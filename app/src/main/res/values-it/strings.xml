@@ -86,6 +86,8 @@
     <string name="dialog_conn_title">Nuova / Modifica connessione</string>
     <string name="dialog_field_name">Nome visualizzato</string>
     <string name="dialog_field_host">Hostname / IP / Endpoint</string>
+    <string name="dialog_field_username">Nome utente / URI cassaforte</string>
+    <string name="dialog_field_port">Porta</string>
     <string name="dialog_field_protocol">Protocollo</string>
     <string name="dialog_field_folder">Cartella superiore</string>
     <string name="dialog_action_save">Salva</string>

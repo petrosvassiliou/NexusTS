@@ -61,13 +61,15 @@ fun SshTerminalSessionView(
     broadcastActive: Boolean,
     pasteActionLabel: String,
     tunnelsActiveLabel: String,
+    externalZoomFactor: Float = 1.0f,
+    onZoomFactorChanged: (Float) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val snapshot by controller.viewport.collectAsState()
     val textMeasurer = rememberTextMeasurer()
     val clipboard = LocalClipboardManager.current
     val baseMonoStyle = NexusTheme.monospace.terminalDefault
-    var fontScale by remember { mutableFloatStateOf(1.0f) }
+    var fontScale by remember(externalZoomFactor) { mutableFloatStateOf(externalZoomFactor) }
     var scrollOffsetLines by remember { mutableIntStateOf(0) }
 
     val scaledStyle = remember(baseMonoStyle, fontScale) {
@@ -83,9 +85,8 @@ fun SshTerminalSessionView(
     val cellWidthPx = sampleLayout.size.width.toFloat().coerceAtLeast(7f)
     val cellHeightPx = sampleLayout.size.height.toFloat().coerceAtLeast(14f)
 
-    DisposableEffect(controller) {
-        onDispose { controller.close() }
-    }
+    // Session lifecycle is owned by NexusWorkspaceViewModel (closed explicitly on tab close or ViewModel clear)
+    // so switching tabs or Navigation Rail destinations preserves the live SSH PTY & scrollback buffer.
 
     Column(
         modifier = modifier
@@ -195,7 +196,9 @@ fun SshTerminalSessionView(
                         scrollOffsetLines = (scrollOffsetLines - dy.toInt()).coerceAtLeast(0)
                     },
                     onZoom = { delta, _ ->
-                        fontScale = (fontScale + delta).coerceIn(0.75f, 2.4f)
+                        val nextScale = (fontScale + delta).coerceIn(0.75f, 2.4f)
+                        fontScale = nextScale
+                        onZoomFactorChanged(nextScale)
                     }
                 )
         ) {

@@ -86,6 +86,8 @@
     <string name="dialog_conn_title">Verbindung erstellen / bearbeiten</string>
     <string name="dialog_field_name">Anzeigename</string>
     <string name="dialog_field_host">Hostname / IP / Endpunkt</string>
+    <string name="dialog_field_username">Benutzername / Tresor-URI</string>
+    <string name="dialog_field_port">Port</string>
     <string name="dialog_field_protocol">Protokoll</string>
     <string name="dialog_field_folder">Übergeordneter Ordner</string>
     <string name="dialog_action_save">Speichern</string>

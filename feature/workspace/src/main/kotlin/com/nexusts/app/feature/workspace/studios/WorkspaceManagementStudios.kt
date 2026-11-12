@@ -2,6 +2,7 @@ package com.nexusts.app.feature.workspace.studios
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,6 +16,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
@@ -246,14 +248,17 @@ fun CredentialVaultStudioView(
             title = { Text(strings.studioActionAddCredential) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
                         listOf(
                             CredentialSourceKind.VAULT_INTERNAL,
                             CredentialSourceKind.ONEPASSWORD_CONNECT,
                             CredentialSourceKind.BITWARDEN_VAULT,
                             CredentialSourceKind.KEEPASS_KDBX,
                             CredentialSourceKind.HARDWARE_FIDO2_PASSKEY
-                        ).take(3).forEach { kind ->
+                        ).forEach { kind ->
                             FilterChip(
                                 selected = credKind == kind,
                                 onClick = { credKind = kind },
@@ -271,7 +276,7 @@ fun CredentialVaultStudioView(
                     OutlinedTextField(
                         value = credUser,
                         onValueChange = { credUser = it },
-                        label = { Text("Username / URI") },
+                        label = { Text(strings.dialogFieldUsername) },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -453,7 +458,7 @@ fun SecureGatewayStudioView(
                     OutlinedTextField(
                         value = gwPort,
                         onValueChange = { gwPort = it.filter(Char::isDigit).take(5) },
-                        label = { Text("Port") },
+                        label = { Text(strings.dialogFieldPort) },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -572,6 +577,7 @@ fun AutomationTasksStudioView(
     keySequenceTasks: List<KeySequenceTask>,
     strings: WorkspaceLocalizedStrings,
     onRunCommandTask: (CommandTask) -> Unit,
+    onRunKeySequenceTask: (KeySequenceTask) -> Unit,
     onAddCommandTask: (CommandTask) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -703,7 +709,8 @@ fun AutomationTasksStudioView(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 16.dp, vertical = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text(macro.name, style = MaterialTheme.typography.titleSmall)
@@ -712,6 +719,11 @@ fun AutomationTasksStudioView(
                                 style = NexusTheme.monospace.keycapShortcut,
                                 color = MaterialTheme.colorScheme.tertiary
                             )
+                        }
+                        FilledTonalButton(onClick = { onRunKeySequenceTask(macro) }) {
+                            Icon(Icons.Outlined.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(strings.studioActionRunTask)
                         }
                     }
                 }

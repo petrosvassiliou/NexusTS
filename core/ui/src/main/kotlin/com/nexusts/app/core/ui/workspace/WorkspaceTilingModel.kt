@@ -51,6 +51,7 @@ data class WorkspaceSessionTab(
     val status: SessionLifecycleStatus = SessionLifecycleStatus.CONNECTING,
     val environmentTag: String? = null,
     val broadcastEnabled: Boolean = false,
+    val zoomFactor: Float = 1.0f,
     val latencyMs: Int? = null,
     val unreadBellOrActivity: Boolean = false
 )
@@ -151,6 +152,35 @@ class WorkspaceTilingController(
             }
         }
         _focusedPaneId.value = paneId
+    }
+
+    fun selectNextTabInFocusedPane() {
+        val leaf = findLeaf(_rootNode.value, _focusedPaneId.value) ?: return
+        if (leaf.tabs.size <= 1) return
+        val currentIdx = leaf.tabs.indexOfFirst { it.tabId == leaf.activeTab?.tabId }.coerceAtLeast(0)
+        val nextTab = leaf.tabs[(currentIdx + 1) % leaf.tabs.size]
+        selectTab(leaf.nodeId, nextTab.tabId)
+    }
+
+    fun selectPreviousTabInFocusedPane() {
+        val leaf = findLeaf(_rootNode.value, _focusedPaneId.value) ?: return
+        if (leaf.tabs.size <= 1) return
+        val currentIdx = leaf.tabs.indexOfFirst { it.tabId == leaf.activeTab?.tabId }.coerceAtLeast(0)
+        val prevTab = leaf.tabs[(currentIdx - 1 + leaf.tabs.size) % leaf.tabs.size]
+        selectTab(leaf.nodeId, prevTab.tabId)
+    }
+
+    fun adjustFocusedTabZoom(deltaOrNullToReset: Float?) {
+        val leaf = findLeaf(_rootNode.value, _focusedPaneId.value) ?: return
+        val active = leaf.activeTab ?: return
+        updateTab(active.tabId) { current ->
+            val updatedZoom = if (deltaOrNullToReset == null) {
+                1.0f
+            } else {
+                (current.zoomFactor + deltaOrNullToReset).coerceIn(0.6f, 3.0f)
+            }
+            current.copy(zoomFactor = updatedZoom)
+        }
     }
 
     fun updateTab(tabId: String, updater: (WorkspaceSessionTab) -> WorkspaceSessionTab) {

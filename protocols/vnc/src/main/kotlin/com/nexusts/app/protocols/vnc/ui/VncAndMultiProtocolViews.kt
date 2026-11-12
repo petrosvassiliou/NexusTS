@@ -75,9 +75,11 @@ fun VncSessionCanvasView(
     host: String,
     isAppleScreenSharing: Boolean,
     settings: ProtocolSpecificSettings.Vnc,
+    externalZoomFactor: Float = 1.0f,
+    onZoomFactorChanged: (Float) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
-    var zoom by remember { mutableFloatStateOf(1f) }
+    var zoom by remember(externalZoomFactor) { mutableFloatStateOf(externalZoomFactor) }
     val encodingLabel = if (isAppleScreenSharing) "ARD DH-AES • ZRLE" else "${settings.preferredEncodings.firstOrNull() ?: "ZRLE"} • RFB 3.8"
 
     Box(
@@ -85,7 +87,9 @@ fun VncSessionCanvasView(
             .fillMaxSize()
             .background(NexusTheme.extendedColors.terminalCanvasBackground)
             .nexusTrackpadCanvasGesture { _, _, zoomChange ->
-                zoom = (zoom * zoomChange).coerceIn(0.6f, 3.0f)
+                val nextZoom = (zoom * zoomChange).coerceIn(0.6f, 3.0f)
+                zoom = nextZoom
+                onZoomFactorChanged(nextZoom)
             }
     ) {
         Canvas(

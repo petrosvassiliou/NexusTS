@@ -86,6 +86,8 @@
     <string name="dialog_conn_title">New / Edit Connection</string>
     <string name="dialog_field_name">Display Name</string>
     <string name="dialog_field_host">Hostname / IP / Endpoint</string>
+    <string name="dialog_field_username">Username / Vault URI</string>
+    <string name="dialog_field_port">Port</string>
     <string name="dialog_field_protocol">Protocol</string>
     <string name="dialog_field_folder">Parent Folder</string>
     <string name="dialog_action_save">Save</string>

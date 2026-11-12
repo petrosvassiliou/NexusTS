@@ -95,6 +95,8 @@ data class WorkspaceLocalizedStrings(
     val dialogConnTitle: String,
     val dialogFieldName: String,
     val dialogFieldHost: String,
+    val dialogFieldUsername: String,
+    val dialogFieldPort: String,
     val dialogFieldProtocol: String,
     val dialogFieldFolder: String,
     val dialogActionSave: String,

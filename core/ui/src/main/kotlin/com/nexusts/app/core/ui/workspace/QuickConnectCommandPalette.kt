@@ -202,7 +202,7 @@ fun QuickConnectCommandPalette(
                     .clickable(
                         interactionSource = remember { MutableInteractionSource() },
                         indication = null,
-                        onClick = {}
+                        onClick = { /* Consume clicks inside modal so backdrop scrim does not dismiss */ }
                     )
                     .onPreviewKeyEvent { event ->
                         if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false

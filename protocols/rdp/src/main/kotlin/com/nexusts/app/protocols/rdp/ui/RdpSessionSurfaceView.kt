@@ -63,10 +63,12 @@ fun RdpSessionSurfaceView(
     ctrlAltDelLabel: String,
     smartcardActiveLabel: String,
     dynamicResizeLabel: String,
+    externalZoomFactor: Float = 1.0f,
+    onZoomFactorChanged: (Float) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var viewportSize by remember { mutableStateOf(IntSize(1920, 1080)) }
-    var zoomScale by remember { mutableFloatStateOf(1f) }
+    var zoomScale by remember(externalZoomFactor) { mutableFloatStateOf(externalZoomFactor) }
     var panOffsetX by remember { mutableFloatStateOf(0f) }
     var panOffsetY by remember { mutableFloatStateOf(0f) }
 
@@ -81,7 +83,8 @@ fun RdpSessionSurfaceView(
     DisposableEffect(session) {
         session.start(viewportSize.width, viewportSize.height)
         onDispose {
-            session.close()
+            // Detach render surface when switching tabs/views without tearing down the live RDP session.
+            session.bindSurface(null)
         }
     }
 
@@ -91,7 +94,9 @@ fun RdpSessionSurfaceView(
             .background(NexusTheme.extendedColors.terminalCanvasBackground)
             .onSizeChanged { newSize -> viewportSize = newSize }
             .nexusTrackpadCanvasGesture { _, pan, zoom ->
-                zoomScale = (zoomScale * zoom).coerceIn(0.75f, 3.0f)
+                val nextZoom = (zoomScale * zoom).coerceIn(0.75f, 3.0f)
+                zoomScale = nextZoom
+                onZoomFactorChanged(nextZoom)
                 if (zoomScale > 1.01f) {
                     panOffsetX += pan.x
                     panOffsetY += pan.y
@@ -107,11 +112,14 @@ fun RdpSessionSurfaceView(
                     session.sendMouse(flags or 0x0078, viewportSize.width / 2, viewportSize.height / 2)
                 },
                 onZoom = { delta, _ ->
-                    zoomScale = (zoomScale + delta).coerceIn(0.75f, 3.0f)
+                    val nextZoom = (zoomScale + delta).coerceIn(0.75f, 3.0f)
+                    zoomScale = nextZoom
+                    onZoomFactorChanged(nextZoom)
                 }
             )
             .pointerInput(session) {
                 awaitPointerEventScope {
+                    var lastPressedButtonFlag = FreeRdpNativeBridge.PTRFLAGS_BUTTON1_LEFT
                     while (true) {
                         val ev = awaitPointerEvent()
                         val change = ev.changes.firstOrNull() ?: continue
@@ -127,10 +135,11 @@ fun RdpSessionSurfaceView(
                                     ev.buttons.isTertiaryPressed -> FreeRdpNativeBridge.PTRFLAGS_BUTTON3_MIDDLE
                                     else -> FreeRdpNativeBridge.PTRFLAGS_BUTTON1_LEFT
                                 }
+                                lastPressedButtonFlag = btn
                                 session.sendMouse(FreeRdpNativeBridge.PTRFLAGS_DOWN or btn, x, y)
                             }
                             PointerEventType.Release -> {
-                                session.sendMouse(FreeRdpNativeBridge.PTRFLAGS_BUTTON1_LEFT, x, y)
+                                session.sendMouse(lastPressedButtonFlag, x, y)
                             }
                         }
                     }

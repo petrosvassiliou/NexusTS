@@ -198,6 +198,16 @@ fun DualPaneTransferCommanderView(
                         selectedLocal = item
                     }
                 },
+                onRefreshPane = {
+                    val sorted = localEntries.sortedWith(
+                        compareBy<CommanderFileItem> { it.name != ".." }
+                            .thenByDescending { it.isDirectory }
+                            .thenBy { it.name.lowercase(Locale.ROOT) }
+                    )
+                    localEntries.clear()
+                    localEntries.addAll(sorted)
+                    selectedLocal = null
+                },
                 onCreateFolder = { dirName ->
                     localEntries.add(
                         CommanderFileItem(dirName, "$localPath/$dirName", true, 4096L, "drwxr-xr-x", "2026-11-12")
@@ -260,6 +270,16 @@ fun DualPaneTransferCommanderView(
                     } else {
                         selectedRemote = item
                     }
+                },
+                onRefreshPane = {
+                    val sorted = remoteEntries.sortedWith(
+                        compareBy<CommanderFileItem> { it.name != ".." }
+                            .thenByDescending { it.isDirectory }
+                            .thenBy { it.name.lowercase(Locale.ROOT) }
+                    )
+                    remoteEntries.clear()
+                    remoteEntries.addAll(sorted)
+                    selectedRemote = null
                 },
                 onCreateFolder = { dirName ->
                     remoteEntries.add(
@@ -403,6 +423,7 @@ private fun CommanderPaneCard(
     selectedItem: CommanderFileItem?,
     accentColor: Color,
     onSelect: (CommanderFileItem) -> Unit,
+    onRefreshPane: () -> Unit,
     onCreateFolder: (String) -> Unit,
     onChmodItem: (CommanderFileItem, String) -> Unit,
     onDeleteItem: (CommanderFileItem) -> Unit,
@@ -549,7 +570,7 @@ private fun CommanderPaneCard(
                     IconButton(onClick = { showMkdirDialog = true }, modifier = Modifier.size(28.dp)) {
                         Icon(Icons.Outlined.CreateNewFolder, contentDescription = null, modifier = Modifier.size(16.dp))
                     }
-                    IconButton(onClick = {}, modifier = Modifier.size(28.dp)) {
+                    IconButton(onClick = onRefreshPane, modifier = Modifier.size(28.dp)) {
                         Icon(Icons.Outlined.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
                     }
                 }

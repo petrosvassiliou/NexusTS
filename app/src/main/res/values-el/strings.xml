@@ -86,6 +86,8 @@
     <string name="dialog_conn_title">Νέα / Επεξεργασία σύνδεσης</string>
     <string name="dialog_field_name">Όνομα εμφάνισης</string>
     <string name="dialog_field_host">Όνομα κεντρικού υπολογιστή / IP</string>
+    <string name="dialog_field_username">Όνομα χρήστη / URI θησαυροφυλακίου</string>
+    <string name="dialog_field_port">Θύρα</string>
     <string name="dialog_field_protocol">Πρωτόκολλο</string>
     <string name="dialog_field_folder">Γονικός φάκελος</string>
     <string name="dialog_action_save">Αποθήκευση</string>

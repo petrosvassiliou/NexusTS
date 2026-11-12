@@ -35,6 +35,7 @@ import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material.icons.outlined.UploadFile
 import androidx.compose.material.icons.outlined.VerticalSplit
 import androidx.compose.material.icons.outlined.ViewSidebar
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
@@ -47,6 +48,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -138,7 +140,11 @@ fun NexusWorkspaceScreen(
         isBottomDrawerVisible = uiState.isBottomDrawerVisible,
         remoteKeyCaptureActive = uiState.remoteKeyCaptureEnabled,
         onShortcutTriggered = { action ->
-            viewModel.handleShortcut(action) { tab -> onDetachTabToNativeWindow(tab, null) }
+            viewModel.handleShortcut(
+                action = action,
+                onOpenVaultPicker = onRequestImportFilePicker,
+                onSyncDriveNow = onRequestGoogleDriveSync
+            ) { tab -> onDetachTabToNativeWindow(tab, null) }
         },
         onForwardRawKeyToActiveSession = viewModel::forwardRawKeyToFocusedSession,
         topWindowBar = {
@@ -159,7 +165,7 @@ fun NexusWorkspaceScreen(
                 onImportRtsz = onRequestImportFilePicker,
                 onSyncGoogleDrive = onRequestGoogleDriveSync,
                 onToggleBroadcast = viewModel::toggleGlobalBroadcast,
-                onLockVault = { viewModel.lockVaultWithPassphrase("nexusts-session-lock".toCharArray()) },
+                onLockVault = viewModel::openLockVaultDialog,
                 onCompleteFlexibleUpdate = onCompleteFlexibleUpdate
             )
         },
@@ -173,7 +179,8 @@ fun NexusWorkspaceScreen(
                 VaultHierarchySidebarTree(
                     uiState = uiState,
                     strings = strings,
-                    smartFolderCountProvider = viewModel::evaluateSmartFolderCount,
+                    smartFolderConnectionsProvider = viewModel::evaluateSmartFolderConnections,
+                    onToggleSmartFolder = viewModel::toggleSmartFolderSelection,
                     onSelectConnection = { id ->
                         viewModel.selectConnectionInTree(id)
                         viewModel.selectRailDestination("connections")
@@ -209,6 +216,7 @@ fun NexusWorkspaceScreen(
                     keySequenceTasks = uiState.vaultDocument.keySequenceTasks,
                     strings = strings,
                     onRunCommandTask = viewModel::executeCommandTask,
+                    onRunKeySequenceTask = viewModel::executeKeySequenceTask,
                     onAddCommandTask = viewModel::addCommandTaskToVault
                 )
 
@@ -304,6 +312,12 @@ fun NexusWorkspaceScreen(
                 onDismiss = viewModel::dismissNewConnectionDialog,
                 onSaveConnection = viewModel::saveConnectionToVault
             )
+            LockVaultPassphraseDialog(
+                visible = uiState.isLockVaultDialogVisible,
+                strings = strings,
+                onDismiss = viewModel::dismissLockVaultDialog,
+                onConfirmLock = { pass -> viewModel.lockVaultWithPassphrase(pass.toCharArray()) }
+            )
         },
         modifier = modifier
     )
@@ -316,8 +330,14 @@ fun ActiveProtocolSessionDispatcher(
     viewModel: NexusWorkspaceViewModel,
     strings: WorkspaceLocalizedStrings
 ) {
-    val (conn, secret) = remember(tab.connectionId, viewModel) {
+    val uiState by viewModel.uiState.collectAsState()
+    val (conn, secret) = remember(tab.connectionId, uiState.vaultDocument, viewModel) {
         viewModel.resolveConnectionAndSecret(tab.connectionId)
+    }
+    val onZoomChanged: (Float) -> Unit = remember(tab.tabId, viewModel) {
+        { nextZoom ->
+            viewModel.tilingController.updateTab(tab.tabId) { it.copy(zoomFactor = nextZoom) }
+        }
     }
 
     when (tab.protocol) {
@@ -328,7 +348,9 @@ fun ActiveProtocolSessionDispatcher(
                 isFocused = isFocused,
                 ctrlAltDelLabel = strings.rdpSendCtrlAltDel,
                 smartcardActiveLabel = strings.rdpSmartcardActive,
-                dynamicResizeLabel = strings.rdpDynamicResizeActive
+                dynamicResizeLabel = strings.rdpDynamicResizeActive,
+                externalZoomFactor = tab.zoomFactor,
+                onZoomFactorChanged = onZoomChanged
             )
         }
 
@@ -339,7 +361,9 @@ fun ActiveProtocolSessionDispatcher(
                 isFocused = isFocused,
                 broadcastActive = tab.broadcastEnabled,
                 pasteActionLabel = strings.sshPasteClipboard,
-                tunnelsActiveLabel = strings.sshTunnelsActive
+                tunnelsActiveLabel = strings.sshTunnelsActive,
+                externalZoomFactor = tab.zoomFactor,
+                onZoomFactorChanged = onZoomChanged
             )
         }
 
@@ -362,7 +386,9 @@ fun ActiveProtocolSessionDispatcher(
             VncSessionCanvasView(
                 host = tab.subtitleHost,
                 isAppleScreenSharing = tab.protocol == SessionProtocolKind.APPLE_SCREEN_SHARING,
-                settings = vncSettings
+                settings = vncSettings,
+                externalZoomFactor = tab.zoomFactor,
+                onZoomFactorChanged = onZoomChanged
             )
         }
 
@@ -602,7 +628,8 @@ private fun DesktopTopWindowChrome(
 private fun VaultHierarchySidebarTree(
     uiState: WorkspaceUiState,
     strings: WorkspaceLocalizedStrings,
-    smartFolderCountProvider: (com.nexusts.app.core.vault.model.SmartFolder) -> Int,
+    smartFolderConnectionsProvider: (com.nexusts.app.core.vault.model.SmartFolder) -> List<VaultConnection>,
+    onToggleSmartFolder: (String) -> Unit,
     onSelectConnection: (String) -> Unit,
     onLaunchConnection: (VaultConnection, QuickLaunchPlacement) -> Unit
 ) {
@@ -622,31 +649,50 @@ private fun VaultHierarchySidebarTree(
                 modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp)
             )
         }
-        items(doc.smartFolders, key = { it.id }) { smart ->
-            val count = smartFolderCountProvider(smart)
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(MaterialTheme.shapes.small)
-                    .padding(horizontal = 8.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = Icons.Outlined.AutoAwesome,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp),
-                        tint = MaterialTheme.colorScheme.tertiary
+        doc.smartFolders.forEach { smart ->
+            val matchedConnections = smartFolderConnectionsProvider(smart)
+            val isExpanded = uiState.selectedSmartFolderId == smart.id
+            item(key = "smart-${smart.id}") {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(MaterialTheme.shapes.small)
+                        .background(
+                            if (isExpanded) MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.45f)
+                            else androidx.compose.ui.graphics.Color.Transparent
+                        )
+                        .clickable { onToggleSmartFolder(smart.id) }
+                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Outlined.AutoAwesome,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                            tint = MaterialTheme.colorScheme.tertiary
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(smart.name, style = MaterialTheme.typography.bodyMedium)
+                    }
+                    Text(
+                        text = matchedConnections.size.toString(),
+                        style = NexusTheme.monospace.keycapShortcut,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(smart.name, style = MaterialTheme.typography.bodyMedium)
                 }
-                Text(
-                    text = count.toString(),
-                    style = NexusTheme.monospace.keycapShortcut,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+            }
+            if (isExpanded) {
+                items(matchedConnections, key = { "smart-${smart.id}-${it.id}" }) { conn ->
+                    ConnectionTreeRow(
+                        connection = conn,
+                        isSelected = conn.id == uiState.selectedConnectionId,
+                        strings = strings,
+                        onSelect = { onSelectConnection(conn.id) },
+                        onLaunch = { placement -> onLaunchConnection(conn, placement) }
+                    )
+                }
             }
         }
 
@@ -821,7 +867,7 @@ private fun ContextualPropertyInspectorPane(
                 Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text(strings.inspectorEffectiveCredential, style = MaterialTheme.typography.labelMedium)
                     Text(
-                        text = profile.effectiveCredential?.name ?: "Interactive Prompt",
+                        text = profile.effectiveCredential?.name ?: "-",
                         style = MaterialTheme.typography.titleSmall
                     )
                     Text(
@@ -866,6 +912,55 @@ private fun ContextualPropertyInspectorPane(
 }
 
 @Composable
+private fun LockVaultPassphraseDialog(
+    visible: Boolean,
+    strings: WorkspaceLocalizedStrings,
+    onDismiss: () -> Unit,
+    onConfirmLock: (String) -> Unit
+) {
+    if (!visible) return
+    var lockPassphrase by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = {
+            Icon(
+                imageVector = Icons.Outlined.Lock,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.secondary
+            )
+        },
+        title = { Text(strings.actionLockVault) },
+        text = {
+            OutlinedTextField(
+                value = lockPassphrase,
+                onValueChange = { lockPassphrase = it },
+                label = { Text(strings.vaultPassphraseLabel) },
+                singleLine = true,
+                visualTransformation = PasswordVisualTransformation(),
+                modifier = Modifier.fillMaxWidth()
+            )
+        },
+        confirmButton = {
+            Button(
+                enabled = lockPassphrase.isNotEmpty(),
+                onClick = {
+                    onConfirmLock(lockPassphrase)
+                    lockPassphrase = ""
+                }
+            ) {
+                Text(strings.actionLockVault)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(strings.dialogActionCancel)
+            }
+        }
+    )
+}
+
+@Composable
 private fun VaultUnlockPane(
     strings: WorkspaceLocalizedStrings,
     onUnlock: (String) -> Unit
@@ -897,7 +992,11 @@ private fun VaultUnlockPane(
         )
         Spacer(modifier = Modifier.height(12.dp))
         Button(
-            onClick = { onUnlock(passphrase) },
+            enabled = passphrase.isNotEmpty(),
+            onClick = {
+                onUnlock(passphrase)
+                passphrase = ""
+            },
             modifier = Modifier.fillMaxWidth()
         ) {
             Text(strings.actionUnlockVault)

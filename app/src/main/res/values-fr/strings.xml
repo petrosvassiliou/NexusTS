@@ -86,6 +86,8 @@
     <string name="dialog_conn_title">Nouvelle / Modifier la connexion</string>
     <string name="dialog_field_name">Nom d\'affichage</string>
     <string name="dialog_field_host">Hôte / IP / Point de terminaison</string>
+    <string name="dialog_field_username">Utilisateur / URI du coffre</string>
+    <string name="dialog_field_port">Port</string>
     <string name="dialog_field_protocol">Protocole</string>
     <string name="dialog_field_folder">Dossier parent</string>
     <string name="dialog_action_save">Enregistrer</string>

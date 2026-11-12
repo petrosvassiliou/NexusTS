@@ -64,6 +64,8 @@ fun rememberLocalizedWorkspaceStrings(): WorkspaceLocalizedStrings {
         dialogConnTitle = stringResource(R.string.dialog_conn_title),
         dialogFieldName = stringResource(R.string.dialog_field_name),
         dialogFieldHost = stringResource(R.string.dialog_field_host),
+        dialogFieldUsername = stringResource(R.string.dialog_field_username),
+        dialogFieldPort = stringResource(R.string.dialog_field_port),
         dialogFieldProtocol = stringResource(R.string.dialog_field_protocol),
         dialogFieldFolder = stringResource(R.string.dialog_field_folder),
         dialogActionSave = stringResource(R.string.dialog_action_save),

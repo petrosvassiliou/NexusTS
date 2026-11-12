@@ -55,12 +55,14 @@ data class WorkspaceUiState(
     val isBottomDrawerVisible: Boolean = false,
     val isQuickConnectVisible: Boolean = false,
     val isNewConnectionDialogVisible: Boolean = false,
+    val isLockVaultDialogVisible: Boolean = false,
     val useSharedTeamDriveZone: Boolean = false,
     val remoteKeyCaptureEnabled: Boolean = false,
     val broadcastModeEnabled: Boolean = false,
     val isVaultLocked: Boolean = false,
     val vaultDocument: NxtsVaultDocument = createEnterpriseStarterVault(),
     val selectedConnectionId: String? = null,
+    val selectedSmartFolderId: String? = null,
     val gatewayHealthReports: Map<String, GatewayHealthReport> = emptyMap(),
     val auditLogs: List<String> = listOf(
         "[NexusTS] Argon2id + AES-256-GCM Zero-Knowledge Engine initialized.",
@@ -114,8 +116,41 @@ class NexusWorkspaceViewModel @Inject constructor(
         _uiState.update { it.copy(isNewConnectionDialogVisible = false) }
     }
 
+    fun openLockVaultDialog() {
+        if (_uiState.value.isVaultLocked) {
+            _uiState.update { it.copy(isSidebarVisible = true) }
+        } else {
+            _uiState.update { it.copy(isLockVaultDialogVisible = true) }
+        }
+    }
+
+    fun dismissLockVaultDialog() {
+        _uiState.update { it.copy(isLockVaultDialogVisible = false) }
+    }
+
     fun selectConnectionInTree(connectionId: String) {
         _uiState.update { it.copy(selectedConnectionId = connectionId) }
+    }
+
+    fun toggleSmartFolderSelection(smartFolderId: String) {
+        _uiState.update { state ->
+            val next = if (state.selectedSmartFolderId == smartFolderId) null else smartFolderId
+            state.copy(selectedSmartFolderId = next)
+        }
+    }
+
+    fun launchLocalShellTab() {
+        val localTab = WorkspaceSessionTab(
+            connectionId = "local-shell-${System.currentTimeMillis()}",
+            title = "Local Terminal",
+            subtitleHost = "127.0.0.1",
+            protocol = SessionProtocolKind.SSH,
+            status = SessionLifecycleStatus.CONNECTED,
+            broadcastEnabled = _uiState.value.broadcastModeEnabled
+        )
+        _uiState.update { it.copy(activeRailId = "connections") }
+        tilingController.openTab(localTab)
+        appendLog("[Terminal] Opened local Googlebook OS terminal tab (${localTab.tabId.take(8)})")
     }
 
     fun effectiveProfileForSelected(): EffectiveConnectionProfile? {
@@ -247,12 +282,27 @@ class NexusWorkspaceViewModel @Inject constructor(
         tilingController.closeTab(tabId)
     }
 
-    fun handleShortcut(action: NexusShortcutAction, onDetachActiveTab: (WorkspaceSessionTab) -> Unit) {
+    fun handleShortcut(
+        action: NexusShortcutAction,
+        onOpenVaultPicker: (() -> Unit)? = null,
+        onSyncDriveNow: (() -> Unit)? = null,
+        onDetachActiveTab: (WorkspaceSessionTab) -> Unit
+    ) {
         when (action) {
             NexusShortcutAction.QUICK_CONNECT_PALETTE ->
                 _uiState.update { it.copy(isQuickConnectVisible = !it.isQuickConnectVisible) }
             NexusShortcutAction.NEW_CONNECTION_DIALOG ->
                 _uiState.update { it.copy(isNewConnectionDialogVisible = !it.isNewConnectionDialogVisible) }
+            NexusShortcutAction.NEW_LOCAL_TERMINAL ->
+                launchLocalShellTab()
+            NexusShortcutAction.OPEN_VAULT_DOCUMENT ->
+                onOpenVaultPicker?.invoke()
+            NexusShortcutAction.LOCK_ALL_VAULTS ->
+                openLockVaultDialog()
+            NexusShortcutAction.SYNC_GOOGLE_DRIVE_NOW -> {
+                appendLog("[Shortcut] Triggering Google Drive API v3 delta-sync…")
+                onSyncDriveNow?.invoke()
+            }
             NexusShortcutAction.RELEASE_REMOTE_KEY_CAPTURE ->
                 _uiState.update { it.copy(remoteKeyCaptureEnabled = false) }
             NexusShortcutAction.TOGGLE_SIDEBAR_TREE ->
@@ -267,7 +317,12 @@ class NexusWorkspaceViewModel @Inject constructor(
                 tilingController.splitPane(orientation = SplitOrientation.VERTICAL)
             NexusShortcutAction.FOCUS_NEXT_PANE ->
                 tilingController.focusNextPane()
-            NexusShortcutAction.TOGGLE_BROADCAST_INPUT -> toggleGlobalBroadcast()
+            NexusShortcutAction.NEXT_TAB ->
+                tilingController.selectNextTabInFocusedPane()
+            NexusShortcutAction.PREVIOUS_TAB ->
+                tilingController.selectPreviousTabInFocusedPane()
+            NexusShortcutAction.TOGGLE_BROADCAST_INPUT ->
+                toggleGlobalBroadcast()
             NexusShortcutAction.CLOSE_ACTIVE_TAB -> {
                 val focusedId = tilingController.focusedPaneId.value
                 val activeTab = findFocusedActiveTab(focusedId)
@@ -279,7 +334,12 @@ class NexusWorkspaceViewModel @Inject constructor(
                     tilingController.extractTabForDetachedWindow(activeTab.tabId)?.let(onDetachActiveTab)
                 }
             }
-            else -> Unit
+            NexusShortcutAction.ZOOM_IN_SESSION ->
+                tilingController.adjustFocusedTabZoom(+0.15f)
+            NexusShortcutAction.ZOOM_OUT_SESSION ->
+                tilingController.adjustFocusedTabZoom(-0.15f)
+            NexusShortcutAction.ZOOM_RESET_SESSION ->
+                tilingController.adjustFocusedTabZoom(null)
         }
     }
 
@@ -350,8 +410,13 @@ class NexusWorkspaceViewModel @Inject constructor(
     }
 
     fun executeCommandTask(task: CommandTask) {
-        val line = if (task.appendNewline) "${task.commandTemplate}\r\n" else task.commandTemplate
-        val bytes = line.encodeToByteArray()
+        val profile = effectiveProfileForSelected()
+        val rendered = if (profile != null) {
+            automationEngine.renderCommandTask(task, profile)
+        } else {
+            if (task.appendNewline) "${task.commandTemplate}\r\n" else task.commandTemplate
+        }
+        val bytes = rendered.replace("\n", "\r\n").replace("\r\r\n", "\r\n").encodeToByteArray()
         if (task.broadcastToAllSelectedSessions) {
             automationEngine.emitBroadcastBytes(bytes, originTabId = null)
         } else {
@@ -361,6 +426,42 @@ class NexusWorkspaceViewModel @Inject constructor(
             }
         }
         appendLog("[Automation] Executed '${task.name}': ${task.commandTemplate}")
+    }
+
+    fun executeKeySequenceTask(macro: KeySequenceTask) {
+        val doc = _uiState.value.vaultDocument
+        val focusedTab = findFocusedActiveTab(tilingController.focusedPaneId.value)
+        val targetConn = doc.connections.firstOrNull { it.id == focusedTab?.connectionId }
+            ?: doc.connections.firstOrNull { it.id == _uiState.value.selectedConnectionId }
+            ?: doc.connections.firstOrNull()
+        val profile = if (targetConn != null) {
+            inheritanceResolver.resolveEffectiveProfile(doc, targetConn)
+        } else {
+            appendLog("[Automation] Cannot run '${macro.name}': no target connection profile.")
+            return
+        }
+
+        viewModelScope.launch {
+            automationEngine.executeKeySequence(
+                task = macro,
+                profile = profile,
+                sendText = { ch ->
+                    if (focusedTab != null) {
+                        sshControllers[focusedTab.tabId]?.sendUserBytes(ch.encodeToByteArray())
+                    }
+                },
+                sendSpecialKey = { token ->
+                    when (token) {
+                        "CTRL+ALT+DEL" -> focusedTab?.let { rdpSessions[it.tabId]?.sendCtrlAltDel() }
+                        "ENTER" -> focusedTab?.let { sshControllers[it.tabId]?.sendUserBytes("\r".encodeToByteArray()) }
+                        "TAB" -> focusedTab?.let { sshControllers[it.tabId]?.sendUserBytes("\t".encodeToByteArray()) }
+                        "ESC" -> focusedTab?.let { sshControllers[it.tabId]?.sendUserBytes(byteArrayOf(0x1B)) }
+                        "CTRL+C" -> focusedTab?.let { sshControllers[it.tabId]?.sendUserBytes(byteArrayOf(0x03)) }
+                    }
+                }
+            )
+            appendLog("[KeySequence] Executed macro '${macro.name}' (${macro.macroSequence})")
+        }
     }
 
     fun setDriveSyncZone(useTeamDrive: Boolean) {
@@ -428,7 +529,13 @@ class NexusWorkspaceViewModel @Inject constructor(
         viewModelScope.launch {
             val sealed = vaultSerializer.sealDocument(_uiState.value.vaultDocument, passphrase)
             sealedLockedVaultSnapshot = sealed
-            _uiState.update { it.copy(isVaultLocked = true) }
+            _uiState.update {
+                it.copy(
+                    isVaultLocked = true,
+                    isLockVaultDialogVisible = false,
+                    isSidebarVisible = true
+                )
+            }
             appendLog("[Vault] Sealed .nxts container (${sealed.size} bytes, Argon2id + AES-256-GCM)")
         }
     }
@@ -490,8 +597,11 @@ class NexusWorkspaceViewModel @Inject constructor(
         }
     }
 
+    fun evaluateSmartFolderConnections(smartFolder: SmartFolder): List<VaultConnection> =
+        inheritanceResolver.evaluateSmartFolder(_uiState.value.vaultDocument, smartFolder)
+
     fun evaluateSmartFolderCount(smartFolder: SmartFolder): Int =
-        inheritanceResolver.evaluateSmartFolder(_uiState.value.vaultDocument, smartFolder).size
+        evaluateSmartFolderConnections(smartFolder).size
 
     private fun findFocusedActiveTab(focusedPaneId: String): WorkspaceSessionTab? {
         fun search(node: com.nexusts.app.core.ui.workspace.PaneNode): WorkspaceSessionTab? = when (node) {
@@ -505,6 +615,15 @@ class NexusWorkspaceViewModel @Inject constructor(
 
     private fun appendLog(entry: String) {
         _uiState.update { it.copy(auditLogs = (listOf(entry) + it.auditLogs).take(100)) }
+    }
+
+    override fun onCleared() {
+        sshControllers.values.forEach { runCatching { it.close() } }
+        sshControllers.clear()
+        rdpSessions.values.forEach { runCatching { it.close() } }
+        rdpSessions.clear()
+        gatewayTunnelManager.closeAllLeases()
+        super.onCleared()
     }
 
     companion object {

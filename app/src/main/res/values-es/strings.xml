@@ -86,6 +86,8 @@
     <string name="dialog_conn_title">Nueva / Editar conexión</string>
     <string name="dialog_field_name">Nombre visible</string>
     <string name="dialog_field_host">Host / IP / Punto de enlace</string>
+    <string name="dialog_field_username">Usuario / URI de bóveda</string>
+    <string name="dialog_field_port">Puerto</string>
     <string name="dialog_field_protocol">Protocolo</string>
     <string name="dialog_field_folder">Carpeta superior</string>
     <string name="dialog_action_save">Guardar</string>

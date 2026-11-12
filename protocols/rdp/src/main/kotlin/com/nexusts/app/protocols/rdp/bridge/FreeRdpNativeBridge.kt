@@ -246,9 +246,13 @@ class RdpManagedSession(
     val secret: ResolvedSessionSecret
 ) {
     private var nativeHandle: Long = 0L
+    private val started = java.util.concurrent.atomic.AtomicBoolean(false)
 
     fun start(initialWidthPx: Int, initialHeightPx: Int): Boolean {
         if (!FreeRdpNativeBridge.isNativeLoaded) return false
+        if (!started.compareAndSet(false, true)) {
+            return nativeHandle != 0L
+        }
         nativeHandle = FreeRdpNativeBridge.nativeCreateSession(
             host = connection.host,
             port = settings.port,
@@ -319,6 +323,7 @@ class RdpManagedSession(
     }
 
     fun close() {
+        started.set(false)
         if (nativeHandle != 0L && FreeRdpNativeBridge.isNativeLoaded) {
             FreeRdpNativeBridge.nativeDestroySession(nativeHandle)
             nativeHandle = 0L
