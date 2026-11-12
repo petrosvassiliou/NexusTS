@@ -1,0 +1,345 @@
+package com.nexusts.app.core.vault.model
+
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
+import java.util.UUID
+
+@Serializable
+enum class InheritanceMode {
+    INHERIT_FROM_PARENT,
+    OVERRIDE_EXPLICIT,
+    NONE_DIRECT,
+    PROMPT_AT_CONNECT
+}
+
+@Serializable
+data class InheritableProperties(
+    val credentialMode: InheritanceMode = InheritanceMode.INHERIT_FROM_PARENT,
+    val explicitCredentialId: String? = null,
+    val gatewayMode: InheritanceMode = InheritanceMode.INHERIT_FROM_PARENT,
+    val explicitGatewayId: String? = null,
+    val environmentBadge: String? = null,
+    val preConnectTaskId: String? = null,
+    val postDisconnectTaskId: String? = null,
+    val displayColorAccentHex: String? = null
+)
+
+@Serializable
+enum class VaultProtocolType {
+    RDP,
+    SSH,
+    TELNET,
+    SERIAL,
+    SFTP,
+    FTP,
+    FTPS,
+    SCP,
+    VNC,
+    APPLE_SCREEN_SHARING,
+    WEB_PAGE,
+    VMWARE_VSPHERE,
+    PROXMOX_VE,
+    HYPER_V,
+    AWS_EC2,
+    AZURE_VM,
+    WINDOWS_TERMINAL_SERVICES,
+    UTILITY_PING,
+    UTILITY_TRACEROUTE,
+    UTILITY_PORT_SCANNER,
+    UTILITY_WAKE_ON_LAN
+}
+
+@Serializable
+enum class RdpResizeBehavior {
+    DYNAMIC_DISP_DVC,
+    SMART_SCALE_VIEWPORT,
+    FIXED_SERVER_RESOLUTION
+}
+
+@Serializable
+@SerialName("protocol_settings")
+sealed interface ProtocolSpecificSettings {
+
+    @Serializable
+    @SerialName("rdp")
+    data class Rdp(
+        val port: Int = 3389,
+        val enableGfxPipeline: Boolean = true,
+        val enableH264Avc444: Boolean = true,
+        val enableRemoteFx: Boolean = true,
+        val resizeBehavior: RdpResizeBehavior = RdpResizeBehavior.DYNAMIC_DISP_DVC,
+        val multiMonitorSpanning: Boolean = false,
+        val selectedMonitorIds: List<Int> = emptyList(),
+        val redirectClipboard: Boolean = true,
+        val redirectSmartcardYubiKey: Boolean = true,
+        val redirectAudioPlayback: Boolean = true,
+        val redirectMicrophone: Boolean = false,
+        val redirectedDriveSafUris: List<String> = emptyList(),
+        val remoteAppMode: Boolean = false,
+        val remoteAppProgram: String = "",
+        val remoteAppArguments: String = "",
+        val rdGatewayHostname: String = "",
+        val rdGatewayPort: Int = 443,
+        val nlaSecurityRequired: Boolean = true,
+        val colorDepthBits: Int = 32
+    ) : ProtocolSpecificSettings
+
+    @Serializable
+    @SerialName("ssh")
+    data class Ssh(
+        val port: Int = 22,
+        val terminalType: String = "xterm-256color",
+        val bastionJumpConnectionId: String? = null,
+        val enableAgentForwarding: Boolean = false,
+        val enableX11Forwarding: Boolean = false,
+        val x11DisplayHost: String = "127.0.0.1:0",
+        val portForwards: List<SshPortForwardRule> = emptyList(),
+        val startupCommand: String = "",
+        val keepAliveIntervalSec: Int = 30,
+        val scrollbackLines: Int = 10_000,
+        val serialBaudRate: Int = 115_200,
+        val serialDevicePath: String = "/dev/ttyUSB0"
+    ) : ProtocolSpecificSettings
+
+    @Serializable
+    @SerialName("file_transfer")
+    data class FileTransfer(
+        val port: Int = 22,
+        val initialLocalDirectory: String = "",
+        val initialRemoteDirectory: String = "/",
+        val preserveTimestamps: Boolean = true,
+        val showHiddenDotfiles: Boolean = true,
+        val maxConcurrentTransfers: Int = 4,
+        val ftpsImplicitTls: Boolean = false
+    ) : ProtocolSpecificSettings
+
+    @Serializable
+    @SerialName("vnc")
+    data class Vnc(
+        val port: Int = 5900,
+        val preferredEncodings: List<String> = listOf("ZRLE", "Tight", "CopyRect", "Hextile", "Raw"),
+        val compressionLevel: Int = 6,
+        val jpegQualityLevel: Int = 7,
+        val viewOnly: Boolean = false,
+        val sharedSession: Boolean = true,
+        val appleArdDiffieHellmanAuth: Boolean = false
+    ) : ProtocolSpecificSettings
+
+    @Serializable
+    @SerialName("web_page")
+    data class WebPage(
+        val url: String,
+        val isolatedStorageProfileId: String = UUID.randomUUID().toString(),
+        val autoFillEnabled: Boolean = true,
+        val usernameCssSelector: String = "input[type='email'], input[name*='user'], input[type='text']",
+        val passwordCssSelector: String = "input[type='password']",
+        val submitCssSelector: String = "button[type='submit'], input[type='submit']",
+        val injectHttpBasicAuth: Boolean = false,
+        val pinnedCertSha256: String = "",
+        val ignoreSelfSignedInternalCert: Boolean = false
+    ) : ProtocolSpecificSettings
+
+    @Serializable
+    @SerialName("cloud_virtualization")
+    data class CloudVirtualization(
+        val apiEndpointUrl: String,
+        val regionOrCluster: String = "",
+        val subscriptionOrAccountId: String = "",
+        val realmOrDomain: String = "pam",
+        val autoSyncDynamicInventory: Boolean = true
+    ) : ProtocolSpecificSettings
+
+    @Serializable
+    @SerialName("net_utility")
+    data class NetUtility(
+        val pingCount: Int = 10,
+        val pingIntervalMs: Int = 1000,
+        val tracerouteMaxHops: Int = 30,
+        val portScanRangeStart: Int = 1,
+        val portScanRangeEnd: Int = 1024,
+        val portScanConcurrency: Int = 128,
+        val wolMacAddress: String = "",
+        val wolBroadcastAddress: String = "255.255.255.255",
+        val wolUdpPort: Int = 9,
+        val wolSecureOnHex: String = ""
+    ) : ProtocolSpecificSettings
+}
+
+@Serializable
+enum class PortForwardKind {
+    LOCAL,
+    REMOTE,
+    DYNAMIC_SOCKS5
+}
+
+@Serializable
+data class SshPortForwardRule(
+    val id: String = UUID.randomUUID().toString(),
+    val kind: PortForwardKind,
+    val bindAddress: String = "127.0.0.1",
+    val bindPort: Int,
+    val targetHost: String = "127.0.0.1",
+    val targetPort: Int = 0,
+    val enabled: Boolean = true
+)
+
+@Serializable
+data class VaultFolder(
+    val id: String = UUID.randomUUID().toString(),
+    val parentFolderId: String? = null,
+    val name: String,
+    val description: String = "",
+    val tags: List<String> = emptyList(),
+    val inheritable: InheritableProperties = InheritableProperties(),
+    val sortOrder: Int = 0,
+    val updatedAtEpochMs: Long = System.currentTimeMillis()
+)
+
+@Serializable
+data class SmartFolderFilter(
+    val includeTags: List<String> = emptyList(),
+    val includeProtocols: List<VaultProtocolType> = emptyList(),
+    val osFamilyFilter: String? = null,
+    val hostPatternRegex: String? = null,
+    val environmentFilter: String? = null
+)
+
+@Serializable
+data class SmartFolder(
+    val id: String = UUID.randomUUID().toString(),
+    val name: String,
+    val filter: SmartFolderFilter,
+    val updatedAtEpochMs: Long = System.currentTimeMillis()
+)
+
+@Serializable
+enum class DynamicScriptInterpreter {
+    JSON_HTTP_API,
+    SHELL_SH,
+    PYTHON3
+}
+
+@Serializable
+data class DynamicFolder(
+    val id: String = UUID.randomUUID().toString(),
+    val parentFolderId: String? = null,
+    val name: String,
+    val interpreter: DynamicScriptInterpreter = DynamicScriptInterpreter.JSON_HTTP_API,
+    val scriptOrEndpointPayload: String,
+    val refreshIntervalMinutes: Int = 30,
+    val inheritable: InheritableProperties = InheritableProperties(),
+    val updatedAtEpochMs: Long = System.currentTimeMillis()
+)
+
+@Serializable
+data class VaultConnection(
+    val id: String = UUID.randomUUID().toString(),
+    val parentFolderId: String? = null,
+    val name: String,
+    val host: String,
+    val protocol: VaultProtocolType,
+    val osFamily: String = "Linux",
+    val tags: List<String> = emptyList(),
+    val notes: String = "",
+    val favorite: Boolean = false,
+    val inheritable: InheritableProperties = InheritableProperties(),
+    val settings: ProtocolSpecificSettings,
+    val updatedAtEpochMs: Long = System.currentTimeMillis()
+)
+
+@Serializable
+enum class CredentialSourceKind {
+    VAULT_INTERNAL,
+    SSH_KEY_PAIR,
+    ONEPASSWORD_CONNECT,
+    BITWARDEN_VAULT,
+    KEEPASS_KDBX,
+    HARDWARE_FIDO2_PASSKEY
+}
+
+@Serializable
+data class VaultCredential(
+    val id: String = UUID.randomUUID().toString(),
+    val parentFolderId: String? = null,
+    val name: String,
+    val sourceKind: CredentialSourceKind = CredentialSourceKind.VAULT_INTERNAL,
+    val username: String = "",
+    val domain: String = "",
+    val secretPassword: String = "",
+    val privateKeyPem: String = "",
+    val publicKeyOpenSsh: String = "",
+    val keyFingerprintSha256: String = "",
+    val keyPassphrase: String = "",
+    val externalReferenceUri: String = "",
+    val fido2CredentialIdBase64: String = "",
+    val totpSecretBase32: String = "",
+    val updatedAtEpochMs: Long = System.currentTimeMillis()
+)
+
+@Serializable
+enum class GatewayTransportKind {
+    NEXUSTS_SECURE_GATEWAY,
+    SSH_TUNNEL_BASTION,
+    SOCKS5_PROXY,
+    HTTP_CONNECT_PROXY
+}
+
+@Serializable
+data class SecureGatewayConfig(
+    val id: String = UUID.randomUUID().toString(),
+    val name: String,
+    val kind: GatewayTransportKind,
+    val host: String,
+    val port: Int,
+    val credentialId: String? = null,
+    val verifyTlsCertificate: Boolean = true,
+    val updatedAtEpochMs: Long = System.currentTimeMillis()
+)
+
+@Serializable
+data class CommandTask(
+    val id: String = UUID.randomUUID().toString(),
+    val name: String,
+    val commandTemplate: String,
+    val broadcastToAllSelectedSessions: Boolean = false,
+    val appendNewline: Boolean = true,
+    val updatedAtEpochMs: Long = System.currentTimeMillis()
+)
+
+@Serializable
+data class KeySequenceTask(
+    val id: String = UUID.randomUUID().toString(),
+    val name: String,
+    /** Macro sequence supporting tokens such as `{WAIT:300}`, `{ENTER}`, `{TAB}`, `{CTRL+ALT+DEL}`, `$EffectiveUsername$` */
+    val macroSequence: String,
+    val keystrokeDelayMs: Int = 25,
+    val updatedAtEpochMs: Long = System.currentTimeMillis()
+)
+
+/**
+ * Root Zero-Knowledge `.nxts` Encrypted Vault Document Model.
+ */
+@Serializable
+data class NxtsVaultDocument(
+    val documentId: String = UUID.randomUUID().toString(),
+    val name: String,
+    val description: String = "",
+    val schemaVersion: Int = 2,
+    val revision: Long = 1L,
+    val lastModifiedByDevice: String = "Googlebook-OS",
+    val updatedAtEpochMs: Long = System.currentTimeMillis(),
+    val vectorClock: Map<String, Long> = mapOf("local" to 1L),
+    val rootInheritable: InheritableProperties = InheritableProperties(
+        credentialMode = InheritanceMode.NONE_DIRECT,
+        gatewayMode = InheritanceMode.NONE_DIRECT
+    ),
+    val folders: List<VaultFolder> = emptyList(),
+    val smartFolders: List<SmartFolder> = emptyList(),
+    val dynamicFolders: List<DynamicFolder> = emptyList(),
+    val connections: List<VaultConnection> = emptyList(),
+    val credentials: List<VaultCredential> = emptyList(),
+    val gateways: List<SecureGatewayConfig> = emptyList(),
+    val commandTasks: List<CommandTask> = emptyList(),
+    val keySequenceTasks: List<KeySequenceTask> = emptyList(),
+    val tombstonedObjectIds: Set<String> = emptySet()
+)

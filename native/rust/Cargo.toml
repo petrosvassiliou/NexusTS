@@ -1,0 +1,47 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/nexusts-crypto",
+    "crates/nexusts-terminal",
+    "crates/nexusts-transfer",
+    "crates/nexusts-vnc",
+    "crates/nexusts-netutils",
+    "crates/nexusts-jni",
+]
+
+[workspace.package]
+version = "1.0.0"
+edition = "2021"
+rust-version = "1.82"
+license = "Proprietary"
+authors = ["NexusTS Systems Architecture Team <engineering@nexusts.app>"]
+
+[workspace.dependencies]
+argon2 = { version = "0.5", features = ["std", "zeroize"] }
+aes-gcm = { version = "0.10", features = ["aes", "alloc", "zeroize"] }
+chacha20poly1305 = { version = "0.10", features = ["std"] }
+hkdf = "0.12"
+sha2 = "0.10"
+hmac = "0.12"
+ed25519-dalek = { version = "2.1", features = ["rand_core", "zeroize", "pkcs8"] }
+rand = "0.8"
+zeroize = { version = "1.8", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+base64 = "0.22"
+flate2 = "1.0"
+tokio = { version = "1.43", features = ["rt-multi-thread", "net", "io-util", "time", "sync", "macros"] }
+russh = "0.49"
+russh-keys = "0.49"
+russh-sftp = "2.0"
+jni = "0.21"
+thiserror = "2.0"
+tracing = "0.1"
+bytes = "1.9"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "unwind"
+strip = "debuginfo"

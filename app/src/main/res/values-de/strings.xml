@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">NexusTS</string>
+    <string name="detached_session_window_title">NexusTS-Sitzung</string>
+    <string name="vault_open_with_nexusts">Tresor in NexusTS öffnen</string>
+
+    <!-- Navigation Rail -->
+    <string name="nav_connections">Verbindungen</string>
+    <string name="nav_credentials">Anmeldedaten</string>
+    <string name="nav_gateways">Gateways</string>
+    <string name="nav_tasks">Aufgaben</string>
+    <string name="nav_drive_sync">Drive-Sync</string>
+
+    <!-- Top Desktop Bar & Quick Connect -->
+    <string name="quick_connect_button">Schnellverbindung (Strg+K)</string>
+    <string name="quick_connect_placeholder">Tresor durchsuchen oder ssh://nutzer@host, rdp://server, sftp://host eingeben…</string>
+    <string name="quick_connect_footer_hint">Zero-Knowledge Argon2id-Tresor • Sofortiger Multi-Pane-Start</string>
+    <string name="action_new_connection">Neue Verbindung</string>
+    <string name="action_import_rtsz">.rtsz importieren</string>
+    <string name="action_lock_vault">Tresor sperren</string>
+    <string name="action_unlock_vault">.nxts-Tresor entsperren</string>
+    <string name="action_sync_now">Drive synchronisieren</string>
+    <string name="action_broadcast_input">Broadcast-Eingabe</string>
+    <string name="action_language_picker">Sprache</string>
+
+    <!-- Split Workspace & Multi-Window -->
+    <string name="split_right">Nach rechts teilen</string>
+    <string name="split_down">Nach unten teilen</string>
+    <string name="detach_new_window">In neues Fenster lösen</string>
+    <string name="detach_to_display_prefix">Auf Monitor verschieben:</string>
+    <string name="toggle_broadcast">Terminal-Broadcast umschalten</string>
+    <string name="close_tab">Sitzungs-Tab schließen</string>
+    <string name="empty_workspace_title">NexusTS Enterprise-Arbeitsbereich</string>
+    <string name="empty_workspace_subtitle">Wählen Sie eine Verbindung aus dem .nxts-Tresorbaum oder drücken Sie Strg+K für RDP-, SSH-, SFTP-, VNC- oder Cloud-Sitzungen.</string>
+
+    <!-- Sidebar Vault Hierarchy -->
+    <string name="vault_section_folders">Ordner &amp; Verbindungen</string>
+    <string name="vault_section_smart_folders">Intelligente Ordner</string>
+    <string name="vault_section_dynamic_folders">Dynamisches Inventar</string>
+    <string name="vault_locked_banner">Tresor ist mit Argon2id + AES-256-GCM verschlüsselt</string>
+    <string name="vault_passphrase_label">Hauptpasswort</string>
+
+    <!-- Property Inspector & Inheritance -->
+    <string name="inspector_title">Eigenschaftsinspektor</string>
+    <string name="inspector_effective_credential">Wirksame Anmeldedaten</string>
+    <string name="inspector_inherited_from">Vererbt von: %1$s</string>
+    <string name="inspector_effective_gateway">Sicheres Gateway / Proxy</string>
+    <string name="inspector_generate_ssh_key">Ed25519-SSH-Schlüssel erzeugen</string>
+    <string name="inspector_protocol_endpoint">Endpunkt &amp; Protokoll</string>
+
+    <!-- Protocol Views -->
+    <string name="rdp_send_ctrl_alt_del">Strg+Alt+Entf</string>
+    <string name="rdp_smartcard_active">YubiKey- / Smartcard-Umleitung aktiv</string>
+    <string name="rdp_dynamic_resize_active">Dynamische DISP_DVC-Fensteranpassung</string>
+    <string name="ssh_paste_clipboard">Einfügen</string>
+    <string name="ssh_tunnels_active">Aktive Tunnel</string>
+    <string name="sftp_local_pane">Lokaler Googlebook-Speicher</string>
+    <string name="sftp_remote_pane">Entfernter Host</string>
+    <string name="sftp_transfer_queue">Hintergrund-Übertragungswarteschlange</string>
+    <string name="web_autofill_credentials">Anmeldedaten ausfüllen</string>
+    <string name="netutil_execute">Diagnose starten</string>
+
+    <!-- Bottom Drawer -->
+    <string name="drawer_audit_logs">Sitzungs- &amp; Sync-Telemetrie</string>
+    <string name="drawer_broadcast_prompt">Befehl für alle aktiven SSH-/Telnet-Fenster eingeben…</string>
+    <string name="drawer_send_broadcast">An alle senden</string>
+
+    <!-- Google Drive Sync & Conflict Resolution -->
+    <string name="sync_status_synced">Google Drive synchronisiert (Rev. %1$d)</string>
+    <string name="sync_status_lock_warning">Sperrhinweis: Wird bearbeitet von %1$s</string>
+    <string name="sync_zone_appdata">Privater appDataFolder</string>
+    <string name="sync_zone_team_drive">Geteilte Teamablage</string>
+
+    <!-- Play Protect Compliant Auto-Updates & MDM -->
+    <string name="update_ready_banner">NexusTS-Update heruntergeladen und verifiziert</string>
+    <string name="update_restart_action">Zum Aktualisieren neu starten</string>
+    <string name="update_downloading_progress">Play-Update wird geladen (%1$d%%)…</string>
+    <string name="mdm_allow_auto_update_title">In-App-Updates zulassen</string>
+    <string name="mdm_allow_auto_update_desc">Legt fest, ob automatisch nach Google Play In-App-Updates gesucht wird.</string>
+    <string name="mdm_trusted_cert_sha256_title">SHA-256 des Enterprise-Update-Signierers</string>
+    <string name="mdm_trusted_cert_sha256_desc">Erwarteter APK Signature Scheme v3/v4-Zertifikatsfingerabdruck für verwaltete Updates.</string>
+    <string name="mdm_shared_drive_id_title">Verwaltete Google-Teamablage-ID</string>
+    <string name="mdm_shared_drive_id_desc">Standard-Teamablage-ID für unternehmensweite .nxts-Verbindungstresore.</string>
+
+    <!-- Language Names -->
+    <string name="lang_en">English</string>
+    <string name="lang_de">Deutsch</string>
+    <string name="lang_it">Italiano</string>
+    <string name="lang_es">Español</string>
+    <string name="lang_el">Ελληνικά</string>
+    <string name="lang_fr">Français</string>
+</resources>

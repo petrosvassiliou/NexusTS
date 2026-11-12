@@ -1,0 +1,17 @@
+[package]
+name = "nexusts-jni"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+nexusts-crypto = { path = "../nexusts-crypto" }
+nexusts-terminal = { path = "../nexusts-terminal" }
+nexusts-transfer = { path = "../nexusts-transfer" }
+nexusts-vnc = { path = "../nexusts-vnc" }
+nexusts-netutils = { path = "../nexusts-netutils" }
+jni.workspace = true
+serde_json.workspace = true

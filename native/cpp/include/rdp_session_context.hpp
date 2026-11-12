@@ -1,0 +1,186 @@
+#pragma once
+
+#include <atomic>
+#include <cstdint>
+#include <functional>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <vector>
+
+#ifdef __ANDROID__
+#include <android/native_window.h>
+#else
+struct ANativeWindow;
+#endif
+
+namespace nexusts::rdp {
+
+struct RdpMonitorLayout {
+    int32_t monitor_id{0};
+    int32_t left{0};
+    int32_t top{0};
+    uint32_t width{1920};
+    uint32_t height{1080};
+    uint32_t physical_width_mm{510};
+    uint32_t physical_height_mm{287};
+    uint32_t desktop_scale_factor{100};
+    uint32_t device_scale_factor{100};
+    bool is_primary{true};
+};
+
+struct RdpConnectParams {
+    std::string host;
+    uint16_t port{3389};
+    std::string username;
+    std::string password;
+    std::string domain;
+    std::string rd_gateway_host;
+    uint16_t rd_gateway_port{443};
+    uint32_t initial_width{1920};
+    uint32_t initial_height{1080};
+    uint32_t desktop_dpi{96};
+    bool enable_gfx_pipeline{true};
+    bool enable_h264_avc444{true};
+    bool enable_remotefx{true};
+    bool enable_dynamic_resize{true};
+    bool multi_monitor_spanning{false};
+    bool redirect_clipboard{true};
+    bool redirect_smartcard{true};
+    bool redirect_audio_out{true};
+    bool redirect_mic_in{false};
+    bool remote_app_mode{false};
+    std::string remote_app_program;
+    std::string remote_app_args;
+    std::vector<RdpMonitorLayout> monitors;
+};
+
+class RdpHardwareH264Decoder {
+public:
+    RdpHardwareH264Decoder();
+    ~RdpHardwareH264Decoder();
+
+    bool initialize(uint32_t width, uint32_t height, bool avc444_chroma);
+    bool decode_nal_unit(
+        const uint8_t* nal_data,
+        size_t nal_size,
+        uint8_t* dst_rgba_buffer,
+        uint32_t dst_stride_bytes
+    );
+    void reconfigure_resolution(uint32_t width, uint32_t height);
+    void shutdown();
+
+private:
+    std::mutex codec_mutex_;
+    uint32_t width_{0};
+    uint32_t height_{0};
+    bool avc444_{false};
+    bool initialized_{false};
+    [[maybe_unused]] void* media_codec_handle_{nullptr};
+};
+
+class RdpVirtualChannelHub {
+public:
+    RdpVirtualChannelHub();
+    ~RdpVirtualChannelHub();
+
+    void start_audio_streams(bool speaker_out, bool mic_in, uint32_t sample_rate_hz = 48000);
+    void stop_audio_streams();
+
+    void push_pcm_playback(const int16_t* pcm_frames, size_t frame_count);
+
+    void on_local_clipboard_text(const std::string& utf8_text);
+    std::string latest_remote_clipboard_text() const;
+
+    std::vector<uint8_t> transmit_smartcard_apdu(const std::vector<uint8_t>& command_apdu);
+    void set_smartcard_apdu_handler(
+        std::function<std::vector<uint8_t>(const std::vector<uint8_t>&)> callback
+    );
+
+private:
+    mutable std::mutex channel_mutex_;
+    std::string clipboard_utf8_;
+    [[maybe_unused]] void* aaudio_out_stream_{nullptr};
+    [[maybe_unused]] void* aaudio_in_stream_{nullptr};
+    std::function<std::vector<uint8_t>(const std::vector<uint8_t>&)> apdu_callback_;
+};
+
+class RdpGdiSurfacePresenter {
+public:
+    RdpGdiSurfacePresenter();
+    ~RdpGdiSurfacePresenter();
+
+    void attach_native_window(ANativeWindow* window);
+    void detach_native_window();
+
+    void resize_shadow_framebuffer(uint32_t width, uint32_t height);
+    void update_dirty_region(
+        uint32_t x,
+        uint32_t y,
+        uint32_t w,
+        uint32_t h,
+        const uint8_t* src_rgba,
+        uint32_t src_stride
+    );
+    void present_frame();
+
+    uint32_t width() const noexcept { return width_.load(); }
+    uint32_t height() const noexcept { return height_.load(); }
+
+private:
+    std::mutex surface_mutex_;
+    ANativeWindow* native_window_{nullptr};
+    std::atomic<uint32_t> width_{1920};
+    std::atomic<uint32_t> height_{1080};
+    std::vector<uint8_t> shadow_rgba_;
+};
+
+class RdpSessionContext {
+public:
+    explicit RdpSessionContext(RdpConnectParams params);
+    ~RdpSessionContext();
+
+    bool connect();
+    void disconnect();
+    bool is_connected() const noexcept { return connected_.load(); }
+
+    /**
+     * Sends MS-RDPEDI (`DISP_DVC`) Display Control PDU to dynamically resize remote desktop
+     * on Googlebook OS freeform window drag without reconnecting.
+     * Aligns dimensions to even multiples of 2 pixels as required by H.264/AVC444 codecs.
+     */
+    bool request_dynamic_display_resize(
+        uint32_t new_width,
+        uint32_t new_height,
+        uint32_t desktop_scale_percent
+    );
+
+    bool update_multi_monitor_topology(const std::vector<RdpMonitorLayout>& monitors);
+
+    void send_keyboard_scancode(
+        uint16_t rdp_scancode,
+        bool key_down,
+        bool extended_key
+    );
+
+    void send_pointer_event(
+        uint16_t pointer_flags,
+        uint16_t x,
+        uint16_t y
+    );
+
+    RdpGdiSurfacePresenter& presenter() noexcept { return presenter_; }
+    RdpVirtualChannelHub& channels() noexcept { return channels_; }
+    RdpHardwareH264Decoder& decoder() noexcept { return h264_decoder_; }
+
+private:
+    RdpConnectParams params_;
+    std::atomic<bool> connected_{false};
+    std::mutex state_mutex_;
+    RdpGdiSurfacePresenter presenter_;
+    RdpVirtualChannelHub channels_;
+    RdpHardwareH264Decoder h264_decoder_;
+    [[maybe_unused]] void* freerdp_instance_{nullptr};
+};
+
+} // namespace nexusts::rdp

@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">NexusTS</string>
+    <string name="detached_session_window_title">Sessione NexusTS</string>
+    <string name="vault_open_with_nexusts">Apri cassaforte in NexusTS</string>
+
+    <!-- Navigation Rail -->
+    <string name="nav_connections">Connessioni</string>
+    <string name="nav_credentials">Credenziali</string>
+    <string name="nav_gateways">Gateway</string>
+    <string name="nav_tasks">Attività</string>
+    <string name="nav_drive_sync">Sincr. Drive</string>
+
+    <!-- Top Desktop Bar & Quick Connect -->
+    <string name="quick_connect_button">Connessione rapida (Ctrl+K)</string>
+    <string name="quick_connect_placeholder">Cerca nella cassaforte o digita ssh://utente@host, rdp://server, sftp://host…</string>
+    <string name="quick_connect_footer_hint">Cassaforte Zero-Knowledge Argon2id • Avvio istantaneo multi-pannello</string>
+    <string name="action_new_connection">Nuova connessione</string>
+    <string name="action_import_rtsz">Importa .rtsz</string>
+    <string name="action_lock_vault">Blocca cassaforte</string>
+    <string name="action_unlock_vault">Sblocca cassaforte .nxts</string>
+    <string name="action_sync_now">Sincronizza Drive</string>
+    <string name="action_broadcast_input">Input simultaneo</string>
+    <string name="action_language_picker">Lingua</string>
+
+    <!-- Split Workspace & Multi-Window -->
+    <string name="split_right">Dividi a destra</string>
+    <string name="split_down">Dividi in basso</string>
+    <string name="detach_new_window">Stacca in nuova finestra</string>
+    <string name="detach_to_display_prefix">Sposta su schermo:</string>
+    <string name="toggle_broadcast">Attiva/disattiva broadcast terminale</string>
+    <string name="close_tab">Chiudi scheda sessione</string>
+    <string name="empty_workspace_title">Area di lavoro Enterprise NexusTS</string>
+    <string name="empty_workspace_subtitle">Seleziona una connessione dall\'albero .nxts o premi Ctrl+K per avviare sessioni RDP, SSH, SFTP, VNC o Cloud.</string>
+
+    <!-- Sidebar Vault Hierarchy -->
+    <string name="vault_section_folders">Cartelle e connessioni</string>
+    <string name="vault_section_smart_folders">Cartelle smart</string>
+    <string name="vault_section_dynamic_folders">Inventario dinamico</string>
+    <string name="vault_locked_banner">Cassaforte cifrata con Argon2id + AES-256-GCM</string>
+    <string name="vault_passphrase_label">Passphrase principale</string>
+
+    <!-- Property Inspector & Inheritance -->
+    <string name="inspector_title">Ispettore proprietà</string>
+    <string name="inspector_effective_credential">Credenziale effettiva</string>
+    <string name="inspector_inherited_from">Ereditato da: %1$s</string>
+    <string name="inspector_effective_gateway">Gateway sicuro / Proxy</string>
+    <string name="inspector_generate_ssh_key">Genera chiave SSH Ed25519</string>
+    <string name="inspector_protocol_endpoint">Endpoint e protocollo</string>
+
+    <!-- Protocol Views -->
+    <string name="rdp_send_ctrl_alt_del">Ctrl+Alt+Canc</string>
+    <string name="rdp_smartcard_active">Reindirizzamento YubiKey / Smartcard attivo</string>
+    <string name="rdp_dynamic_resize_active">Ridimensionamento dinamico DISP_DVC</string>
+    <string name="ssh_paste_clipboard">Incolla</string>
+    <string name="ssh_tunnels_active">Tunnel attivi</string>
+    <string name="sftp_local_pane">Archiviazione locale Googlebook</string>
+    <string name="sftp_remote_pane">Host remoto</string>
+    <string name="sftp_transfer_queue">Coda trasferimenti in background</string>
+    <string name="web_autofill_credentials">Compila credenziali</string>
+    <string name="netutil_execute">Esegui diagnostica</string>
+
+    <!-- Bottom Drawer -->
+    <string name="drawer_audit_logs">Telemetria sessioni e sincronizzazione</string>
+    <string name="drawer_broadcast_prompt">Digita il comando da inviare a tutti i terminali SSH/Telnet attivi…</string>
+    <string name="drawer_send_broadcast">Invia a tutti</string>
+
+    <!-- Google Drive Sync & Conflict Resolution -->
+    <string name="sync_status_synced">Google Drive sincronizzato (Rev. %1$d)</string>
+    <string name="sync_status_lock_warning">Avviso di blocco: in modifica da %1$s</string>
+    <string name="sync_zone_appdata">appDataFolder privata</string>
+    <string name="sync_zone_team_drive">Drive condiviso del team</string>
+
+    <!-- Play Protect Compliant Auto-Updates & MDM -->
+    <string name="update_ready_banner">Aggiornamento NexusTS scaricato e verificato</string>
+    <string name="update_restart_action">Riavvia per aggiornare</string>
+    <string name="update_downloading_progress">Download aggiornamento Play (%1$d%%)…</string>
+    <string name="mdm_allow_auto_update_title">Consenti aggiornamenti in-app</string>
+    <string name="mdm_allow_auto_update_desc">Controlla la verifica automatica degli aggiornamenti Google Play In-App.</string>
+    <string name="mdm_trusted_cert_sha256_title">SHA-256 firmatario aggiornamenti Enterprise</string>
+    <string name="mdm_trusted_cert_sha256_desc">Impronta certificato APK Signature Scheme v3/v4 attesa per aggiornamenti gestiti.</string>
+    <string name="mdm_shared_drive_id_title">ID Drive condiviso Google gestito</string>
+    <string name="mdm_shared_drive_id_desc">ID Drive condiviso predefinito per le casseforti .nxts aziendali.</string>
+
+    <!-- Language Names -->
+    <string name="lang_en">English</string>
+    <string name="lang_de">Deutsch</string>
+    <string name="lang_it">Italiano</string>
+    <string name="lang_es">Español</string>
+    <string name="lang_el">Ελληνικά</string>
+    <string name="lang_fr">Français</string>
+</resources>

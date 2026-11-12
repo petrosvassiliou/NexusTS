@@ -1,0 +1,73 @@
+package com.nexusts.app
+
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.res.stringResource
+import com.nexusts.app.feature.workspace.i18n.SupportedNexusLocale
+import com.nexusts.app.feature.workspace.i18n.WorkspaceLocalizedStrings
+
+@Composable
+fun rememberLocalizedWorkspaceStrings(): WorkspaceLocalizedStrings {
+    return WorkspaceLocalizedStrings(
+        appName = stringResource(R.string.app_name),
+        navConnections = stringResource(R.string.nav_connections),
+        navCredentials = stringResource(R.string.nav_credentials),
+        navGateways = stringResource(R.string.nav_gateways),
+        navTasks = stringResource(R.string.nav_tasks),
+        navDriveSync = stringResource(R.string.nav_drive_sync),
+        quickConnectButton = stringResource(R.string.quick_connect_button),
+        quickConnectPlaceholder = stringResource(R.string.quick_connect_placeholder),
+        quickConnectFooterHint = stringResource(R.string.quick_connect_footer_hint),
+        actionNewConnection = stringResource(R.string.action_new_connection),
+        actionImportRtsz = stringResource(R.string.action_import_rtsz),
+        actionLockVault = stringResource(R.string.action_lock_vault),
+        actionUnlockVault = stringResource(R.string.action_unlock_vault),
+        actionSyncNow = stringResource(R.string.action_sync_now),
+        actionBroadcastInput = stringResource(R.string.action_broadcast_input),
+        actionLanguagePicker = stringResource(R.string.action_language_picker),
+        splitRight = stringResource(R.string.split_right),
+        splitDown = stringResource(R.string.split_down),
+        detachNewWindow = stringResource(R.string.detach_new_window),
+        detachToDisplayPrefix = stringResource(R.string.detach_to_display_prefix),
+        toggleBroadcast = stringResource(R.string.toggle_broadcast),
+        closeTab = stringResource(R.string.close_tab),
+        emptyWorkspaceTitle = stringResource(R.string.empty_workspace_title),
+        emptyWorkspaceSubtitle = stringResource(R.string.empty_workspace_subtitle),
+        vaultSectionFolders = stringResource(R.string.vault_section_folders),
+        vaultSectionSmartFolders = stringResource(R.string.vault_section_smart_folders),
+        vaultSectionDynamicFolders = stringResource(R.string.vault_section_dynamic_folders),
+        vaultLockedBanner = stringResource(R.string.vault_locked_banner),
+        vaultPassphraseLabel = stringResource(R.string.vault_passphrase_label),
+        inspectorTitle = stringResource(R.string.inspector_title),
+        inspectorEffectiveCredential = stringResource(R.string.inspector_effective_credential),
+        inspectorInheritedFromFormat = stringResource(R.string.inspector_inherited_from),
+        inspectorEffectiveGateway = stringResource(R.string.inspector_effective_gateway),
+        inspectorGenerateSshKey = stringResource(R.string.inspector_generate_ssh_key),
+        inspectorProtocolEndpoint = stringResource(R.string.inspector_protocol_endpoint),
+        rdpSendCtrlAltDel = stringResource(R.string.rdp_send_ctrl_alt_del),
+        rdpSmartcardActive = stringResource(R.string.rdp_smartcard_active),
+        rdpDynamicResizeActive = stringResource(R.string.rdp_dynamic_resize_active),
+        sshPasteClipboard = stringResource(R.string.ssh_paste_clipboard),
+        sshTunnelsActive = stringResource(R.string.ssh_tunnels_active),
+        sftpLocalPane = stringResource(R.string.sftp_local_pane),
+        sftpRemotePane = stringResource(R.string.sftp_remote_pane),
+        sftpTransferQueue = stringResource(R.string.sftp_transfer_queue),
+        webAutofillCredentials = stringResource(R.string.web_autofill_credentials),
+        netutilExecute = stringResource(R.string.netutil_execute),
+        drawerAuditLogs = stringResource(R.string.drawer_audit_logs),
+        drawerBroadcastPrompt = stringResource(R.string.drawer_broadcast_prompt),
+        drawerSendBroadcast = stringResource(R.string.drawer_send_broadcast),
+        syncStatusSyncedFormat = stringResource(R.string.sync_status_synced),
+        syncZoneAppData = stringResource(R.string.sync_zone_appdata),
+        syncZoneTeamDrive = stringResource(R.string.sync_zone_team_drive),
+        updateReadyBanner = stringResource(R.string.update_ready_banner),
+        updateRestartAction = stringResource(R.string.update_restart_action),
+        languageLabels = mapOf(
+            SupportedNexusLocale.ENGLISH to stringResource(R.string.lang_en),
+            SupportedNexusLocale.GERMAN to stringResource(R.string.lang_de),
+            SupportedNexusLocale.ITALIAN to stringResource(R.string.lang_it),
+            SupportedNexusLocale.SPANISH to stringResource(R.string.lang_es),
+            SupportedNexusLocale.GREEK to stringResource(R.string.lang_el),
+            SupportedNexusLocale.FRENCH to stringResource(R.string.lang_fr)
+        )
+    )
+}

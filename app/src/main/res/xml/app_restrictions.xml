@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<restrictions xmlns:android="http://schemas.android.com/apk/res/android">
+    <restriction
+        android:defaultValue="true"
+        android:description="@string/mdm_allow_auto_update_desc"
+        android:key="allow_in_app_updates"
+        android:restrictionType="bool"
+        android:title="@string/mdm_allow_auto_update_title" />
+    <restriction
+        android:defaultValue=""
+        android:description="@string/mdm_trusted_cert_sha256_desc"
+        android:key="enterprise_update_signer_sha256"
+        android:restrictionType="string"
+        android:title="@string/mdm_trusted_cert_sha256_title" />
+    <restriction
+        android:defaultValue=""
+        android:description="@string/mdm_shared_drive_id_desc"
+        android:key="managed_team_drive_id"
+        android:restrictionType="string"
+        android:title="@string/mdm_shared_drive_id_title" />
+</restrictions>

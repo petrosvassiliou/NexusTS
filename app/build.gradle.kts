@@ -1,0 +1,162 @@
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+
+plugins {
+    alias(libs.plugins.android.application)
+    alias(libs.plugins.kotlin.android)
+    alias(libs.plugins.kotlin.compose)
+    alias(libs.plugins.kotlin.serialization)
+    alias(libs.plugins.ksp)
+    alias(libs.plugins.hilt)
+}
+
+android {
+    namespace = "com.nexusts.app"
+    compileSdk = providers.gradleProperty("nexusts.compileSdk").get().toInt()
+    ndkVersion = libs.versions.ndk.get()
+
+    defaultConfig {
+        applicationId = "com.nexusts.app"
+        minSdk = providers.gradleProperty("nexusts.minSdk").get().toInt()
+        targetSdk = providers.gradleProperty("nexusts.targetSdk").get().toInt()
+        versionCode = 10000
+        versionName = "1.0.0"
+
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        vectorDrawables {
+            useSupportLibrary = true
+        }
+
+        // Restrict resource packaging strictly to our 6 supported enterprise locales
+        resourceConfigurations += listOf("en", "de", "it", "es", "el", "fr")
+
+        ndk {
+            abiFilters += providers.gradleProperty("nexusts.ndk.abis")
+                .get()
+                .split(",")
+                .map { it.trim() }
+        }
+    }
+
+    signingConfigs {
+        getByName("debug") {
+            enableV1Signing = false
+            enableV2Signing = true
+            enableV3Signing = true
+            enableV4Signing = true
+        }
+        create("release") {
+            // Production signing key injected from CI/Enterprise keystore environment variables
+            val keystorePath = System.getenv("NEXUSTS_KEYSTORE_PATH")
+            if (!keystorePath.isNullOrBlank()) {
+                storeFile = file(keystorePath)
+                storePassword = System.getenv("NEXUSTS_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("NEXUSTS_KEY_ALIAS")
+                keyPassword = System.getenv("NEXUSTS_KEY_PASSWORD")
+            }
+            // Enforce APK Signature Scheme v3/v4 for Play Protect & Enterprise PackageInstaller compliance
+            enableV1Signing = false
+            enableV2Signing = true
+            enableV3Signing = true
+            enableV4Signing = true
+        }
+    }
+
+    buildTypes {
+        debug {
+            applicationIdSuffix = ".debug"
+            versionNameSuffix = "-dev"
+            isMinifyEnabled = false
+        }
+        release {
+            isMinifyEnabled = true
+            isShrinkResources = true
+            val hasReleaseKey = !System.getenv("NEXUSTS_KEYSTORE_PATH").isNullOrBlank()
+            signingConfig = if (hasReleaseKey) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    kotlin {
+        compilerOptions {
+            jvmTarget.set(JvmTarget.JVM_17)
+            freeCompilerArgs.addAll(
+                "-opt-in=androidx.compose.material3.ExperimentalMaterial3Api",
+                "-opt-in=androidx.compose.material3.ExperimentalMaterial3ExpressiveApi"
+            )
+        }
+    }
+
+    buildFeatures {
+        compose = true
+        buildConfig = true
+    }
+
+    bundle {
+        language {
+            // Keep all 6 languages bundled inside base APK so offline Per-App Language switching is instantaneous
+            enableSplit = false
+        }
+    }
+
+    packaging {
+        jniLibs {
+            useLegacyPackaging = false
+        }
+        resources {
+            excludes += "/META-INF/{AL2.0,LGPL2.1,DEPENDENCIES,INDEX.LIST}"
+        }
+    }
+}
+
+dependencies {
+    implementation(projects.core.ui)
+    implementation(projects.core.vault)
+    implementation(projects.core.gdriveSync)
+    implementation(projects.protocols.rdp)
+    implementation(projects.protocols.ssh)
+    implementation(projects.protocols.vnc)
+    implementation(projects.feature.workspace)
+
+    implementation(platform(libs.androidx.compose.bom))
+    implementation(libs.androidx.core.ktx)
+    implementation(libs.androidx.appcompat)
+    implementation(libs.androidx.activity.compose)
+    implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation(libs.androidx.lifecycle.runtime.compose)
+    implementation(libs.androidx.lifecycle.process)
+    implementation(libs.androidx.compose.material3)
+    implementation(libs.androidx.compose.material3.window.size)
+    implementation(libs.androidx.window)
+    implementation(libs.androidx.work.runtime.ktx)
+    implementation(libs.androidx.datastore.preferences)
+
+    // Play Protect Compliant In-App Updates API
+    implementation(libs.play.app.update)
+    implementation(libs.play.app.update.ktx)
+    implementation(libs.kotlinx.coroutines.play.services)
+
+    // Hilt DI
+    implementation(libs.hilt.android)
+    ksp(libs.hilt.compiler)
+    implementation(libs.androidx.hilt.navigation.compose)
+    implementation(libs.androidx.hilt.work)
+    ksp(libs.androidx.hilt.compiler)
+
+    testImplementation(libs.junit)
+    testImplementation(libs.kotlinx.coroutines.test)
+    androidTestImplementation(libs.androidx.test.ext.junit)
+    androidTestImplementation(platform(libs.androidx.compose.bom))
+    androidTestImplementation(libs.androidx.compose.ui.test.junit4)
+}

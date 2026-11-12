@@ -1,0 +1,28 @@
+plugins {
+    id("nexusts.android.library")
+    id("nexusts.android.compose")
+    id("nexusts.native.cargonative")
+    alias(libs.plugins.kotlin.serialization)
+    alias(libs.plugins.ksp)
+    alias(libs.plugins.hilt)
+}
+
+android {
+    namespace = "com.nexusts.app.protocols.vnc"
+}
+
+dependencies {
+    implementation(projects.core.ui)
+    implementation(projects.core.vault)
+    implementation(libs.androidx.core.ktx)
+    implementation(libs.androidx.webkit)
+    implementation(libs.okhttp)
+    implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.kotlinx.serialization.json)
+
+    implementation(libs.hilt.android)
+    ksp(libs.hilt.compiler)
+
+    testImplementation(libs.junit)
+    testImplementation(libs.kotlinx.coroutines.test)
+}

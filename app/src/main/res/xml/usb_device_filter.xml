@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Yubico YubiKey 4 / 5 Series CCID + FIDO2 Smartcard Redirection -->
+    <usb-device vendor-id="4176" />
+    <!-- Generic USB CCID Smartcard Class (Class 0x0B) -->
+    <usb-device class="11" />
+    <!-- FTDI / CP210x / CDC-ACM USB Serial Console Adapters -->
+    <usb-device vendor-id="1027" />
+    <usb-device vendor-id="4292" />
+    <usb-device class="2" subclass="2" />
+</resources>

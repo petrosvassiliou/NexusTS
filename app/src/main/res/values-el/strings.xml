@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">NexusTS</string>
+    <string name="detached_session_window_title">Συνεδρία NexusTS</string>
+    <string name="vault_open_with_nexusts">Άνοιγμα θησαυροφυλακίου στο NexusTS</string>
+
+    <!-- Navigation Rail -->
+    <string name="nav_connections">Συνδέσεις</string>
+    <string name="nav_credentials">Διαπιστευτήρια</string>
+    <string name="nav_gateways">Πύλες</string>
+    <string name="nav_tasks">Εργασίες</string>
+    <string name="nav_drive_sync">Συγχρ. Drive</string>
+
+    <!-- Top Desktop Bar & Quick Connect -->
+    <string name="quick_connect_button">Ταχεία σύνδεση (Ctrl+K)</string>
+    <string name="quick_connect_placeholder">Αναζήτηση ή πληκτρολόγηση ssh://user@host, rdp://server, sftp://host…</string>
+    <string name="quick_connect_footer_hint">Θησαυροφυλάκιο Zero-Knowledge Argon2id • Άμεση εκκίνηση πολλαπλών προβολών</string>
+    <string name="action_new_connection">Νέα σύνδεση</string>
+    <string name="action_import_rtsz">Εισαγωγή .rtsz</string>
+    <string name="action_lock_vault">Κλείδωμα θησαυροφυλακίου</string>
+    <string name="action_unlock_vault">Ξεκλείδωμα .nxts</string>
+    <string name="action_sync_now">Συγχρονισμός Drive</string>
+    <string name="action_broadcast_input">Ταυτόχρονη είσοδος</string>
+    <string name="action_language_picker">Γλώσσα</string>
+
+    <!-- Split Workspace & Multi-Window -->
+    <string name="split_right">Διαίρεση δεξιά</string>
+    <string name="split_down">Διαίρεση κάτω</string>
+    <string name="detach_new_window">Απόσπαση σε νέο παράθυρο</string>
+    <string name="detach_to_display_prefix">Μετακίνηση στην οθόνη:</string>
+    <string name="toggle_broadcast">Εναλλαγή εκπομπής τερματικού</string>
+    <string name="close_tab">Κλείσιμο καρτέλας συνεδρίας</string>
+    <string name="empty_workspace_title">Εταιρικός Χώρος Εργασίας NexusTS</string>
+    <string name="empty_workspace_subtitle">Επιλέξτε σύνδεση από το δέντρο .nxts ή πατήστε Ctrl+K για συνεδρίες RDP, SSH, SFTP, VNC ή Cloud.</string>
+
+    <!-- Sidebar Vault Hierarchy -->
+    <string name="vault_section_folders">Φάκελοι &amp; Συνδέσεις</string>
+    <string name="vault_section_smart_folders">Έξυπνοι φάκελοι</string>
+    <string name="vault_section_dynamic_folders">Δυναμικό απόθεμα</string>
+    <string name="vault_locked_banner">Το θησαυροφυλάκιο είναι κρυπτογραφημένο με Argon2id + AES-256-GCM</string>
+    <string name="vault_passphrase_label">Κύρια φράση πρόσβασης</string>
+
+    <!-- Property Inspector & Inheritance -->
+    <string name="inspector_title">Επιθεωρητής ιδιοτήτων</string>
+    <string name="inspector_effective_credential">Ενεργό διαπιστευτήριο</string>
+    <string name="inspector_inherited_from">Κληρονομήθηκε από: %1$s</string>
+    <string name="inspector_effective_gateway">Ασφαλής Πύλη / Proxy</string>
+    <string name="inspector_generate_ssh_key">Δημιουργία κλειδιού SSH Ed25519</string>
+    <string name="inspector_protocol_endpoint">Τερματικό σημείο &amp; Πρωτόκολλο</string>
+
+    <!-- Protocol Views -->
+    <string name="rdp_send_ctrl_alt_del">Ctrl+Alt+Del</string>
+    <string name="rdp_smartcard_active">Ανακατεύθυνση YubiKey / Έξυπνης κάρτας ενεργή</string>
+    <string name="rdp_dynamic_resize_active">Δυναμική αλλαγή ανάλυσης DISP_DVC</string>
+    <string name="ssh_paste_clipboard">Επικόλληση</string>
+    <string name="ssh_tunnels_active">Ενεργές σήραγγες</string>
+    <string name="sftp_local_pane">Τοπικός χώρος Googlebook</string>
+    <string name="sftp_remote_pane">Απομακρυσμένος κόμβος</string>
+    <string name="sftp_transfer_queue">Ουρά μεταφορών παρασκηνίου</string>
+    <string name="web_autofill_credentials">Αυτόματη συμπλήρωση στοιχείων</string>
+    <string name="netutil_execute">Εκτέλεση διαγνωστικού</string>
+
+    <!-- Bottom Drawer -->
+    <string name="drawer_audit_logs">Τηλεμετρία συνεδριών &amp; συγχρονισμού</string>
+    <string name="drawer_broadcast_prompt">Πληκτρολογήστε εντολή για αποστολή σε όλα τα ενεργά τερματικά SSH/Telnet…</string>
+    <string name="drawer_send_broadcast">Αποστολή σε όλα</string>
+
+    <!-- Google Drive Sync & Conflict Resolution -->
+    <string name="sync_status_synced">Το Google Drive συγχρονίστηκε (Αναθ. %1$d)</string>
+    <string name="sync_status_lock_warning">Ειδοποίηση κλειδώματος: Επεξεργασία από %1$s</string>
+    <string name="sync_zone_appdata">Ιδιωτικός φάκελος appDataFolder</string>
+    <string name="sync_zone_team_drive">Κοινόχρηστο Drive ομάδας</string>
+
+    <!-- Play Protect Compliant Auto-Updates & MDM -->
+    <string name="update_ready_banner">Η ενημέρωση του NexusTS λήφθηκε και επαληθεύτηκε</string>
+    <string name="update_restart_action">Επανεκκίνηση για ενημέρωση</string>
+    <string name="update_downloading_progress">Λήψη ενημέρωσης Play (%1$d%%)…</string>
+    <string name="mdm_allow_auto_update_title">Επιτρέπονται ενημερώσεις εντός εφαρμογής</string>
+    <string name="mdm_allow_auto_update_desc">Ελέγχει τον αυτόματο έλεγχο ενημερώσεων μέσω του Google Play In-App Updates.</string>
+    <string name="mdm_trusted_cert_sha256_title">SHA-256 υπογράφοντος εταιρικών ενημερώσεων</string>
+    <string name="mdm_trusted_cert_sha256_desc">Αναμενόμενο αποτύπωμα πιστοποιητικού APK Signature Scheme v3/v4 για διαχειριζόμενες ενημερώσεις.</string>
+    <string name="mdm_shared_drive_id_title">Αναγνωριστικό διαχειριζόμενου Κοινόχρηστου Drive</string>
+    <string name="mdm_shared_drive_id_desc">Προεπιλεγμένο αναγνωριστικό Drive ομάδας για εταιρικά αρχεία .nxts.</string>
+
+    <!-- Language Names -->
+    <string name="lang_en">English</string>
+    <string name="lang_de">Deutsch</string>
+    <string name="lang_it">Italiano</string>
+    <string name="lang_es">Español</string>
+    <string name="lang_el">Ελληνικά</string>
+    <string name="lang_fr">Français</string>
+</resources>

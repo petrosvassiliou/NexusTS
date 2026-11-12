@@ -1,0 +1,11 @@
+[package]
+name = "nexusts-vnc"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+flate2.workspace = true
+serde.workspace = true
+bytes.workspace = true
+thiserror.workspace = true

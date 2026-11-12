@@ -1,0 +1,193 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- Native Googlebook OS & Tablet Hardware Feature Declarations (Non-blocking on touch tablets) -->
+    <uses-feature
+        android:name="android.hardware.type.pc"
+        android:required="false" />
+    <uses-feature
+        android:name="android.software.freeform_window_management"
+        android:required="false" />
+    <uses-feature
+        android:name="android.hardware.usb.host"
+        android:required="false" />
+    <uses-feature
+        android:name="android.hardware.touchscreen"
+        android:required="false" />
+    <uses-feature
+        android:name="android.hardware.microphone"
+        android:required="false" />
+
+    <!-- Enterprise Network, Sync, Audio Redirection & Hardware Key Permissions -->
+    <!-- Play Protect Compliant: Uses official Google Play In-App Updates API exclusively -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.NFC" />
+    <uses-permission android:name="android.permission.USE_BIOMETRIC" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- Visibility for external password manager / credential provider integrations -->
+    <queries>
+        <package android:name="com.agilebits.onepassword" />
+        <package android:name="com.x8bit.bitwarden" />
+        <package android:name="keepass2android.keepass2android" />
+        <intent>
+            <action android:name="androidx.credentials.CredentialProviderService" />
+        </intent>
+    </queries>
+
+    <application
+        android:name=".NexusTSApplication"
+        android:allowBackup="false"
+        android:enableOnBackInvokedCallback="true"
+        android:hardwareAccelerated="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:largeHeap="true"
+        android:localeConfig="@xml/locales_config"
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:resizeableActivity="true"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.NexusTS">
+
+        <!-- Native Googlebook OS Multi-Instance & Desktop Windowing Capabilities -->
+        <property
+            android:name="android.window.PROPERTY_SUPPORTS_MULTI_INSTANCE_SYSTEM_UI"
+            android:value="true" />
+
+        <!-- Primary Adaptive Desktop Workspace Window -->
+        <activity
+            android:name=".MainActivity"
+            android:configChanges="density|fontScale|keyboard|keyboardHidden|layoutDirection|locale|mcc|mnc|navigation|orientation|screenLayout|screenSize|smallestScreenSize|touchscreen|uiMode"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:resizeableActivity="true"
+            android:windowSoftInputMode="adjustResize">
+
+            <!-- Default Freeform Window Geometry on Googlebook OS Desktop -->
+            <layout
+                android:defaultHeight="900dp"
+                android:defaultWidth="1440dp"
+                android:gravity="center"
+                android:minHeight="480dp"
+                android:minWidth="640dp" />
+
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!-- Direct Association with .nxts Encrypted Vault Documents (MIME type) -->
+            <intent-filter android:label="@string/vault_open_with_nexusts">
+                <action android:name="android.intent.action.VIEW" />
+                <action android:name="android.intent.action.EDIT" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:mimeType="application/vnd.nexusts.vault" />
+                <data android:mimeType="application/x-nxts" />
+            </intent-filter>
+
+            <!-- Direct File/Content Path Suffix Matching for .nxts and .rtsz Vaults -->
+            <intent-filter android:label="@string/vault_open_with_nexusts">
+                <action android:name="android.intent.action.VIEW" />
+                <action android:name="android.intent.action.EDIT" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="content" />
+                <data android:scheme="file" />
+                <data android:host="*" />
+                <data android:mimeType="*/*" />
+                <data android:pathSuffix=".nxts" />
+                <data android:pathSuffix=".rtsz" />
+                <data android:pathSuffix=".rtsx" />
+            </intent-filter>
+
+            <!-- URI Scheme Support for ssh://, rdp://, vnc://, sftp:// Enterprise Launch Links -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="ssh" />
+                <data android:scheme="rdp" />
+                <data android:scheme="vnc" />
+                <data android:scheme="sftp" />
+                <data android:scheme="nexusts" />
+            </intent-filter>
+
+            <!-- USB Smartcard / YubiKey CCID & Serial Device Attachment -->
+            <intent-filter>
+                <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
+            </intent-filter>
+            <meta-data
+                android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED"
+                android:resource="@xml/usb_device_filter" />
+        </activity>
+
+        <!-- Detached Multi-Monitor / Freeform Session Window for Googlebook OS Tab Tear-Off -->
+        <activity
+            android:name=".DetachedSessionActivity"
+            android:configChanges="density|fontScale|keyboard|keyboardHidden|layoutDirection|locale|navigation|orientation|screenLayout|screenSize|smallestScreenSize|touchscreen|uiMode"
+            android:documentLaunchMode="always"
+            android:exported="false"
+            android:label="@string/detached_session_window_title"
+            android:persistableMode="persistNever"
+            android:resizeableActivity="true"
+            android:windowSoftInputMode="adjustResize">
+            <layout
+                android:defaultHeight="820dp"
+                android:defaultWidth="1280dp"
+                android:gravity="center"
+                android:minHeight="360dp"
+                android:minWidth="480dp" />
+        </activity>
+
+        <!-- Enterprise Managed Configuration Restrictions Metadata -->
+        <meta-data
+            android:name="android.content.APP_RESTRICTIONS"
+            android:resource="@xml/app_restrictions" />
+
+        <!-- Managed PackageInstaller Status Receiver (Enterprise MDM Updates Only) -->
+        <receiver
+            android:name=".updater.EnterpriseInstallStatusReceiver"
+            android:exported="false" />
+
+        <!-- Foreground Service keeping active SSH/RDP/Tunnel sessions alive across desktop workspaces -->
+        <service
+            android:name=".service.ActiveSessionsForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice|dataSync" />
+
+        <!-- WorkManager Hilt Custom Initializer -->
+        <provider
+            android:name="androidx.startup.InitializationProvider"
+            android:authorities="${applicationId}.androidx-startup"
+            android:exported="false"
+            tools:node="merge">
+            <meta-data
+                android:name="androidx.work.WorkManagerInitializer"
+                android:value="androidx.startup"
+                tools:node="remove" />
+        </provider>
+
+        <!-- Secure FileProvider for exporting encrypted .nxts vault backups -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
+    </application>
+
+</manifest>

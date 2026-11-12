@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Expressive Nexus Terminal Chevron + Multi-Node Topology Emblem -->
+    <path
+        android:fillColor="#00E5C3"
+        android:pathData="M30,36L48,54L30,72L35.5,77.5L59,54L35.5,30.5Z" />
+    <path
+        android:fillColor="#7C9BFF"
+        android:pathData="M54,68h24v6.5h-24z" />
+    <path
+        android:fillColor="#FFB784"
+        android:pathData="M72,36m-5.5,0a5.5,5.5 0,1 1,11 0a5.5,5.5 0,1 1,-11 0" />
+</vector>
