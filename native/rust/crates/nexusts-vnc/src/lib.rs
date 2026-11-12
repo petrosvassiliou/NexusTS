@@ -339,3 +339,50 @@ pub fn build_rfb_pointer_event(button_mask: u8, x: u16, y: u16) -> [u8; 6] {
     pkt[4..6].copy_from_slice(&y.to_be_bytes());
     pkt
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rfb_client::{apply_hextile_rect, build_rfb_preferred_encodings};
+    use flate2::{Compress, Compression, FlushCompress};
+
+    #[test]
+    fn rfb_raw_copyrect_tight_hextile_and_zrle_roundtrip() {
+        let mut fb = RfbFramebuffer::new(32, 32);
+
+        // 1. Raw 2x2 rect at (0, 0)
+        let raw_px = [10u8, 20, 30, 255].repeat(4);
+        fb.apply_raw_rect(0, 0, 2, 2, &raw_px).unwrap();
+        assert_eq!(&fb.rgba_pixels[0..4], &[10, 20, 30, 255]);
+
+        // 2. CopyRect 2x2 from (0, 0) -> (4, 4)
+        fb.apply_copy_rect(4, 4, 2, 2, 0, 0).unwrap();
+        let copy_off = (4 * 32 + 4) * 4;
+        assert_eq!(&fb.rgba_pixels[copy_off..copy_off + 4], &[10, 20, 30, 255]);
+
+        // 3. Tight FillCompression (sub_type = 0x08 -> comp_ctl = 0x80) at (8, 8)
+        fb.apply_tight_rect(8, 8, 4, 4, &[0x80, 99, 150, 201]).unwrap();
+        let tight_off = (8 * 32 + 8) * 4;
+        assert_eq!(&fb.rgba_pixels[tight_off..tight_off + 4], &[99, 150, 201, 255]);
+
+        // 4. Hextile background-specified (submask = 0x02) 4x4 tile at (12, 12)
+        apply_hextile_rect(&mut fb, 12, 12, 4, 4, &[0x02, 44, 55, 66, 255]).unwrap();
+        let hex_off = (12 * 32 + 12) * 4;
+        assert_eq!(&fb.rgba_pixels[hex_off..hex_off + 4], &[44, 55, 66, 255]);
+
+        // 5. ZRLE solid single-color tile (subencoding = 1, RGB = 210, 110, 50) at (16, 16)
+        let zrle_plain = [1u8, 210, 110, 50];
+        let mut deflate = Compress::new(Compression::default(), true);
+        let mut zrle_z = vec![0u8; 64];
+        deflate
+            .compress(&zrle_plain, &mut zrle_z, FlushCompress::Sync)
+            .unwrap();
+        let z_len = deflate.total_out() as usize;
+        fb.apply_zrle_rect(16, 16, 8, 8, &zrle_z[..z_len]).unwrap();
+        let zrle_off = (16 * 32 + 16) * 4;
+        assert_eq!(&fb.rgba_pixels[zrle_off..zrle_off + 4], &[210, 110, 50, 255]);
+
+        let enc_pkt = build_rfb_preferred_encodings(true);
+        assert_eq!(enc_pkt[0], 2);
+    }
+}

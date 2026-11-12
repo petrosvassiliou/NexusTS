@@ -55,6 +55,9 @@ data class WorkspaceUiState(
     val isBottomDrawerVisible: Boolean = false,
     val isQuickConnectVisible: Boolean = false,
     val isNewConnectionDialogVisible: Boolean = false,
+    val editingConnection: VaultConnection? = null,
+    val isFolderDialogVisible: Boolean = false,
+    val editingFolder: VaultFolder? = null,
     val isLockVaultDialogVisible: Boolean = false,
     val useSharedTeamDriveZone: Boolean = false,
     val remoteKeyCaptureEnabled: Boolean = false,
@@ -76,23 +79,45 @@ class NexusWorkspaceViewModel @Inject constructor(
     private val inheritanceResolver: PropertyInheritanceResolver,
     private val credentialHub: EnterpriseCredentialHub,
     private val automationEngine: AutomationTaskEngine,
-    private val gatewayTunnelManager: SecureGatewayTunnelManager
+    private val gatewayTunnelManager: SecureGatewayTunnelManager,
+    private val activeVaultStore: ActiveVaultSessionStore
 ) : ViewModel() {
 
     val tilingController = WorkspaceTilingController()
     private val rtszImporter = RtszDocumentImporter()
 
-    private val _uiState = MutableStateFlow(WorkspaceUiState())
+    private val _uiState = MutableStateFlow(
+        WorkspaceUiState(
+            vaultDocument = activeVaultStore.snapshot.value.vaultDocument,
+            isVaultLocked = activeVaultStore.snapshot.value.isVaultLocked,
+            selectedConnectionId = activeVaultStore.snapshot.value.vaultDocument.connections.firstOrNull()?.id
+        )
+    )
     val uiState: StateFlow<WorkspaceUiState> = _uiState.asStateFlow()
 
     private val sshControllers = ConcurrentHashMap<String, SshTerminalSessionController>()
     private val rdpSessions = ConcurrentHashMap<String, RdpManagedSession>()
-    private var sealedLockedVaultSnapshot: ByteArray? = null
 
     init {
-        val firstConn = _uiState.value.vaultDocument.connections.firstOrNull()
-        if (firstConn != null) {
-            _uiState.update { it.copy(selectedConnectionId = firstConn.id) }
+        viewModelScope.launch {
+            var lastSeenMutation = activeVaultStore.snapshot.value.mutationRevision
+            activeVaultStore.snapshot.collect { shared ->
+                if (shared.mutationRevision != lastSeenMutation) {
+                    lastSeenMutation = shared.mutationRevision
+                    rdpSessions.values.forEach { runCatching { it.close() } }
+                    rdpSessions.clear()
+                }
+                _uiState.update { current ->
+                    val validSelectedId = current.selectedConnectionId
+                        ?.takeIf { selId -> shared.vaultDocument.connections.any { it.id == selId } }
+                        ?: shared.vaultDocument.connections.firstOrNull()?.id
+                    current.copy(
+                        vaultDocument = shared.vaultDocument,
+                        isVaultLocked = shared.isVaultLocked,
+                        selectedConnectionId = validSelectedId
+                    )
+                }
+            }
         }
         viewModelScope.launch {
             automationEngine.broadcastBus.collect { packet ->
@@ -109,11 +134,40 @@ class NexusWorkspaceViewModel @Inject constructor(
     }
 
     fun openNewConnectionDialog() {
-        _uiState.update { it.copy(isNewConnectionDialogVisible = true) }
+        _uiState.update { it.copy(editingConnection = null, isNewConnectionDialogVisible = true) }
+    }
+
+    fun openEditConnectionDialog(connection: VaultConnection) {
+        _uiState.update { it.copy(editingConnection = connection, isNewConnectionDialogVisible = true) }
     }
 
     fun dismissNewConnectionDialog() {
-        _uiState.update { it.copy(isNewConnectionDialogVisible = false) }
+        _uiState.update { it.copy(editingConnection = null, isNewConnectionDialogVisible = false) }
+    }
+
+    fun openNewFolderDialog() {
+        _uiState.update { it.copy(editingFolder = null, isFolderDialogVisible = true) }
+    }
+
+    fun openEditFolderDialog(folder: VaultFolder) {
+        _uiState.update { it.copy(editingFolder = folder, isFolderDialogVisible = true) }
+    }
+
+    fun dismissFolderDialog() {
+        _uiState.update { it.copy(editingFolder = null, isFolderDialogVisible = false) }
+    }
+
+    fun resolveFolderInheritedPreview(folderId: String?): Pair<VaultCredential?, String> {
+        val doc = _uiState.value.vaultDocument
+        val syntheticProbe = VaultConnection(
+            parentFolderId = folderId,
+            name = "Inherited Preview",
+            host = "preview.internal",
+            protocol = VaultProtocolType.RDP,
+            inheritable = InheritableProperties(credentialMode = InheritanceMode.INHERIT_FROM_PARENT)
+        )
+        val profile = inheritanceResolver.resolveEffectiveProfile(doc, syntheticProbe)
+        return profile.effectiveCredential to profile.credentialSourceLabel
     }
 
     fun openLockVaultDialog() {
@@ -292,7 +346,13 @@ class NexusWorkspaceViewModel @Inject constructor(
             NexusShortcutAction.QUICK_CONNECT_PALETTE ->
                 _uiState.update { it.copy(isQuickConnectVisible = !it.isQuickConnectVisible) }
             NexusShortcutAction.NEW_CONNECTION_DIALOG ->
-                _uiState.update { it.copy(isNewConnectionDialogVisible = !it.isNewConnectionDialogVisible) }
+                _uiState.update {
+                    val nextOpen = !it.isNewConnectionDialogVisible
+                    it.copy(
+                        editingConnection = if (nextOpen) null else it.editingConnection,
+                        isNewConnectionDialogVisible = nextOpen
+                    )
+                }
             NexusShortcutAction.NEW_LOCAL_TERMINAL ->
                 launchLocalShellTab()
             NexusShortcutAction.OPEN_VAULT_DOCUMENT ->
@@ -348,28 +408,31 @@ class NexusWorkspaceViewModel @Inject constructor(
         staleTabs.forEach { tabId -> rdpSessions.remove(tabId)?.close() }
 
         var wasUpdated = false
-        _uiState.update { state ->
-            val nextRev = state.vaultDocument.revision + 1L
-            val nextClock = state.vaultDocument.vectorClock.toMutableMap().apply {
+        activeVaultStore.updateVaultDocument { doc ->
+            val nextRev = doc.revision + 1L
+            val nextClock = doc.vectorClock.toMutableMap().apply {
                 put("googlebook", nextRev)
             }
-            val exists = state.vaultDocument.connections.any { it.id == connection.id }
+            val exists = doc.connections.any { it.id == connection.id }
             wasUpdated = exists
             val updatedConnections = if (exists) {
-                state.vaultDocument.connections.map { if (it.id == connection.id) connection else it }
+                doc.connections.map { if (it.id == connection.id) connection else it }
             } else {
-                state.vaultDocument.connections + connection
+                doc.connections + connection
             }
+            doc.copy(
+                revision = nextRev,
+                vectorClock = nextClock,
+                connections = updatedConnections
+            )
+        }
+        _uiState.update { state ->
             state.copy(
                 activeRailId = "connections",
                 selectedConnectionId = connection.id,
                 isNewConnectionDialogVisible = false,
                 editingConnection = null,
-                vaultDocument = state.vaultDocument.copy(
-                    revision = nextRev,
-                    vectorClock = nextClock,
-                    connections = updatedConnections
-                )
+                vaultDocument = activeVaultStore.snapshot.value.vaultDocument
             )
         }
         tilingController.allActiveTabs()
@@ -399,31 +462,34 @@ class NexusWorkspaceViewModel @Inject constructor(
             folder
         }
 
-        _uiState.update { state ->
-            val nextRev = state.vaultDocument.revision + 1L
-            val nextClock = state.vaultDocument.vectorClock.toMutableMap().apply {
+        activeVaultStore.updateVaultDocument { doc ->
+            val nextRev = doc.revision + 1L
+            val nextClock = doc.vectorClock.toMutableMap().apply {
                 put("googlebook", nextRev)
             }
             val updatedCredentials = if (inlineNewCredential != null) {
-                state.vaultDocument.credentials + inlineNewCredential.copy(parentFolderId = finalFolder.id)
+                doc.credentials + inlineNewCredential.copy(parentFolderId = finalFolder.id)
             } else {
-                state.vaultDocument.credentials
+                doc.credentials
             }
-            val folderExists = state.vaultDocument.folders.any { it.id == finalFolder.id }
+            val folderExists = doc.folders.any { it.id == finalFolder.id }
             val updatedFolders = if (folderExists) {
-                state.vaultDocument.folders.map { if (it.id == finalFolder.id) finalFolder else it }
+                doc.folders.map { if (it.id == finalFolder.id) finalFolder else it }
             } else {
-                state.vaultDocument.folders + finalFolder
+                doc.folders + finalFolder
             }
+            doc.copy(
+                revision = nextRev,
+                vectorClock = nextClock,
+                folders = updatedFolders,
+                credentials = updatedCredentials
+            )
+        }
+        _uiState.update { state ->
             state.copy(
                 isFolderDialogVisible = false,
                 editingFolder = null,
-                vaultDocument = state.vaultDocument.copy(
-                    revision = nextRev,
-                    vectorClock = nextClock,
-                    folders = updatedFolders,
-                    credentials = updatedCredentials
-                )
+                vaultDocument = activeVaultStore.snapshot.value.vaultDocument
             )
         }
         val credSummary = inlineNewCredential?.let { " + saved folder credential '${it.name}'" }.orEmpty()
@@ -431,26 +497,24 @@ class NexusWorkspaceViewModel @Inject constructor(
     }
 
     fun addCredentialToVault(credential: VaultCredential) {
-        _uiState.update { state ->
-            state.copy(
-                vaultDocument = state.vaultDocument.copy(
-                    revision = state.vaultDocument.revision + 1L,
-                    credentials = state.vaultDocument.credentials + credential
-                )
+        activeVaultStore.updateVaultDocument { doc ->
+            doc.copy(
+                revision = doc.revision + 1L,
+                credentials = doc.credentials + credential
             )
         }
+        _uiState.update { it.copy(vaultDocument = activeVaultStore.snapshot.value.vaultDocument) }
         appendLog("[Credentials] Stored '${credential.name}' (${credential.sourceKind.name})")
     }
 
     fun addGatewayToVault(gateway: SecureGatewayConfig) {
-        _uiState.update { state ->
-            state.copy(
-                vaultDocument = state.vaultDocument.copy(
-                    revision = state.vaultDocument.revision + 1L,
-                    gateways = state.vaultDocument.gateways + gateway
-                )
+        activeVaultStore.updateVaultDocument { doc ->
+            doc.copy(
+                revision = doc.revision + 1L,
+                gateways = doc.gateways + gateway
             )
         }
+        _uiState.update { it.copy(vaultDocument = activeVaultStore.snapshot.value.vaultDocument) }
         appendLog("[Gateway] Registered ${gateway.kind.name} '${gateway.name}' (${gateway.host}:${gateway.port})")
     }
 
@@ -466,14 +530,13 @@ class NexusWorkspaceViewModel @Inject constructor(
     }
 
     fun addCommandTaskToVault(task: CommandTask) {
-        _uiState.update { state ->
-            state.copy(
-                vaultDocument = state.vaultDocument.copy(
-                    revision = state.vaultDocument.revision + 1L,
-                    commandTasks = state.vaultDocument.commandTasks + task
-                )
+        activeVaultStore.updateVaultDocument { doc ->
+            doc.copy(
+                revision = doc.revision + 1L,
+                commandTasks = doc.commandTasks + task
             )
         }
+        _uiState.update { it.copy(vaultDocument = activeVaultStore.snapshot.value.vaultDocument) }
         appendLog("[Automation] Added task '${task.name}'")
     }
 
@@ -582,21 +645,20 @@ class NexusWorkspaceViewModel @Inject constructor(
             publicKeyOpenSsh = generated.public_key_openssh,
             keyFingerprintSha256 = generated.sha256_fingerprint
         )
-        _uiState.update { state ->
-            state.copy(
-                vaultDocument = state.vaultDocument.copy(
-                    revision = state.vaultDocument.revision + 1L,
-                    credentials = state.vaultDocument.credentials + newCred
-                )
+        activeVaultStore.updateVaultDocument { doc ->
+            doc.copy(
+                revision = doc.revision + 1L,
+                credentials = doc.credentials + newCred
             )
         }
+        _uiState.update { it.copy(vaultDocument = activeVaultStore.snapshot.value.vaultDocument) }
         appendLog("[SSH Agent] Generated OpenSSH Ed25519 key ${generated.sha256_fingerprint}")
     }
 
     fun lockVaultWithPassphrase(passphrase: CharArray) {
         viewModelScope.launch {
             val sealed = vaultSerializer.sealDocument(_uiState.value.vaultDocument, passphrase)
-            sealedLockedVaultSnapshot = sealed
+            activeVaultStore.lockWithSealedBytes(sealed)
             _uiState.update {
                 it.copy(
                     isVaultLocked = true,
@@ -609,8 +671,9 @@ class NexusWorkspaceViewModel @Inject constructor(
     }
 
     fun unlockVaultWithPassphrase(passphrase: CharArray) {
-        val blob = sealedLockedVaultSnapshot
+        val blob = activeVaultStore.snapshot.value.sealedLockedVaultSnapshot
         if (blob == null) {
+            activeVaultStore.clearLockWithoutBlob()
             _uiState.update { it.copy(isVaultLocked = false) }
             return
         }
@@ -618,7 +681,14 @@ class NexusWorkspaceViewModel @Inject constructor(
             runCatching {
                 vaultSerializer.unsealDocument(blob, passphrase)
             }.onSuccess { doc ->
-                _uiState.update { it.copy(vaultDocument = doc, isVaultLocked = false) }
+                activeVaultStore.replaceUnlockedVault(doc)
+                _uiState.update {
+                    it.copy(
+                        vaultDocument = doc,
+                        selectedConnectionId = doc.connections.firstOrNull()?.id,
+                        isVaultLocked = false
+                    )
+                }
                 appendLog("[Vault] Unlocked '${doc.name}' (Revision ${doc.revision})")
             }.onFailure { err ->
                 appendLog("[Vault Error] ${err.message}")
@@ -627,15 +697,39 @@ class NexusWorkspaceViewModel @Inject constructor(
     }
 
     fun importVaultOrRtszBytes(fileName: String, bytes: ByteArray, passphraseOrNull: CharArray? = null) {
+        val hasNxtsMagic = bytes.size >= 4 &&
+            bytes[0] == 0x4E.toByte() &&
+            bytes[1] == 0x58.toByte() &&
+            bytes[2] == 0x54.toByte() &&
+            bytes[3] == 0x53.toByte()
+        val isRtszFormat = !hasNxtsMagic && (
+            fileName.endsWith(".rtsz", true) ||
+                fileName.endsWith(".rtsx", true) ||
+                (bytes.size >= 4 && bytes[0] == 0x50.toByte() && bytes[1] == 0x4B.toByte() && bytes[2] == 0x03.toByte() && bytes[3] == 0x04.toByte()) ||
+                bytes.decodeToString(0, minOf(bytes.size, 64), throwOnInvalidSequence = false).trimStart().startsWith("<")
+            )
+
+        if (!isRtszFormat && passphraseOrNull == null) {
+            activeVaultStore.stageEncryptedBytesForUnlock(bytes, fileName)
+            _uiState.update {
+                it.copy(
+                    isVaultLocked = true,
+                    isSidebarVisible = true
+                )
+            }
+            appendLog("[Import] Staged encrypted vault '$fileName' — enter passphrase in sidebar to unlock.")
+            return
+        }
+
         viewModelScope.launch {
             runCatching {
-                if (fileName.endsWith(".rtsz", true) || fileName.endsWith(".rtsx", true)) {
+                if (isRtszFormat) {
                     rtszImporter.importRtszBytes(bytes, fileName.substringBeforeLast('.'))
                 } else {
-                    requireNotNull(passphraseOrNull) { "Passphrase required to open encrypted .nxts vault" }
-                    vaultSerializer.unsealDocument(bytes, passphraseOrNull)
+                    vaultSerializer.unsealDocument(bytes, passphraseOrNull!!)
                 }
             }.onSuccess { importedDoc ->
+                activeVaultStore.replaceUnlockedVault(importedDoc)
                 _uiState.update {
                     it.copy(
                         vaultDocument = importedDoc,

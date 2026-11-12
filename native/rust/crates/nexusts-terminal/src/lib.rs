@@ -303,11 +303,23 @@ impl VtTerminalBuffer {
                     match code {
                         25 => self.cursor_visible = enable,
                         1049 | 47 => {
-                            self.using_alt_screen = enable;
                             if enable {
+                                if code == 1049 && !self.using_alt_screen {
+                                    self.saved_cursor = (self.cursor_col, self.cursor_row);
+                                }
+                                self.using_alt_screen = true;
                                 let cols = self.cols;
                                 let rows = self.rows;
                                 self.alt_grid = vec![vec![TerminalCell::default(); cols]; rows];
+                                self.cursor_col = 0;
+                                self.cursor_row = 0;
+                            } else {
+                                let was_alt = self.using_alt_screen;
+                                self.using_alt_screen = false;
+                                if code == 1049 && was_alt {
+                                    self.cursor_col = self.saved_cursor.0.min(self.cols - 1);
+                                    self.cursor_row = self.saved_cursor.1.min(self.rows - 1);
+                                }
                             }
                         }
                         2004 => self.bracketed_paste = enable,

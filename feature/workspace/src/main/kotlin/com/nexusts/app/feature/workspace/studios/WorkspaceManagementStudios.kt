@@ -128,7 +128,17 @@ fun FolderPropertiesAndCredentialDialog(
     var inlinePassword by remember(editingFolder) { mutableStateOf("") }
 
     val candidateParents = remember(allFolders, folderId) {
-        allFolders.filter { it.id != folderId }
+        val byId = allFolders.associateBy { it.id }
+        fun isSelfOrDescendant(candidateId: String): Boolean {
+            val visited = mutableSetOf<String>()
+            var cur: String? = candidateId
+            while (cur != null && visited.add(cur)) {
+                if (cur == folderId) return true
+                cur = byId[cur]?.parentFolderId
+            }
+            return false
+        }
+        allFolders.filterNot { isSelfOrDescendant(it.id) }
     }
 
     AlertDialog(
@@ -558,6 +568,13 @@ fun NewOrEditConnectionDialog(
                                 expanded = folderMenuOpen,
                                 onDismissRequest = { folderMenuOpen = false }
                             ) {
+                                DropdownMenuItem(
+                                    text = { Text("-") },
+                                    onClick = {
+                                        selectedFolderId = null
+                                        folderMenuOpen = false
+                                    }
+                                )
                                 folders.forEach { folder ->
                                     DropdownMenuItem(
                                         text = { Text(folder.name) },
@@ -949,7 +966,6 @@ fun NewOrEditConnectionDialog(
                     ))
 
                     onSaveConnection(savedConn)
-                    onDismiss()
                 }
             ) {
                 Text(strings.dialogActionSave)

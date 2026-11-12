@@ -793,6 +793,21 @@ private fun VaultHierarchySidebarTree(
                 )
             }
         }
+
+        val knownFolderIds = doc.folders.map { it.id }.toSet()
+        val rootConnections = doc.connections.filter {
+            it.parentFolderId == null || it.parentFolderId !in knownFolderIds
+        }
+        items(rootConnections, key = { "root-${it.id}" }) { conn ->
+            ConnectionTreeRow(
+                connection = conn,
+                isSelected = conn.id == uiState.selectedConnectionId,
+                strings = strings,
+                onSelect = { onSelectConnection(conn.id) },
+                onEdit = { onEditConnection(conn) },
+                onLaunch = { placement -> onLaunchConnection(conn, placement) }
+            )
+        }
     }
 }
 

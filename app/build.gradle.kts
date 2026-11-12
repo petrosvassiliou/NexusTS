@@ -113,6 +113,7 @@ android {
     packaging {
         jniLibs {
             useLegacyPackaging = false
+            pickFirsts += "**/libnexusts_jni.so"
         }
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1,DEPENDENCIES,INDEX.LIST}"
@@ -136,11 +137,16 @@ dependencies {
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.androidx.lifecycle.process)
+    implementation(libs.androidx.compose.ui)
+    implementation(libs.androidx.compose.ui.graphics)
+    implementation(libs.androidx.compose.foundation)
+    implementation(libs.androidx.compose.material.icons.extended)
     implementation(libs.androidx.compose.material3)
     implementation(libs.androidx.compose.material3.window.size)
     implementation(libs.androidx.window)
     implementation(libs.androidx.work.runtime.ktx)
     implementation(libs.androidx.datastore.preferences)
+    implementation(libs.kotlinx.serialization.json)
 
     // Play Protect Compliant In-App Updates API
     implementation(libs.play.app.update)

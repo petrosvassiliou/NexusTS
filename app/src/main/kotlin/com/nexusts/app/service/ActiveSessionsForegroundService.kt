@@ -4,9 +4,11 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
 import com.nexusts.app.R
 
 /**
@@ -25,7 +27,12 @@ class ActiveSessionsForegroundService : Service() {
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
-        startForeground(NOTIFICATION_ID, notification)
+        val fgsType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+        } else {
+            0
+        }
+        ServiceCompat.startForeground(this, NOTIFICATION_ID, notification, fgsType)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY

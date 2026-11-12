@@ -4,8 +4,8 @@
 use async_trait::async_trait;
 use russh::client::{self, Handle, Msg};
 use russh::{Channel, ChannelId, Disconnect};
-use russh_keys::key::PublicKey;
-use russh_keys::PublicKeyBase64;
+use russh_keys::key::PrivateKeyWithHashAlg;
+use russh_keys::{HashAlg, PublicKey, PublicKeyBase64};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
@@ -48,7 +48,7 @@ pub struct SshConnectSpec {
     pub keepalive_secs: u64,
 }
 
-struct NexusSshHandler {
+pub struct NexusSshHandler {
     expected_fp: Option<String>,
     x11_events_tx: Option<mpsc::UnboundedSender<Vec<u8>>>,
 }
@@ -135,8 +135,14 @@ impl ActiveSshClientSession {
             }
             SshAuthMethod::PrivateKeyPem { pem, passphrase } => {
                 let key_pair = russh_keys::decode_secret_key(pem, passphrase.as_deref())?;
+                let hash_alg = if key_pair.algorithm().is_rsa() {
+                    Some(HashAlg::Sha256)
+                } else {
+                    None
+                };
+                let key_with_alg = PrivateKeyWithHashAlg::new(Arc::new(key_pair), hash_alg)?;
                 handle
-                    .authenticate_publickey(&spec.username, Arc::new(key_pair))
+                    .authenticate_publickey(&spec.username, key_with_alg)
                     .await?
             }
         };
@@ -176,10 +182,16 @@ impl ActiveSshClientSession {
         ))
     }
 
-    pub async fn notify_pty_resize(&self, cols: u32, rows: u32) -> Result<(), TransportError> {
-        self.handle
-            .window_change(self.pty_channel_id, cols, rows, 0, 0)
-            .await?;
+    pub fn pty_channel_id(&self) -> ChannelId {
+        self.pty_channel_id
+    }
+
+    pub async fn notify_pty_resize(
+        channel: &Channel<Msg>,
+        cols: u32,
+        rows: u32,
+    ) -> Result<(), TransportError> {
+        channel.window_change(cols, rows, 0, 0).await?;
         Ok(())
     }
 

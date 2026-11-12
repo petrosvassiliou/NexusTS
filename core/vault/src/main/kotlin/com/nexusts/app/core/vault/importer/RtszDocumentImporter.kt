@@ -54,37 +54,86 @@ class RtszDocumentImporter {
         var docName = fallbackDocumentName
 
         val allElements = dom.documentElement.childNodes
+        // Pass 1: Pre-scan <RoyalDocument> so documentId and docName are resolved regardless of XML tag ordering
+        for (i in 0 until allElements.length) {
+            val node = allElements.item(i)
+            if (node.nodeType != Node.ELEMENT_NODE) continue
+            val elem = node as Element
+            if (elem.tagName == "RoyalDocument") {
+                val parsedDocId = elem.childText("ID")
+                if (parsedDocId.isNotBlank()) documentId = parsedDocId
+                val parsedDocName = elem.childText("Name")
+                if (parsedDocName.isNotBlank()) docName = parsedDocName
+                break
+            }
+        }
+
+        // Pass 2: Materialize folders, connections, credentials, gateways, and automation tasks
         for (i in 0 until allElements.length) {
             val node = allElements.item(i)
             if (node.nodeType != Node.ELEMENT_NODE) continue
             val elem = node as Element
             val tag = elem.tagName
+            if (tag == "RoyalDocument") continue
 
             val id = elem.childText("ID").ifBlank { UUID.randomUUID().toString() }
             val parentIdRaw = elem.childText("ParentID").takeIf { it.isNotBlank() }
             val name = elem.childText("Name").ifBlank { tag }
             val uri = elem.childText("URI")
-            val credId = elem.childText("CredentialID").takeIf { it.isNotBlank() }
-            val credMode = when (elem.childText("CredentialMode")) {
-                "2" -> InheritanceMode.OVERRIDE_EXPLICIT
-                "1" -> InheritanceMode.INHERIT_FROM_PARENT
-                "3" -> InheritanceMode.PROMPT_AT_CONNECT
-                else -> if (credId != null) InheritanceMode.OVERRIDE_EXPLICIT else InheritanceMode.INHERIT_FROM_PARENT
+            val rawCredMode = elem.childText("CredentialMode").trim()
+            val explicitCredId = elem.childText("CredentialID").takeIf { it.isNotBlank() }
+
+            val inlineUserRaw = elem.childText("CredentialUsername")
+                .ifBlank { if (tag != "RoyalCredential") elem.childText("UserName") else "" }
+            val inlinePassRaw = elem.childText("CredentialPassword")
+                .ifBlank { if (tag != "RoyalCredential") elem.childText("Password") else "" }
+            val inlineKeyPem = if (tag != "RoyalCredential") elem.childText("CredentialKeyFileContent") else ""
+
+            val synthesizedInlineCredId: String? = if (
+                tag != "RoyalCredential" &&
+                (rawCredMode == "1" || (explicitCredId == null && (inlineUserRaw.isNotBlank() || inlinePassRaw.isNotBlank() || inlineKeyPem.isNotBlank()))) &&
+                (inlineUserRaw.isNotBlank() || inlinePassRaw.isNotBlank() || inlineKeyPem.isNotBlank())
+            ) {
+                val (inlineDomain, inlineUser) = splitDomainAndUsername(inlineUserRaw)
+                val synId = "inline-cred-$id"
+                credentials += VaultCredential(
+                    id = synId,
+                    parentFolderId = if (tag == "RoyalFolder") id else parentIdRaw?.takeIf { it != documentId },
+                    name = "$name (Saved Credential)",
+                    sourceKind = if (inlineKeyPem.isNotBlank()) {
+                        CredentialSourceKind.SSH_KEY_PAIR
+                    } else {
+                        CredentialSourceKind.VAULT_INTERNAL
+                    },
+                    username = inlineUser,
+                    domain = inlineDomain,
+                    secretPassword = inlinePassRaw,
+                    privateKeyPem = inlineKeyPem
+                )
+                synId
+            } else {
+                null
+            }
+
+            val resolvedCredId = synthesizedInlineCredId ?: explicitCredId
+            val credMode = when {
+                synthesizedInlineCredId != null -> InheritanceMode.OVERRIDE_EXPLICIT
+                rawCredMode == "0" -> InheritanceMode.NONE_DIRECT
+                rawCredMode == "2" -> InheritanceMode.OVERRIDE_EXPLICIT
+                rawCredMode == "3" -> InheritanceMode.PROMPT_AT_CONNECT
+                rawCredMode == "4" || rawCredMode == "1" -> InheritanceMode.INHERIT_FROM_PARENT
+                resolvedCredId != null -> InheritanceMode.OVERRIDE_EXPLICIT
+                else -> InheritanceMode.INHERIT_FROM_PARENT
             }
             val gwId = elem.childText("SecureGatewayID").takeIf { it.isNotBlank() }
             val inheritable = InheritableProperties(
                 credentialMode = credMode,
-                explicitCredentialId = credId,
+                explicitCredentialId = if (credMode == InheritanceMode.OVERRIDE_EXPLICIT) resolvedCredId else null,
                 gatewayMode = if (gwId != null) InheritanceMode.OVERRIDE_EXPLICIT else InheritanceMode.INHERIT_FROM_PARENT,
                 explicitGatewayId = gwId
             )
 
             when (tag) {
-                "RoyalDocument" -> {
-                    documentId = id
-                    docName = name
-                }
-
                 "RoyalFolder" -> {
                     if (id != documentId) {
                         folders += VaultFolder(
@@ -233,6 +282,9 @@ class RtszDocumentImporter {
 
                 "RoyalCredential" -> {
                     val keyContent = elem.childText("KeyFileContent")
+                    val rawUser = elem.childText("UserName")
+                    val explicitDomain = elem.childText("Domain")
+                    val (parsedDomain, parsedUser) = splitDomainAndUsername(rawUser)
                     credentials += VaultCredential(
                         id = id,
                         parentFolderId = parentIdRaw?.takeIf { it != documentId },
@@ -242,7 +294,8 @@ class RtszDocumentImporter {
                         } else {
                             CredentialSourceKind.VAULT_INTERNAL
                         },
-                        username = elem.childText("UserName"),
+                        username = parsedUser,
+                        domain = explicitDomain.ifBlank { parsedDomain },
                         secretPassword = elem.childText("Password"),
                         privateKeyPem = keyContent
                     )
@@ -259,7 +312,7 @@ class RtszDocumentImporter {
                         },
                         host = uri,
                         port = elem.childText("Port").toIntOrNull() ?: 22,
-                        credentialId = credId
+                        credentialId = resolvedCredId
                     )
                 }
 
@@ -304,6 +357,16 @@ class RtszDocumentImporter {
             commandTasks = commandTasks,
             keySequenceTasks = keyTasks
         )
+    }
+
+    private fun splitDomainAndUsername(raw: String): Pair<String, String> {
+        val trimmed = raw.trim()
+        val slashIdx = trimmed.indexOf('\\')
+        return if (slashIdx > 0 && slashIdx < trimmed.lastIndex) {
+            trimmed.substring(0, slashIdx).trim() to trimmed.substring(slashIdx + 1).trim()
+        } else {
+            "" to trimmed
+        }
     }
 
     private fun extractXmlFromZipOrRaw(rawBytes: ByteArray): ByteArray {

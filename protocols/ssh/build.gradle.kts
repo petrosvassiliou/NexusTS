@@ -1,7 +1,6 @@
 plugins {
     id("nexusts.android.library")
     id("nexusts.android.compose")
-    id("nexusts.native.cargonative")
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.ksp)
     alias(libs.plugins.hilt)

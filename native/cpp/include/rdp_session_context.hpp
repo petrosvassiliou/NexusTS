@@ -91,6 +91,9 @@ public:
     void shutdown();
 
 private:
+    bool initialize_locked(uint32_t width, uint32_t height, bool avc444_chroma);
+    void shutdown_locked();
+
     std::mutex codec_mutex_;
     uint32_t width_{0};
     uint32_t height_{0};

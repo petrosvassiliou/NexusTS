@@ -4,11 +4,13 @@ import com.android.build.api.dsl.LibraryExtension
 import org.gradle.api.DefaultTask
 import org.gradle.api.Plugin
 import org.gradle.api.Project
+import org.gradle.api.file.ConfigurableFileCollection
 import org.gradle.api.file.DirectoryProperty
 import org.gradle.api.provider.ListProperty
 import org.gradle.api.provider.Property
 import org.gradle.api.tasks.Input
-import org.gradle.api.tasks.InputDirectory
+import org.gradle.api.tasks.InputFiles
+import org.gradle.api.tasks.Internal
 import org.gradle.api.tasks.OutputDirectory
 import org.gradle.api.tasks.PathSensitive
 import org.gradle.api.tasks.PathSensitivity
@@ -22,9 +24,12 @@ abstract class CargoNdkBuildTask @Inject constructor(
     private val execOperations: ExecOperations
 ) : DefaultTask() {
 
-    @get:InputDirectory
-    @get:PathSensitive(PathSensitivity.RELATIVE)
+    @get:Internal
     abstract val rustWorkspaceDir: DirectoryProperty
+
+    @get:InputFiles
+    @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val rustSourceInputs: ConfigurableFileCollection
 
     @get:Input
     abstract val cratePackageName: Property<String>
@@ -84,11 +89,17 @@ class CargoNdkConventionPlugin : Plugin<Project> {
                 .map { raw -> raw.split(",").map { it.trim() }.filter { it.isNotEmpty() } }
 
             val jniGeneratedDir = layout.buildDirectory.dir("generated/cargoJniLibs")
+            val rustRoot = rootProject.layout.projectDirectory.dir("native/rust")
 
             val cargoTask = tasks.register<CargoNdkBuildTask>("buildCargoNdk") {
                 group = "native"
                 description = "Builds Rust protocol and cryptography workspace crates via cargo-ndk with 16KB page alignment."
-                rustWorkspaceDir.set(rootProject.layout.projectDirectory.dir("native/rust"))
+                rustWorkspaceDir.set(rustRoot)
+                rustSourceInputs.from(
+                    rootProject.fileTree("native/rust") {
+                        exclude("target/**")
+                    }
+                )
                 cratePackageName.set("nexusts-jni")
                 abis.set(abisList)
                 releaseProfile.set(true)

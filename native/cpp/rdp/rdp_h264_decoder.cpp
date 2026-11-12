@@ -15,8 +15,12 @@ RdpHardwareH264Decoder::~RdpHardwareH264Decoder() {
 
 bool RdpHardwareH264Decoder::initialize(uint32_t width, uint32_t height, bool avc444_chroma) {
     std::lock_guard<std::mutex> lock(codec_mutex_);
+    return initialize_locked(width, height, avc444_chroma);
+}
+
+bool RdpHardwareH264Decoder::initialize_locked(uint32_t width, uint32_t height, bool avc444_chroma) {
     if (initialized_) {
-        shutdown();
+        shutdown_locked();
     }
     width_ = width;
     height_ = height;
@@ -102,13 +106,18 @@ bool RdpHardwareH264Decoder::decode_nal_unit(
 }
 
 void RdpHardwareH264Decoder::reconfigure_resolution(uint32_t width, uint32_t height) {
+    std::lock_guard<std::mutex> lock(codec_mutex_);
     const bool was_avc444 = avc444_;
-    shutdown();
-    initialize(width, height, was_avc444);
+    shutdown_locked();
+    initialize_locked(width, height, was_avc444);
 }
 
 void RdpHardwareH264Decoder::shutdown() {
     std::lock_guard<std::mutex> lock(codec_mutex_);
+    shutdown_locked();
+}
+
+void RdpHardwareH264Decoder::shutdown_locked() {
 #ifdef __ANDROID__
     if (media_codec_handle_) {
         auto* codec = static_cast<AMediaCodec*>(media_codec_handle_);

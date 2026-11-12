@@ -3,6 +3,7 @@ package com.nexusts.app
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -133,11 +134,32 @@ class MainActivity : AppCompatActivity() {
 
     private fun importVaultUri(uri: Uri) {
         runCatching {
-            val fileName = uri.lastPathSegment ?: "vault.rtsz"
+            val fileName = resolveDisplayName(uri)
             contentResolver.openInputStream(uri)?.use { stream ->
                 val rawBytes = stream.readBytes()
                 workspaceViewModel.importVaultOrRtszBytes(fileName = fileName, bytes = rawBytes)
             }
         }
+    }
+
+    private fun resolveDisplayName(uri: Uri): String {
+        if (uri.scheme.equals("content", ignoreCase = true)) {
+            runCatching {
+                contentResolver.query(
+                    uri,
+                    arrayOf(OpenableColumns.DISPLAY_NAME),
+                    null,
+                    null,
+                    null
+                )?.use { cursor ->
+                    val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if (nameIndex >= 0 && cursor.moveToFirst()) {
+                        val queried = cursor.getString(nameIndex)?.trim()
+                        if (!queried.isNullOrBlank()) return queried
+                    }
+                }
+            }
+        }
+        return uri.lastPathSegment?.substringAfterLast('/')?.takeIf { it.isNotBlank() } ?: "vault.nxts"
     }
 }
