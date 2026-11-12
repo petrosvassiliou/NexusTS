@@ -48,14 +48,28 @@ Java_com_nexusts_app_protocols_rdp_bridge_FreeRdpNativeBridge_nativeCreateSessio
     jint gateway_port,
     jint initial_width,
     jint initial_height,
+    jboolean connect_to_console,
+    jboolean hidpi_enabled,
+    jint desktop_scale_percent,
+    jint color_depth_bits,
     jboolean enable_h264_avc444,
     jboolean enable_remotefx,
     jboolean enable_dynamic_resize,
     jboolean multi_monitor,
     jboolean redirect_clipboard,
-    jboolean redirect_smartcard,
-    jboolean redirect_audio,
+    jint audio_redirection_mode,
     jboolean redirect_mic,
+    jboolean redirect_drives,
+    jboolean redirect_printers,
+    jboolean redirect_ports,
+    jboolean redirect_smartcard,
+    jboolean enable_font_smoothing,
+    jboolean enable_desktop_composition,
+    jboolean enable_wallpaper,
+    jboolean compression_enabled,
+    jboolean nla_security,
+    jboolean restricted_admin_mode,
+    jboolean ignore_certificate,
     jboolean remote_app_mode,
     jstring remote_app_program,
     jstring remote_app_args
@@ -70,14 +84,31 @@ Java_com_nexusts_app_protocols_rdp_bridge_FreeRdpNativeBridge_nativeCreateSessio
     params.rd_gateway_port = static_cast<uint16_t>(gateway_port);
     params.initial_width = static_cast<uint32_t>(initial_width);
     params.initial_height = static_cast<uint32_t>(initial_height);
+    params.connect_to_console = (connect_to_console == JNI_TRUE);
+    params.hidpi_enabled = (hidpi_enabled == JNI_TRUE);
+    params.desktop_scale_factor = static_cast<uint32_t>(desktop_scale_percent);
+    params.device_scale_factor = (desktop_scale_percent >= 175) ? 180u
+        : ((desktop_scale_percent >= 125) ? 140u : 100u);
+    params.color_depth_bits = static_cast<uint32_t>(color_depth_bits);
     params.enable_h264_avc444 = (enable_h264_avc444 == JNI_TRUE);
     params.enable_remotefx = (enable_remotefx == JNI_TRUE);
     params.enable_dynamic_resize = (enable_dynamic_resize == JNI_TRUE);
     params.multi_monitor_spanning = (multi_monitor == JNI_TRUE);
     params.redirect_clipboard = (redirect_clipboard == JNI_TRUE);
-    params.redirect_smartcard = (redirect_smartcard == JNI_TRUE);
-    params.redirect_audio_out = (redirect_audio == JNI_TRUE);
+    params.audio_redirection_mode = static_cast<int32_t>(audio_redirection_mode);
+    params.redirect_audio_out = (audio_redirection_mode == 0);
     params.redirect_mic_in = (redirect_mic == JNI_TRUE);
+    params.redirect_drives = (redirect_drives == JNI_TRUE);
+    params.redirect_printers = (redirect_printers == JNI_TRUE);
+    params.redirect_serial_ports = (redirect_ports == JNI_TRUE);
+    params.redirect_smartcard = (redirect_smartcard == JNI_TRUE);
+    params.enable_font_smoothing = (enable_font_smoothing == JNI_TRUE);
+    params.enable_desktop_composition = (enable_desktop_composition == JNI_TRUE);
+    params.enable_wallpaper = (enable_wallpaper == JNI_TRUE);
+    params.compression_enabled = (compression_enabled == JNI_TRUE);
+    params.nla_security = (nla_security == JNI_TRUE);
+    params.restricted_admin_mode = (restricted_admin_mode == JNI_TRUE);
+    params.ignore_certificate = (ignore_certificate == JNI_TRUE);
     params.remote_app_mode = (remote_app_mode == JNI_TRUE);
     params.remote_app_program = jstring_to_utf8(env, remote_app_program);
     params.remote_app_args = jstring_to_utf8(env, remote_app_args);
@@ -201,6 +232,20 @@ Java_com_nexusts_app_protocols_rdp_bridge_FreeRdpNativeBridge_nativeSyncClipboar
     if (auto* ctx = lookup_session(handle)) {
         ctx->channels().on_local_clipboard_text(jstring_to_utf8(env, utf8_text));
     }
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_nexusts_app_protocols_rdp_bridge_FreeRdpNativeBridge_nativePullRemoteClipboardText(
+    JNIEnv* env,
+    jclass /*clazz*/,
+    jlong handle
+) {
+    std::lock_guard<std::mutex> lock(g_sessions_mutex);
+    if (auto* ctx = lookup_session(handle)) {
+        const std::string text = ctx->channels().latest_remote_clipboard_text();
+        return env->NewStringUTF(text.c_str());
+    }
+    return env->NewStringUTF("");
 }
 
 JNIEXPORT void JNICALL

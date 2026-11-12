@@ -42,10 +42,14 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -65,33 +69,396 @@ import com.nexusts.app.core.vault.model.InheritanceMode
 import com.nexusts.app.core.vault.model.KeySequenceTask
 import com.nexusts.app.core.vault.model.NxtsVaultDocument
 import com.nexusts.app.core.vault.model.ProtocolSpecificSettings
+import com.nexusts.app.core.vault.model.RdpAudioRedirectionMode
+import com.nexusts.app.core.vault.model.RdpResizeBehavior
 import com.nexusts.app.core.vault.model.SecureGatewayConfig
 import com.nexusts.app.core.vault.model.VaultConnection
 import com.nexusts.app.core.vault.model.VaultCredential
 import com.nexusts.app.core.vault.model.VaultFolder
 import com.nexusts.app.core.vault.model.VaultProtocolType
 import com.nexusts.app.feature.workspace.i18n.WorkspaceLocalizedStrings
+import java.util.UUID
 
 /**
- * 1. Expressive Connection Editor Dialog (`Ctrl/Cmd + N`) supporting all 21 protocols,
- *    Folder hierarchy assignment, and Property Inheritance mode selection.
+ * 0. Folder Properties & Folder-Level Credential Editor Dialog.
+ *    Allows saving credentials directly on a Folder (either selecting an existing vault credential
+ *    or creating a new Domain\Username + Password credential inline on the Folder) so child RDP,
+ *    SSH, SFTP, VNC, and Cloud connections inherit them automatically via `INHERIT_FROM_PARENT`.
+ */
+@Composable
+fun FolderPropertiesAndCredentialDialog(
+    visible: Boolean,
+    editingFolder: VaultFolder?,
+    allFolders: List<VaultFolder>,
+    credentials: List<VaultCredential>,
+    childConnectionCount: Int,
+    strings: WorkspaceLocalizedStrings,
+    onDismiss: () -> Unit,
+    onSaveFolderAndCredential: (VaultFolder, VaultCredential?) -> Unit
+) {
+    if (!visible) return
+
+    val folderId = remember(editingFolder) { editingFolder?.id ?: UUID.randomUUID().toString() }
+    var folderName by remember(editingFolder) { mutableStateOf(editingFolder?.name.orEmpty()) }
+    var parentFolderId by remember(editingFolder) { mutableStateOf(editingFolder?.parentFolderId) }
+    var parentMenuOpen by remember { mutableStateOf(false) }
+
+    // 0 = Create & Save New Folder Credential inline, 1 = Pick Existing Credential, 2 = Inherit Parent, 3 = Prompt
+    var credAssignChoice by remember(editingFolder) {
+        mutableIntStateOf(
+            when (editingFolder?.inheritable?.credentialMode) {
+                InheritanceMode.OVERRIDE_EXPLICIT -> 1
+                InheritanceMode.INHERIT_FROM_PARENT -> 2
+                InheritanceMode.PROMPT_AT_CONNECT -> 3
+                else -> 0
+            }
+        )
+    }
+    var selectedCredId by remember(editingFolder, credentials) {
+        mutableStateOf(
+            editingFolder?.inheritable?.explicitCredentialId ?: credentials.firstOrNull()?.id
+        )
+    }
+    var credMenuOpen by remember { mutableStateOf(false) }
+
+    // Inline Folder Credential creator fields
+    var inlineCredName by remember(editingFolder) { mutableStateOf("") }
+    var inlineDomain by remember(editingFolder) { mutableStateOf("") }
+    var inlineUsername by remember(editingFolder) { mutableStateOf("") }
+    var inlinePassword by remember(editingFolder) { mutableStateOf("") }
+
+    val candidateParents = remember(allFolders, folderId) {
+        allFolders.filter { it.id != folderId }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = {
+            Icon(
+                imageVector = Icons.Outlined.Folder,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary
+            )
+        },
+        title = {
+            Text(text = strings.dialogFolderTitle, style = MaterialTheme.typography.titleLarge)
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                OutlinedTextField(
+                    value = folderName,
+                    onValueChange = { folderName = it },
+                    label = { Text(strings.dialogFieldName) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                if (candidateParents.isNotEmpty()) {
+                    val parentLabel = candidateParents.firstOrNull { it.id == parentFolderId }?.name ?: "-"
+                    Box(modifier = Modifier.fillMaxWidth()) {
+                        OutlinedButton(
+                            onClick = { parentMenuOpen = true },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("${strings.dialogFieldFolder}: $parentLabel")
+                        }
+                        DropdownMenu(
+                            expanded = parentMenuOpen,
+                            onDismissRequest = { parentMenuOpen = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("-") },
+                                onClick = {
+                                    parentFolderId = null
+                                    parentMenuOpen = false
+                                }
+                            )
+                            candidateParents.forEach { candidate ->
+                                DropdownMenuItem(
+                                    text = { Text(candidate.name) },
+                                    onClick = {
+                                        parentFolderId = candidate.id
+                                        parentMenuOpen = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+
+                HorizontalDivider()
+
+                Text(
+                    text = strings.dialogFieldCredentialMode,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.secondary
+                )
+
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        FilterChip(
+                            selected = credAssignChoice == 0,
+                            onClick = { credAssignChoice = 0 },
+                            label = { Text(strings.credModeInlineNew, style = MaterialTheme.typography.labelSmall) }
+                        )
+                        FilterChip(
+                            selected = credAssignChoice == 1,
+                            onClick = { credAssignChoice = 1 },
+                            label = { Text(strings.credModeOverrideExplicit, style = MaterialTheme.typography.labelSmall) }
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        FilterChip(
+                            selected = credAssignChoice == 2,
+                            onClick = { credAssignChoice = 2 },
+                            label = { Text(strings.credModeInheritFolder, style = MaterialTheme.typography.labelSmall) }
+                        )
+                        FilterChip(
+                            selected = credAssignChoice == 3,
+                            onClick = { credAssignChoice = 3 },
+                            label = { Text(strings.credModePrompt, style = MaterialTheme.typography.labelSmall) }
+                        )
+                    }
+                }
+
+                when (credAssignChoice) {
+                    0 -> {
+                        Surface(
+                            shape = MaterialTheme.shapes.medium,
+                            color = MaterialTheme.colorScheme.surfaceContainer,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                OutlinedTextField(
+                                    value = inlineCredName,
+                                    onValueChange = { inlineCredName = it },
+                                    label = { Text(strings.dialogFieldName) },
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                                OutlinedTextField(
+                                    value = inlineDomain,
+                                    onValueChange = { inlineDomain = it },
+                                    label = { Text(strings.dialogFieldDomain) },
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                                OutlinedTextField(
+                                    value = inlineUsername,
+                                    onValueChange = { inlineUsername = it },
+                                    label = { Text(strings.dialogFieldUsername) },
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                                OutlinedTextField(
+                                    value = inlinePassword,
+                                    onValueChange = { inlinePassword = it },
+                                    label = { Text(strings.vaultPassphraseLabel) },
+                                    visualTransformation = PasswordVisualTransformation(),
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            }
+                        }
+                    }
+
+                    1 -> {
+                        val activeCred = credentials.firstOrNull { it.id == selectedCredId }
+                        val activeCredLabel = activeCred?.let {
+                            val userPart = if (it.domain.isNotBlank()) "${it.domain}\\${it.username}" else it.username
+                            "${it.name} ($userPart)"
+                        } ?: "-"
+                        Box(modifier = Modifier.fillMaxWidth()) {
+                            OutlinedButton(
+                                onClick = { credMenuOpen = true },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Icon(Icons.Outlined.Key, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(activeCredLabel)
+                            }
+                            DropdownMenu(
+                                expanded = credMenuOpen,
+                                onDismissRequest = { credMenuOpen = false }
+                            ) {
+                                credentials.forEach { cred ->
+                                    val userPart = if (cred.domain.isNotBlank()) "${cred.domain}\\${cred.username}" else cred.username
+                                    DropdownMenuItem(
+                                        text = { Text("${cred.name} • $userPart") },
+                                        onClick = {
+                                            selectedCredId = cred.id
+                                            credMenuOpen = false
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (childConnectionCount > 0) {
+                    Text(
+                        text = "Cascades automatically to $childConnectionCount child connection(s) using '${strings.credModeInheritFolder}'.",
+                        style = NexusTheme.monospace.keycapShortcut,
+                        color = MaterialTheme.colorScheme.secondary
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            val inlineValid = credAssignChoice != 0 || inlineUsername.isNotBlank()
+            Button(
+                enabled = folderName.isNotBlank() && inlineValid,
+                onClick = {
+                    val newInlineCred = if (credAssignChoice == 0) {
+                        val resolvedCredTitle = inlineCredName.trim().ifBlank {
+                            "${folderName.trim()} (${if (inlineDomain.isNotBlank()) "${inlineDomain.trim()}\\" else ""}${inlineUsername.trim()})"
+                        }
+                        VaultCredential(
+                            parentFolderId = folderId,
+                            name = resolvedCredTitle,
+                            sourceKind = CredentialSourceKind.VAULT_INTERNAL,
+                            username = inlineUsername.trim(),
+                            domain = inlineDomain.trim(),
+                            secretPassword = inlinePassword
+                        )
+                    } else {
+                        null
+                    }
+
+                    val baseInheritable = editingFolder?.inheritable ?: InheritableProperties()
+                    val updatedInheritable = when (credAssignChoice) {
+                        0 -> baseInheritable.copy(
+                            credentialMode = InheritanceMode.OVERRIDE_EXPLICIT,
+                            explicitCredentialId = newInlineCred?.id
+                        )
+                        1 -> baseInheritable.copy(
+                            credentialMode = InheritanceMode.OVERRIDE_EXPLICIT,
+                            explicitCredentialId = selectedCredId
+                        )
+                        3 -> baseInheritable.copy(
+                            credentialMode = InheritanceMode.PROMPT_AT_CONNECT,
+                            explicitCredentialId = null
+                        )
+                        else -> baseInheritable.copy(
+                            credentialMode = InheritanceMode.INHERIT_FROM_PARENT,
+                            explicitCredentialId = null
+                        )
+                    }
+
+                    val savedFolder = (editingFolder?.copy(
+                        parentFolderId = parentFolderId,
+                        name = folderName.trim(),
+                        inheritable = updatedInheritable
+                    ) ?: VaultFolder(
+                        id = folderId,
+                        parentFolderId = parentFolderId,
+                        name = folderName.trim(),
+                        inheritable = updatedInheritable
+                    ))
+
+                    onSaveFolderAndCredential(savedFolder, newInlineCred)
+                }
+            ) {
+                Text(strings.dialogActionSave)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(strings.dialogActionCancel)
+            }
+        }
+    )
+}
+
+/**
+ * 1. Expressive Connection Editor Dialog (`Ctrl/Cmd + N` or Edit Connection) supporting all 21 protocols,
+ *    Folder-Level Credential Inheritance preview/override, and the full 4-Tab Classic Royal TS RDP Suite:
+ *    - General & Console (`/admin`)
+ *    - Display & HiDPI Scaling (`100%–200%`, Dynamic Resize `DISP_DVC`, Color Depth, Multi-Monitor)
+ *    - Local Resources (Clipboard Sharing, 3-Mode Audio Redirection, Mic, Drives, Printers, Serial Ports, Smartcard)
+ *    - Experience & Security (ClearType Font Smoothing, Aero Desktop Composition, Wallpaper, NLA, Restricted Admin, RD Gateway)
  */
 @Composable
 fun NewOrEditConnectionDialog(
     visible: Boolean,
+    initialConnection: VaultConnection?,
     folders: List<VaultFolder>,
+    credentials: List<VaultCredential>,
+    resolveFolderPreview: (String?) -> Pair<VaultCredential?, String>,
     strings: WorkspaceLocalizedStrings,
     onDismiss: () -> Unit,
     onSaveConnection: (VaultConnection) -> Unit
 ) {
     if (!visible) return
 
-    var name by remember { mutableStateOf("") }
-    var host by remember { mutableStateOf("") }
-    var selectedProto by remember { mutableStateOf(VaultProtocolType.SSH) }
-    var selectedFolderId by remember { mutableStateOf(folders.firstOrNull()?.id) }
+    val initialRdp = (initialConnection?.settings as? ProtocolSpecificSettings.Rdp) ?: ProtocolSpecificSettings.Rdp()
+
+    var name by remember(initialConnection) { mutableStateOf(initialConnection?.name.orEmpty()) }
+    var host by remember(initialConnection) { mutableStateOf(initialConnection?.host.orEmpty()) }
+    var selectedProto by remember(initialConnection) {
+        mutableStateOf(initialConnection?.protocol ?: VaultProtocolType.RDP)
+    }
+    var selectedFolderId by remember(initialConnection, folders) {
+        mutableStateOf(initialConnection?.parentFolderId ?: folders.firstOrNull()?.id)
+    }
+    var credentialMode by remember(initialConnection) {
+        mutableStateOf(initialConnection?.inheritable?.credentialMode ?: InheritanceMode.INHERIT_FROM_PARENT)
+    }
+    var explicitCredentialId by remember(initialConnection, credentials) {
+        mutableStateOf(initialConnection?.inheritable?.explicitCredentialId ?: credentials.firstOrNull()?.id)
+    }
+
     var protoMenuOpen by remember { mutableStateOf(false) }
     var folderMenuOpen by remember { mutableStateOf(false) }
+    var credMenuOpen by remember { mutableStateOf(false) }
+    var activeRdpTab by remember(initialConnection) { mutableIntStateOf(0) }
+
+    // Classic Royal TS RDP state
+    var rdpPortText by remember(initialConnection) { mutableStateOf(initialRdp.port.toString()) }
+    var connectToConsole by remember(initialConnection) { mutableStateOf(initialRdp.connectToConsoleAdmin) }
+    var hiDpiEnabled by remember(initialConnection) { mutableStateOf(initialRdp.hiDpiEnabled) }
+    var desktopScalePercent by remember(initialConnection) { mutableIntStateOf(initialRdp.desktopScaleFactorPercent) }
+    var resizeBehavior by remember(initialConnection) { mutableStateOf(initialRdp.resizeBehavior) }
+    var customWidthText by remember(initialConnection) { mutableStateOf(initialRdp.customDesktopWidth.toString()) }
+    var customHeightText by remember(initialConnection) { mutableStateOf(initialRdp.customDesktopHeight.toString()) }
+    var colorDepthBits by remember(initialConnection) { mutableIntStateOf(initialRdp.colorDepthBits) }
+    var multiMonitorSpanning by remember(initialConnection) { mutableStateOf(initialRdp.multiMonitorSpanning) }
+    var enableH264Avc444 by remember(initialConnection) { mutableStateOf(initialRdp.enableH264Avc444) }
+
+    var redirectClipboard by remember(initialConnection) { mutableStateOf(initialRdp.redirectClipboard) }
+    var audioRedirectionMode by remember(initialConnection) { mutableStateOf(initialRdp.audioRedirectionMode) }
+    var redirectMicrophone by remember(initialConnection) { mutableStateOf(initialRdp.redirectMicrophone) }
+    var redirectDrives by remember(initialConnection) { mutableStateOf(initialRdp.redirectDrives) }
+    var redirectPrinters by remember(initialConnection) { mutableStateOf(initialRdp.redirectPrinters) }
+    var redirectPorts by remember(initialConnection) { mutableStateOf(initialRdp.redirectPorts) }
+    var redirectSmartcard by remember(initialConnection) { mutableStateOf(initialRdp.redirectSmartcardYubiKey) }
+
+    var enableFontSmoothing by remember(initialConnection) { mutableStateOf(initialRdp.enableFontSmoothing) }
+    var enableDesktopComposition by remember(initialConnection) { mutableStateOf(initialRdp.enableDesktopComposition) }
+    var enableWallpaper by remember(initialConnection) { mutableStateOf(initialRdp.enableWallpaper) }
+    var nlaSecurityRequired by remember(initialConnection) { mutableStateOf(initialRdp.nlaSecurityRequired) }
+    var restrictedAdminMode by remember(initialConnection) { mutableStateOf(initialRdp.restrictedAdminMode) }
+    var ignoreCertWarnings by remember(initialConnection) { mutableStateOf(initialRdp.ignoreCertificateWarnings) }
+    var rdGatewayHost by remember(initialConnection) { mutableStateOf(initialRdp.rdGatewayHostname) }
+
+    val (inheritedFolderCred, inheritedFolderSource) = remember(selectedFolderId, folders, credentials) {
+        resolveFolderPreview(selectedFolderId)
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -99,22 +466,12 @@ fun NewOrEditConnectionDialog(
             Text(text = strings.dialogConnTitle, style = MaterialTheme.typography.titleLarge)
         },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedTextField(
-                    value = name,
-                    onValueChange = { name = it },
-                    label = { Text(strings.dialogFieldName) },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                OutlinedTextField(
-                    value = host,
-                    onValueChange = { host = it },
-                    label = { Text(strings.dialogFieldHost) },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
                 // Protocol Selector
                 Box(modifier = Modifier.fillMaxWidth()) {
                     OutlinedButton(
@@ -139,31 +496,359 @@ fun NewOrEditConnectionDialog(
                     }
                 }
 
-                // Parent Folder Selector (Property Inheritance Cascade)
-                if (folders.isNotEmpty()) {
-                    val activeFolderName = folders.firstOrNull { it.id == selectedFolderId }?.name ?: "-"
-                    Box(modifier = Modifier.fillMaxWidth()) {
-                        OutlinedButton(
-                            onClick = { folderMenuOpen = true },
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text("${strings.dialogFieldFolder}: $activeFolderName")
+                if (selectedProto == VaultProtocolType.RDP) {
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        listOf(
+                            0 to strings.rdpTabGeneral,
+                            1 to strings.rdpTabDisplayHiDpi,
+                            2 to strings.rdpTabResources,
+                            3 to strings.rdpTabExperienceSecurity
+                        ).forEach { (idx, label) ->
+                            FilterChip(
+                                selected = activeRdpTab == idx,
+                                onClick = { activeRdpTab = idx },
+                                label = { Text(label, style = MaterialTheme.typography.labelSmall) }
+                            )
                         }
-                        DropdownMenu(
-                            expanded = folderMenuOpen,
-                            onDismissRequest = { folderMenuOpen = false }
-                        ) {
-                            folders.forEach { folder ->
-                                DropdownMenuItem(
-                                    text = { Text(folder.name) },
-                                    onClick = {
-                                        selectedFolderId = folder.id
-                                        folderMenuOpen = false
+                    }
+                }
+
+                // General Fields (always shown for non-RDP, or shown on Tab 0 for RDP)
+                if (selectedProto != VaultProtocolType.RDP || activeRdpTab == 0) {
+                    OutlinedTextField(
+                        value = name,
+                        onValueChange = { name = it },
+                        label = { Text(strings.dialogFieldName) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            value = host,
+                            onValueChange = { host = it },
+                            label = { Text(strings.dialogFieldHost) },
+                            singleLine = true,
+                            modifier = Modifier.weight(1f)
+                        )
+                        if (selectedProto == VaultProtocolType.RDP) {
+                            OutlinedTextField(
+                                value = rdpPortText,
+                                onValueChange = { rdpPortText = it.filter(Char::isDigit) },
+                                label = { Text(strings.dialogFieldPort) },
+                                singleLine = true,
+                                modifier = Modifier.width(92.dp)
+                            )
+                        }
+                    }
+
+                    // Parent Folder Selector (Property Inheritance Cascade)
+                    if (folders.isNotEmpty()) {
+                        val activeFolderName = folders.firstOrNull { it.id == selectedFolderId }?.name ?: "-"
+                        Box(modifier = Modifier.fillMaxWidth()) {
+                            OutlinedButton(
+                                onClick = { folderMenuOpen = true },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("${strings.dialogFieldFolder}: $activeFolderName")
+                            }
+                            DropdownMenu(
+                                expanded = folderMenuOpen,
+                                onDismissRequest = { folderMenuOpen = false }
+                            ) {
+                                folders.forEach { folder ->
+                                    DropdownMenuItem(
+                                        text = { Text(folder.name) },
+                                        onClick = {
+                                            selectedFolderId = folder.id
+                                            folderMenuOpen = false
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // Credential Inheritance / Folder Credential Application
+                    Text(
+                        text = strings.dialogFieldCredentialMode,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.secondary
+                    )
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        FilterChip(
+                            selected = credentialMode == InheritanceMode.INHERIT_FROM_PARENT,
+                            onClick = { credentialMode = InheritanceMode.INHERIT_FROM_PARENT },
+                            label = { Text(strings.credModeInheritFolder, style = MaterialTheme.typography.labelSmall) }
+                        )
+                        FilterChip(
+                            selected = credentialMode == InheritanceMode.OVERRIDE_EXPLICIT,
+                            onClick = { credentialMode = InheritanceMode.OVERRIDE_EXPLICIT },
+                            label = { Text(strings.credModeOverrideExplicit, style = MaterialTheme.typography.labelSmall) }
+                        )
+                        FilterChip(
+                            selected = credentialMode == InheritanceMode.PROMPT_AT_CONNECT,
+                            onClick = { credentialMode = InheritanceMode.PROMPT_AT_CONNECT },
+                            label = { Text(strings.credModePrompt, style = MaterialTheme.typography.labelSmall) }
+                        )
+                    }
+
+                    when (credentialMode) {
+                        InheritanceMode.INHERIT_FROM_PARENT -> {
+                            Surface(
+                                shape = MaterialTheme.shapes.medium,
+                                color = MaterialTheme.colorScheme.surfaceContainer,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                    val credDesc = inheritedFolderCred?.let {
+                                        val userStr = if (it.domain.isNotBlank()) "${it.domain}\\${it.username}" else it.username
+                                        "${it.name} ($userStr)"
+                                    } ?: "-"
+                                    Text(credDesc, style = MaterialTheme.typography.bodySmall)
+                                    Text(
+                                        text = String.format(strings.inspectorInheritedFromFormat, inheritedFolderSource),
+                                        style = NexusTheme.monospace.keycapShortcut,
+                                        color = MaterialTheme.colorScheme.secondary
+                                    )
+                                }
+                            }
+                        }
+
+                        InheritanceMode.OVERRIDE_EXPLICIT -> {
+                            val chosenCred = credentials.firstOrNull { it.id == explicitCredentialId }
+                            val chosenCredLabel = chosenCred?.let {
+                                val userStr = if (it.domain.isNotBlank()) "${it.domain}\\${it.username}" else it.username
+                                "${it.name} ($userStr)"
+                            } ?: "-"
+                            Box(modifier = Modifier.fillMaxWidth()) {
+                                OutlinedButton(
+                                    onClick = { credMenuOpen = true },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Icon(Icons.Outlined.Key, contentDescription = null, modifier = Modifier.size(15.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(chosenCredLabel)
+                                }
+                                DropdownMenu(
+                                    expanded = credMenuOpen,
+                                    onDismissRequest = { credMenuOpen = false }
+                                ) {
+                                    credentials.forEach { cred ->
+                                        val userStr = if (cred.domain.isNotBlank()) "${cred.domain}\\${cred.username}" else cred.username
+                                        DropdownMenuItem(
+                                            text = { Text("${cred.name} • $userStr") },
+                                            onClick = {
+                                                explicitCredentialId = cred.id
+                                                credMenuOpen = false
+                                            }
+                                        )
                                     }
+                                }
+                            }
+                        }
+
+                        else -> Unit
+                    }
+
+                    if (selectedProto == VaultProtocolType.RDP) {
+                        RdpOptionSwitchRow(
+                            label = strings.rdpOptConnectConsole,
+                            checked = connectToConsole,
+                            onCheckedChange = { connectToConsole = it }
+                        )
+                    }
+                }
+
+                // RDP Tab 1: Display & HiDPI Scaling
+                if (selectedProto == VaultProtocolType.RDP && activeRdpTab == 1) {
+                    RdpOptionSwitchRow(
+                        label = strings.rdpOptHiDpiScaling,
+                        checked = hiDpiEnabled,
+                        onCheckedChange = { hiDpiEnabled = it }
+                    )
+                    if (hiDpiEnabled) {
+                        Row(
+                            modifier = Modifier.horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            listOf(100, 125, 150, 175, 200).forEach { scale ->
+                                FilterChip(
+                                    selected = desktopScalePercent == scale,
+                                    onClick = { desktopScalePercent = scale },
+                                    label = { Text("$scale%", style = MaterialTheme.typography.labelSmall) }
                                 )
                             }
                         }
                     }
+
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        listOf(
+                            RdpResizeBehavior.DYNAMIC_DISP_DVC to "Dynamic Resize (DISP_DVC)",
+                            RdpResizeBehavior.SMART_SCALE_VIEWPORT to "Smart Scale",
+                            RdpResizeBehavior.FIXED_SERVER_RESOLUTION to "Fixed Size"
+                        ).forEach { (mode, modeLabel) ->
+                            FilterChip(
+                                selected = resizeBehavior == mode,
+                                onClick = { resizeBehavior = mode },
+                                label = { Text(modeLabel, style = MaterialTheme.typography.labelSmall) }
+                            )
+                        }
+                    }
+
+                    if (resizeBehavior == RdpResizeBehavior.FIXED_SERVER_RESOLUTION) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedTextField(
+                                value = customWidthText,
+                                onValueChange = { customWidthText = it.filter(Char::isDigit) },
+                                label = { Text("Width (px)") },
+                                singleLine = true,
+                                modifier = Modifier.weight(1f)
+                            )
+                            OutlinedTextField(
+                                value = customHeightText,
+                                onValueChange = { customHeightText = it.filter(Char::isDigit) },
+                                label = { Text("Height (px)") },
+                                singleLine = true,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        listOf(32, 24, 16).forEach { depth ->
+                            FilterChip(
+                                selected = colorDepthBits == depth,
+                                onClick = { colorDepthBits = depth },
+                                label = { Text("$depth-bit Color", style = MaterialTheme.typography.labelSmall) }
+                            )
+                        }
+                    }
+
+                    RdpOptionSwitchRow(
+                        label = strings.rdpOptMultiMonitor,
+                        checked = multiMonitorSpanning,
+                        onCheckedChange = { multiMonitorSpanning = it }
+                    )
+                    RdpOptionSwitchRow(
+                        label = "AVC444 / H.264 Hardware Acceleration",
+                        checked = enableH264Avc444,
+                        onCheckedChange = { enableH264Avc444 = it }
+                    )
+                }
+
+                // RDP Tab 2: Local Resources (Clipboard, Audio Mode, Mic, Drives, Printers, Ports, Smartcard)
+                if (selectedProto == VaultProtocolType.RDP && activeRdpTab == 2) {
+                    RdpOptionSwitchRow(
+                        label = strings.rdpOptClipboardSharing,
+                        checked = redirectClipboard,
+                        onCheckedChange = { redirectClipboard = it }
+                    )
+
+                    Text(
+                        text = strings.rdpOptAudioRedirection,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.secondary
+                    )
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        FilterChip(
+                            selected = audioRedirectionMode == RdpAudioRedirectionMode.PLAY_ON_THIS_DEVICE,
+                            onClick = { audioRedirectionMode = RdpAudioRedirectionMode.PLAY_ON_THIS_DEVICE },
+                            label = { Text(strings.rdpAudioLocal, style = MaterialTheme.typography.labelSmall) }
+                        )
+                        FilterChip(
+                            selected = audioRedirectionMode == RdpAudioRedirectionMode.PLAY_ON_REMOTE_HOST,
+                            onClick = { audioRedirectionMode = RdpAudioRedirectionMode.PLAY_ON_REMOTE_HOST },
+                            label = { Text(strings.rdpAudioRemote, style = MaterialTheme.typography.labelSmall) }
+                        )
+                        FilterChip(
+                            selected = audioRedirectionMode == RdpAudioRedirectionMode.DO_NOT_PLAY,
+                            onClick = { audioRedirectionMode = RdpAudioRedirectionMode.DO_NOT_PLAY },
+                            label = { Text(strings.rdpAudioMute, style = MaterialTheme.typography.labelSmall) }
+                        )
+                    }
+
+                    RdpOptionSwitchRow(
+                        label = strings.rdpOptMicRedirection,
+                        checked = redirectMicrophone,
+                        onCheckedChange = { redirectMicrophone = it }
+                    )
+                    RdpOptionSwitchRow(
+                        label = strings.rdpOptDriveRedirection,
+                        checked = redirectDrives,
+                        onCheckedChange = { redirectDrives = it }
+                    )
+                    RdpOptionSwitchRow(
+                        label = strings.rdpOptPrinterRedirection,
+                        checked = redirectPrinters,
+                        onCheckedChange = { redirectPrinters = it }
+                    )
+                    RdpOptionSwitchRow(
+                        label = strings.rdpOptPortsRedirection,
+                        checked = redirectPorts,
+                        onCheckedChange = { redirectPorts = it }
+                    )
+                    RdpOptionSwitchRow(
+                        label = strings.rdpOptSmartcardRedirection,
+                        checked = redirectSmartcard,
+                        onCheckedChange = { redirectSmartcard = it }
+                    )
+                }
+
+                // RDP Tab 3: Experience & Security (ClearType, Aero, Wallpaper, NLA, Restricted Admin, Cert, RD Gateway)
+                if (selectedProto == VaultProtocolType.RDP && activeRdpTab == 3) {
+                    RdpOptionSwitchRow(
+                        label = strings.rdpOptClearType,
+                        checked = enableFontSmoothing,
+                        onCheckedChange = { enableFontSmoothing = it }
+                    )
+                    RdpOptionSwitchRow(
+                        label = strings.rdpOptDesktopComposition,
+                        checked = enableDesktopComposition,
+                        onCheckedChange = { enableDesktopComposition = it }
+                    )
+                    RdpOptionSwitchRow(
+                        label = strings.rdpOptWallpaper,
+                        checked = enableWallpaper,
+                        onCheckedChange = { enableWallpaper = it }
+                    )
+                    HorizontalDivider()
+                    RdpOptionSwitchRow(
+                        label = strings.rdpOptNlaSecurity,
+                        checked = nlaSecurityRequired,
+                        onCheckedChange = { nlaSecurityRequired = it }
+                    )
+                    RdpOptionSwitchRow(
+                        label = strings.rdpOptRestrictedAdmin,
+                        checked = restrictedAdminMode,
+                        onCheckedChange = { restrictedAdminMode = it }
+                    )
+                    RdpOptionSwitchRow(
+                        label = strings.rdpOptIgnoreCert,
+                        checked = ignoreCertWarnings,
+                        onCheckedChange = { ignoreCertWarnings = it }
+                    )
+                    OutlinedTextField(
+                        value = rdGatewayHost,
+                        onValueChange = { rdGatewayHost = it },
+                        label = { Text(strings.rdpOptRdGateway) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
                 }
             }
         },
@@ -171,44 +856,99 @@ fun NewOrEditConnectionDialog(
             Button(
                 enabled = name.isNotBlank() && host.isNotBlank(),
                 onClick = {
-                    val defaultSettings: ProtocolSpecificSettings = when (selectedProto) {
-                        VaultProtocolType.RDP -> ProtocolSpecificSettings.Rdp()
+                    val configuredSettings: ProtocolSpecificSettings = when (selectedProto) {
+                        VaultProtocolType.RDP -> initialRdp.copy(
+                            port = rdpPortText.toIntOrNull()?.takeIf { it in 1..65535 } ?: 3389,
+                            connectToConsoleAdmin = connectToConsole,
+                            hiDpiEnabled = hiDpiEnabled,
+                            desktopScaleFactorPercent = desktopScalePercent,
+                            deviceScaleFactorPercent = if (desktopScalePercent >= 175) 180 else if (desktopScalePercent >= 125) 140 else 100,
+                            enableH264Avc444 = enableH264Avc444,
+                            resizeBehavior = resizeBehavior,
+                            customDesktopWidth = customWidthText.toIntOrNull()?.coerceIn(640, 8192) ?: 1920,
+                            customDesktopHeight = customHeightText.toIntOrNull()?.coerceIn(480, 8192) ?: 1080,
+                            multiMonitorSpanning = multiMonitorSpanning,
+                            colorDepthBits = colorDepthBits,
+                            redirectClipboard = redirectClipboard,
+                            audioRedirectionMode = audioRedirectionMode,
+                            redirectAudioPlayback = audioRedirectionMode == RdpAudioRedirectionMode.PLAY_ON_THIS_DEVICE,
+                            redirectMicrophone = redirectMicrophone,
+                            redirectDrives = redirectDrives,
+                            redirectPrinters = redirectPrinters,
+                            redirectPorts = redirectPorts,
+                            redirectSmartcardYubiKey = redirectSmartcard,
+                            enableFontSmoothing = enableFontSmoothing,
+                            enableDesktopComposition = enableDesktopComposition,
+                            enableWallpaper = enableWallpaper,
+                            nlaSecurityRequired = nlaSecurityRequired,
+                            restrictedAdminMode = restrictedAdminMode,
+                            ignoreCertificateWarnings = ignoreCertWarnings,
+                            rdGatewayHostname = rdGatewayHost.trim()
+                        )
+
                         VaultProtocolType.SSH, VaultProtocolType.TELNET, VaultProtocolType.SERIAL ->
-                            ProtocolSpecificSettings.Ssh()
+                            (initialConnection?.settings as? ProtocolSpecificSettings.Ssh)
+                                ?: ProtocolSpecificSettings.Ssh()
+
                         VaultProtocolType.SFTP, VaultProtocolType.FTP,
                         VaultProtocolType.FTPS, VaultProtocolType.SCP ->
-                            ProtocolSpecificSettings.FileTransfer()
+                            (initialConnection?.settings as? ProtocolSpecificSettings.FileTransfer)
+                                ?: ProtocolSpecificSettings.FileTransfer()
+
                         VaultProtocolType.VNC, VaultProtocolType.APPLE_SCREEN_SHARING ->
-                            ProtocolSpecificSettings.Vnc(
-                                appleArdDiffieHellmanAuth = selectedProto == VaultProtocolType.APPLE_SCREEN_SHARING
-                            )
+                            (initialConnection?.settings as? ProtocolSpecificSettings.Vnc)
+                                ?: ProtocolSpecificSettings.Vnc(
+                                    appleArdDiffieHellmanAuth = selectedProto == VaultProtocolType.APPLE_SCREEN_SHARING
+                                )
+
                         VaultProtocolType.WEB_PAGE ->
-                            ProtocolSpecificSettings.WebPage(
-                                url = if (host.startsWith("http")) host else "https://$host"
-                            )
+                            (initialConnection?.settings as? ProtocolSpecificSettings.WebPage)
+                                ?: ProtocolSpecificSettings.WebPage(
+                                    url = if (host.startsWith("http")) host else "https://$host"
+                                )
+
                         VaultProtocolType.VMWARE_VSPHERE, VaultProtocolType.PROXMOX_VE,
                         VaultProtocolType.HYPER_V, VaultProtocolType.AWS_EC2,
                         VaultProtocolType.AZURE_VM, VaultProtocolType.WINDOWS_TERMINAL_SERVICES ->
-                            ProtocolSpecificSettings.CloudVirtualization(
-                                apiEndpointUrl = if (host.startsWith("http")) host else "https://$host"
-                            )
+                            (initialConnection?.settings as? ProtocolSpecificSettings.CloudVirtualization)
+                                ?: ProtocolSpecificSettings.CloudVirtualization(
+                                    apiEndpointUrl = if (host.startsWith("http")) host else "https://$host"
+                                )
+
                         VaultProtocolType.UTILITY_PING, VaultProtocolType.UTILITY_TRACEROUTE,
                         VaultProtocolType.UTILITY_PORT_SCANNER, VaultProtocolType.UTILITY_WAKE_ON_LAN ->
-                            ProtocolSpecificSettings.NetUtility()
+                            (initialConnection?.settings as? ProtocolSpecificSettings.NetUtility)
+                                ?: ProtocolSpecificSettings.NetUtility()
                     }
-                    onSaveConnection(
-                        VaultConnection(
-                            parentFolderId = selectedFolderId,
-                            name = name.trim(),
-                            host = host.trim(),
-                            protocol = selectedProto,
-                            inheritable = InheritableProperties(
-                                credentialMode = InheritanceMode.INHERIT_FROM_PARENT,
-                                gatewayMode = InheritanceMode.INHERIT_FROM_PARENT
-                            ),
-                            settings = defaultSettings
-                        )
+
+                    val baseInheritable = initialConnection?.inheritable ?: InheritableProperties()
+                    val resolvedInheritable = baseInheritable.copy(
+                        credentialMode = credentialMode,
+                        explicitCredentialId = if (credentialMode == InheritanceMode.OVERRIDE_EXPLICIT) {
+                            explicitCredentialId
+                        } else {
+                            null
+                        }
                     )
+
+                    val savedConn = (initialConnection?.copy(
+                        parentFolderId = selectedFolderId,
+                        name = name.trim(),
+                        host = host.trim(),
+                        protocol = selectedProto,
+                        inheritable = resolvedInheritable,
+                        settings = configuredSettings
+                    ) ?: VaultConnection(
+                        parentFolderId = selectedFolderId,
+                        name = name.trim(),
+                        host = host.trim(),
+                        protocol = selectedProto,
+                        osFamily = if (selectedProto == VaultProtocolType.RDP) "Windows" else "Linux",
+                        inheritable = resolvedInheritable,
+                        settings = configuredSettings
+                    ))
+
+                    onSaveConnection(savedConn)
                     onDismiss()
                 }
             ) {
@@ -221,6 +961,33 @@ fun NewOrEditConnectionDialog(
             }
         }
     )
+}
+
+@Composable
+private fun RdpOptionSwitchRow(
+    label: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onCheckedChange(!checked) }
+            .padding(vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.weight(1f)
+        )
+        Spacer(modifier = Modifier.width(8.dp))
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange
+        )
+    }
 }
 
 /**

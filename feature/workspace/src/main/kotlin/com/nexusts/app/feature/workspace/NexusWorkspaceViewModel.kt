@@ -344,22 +344,90 @@ class NexusWorkspaceViewModel @Inject constructor(
     }
 
     fun saveConnectionToVault(connection: VaultConnection) {
+        val staleTabs = rdpSessions.entries.filter { it.value.connection.id == connection.id }.map { it.key }
+        staleTabs.forEach { tabId -> rdpSessions.remove(tabId)?.close() }
+
+        var wasUpdated = false
         _uiState.update { state ->
             val nextRev = state.vaultDocument.revision + 1L
             val nextClock = state.vaultDocument.vectorClock.toMutableMap().apply {
                 put("googlebook", nextRev)
             }
+            val exists = state.vaultDocument.connections.any { it.id == connection.id }
+            wasUpdated = exists
+            val updatedConnections = if (exists) {
+                state.vaultDocument.connections.map { if (it.id == connection.id) connection else it }
+            } else {
+                state.vaultDocument.connections + connection
+            }
             state.copy(
                 activeRailId = "connections",
                 selectedConnectionId = connection.id,
+                isNewConnectionDialogVisible = false,
+                editingConnection = null,
                 vaultDocument = state.vaultDocument.copy(
                     revision = nextRev,
                     vectorClock = nextClock,
-                    connections = state.vaultDocument.connections + connection
+                    connections = updatedConnections
                 )
             )
         }
-        appendLog("[Vault] Added ${connection.protocol.name} connection '${connection.name}' (${connection.host})")
+        tilingController.allActiveTabs()
+            .filter { it.connectionId == connection.id }
+            .forEach { tab ->
+                tilingController.updateTab(tab.tabId) {
+                    it.copy(title = connection.name, subtitleHost = connection.host)
+                }
+            }
+        val verb = if (wasUpdated) "Updated" else "Added"
+        appendLog("[Vault] $verb ${connection.protocol.name} connection '${connection.name}' (${connection.host})")
+    }
+
+    fun saveFolderAndCredentialToVault(folder: VaultFolder, inlineNewCredential: VaultCredential? = null) {
+        // Refresh cached RDP sessions so any child RDP connection inheriting from this folder picks up new credentials on next connect/render
+        rdpSessions.values.forEach { runCatching { it.close() } }
+        rdpSessions.clear()
+
+        val finalFolder = if (inlineNewCredential != null) {
+            folder.copy(
+                inheritable = folder.inheritable.copy(
+                    credentialMode = InheritanceMode.OVERRIDE_EXPLICIT,
+                    explicitCredentialId = inlineNewCredential.id
+                )
+            )
+        } else {
+            folder
+        }
+
+        _uiState.update { state ->
+            val nextRev = state.vaultDocument.revision + 1L
+            val nextClock = state.vaultDocument.vectorClock.toMutableMap().apply {
+                put("googlebook", nextRev)
+            }
+            val updatedCredentials = if (inlineNewCredential != null) {
+                state.vaultDocument.credentials + inlineNewCredential.copy(parentFolderId = finalFolder.id)
+            } else {
+                state.vaultDocument.credentials
+            }
+            val folderExists = state.vaultDocument.folders.any { it.id == finalFolder.id }
+            val updatedFolders = if (folderExists) {
+                state.vaultDocument.folders.map { if (it.id == finalFolder.id) finalFolder else it }
+            } else {
+                state.vaultDocument.folders + finalFolder
+            }
+            state.copy(
+                isFolderDialogVisible = false,
+                editingFolder = null,
+                vaultDocument = state.vaultDocument.copy(
+                    revision = nextRev,
+                    vectorClock = nextClock,
+                    folders = updatedFolders,
+                    credentials = updatedCredentials
+                )
+            )
+        }
+        val credSummary = inlineNewCredential?.let { " + saved folder credential '${it.name}'" }.orEmpty()
+        appendLog("[Folder] Saved folder '${finalFolder.name}' (${finalFolder.inheritable.credentialMode.name})$credSummary")
     }
 
     fun addCredentialToVault(credential: VaultCredential) {
@@ -657,6 +725,7 @@ class NexusWorkspaceViewModel @Inject constructor(
             val bastionGwId = "gw-eu-bastion"
 
             val folderProdId = "folder-prod-core"
+            val folderWinAdId = "folder-win-ad"
             val folderCloudId = "folder-hybrid-cloud"
 
             return NxtsVaultDocument(
@@ -669,6 +738,18 @@ class NexusWorkspaceViewModel @Inject constructor(
                     gatewayMode = InheritanceMode.NONE_DIRECT
                 ),
                 folders = listOf(
+                    VaultFolder(
+                        id = folderWinAdId,
+                        name = "Windows Server Farm (AD)",
+                        tags = listOf("ad", "windows", "tier-0"),
+                        inheritable = InheritableProperties(
+                            credentialMode = InheritanceMode.OVERRIDE_EXPLICIT,
+                            explicitCredentialId = winCredId,
+                            gatewayMode = InheritanceMode.OVERRIDE_EXPLICIT,
+                            explicitGatewayId = bastionGwId,
+                            environmentBadge = "PRODUCTION"
+                        )
+                    ),
                     VaultFolder(
                         id = folderProdId,
                         name = "Production Core (EU-Central)",
@@ -710,6 +791,55 @@ class NexusWorkspaceViewModel @Inject constructor(
                 ),
                 connections = listOf(
                     VaultConnection(
+                        id = "conn-win-rds-01",
+                        parentFolderId = folderWinAdId,
+                        name = "WinServer-2025-DC01",
+                        host = "dc01.corp.nexusts.internal",
+                        protocol = VaultProtocolType.RDP,
+                        osFamily = "Windows",
+                        tags = listOf("ad", "rdp", "smartcard"),
+                        inheritable = InheritableProperties(
+                            credentialMode = InheritanceMode.INHERIT_FROM_PARENT,
+                            gatewayMode = InheritanceMode.INHERIT_FROM_PARENT
+                        ),
+                        settings = ProtocolSpecificSettings.Rdp(
+                            connectToConsoleAdmin = false,
+                            hiDpiEnabled = true,
+                            desktopScaleFactorPercent = 150,
+                            enableH264Avc444 = true,
+                            redirectClipboard = true,
+                            audioRedirectionMode = com.nexusts.app.core.vault.model.RdpAudioRedirectionMode.PLAY_ON_THIS_DEVICE,
+                            redirectDrives = true,
+                            redirectSmartcardYubiKey = true,
+                            enableFontSmoothing = true,
+                            enableDesktopComposition = true,
+                            multiMonitorSpanning = true
+                        )
+                    ),
+                    VaultConnection(
+                        id = "conn-win-rds-02",
+                        parentFolderId = folderWinAdId,
+                        name = "RDS-ConsoleHost-02 (/admin)",
+                        host = "rds02.corp.nexusts.internal",
+                        protocol = VaultProtocolType.RDP,
+                        osFamily = "Windows",
+                        tags = listOf("rds", "console", "rdp"),
+                        inheritable = InheritableProperties(
+                            credentialMode = InheritanceMode.INHERIT_FROM_PARENT,
+                            gatewayMode = InheritanceMode.INHERIT_FROM_PARENT
+                        ),
+                        settings = ProtocolSpecificSettings.Rdp(
+                            connectToConsoleAdmin = true,
+                            hiDpiEnabled = true,
+                            desktopScaleFactorPercent = 125,
+                            redirectClipboard = true,
+                            audioRedirectionMode = com.nexusts.app.core.vault.model.RdpAudioRedirectionMode.PLAY_ON_REMOTE_HOST,
+                            redirectPrinters = true,
+                            enableFontSmoothing = true,
+                            nlaSecurityRequired = true
+                        )
+                    ),
+                    VaultConnection(
                         id = "conn-k8s-bastion-ssh",
                         parentFolderId = folderProdId,
                         name = "k8s-control-plane-01",
@@ -728,24 +858,6 @@ class NexusWorkspaceViewModel @Inject constructor(
                                     targetPort = 6443
                                 )
                             )
-                        )
-                    ),
-                    VaultConnection(
-                        id = "conn-win-rds-01",
-                        parentFolderId = folderProdId,
-                        name = "WinServer-2025-DC01",
-                        host = "dc01.corp.nexusts.internal",
-                        protocol = VaultProtocolType.RDP,
-                        osFamily = "Windows",
-                        tags = listOf("ad", "rdp", "smartcard"),
-                        inheritable = InheritableProperties(
-                            credentialMode = InheritanceMode.OVERRIDE_EXPLICIT,
-                            explicitCredentialId = winCredId
-                        ),
-                        settings = ProtocolSpecificSettings.Rdp(
-                            enableH264Avc444 = true,
-                            redirectSmartcardYubiKey = true,
-                            multiMonitorSpanning = true
                         )
                     ),
                     VaultConnection(

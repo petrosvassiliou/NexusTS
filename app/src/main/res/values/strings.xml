@@ -102,6 +102,44 @@
     <string name="studio_action_run_task">Execute</string>
     <string name="studio_sync_subtitle">Google Drive API v3 Synchronization, Vector Clock Revisions &amp; Multi-User Advisory Locks</string>
 
+    <!-- Folder Credentials & Classic RDP Options -->
+    <string name="action_new_folder">New Folder</string>
+    <string name="action_edit_folder_credentials">Folder Credentials &amp; Properties</string>
+    <string name="action_edit_connection">Edit Connection</string>
+    <string name="dialog_folder_title">Folder Properties &amp; Credentials</string>
+    <string name="dialog_field_domain">Domain (AD / NetBIOS)</string>
+    <string name="dialog_field_credential_mode">Credential Assignment</string>
+    <string name="cred_mode_inherit_folder">Inherit from Parent Folder</string>
+    <string name="cred_mode_override_explicit">Specify Vault Credential</string>
+    <string name="cred_mode_inline_new">Create &amp; Save New Folder Credential</string>
+    <string name="cred_mode_prompt">Prompt at Connect</string>
+    <string name="rdp_tab_general">General</string>
+    <string name="rdp_tab_display_hidpi">Display &amp; HiDPI</string>
+    <string name="rdp_tab_resources">Local Resources</string>
+    <string name="rdp_tab_experience_security">Experience &amp; Security</string>
+    <string name="rdp_opt_connect_console">Connect to Console / Admin Session (/admin)</string>
+    <string name="rdp_opt_hidpi_scaling">HiDPI / Retina Display Scaling</string>
+    <string name="rdp_opt_clipboard_sharing">Clipboard Sharing (Bidirectional)</string>
+    <string name="rdp_opt_audio_redirection">Audio Output Redirection</string>
+    <string name="rdp_audio_local">Play on This Device</string>
+    <string name="rdp_audio_remote">Leave on Remote Host</string>
+    <string name="rdp_audio_mute">Do Not Play</string>
+    <string name="rdp_opt_mic_redirection">Microphone / Audio Input</string>
+    <string name="rdp_opt_drive_redirection">Local Drive / Folder Redirection</string>
+    <string name="rdp_opt_printer_redirection">Printer Redirection</string>
+    <string name="rdp_opt_ports_redirection">Serial / COM Port Redirection</string>
+    <string name="rdp_opt_smartcard_redirection">Smartcard / YubiKey PIV Redirection</string>
+    <string name="rdp_opt_multimonitor">Multi-Monitor Spanning</string>
+    <string name="rdp_opt_cleartype">Font Smoothing (ClearType)</string>
+    <string name="rdp_opt_desktop_composition">Desktop Composition (Aero)</string>
+    <string name="rdp_opt_wallpaper">Desktop Wallpaper</string>
+    <string name="rdp_opt_nla_security">Network Level Authentication (NLA)</string>
+    <string name="rdp_opt_restricted_admin">Restricted Admin Mode (/restrictedAdmin)</string>
+    <string name="rdp_opt_ignore_cert">Ignore Server Certificate Warnings</string>
+    <string name="rdp_opt_rd_gateway">RD Gateway Hostname</string>
+    <string name="rdp_sync_clipboard_chip">Clipboard</string>
+    <string name="rdp_console_badge">Console /admin</string>
+
     <!-- Language Names -->
     <string name="lang_en">English</string>
     <string name="lang_de">Deutsch</string>

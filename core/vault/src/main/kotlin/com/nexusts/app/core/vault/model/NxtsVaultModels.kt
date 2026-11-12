@@ -57,6 +57,13 @@ enum class RdpResizeBehavior {
 }
 
 @Serializable
+enum class RdpAudioRedirectionMode {
+    PLAY_ON_THIS_DEVICE,
+    PLAY_ON_REMOTE_HOST,
+    DO_NOT_PLAY
+}
+
+@Serializable
 @SerialName("protocol_settings")
 sealed interface ProtocolSpecificSettings {
 
@@ -64,24 +71,44 @@ sealed interface ProtocolSpecificSettings {
     @SerialName("rdp")
     data class Rdp(
         val port: Int = 3389,
+        val connectToConsoleAdmin: Boolean = false,
+        val hiDpiEnabled: Boolean = true,
+        val desktopScaleFactorPercent: Int = 100,
+        val deviceScaleFactorPercent: Int = 100,
         val enableGfxPipeline: Boolean = true,
         val enableH264Avc444: Boolean = true,
         val enableRemoteFx: Boolean = true,
         val resizeBehavior: RdpResizeBehavior = RdpResizeBehavior.DYNAMIC_DISP_DVC,
+        val customDesktopWidth: Int = 1920,
+        val customDesktopHeight: Int = 1080,
         val multiMonitorSpanning: Boolean = false,
         val selectedMonitorIds: List<Int> = emptyList(),
+        val colorDepthBits: Int = 32,
         val redirectClipboard: Boolean = true,
-        val redirectSmartcardYubiKey: Boolean = true,
+        val audioRedirectionMode: RdpAudioRedirectionMode = RdpAudioRedirectionMode.PLAY_ON_THIS_DEVICE,
         val redirectAudioPlayback: Boolean = true,
         val redirectMicrophone: Boolean = false,
+        val redirectDrives: Boolean = false,
         val redirectedDriveSafUris: List<String> = emptyList(),
+        val redirectPrinters: Boolean = false,
+        val redirectPorts: Boolean = false,
+        val redirectSmartcardYubiKey: Boolean = true,
+        val enableFontSmoothing: Boolean = true,
+        val enableDesktopComposition: Boolean = true,
+        val enableWallpaper: Boolean = false,
+        val enableFullWindowDrag: Boolean = false,
+        val enableMenuAnimations: Boolean = false,
+        val enableThemes: Boolean = true,
+        val compressionEnabled: Boolean = true,
         val remoteAppMode: Boolean = false,
         val remoteAppProgram: String = "",
         val remoteAppArguments: String = "",
         val rdGatewayHostname: String = "",
         val rdGatewayPort: Int = 443,
         val nlaSecurityRequired: Boolean = true,
-        val colorDepthBits: Int = 32
+        val tlsSecurity: Boolean = true,
+        val restrictedAdminMode: Boolean = false,
+        val ignoreCertificateWarnings: Boolean = false
     ) : ProtocolSpecificSettings
 
     @Serializable

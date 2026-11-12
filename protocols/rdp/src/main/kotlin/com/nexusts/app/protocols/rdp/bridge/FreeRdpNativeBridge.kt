@@ -12,6 +12,7 @@ import android.view.Surface
 import com.nexusts.app.core.ui.input.RawHardwareKeyPacket
 import com.nexusts.app.core.vault.credentials.ResolvedSessionSecret
 import com.nexusts.app.core.vault.model.ProtocolSpecificSettings
+import com.nexusts.app.core.vault.model.RdpAudioRedirectionMode
 import com.nexusts.app.core.vault.model.RdpResizeBehavior
 import com.nexusts.app.core.vault.model.VaultConnection
 
@@ -44,14 +45,28 @@ object FreeRdpNativeBridge {
         gatewayPort: Int,
         initialWidth: Int,
         initialHeight: Int,
+        connectToConsole: Boolean,
+        hiDpiEnabled: Boolean,
+        desktopScalePercent: Int,
+        colorDepthBits: Int,
         enableH264Avc444: Boolean,
         enableRemoteFx: Boolean,
         enableDynamicResize: Boolean,
         multiMonitor: Boolean,
         redirectClipboard: Boolean,
-        redirectSmartcard: Boolean,
-        redirectAudio: Boolean,
+        audioRedirectionMode: Int,
         redirectMic: Boolean,
+        redirectDrives: Boolean,
+        redirectPrinters: Boolean,
+        redirectPorts: Boolean,
+        redirectSmartcard: Boolean,
+        enableFontSmoothing: Boolean,
+        enableDesktopComposition: Boolean,
+        enableWallpaper: Boolean,
+        compressionEnabled: Boolean,
+        nlaSecurity: Boolean,
+        restrictedAdminMode: Boolean,
+        ignoreCertificate: Boolean,
         remoteAppMode: Boolean,
         remoteAppProgram: String,
         remoteAppArgs: String
@@ -89,6 +104,9 @@ object FreeRdpNativeBridge {
 
     @JvmStatic
     external fun nativeSyncClipboardText(handle: Long, utf8Text: String)
+
+    @JvmStatic
+    external fun nativePullRemoteClipboardText(handle: Long): String
 
     @JvmStatic
     external fun nativeDestroySession(handle: Long)
@@ -248,10 +266,18 @@ class RdpManagedSession(
     private var nativeHandle: Long = 0L
     private val started = java.util.concurrent.atomic.AtomicBoolean(false)
 
-    fun start(initialWidthPx: Int, initialHeightPx: Int): Boolean {
+    fun start(initialWidthPx: Int, initialHeightPx: Int, effectiveScalePercent: Int = settings.desktopScaleFactorPercent): Boolean {
         if (!FreeRdpNativeBridge.isNativeLoaded) return false
         if (!started.compareAndSet(false, true)) {
             return nativeHandle != 0L
+        }
+        val useFixedSize = settings.resizeBehavior == RdpResizeBehavior.FIXED_SERVER_RESOLUTION
+        val startW = if (useFixedSize) settings.customDesktopWidth else initialWidthPx
+        val startH = if (useFixedSize) settings.customDesktopHeight else initialHeightPx
+        val audioModeCode = when (settings.audioRedirectionMode) {
+            RdpAudioRedirectionMode.PLAY_ON_THIS_DEVICE -> 0
+            RdpAudioRedirectionMode.PLAY_ON_REMOTE_HOST -> 1
+            RdpAudioRedirectionMode.DO_NOT_PLAY -> 2
         }
         nativeHandle = FreeRdpNativeBridge.nativeCreateSession(
             host = connection.host,
@@ -261,16 +287,30 @@ class RdpManagedSession(
             domain = secret.domain,
             gatewayHost = settings.rdGatewayHostname,
             gatewayPort = settings.rdGatewayPort,
-            initialWidth = initialWidthPx,
-            initialHeight = initialHeightPx,
+            initialWidth = startW,
+            initialHeight = startH,
+            connectToConsole = settings.connectToConsoleAdmin,
+            hiDpiEnabled = settings.hiDpiEnabled,
+            desktopScalePercent = if (settings.hiDpiEnabled) effectiveScalePercent.coerceIn(100, 200) else 100,
+            colorDepthBits = settings.colorDepthBits,
             enableH264Avc444 = settings.enableH264Avc444,
             enableRemoteFx = settings.enableRemoteFx,
             enableDynamicResize = settings.resizeBehavior == RdpResizeBehavior.DYNAMIC_DISP_DVC,
             multiMonitor = settings.multiMonitorSpanning,
             redirectClipboard = settings.redirectClipboard,
-            redirectSmartcard = settings.redirectSmartcardYubiKey,
-            redirectAudio = settings.redirectAudioPlayback,
+            audioRedirectionMode = audioModeCode,
             redirectMic = settings.redirectMicrophone,
+            redirectDrives = settings.redirectDrives || settings.redirectedDriveSafUris.isNotEmpty(),
+            redirectPrinters = settings.redirectPrinters,
+            redirectPorts = settings.redirectPorts,
+            redirectSmartcard = settings.redirectSmartcardYubiKey,
+            enableFontSmoothing = settings.enableFontSmoothing,
+            enableDesktopComposition = settings.enableDesktopComposition,
+            enableWallpaper = settings.enableWallpaper,
+            compressionEnabled = settings.compressionEnabled,
+            nlaSecurity = settings.nlaSecurityRequired,
+            restrictedAdminMode = settings.restrictedAdminMode,
+            ignoreCertificate = settings.ignoreCertificateWarnings,
             remoteAppMode = settings.remoteAppMode,
             remoteAppProgram = settings.remoteAppProgram,
             remoteAppArgs = settings.remoteAppArguments
@@ -284,13 +324,29 @@ class RdpManagedSession(
         }
     }
 
-    fun onViewportResized(widthPx: Int, heightPx: Int, scalePercent: Int = 100) {
+    fun onViewportResized(widthPx: Int, heightPx: Int, scalePercent: Int = settings.desktopScaleFactorPercent) {
         if (nativeHandle != 0L &&
             FreeRdpNativeBridge.isNativeLoaded &&
             settings.resizeBehavior == RdpResizeBehavior.DYNAMIC_DISP_DVC
         ) {
-            FreeRdpNativeBridge.nativeRequestDynamicResize(nativeHandle, widthPx, heightPx, scalePercent)
+            val effectiveScale = if (settings.hiDpiEnabled) scalePercent.coerceIn(100, 200) else 100
+            FreeRdpNativeBridge.nativeRequestDynamicResize(nativeHandle, widthPx, heightPx, effectiveScale)
         }
+    }
+
+    fun syncClipboardToRemote(utf8Text: String) {
+        if (!settings.redirectClipboard || utf8Text.isEmpty()) return
+        if (nativeHandle != 0L && FreeRdpNativeBridge.isNativeLoaded) {
+            FreeRdpNativeBridge.nativeSyncClipboardText(nativeHandle, utf8Text)
+        }
+    }
+
+    fun pullRemoteClipboardText(): String {
+        if (!settings.redirectClipboard) return ""
+        if (nativeHandle != 0L && FreeRdpNativeBridge.isNativeLoaded) {
+            return FreeRdpNativeBridge.nativePullRemoteClipboardText(nativeHandle)
+        }
+        return ""
     }
 
     fun sendHardwareKey(packet: RawHardwareKeyPacket): Boolean {

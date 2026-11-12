@@ -99,6 +99,25 @@ class RtszDocumentImporter {
 
                 "RoyalRDSConnection" -> {
                     val port = elem.childText("RDPPort").toIntOrNull() ?: 3389
+                    val audioModeRaw = elem.childText("AudioRedirectionMode").trim()
+                    val audioMode = when {
+                        audioModeRaw == "1" || audioModeRaw.contains("Remote", true) ->
+                            com.nexusts.app.core.vault.model.RdpAudioRedirectionMode.PLAY_ON_REMOTE_HOST
+                        audioModeRaw == "2" || audioModeRaw.contains("None", true) || audioModeRaw.contains("DoNotPlay", true) ->
+                            com.nexusts.app.core.vault.model.RdpAudioRedirectionMode.DO_NOT_PLAY
+                        else ->
+                            com.nexusts.app.core.vault.model.RdpAudioRedirectionMode.PLAY_ON_THIS_DEVICE
+                    }
+                    val scaleRaw = elem.childText("DesktopScaleFactor").toIntOrNull()?.coerceIn(100, 200) ?: 100
+                    val resizeModeRaw = elem.childText("ResizeMode")
+                    val resizeBehavior = when {
+                        resizeModeRaw.contains("SmartSizing", true) || resizeModeRaw == "1" ->
+                            com.nexusts.app.core.vault.model.RdpResizeBehavior.SMART_SCALE_VIEWPORT
+                        resizeModeRaw.contains("None", true) || resizeModeRaw.contains("Scrollbars", true) ->
+                            com.nexusts.app.core.vault.model.RdpResizeBehavior.FIXED_SERVER_RESOLUTION
+                        else ->
+                            com.nexusts.app.core.vault.model.RdpResizeBehavior.DYNAMIC_DISP_DVC
+                    }
                     connections += VaultConnection(
                         id = id,
                         parentFolderId = parentIdRaw?.takeIf { it != documentId },
@@ -110,9 +129,32 @@ class RtszDocumentImporter {
                         inheritable = inheritable,
                         settings = ProtocolSpecificSettings.Rdp(
                             port = port,
-                            redirectSmartcardYubiKey = elem.childText("RedirectSmartCards").equals("true", true),
+                            connectToConsoleAdmin = elem.childText("ConnectToAdministerOrConsole").equals("true", true) ||
+                                elem.childText("ConnectToConsole").equals("true", true),
+                            hiDpiEnabled = !elem.childText("AutoAdjustRetinaDisplay").equals("false", true),
+                            desktopScaleFactorPercent = scaleRaw,
+                            deviceScaleFactorPercent = if (scaleRaw >= 175) 180 else if (scaleRaw >= 125) 140 else 100,
+                            resizeBehavior = resizeBehavior,
+                            customDesktopWidth = elem.childText("DesktopWidth").toIntOrNull()?.takeIf { it >= 640 } ?: 1920,
+                            customDesktopHeight = elem.childText("DesktopHeight").toIntOrNull()?.takeIf { it >= 480 } ?: 1080,
+                            colorDepthBits = elem.childText("ColorDepth").toIntOrNull()?.takeIf { it in listOf(16, 24, 32) } ?: 32,
                             redirectClipboard = !elem.childText("RedirectClipboard").equals("false", true),
-                            rdGatewayHostname = elem.childText("RDGatewayHost")
+                            audioRedirectionMode = audioMode,
+                            redirectAudioPlayback = audioMode == com.nexusts.app.core.vault.model.RdpAudioRedirectionMode.PLAY_ON_THIS_DEVICE,
+                            redirectMicrophone = elem.childText("RedirectAudioCapture").equals("true", true) ||
+                                elem.childText("RedirectMicrophone").equals("true", true),
+                            redirectDrives = elem.childText("RedirectDrives").equals("true", true),
+                            redirectPrinters = elem.childText("RedirectPrinters").equals("true", true),
+                            redirectPorts = elem.childText("RedirectPorts").equals("true", true),
+                            redirectSmartcardYubiKey = elem.childText("RedirectSmartCards").equals("true", true),
+                            enableFontSmoothing = !elem.childText("AllowFontSmoothing").equals("false", true),
+                            enableDesktopComposition = !elem.childText("AllowDesktopComposition").equals("false", true),
+                            enableWallpaper = elem.childText("AllowWallpaper").equals("true", true),
+                            nlaSecurityRequired = !elem.childText("NetworkLevelAuthentication").equals("false", true),
+                            restrictedAdminMode = elem.childText("RestrictedAdminMode").equals("true", true),
+                            ignoreCertificateWarnings = elem.childText("IgnoreCertificateWarning").equals("true", true),
+                            rdGatewayHostname = elem.childText("RDGatewayHost"),
+                            rdGatewayPort = elem.childText("RDGatewayPort").toIntOrNull() ?: 443
                         )
                     )
                 }

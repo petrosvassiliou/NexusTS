@@ -16,12 +16,16 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
+import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.CloudSync
 import androidx.compose.material.icons.outlined.DeviceHub
+import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.outlined.Language
@@ -45,6 +49,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -75,8 +80,11 @@ import com.nexusts.app.core.ui.workspace.SplitWorkspaceLabels
 import com.nexusts.app.core.ui.workspace.WorkspaceSessionTab
 import com.nexusts.app.core.ui.workspace.protocolAccentColor
 import com.nexusts.app.core.ui.workspace.protocolIcon
+import com.nexusts.app.core.vault.model.InheritanceMode
 import com.nexusts.app.core.vault.model.ProtocolSpecificSettings
+import com.nexusts.app.core.vault.model.RdpAudioRedirectionMode
 import com.nexusts.app.core.vault.model.VaultConnection
+import com.nexusts.app.core.vault.model.VaultFolder
 import com.nexusts.app.core.vault.model.VaultProtocolType
 import com.nexusts.app.feature.workspace.i18n.NexusLocaleController
 import com.nexusts.app.feature.workspace.i18n.SupportedNexusLocale
@@ -181,10 +189,13 @@ fun NexusWorkspaceScreen(
                     strings = strings,
                     smartFolderConnectionsProvider = viewModel::evaluateSmartFolderConnections,
                     onToggleSmartFolder = viewModel::toggleSmartFolderSelection,
+                    onNewFolder = viewModel::openNewFolderDialog,
+                    onEditFolder = viewModel::openEditFolderDialog,
                     onSelectConnection = { id ->
                         viewModel.selectConnectionInTree(id)
                         viewModel.selectRailDestination("connections")
                     },
+                    onEditConnection = viewModel::openEditConnectionDialog,
                     onLaunchConnection = { conn, placement ->
                         viewModel.selectRailDestination("connections")
                         viewModel.launchConnection(conn, placement) { detachedTab ->
@@ -272,9 +283,16 @@ fun NexusWorkspaceScreen(
             }
         },
         propertyInspectorContent = {
+            val activeProfile = viewModel.effectiveProfileForSelected()
+            val parentFolder = activeProfile?.connection?.parentFolderId?.let { folderId ->
+                uiState.vaultDocument.folders.firstOrNull { it.id == folderId }
+            }
             ContextualPropertyInspectorPane(
-                profile = viewModel.effectiveProfileForSelected(),
+                profile = activeProfile,
+                parentFolder = parentFolder,
                 strings = strings,
+                onEditConnection = viewModel::openEditConnectionDialog,
+                onEditParentFolderCredentials = viewModel::openEditFolderDialog,
                 onGenerateSshKey = viewModel::generateAndStoreSshKeyPair
             )
         },
@@ -307,10 +325,26 @@ fun NexusWorkspaceScreen(
             )
             com.nexusts.app.feature.workspace.studios.NewOrEditConnectionDialog(
                 visible = uiState.isNewConnectionDialogVisible,
+                initialConnection = uiState.editingConnection,
                 folders = uiState.vaultDocument.folders,
+                credentials = uiState.vaultDocument.credentials,
+                resolveFolderPreview = viewModel::resolveFolderInheritedPreview,
                 strings = strings,
                 onDismiss = viewModel::dismissNewConnectionDialog,
                 onSaveConnection = viewModel::saveConnectionToVault
+            )
+            val folderChildCount = uiState.editingFolder?.let { f ->
+                uiState.vaultDocument.connections.count { it.parentFolderId == f.id }
+            } ?: 0
+            com.nexusts.app.feature.workspace.studios.FolderPropertiesAndCredentialDialog(
+                visible = uiState.isFolderDialogVisible,
+                editingFolder = uiState.editingFolder,
+                allFolders = uiState.vaultDocument.folders,
+                credentials = uiState.vaultDocument.credentials,
+                childConnectionCount = folderChildCount,
+                strings = strings,
+                onDismiss = viewModel::dismissFolderDialog,
+                onSaveFolderAndCredential = viewModel::saveFolderAndCredentialToVault
             )
             LockVaultPassphraseDialog(
                 visible = uiState.isLockVaultDialogVisible,
@@ -342,13 +376,15 @@ fun ActiveProtocolSessionDispatcher(
 
     when (tab.protocol) {
         SessionProtocolKind.RDP, SessionProtocolKind.WINDOWS_TS -> {
-            val rdpSession = remember(tab.tabId) { viewModel.getOrCreateRdpSession(tab) }
+            val rdpSession = remember(tab.tabId, conn, secret) { viewModel.getOrCreateRdpSession(tab) }
             RdpSessionSurfaceView(
                 session = rdpSession,
                 isFocused = isFocused,
                 ctrlAltDelLabel = strings.rdpSendCtrlAltDel,
                 smartcardActiveLabel = strings.rdpSmartcardActive,
                 dynamicResizeLabel = strings.rdpDynamicResizeActive,
+                clipboardSyncLabel = strings.rdpSyncClipboardChip,
+                consoleBadgeLabel = strings.rdpConsoleBadge,
                 externalZoomFactor = tab.zoomFactor,
                 onZoomFactorChanged = onZoomChanged
             )
@@ -630,7 +666,10 @@ private fun VaultHierarchySidebarTree(
     strings: WorkspaceLocalizedStrings,
     smartFolderConnectionsProvider: (com.nexusts.app.core.vault.model.SmartFolder) -> List<VaultConnection>,
     onToggleSmartFolder: (String) -> Unit,
+    onNewFolder: () -> Unit,
+    onEditFolder: (VaultFolder) -> Unit,
     onSelectConnection: (String) -> Unit,
+    onEditConnection: (VaultConnection) -> Unit,
     onLaunchConnection: (VaultConnection, QuickLaunchPlacement) -> Unit
 ) {
     val doc = uiState.vaultDocument
@@ -690,6 +729,7 @@ private fun VaultHierarchySidebarTree(
                         isSelected = conn.id == uiState.selectedConnectionId,
                         strings = strings,
                         onSelect = { onSelectConnection(conn.id) },
+                        onEdit = { onEditConnection(conn) },
                         onLaunch = { placement -> onLaunchConnection(conn, placement) }
                     )
                 }
@@ -699,37 +739,46 @@ private fun VaultHierarchySidebarTree(
         item {
             Spacer(modifier = Modifier.height(8.dp))
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-            Spacer(modifier = Modifier.height(8.dp))
-            Text(
-                text = strings.vaultSectionFolders,
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.secondary,
-                modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp)
-            )
+            Spacer(modifier = Modifier.height(6.dp))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 6.dp, vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = strings.vaultSectionFolders,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.secondary
+                )
+                IconButton(
+                    onClick = onNewFolder,
+                    modifier = Modifier.size(26.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.Add,
+                        contentDescription = strings.actionNewFolder,
+                        modifier = Modifier.size(16.dp),
+                        tint = MaterialTheme.colorScheme.secondary
+                    )
+                }
+            }
         }
 
         doc.folders.forEach { folder ->
+            val explicitFolderCred = if (folder.inheritable.credentialMode == InheritanceMode.OVERRIDE_EXPLICIT) {
+                doc.credentials.firstOrNull { it.id == folder.inheritable.explicitCredentialId }
+            } else {
+                null
+            }
             item(key = "folder-${folder.id}") {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 6.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        imageVector = Icons.Outlined.Folder,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(17.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = folder.name,
-                        style = MaterialTheme.typography.titleSmall,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
+                FolderTreeRow(
+                    folder = folder,
+                    explicitFolderCredentialName = explicitFolderCred?.name,
+                    strings = strings,
+                    onEditFolder = { onEditFolder(folder) }
+                )
             }
 
             val folderConnections = doc.connections.filter { it.parentFolderId == folder.id }
@@ -739,9 +788,92 @@ private fun VaultHierarchySidebarTree(
                     isSelected = conn.id == uiState.selectedConnectionId,
                     strings = strings,
                     onSelect = { onSelectConnection(conn.id) },
+                    onEdit = { onEditConnection(conn) },
                     onLaunch = { placement -> onLaunchConnection(conn, placement) }
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun FolderTreeRow(
+    folder: VaultFolder,
+    explicitFolderCredentialName: String?,
+    strings: WorkspaceLocalizedStrings,
+    onEditFolder: () -> Unit
+) {
+    var folderMenuOpen by remember { mutableStateOf(false) }
+
+    Box {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(MaterialTheme.shapes.small)
+                .nexusDesktopPointerButtons(onSecondaryClick = { folderMenuOpen = true })
+                .clickable(onClick = onEditFolder)
+                .padding(horizontal = 6.dp, vertical = 5.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(
+                modifier = Modifier.weight(1f),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.Folder,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(17.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = folder.name,
+                        style = MaterialTheme.typography.titleSmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    if (explicitFolderCredentialName != null) {
+                        Text(
+                            text = explicitFolderCredentialName,
+                            style = NexusTheme.monospace.keycapShortcut,
+                            color = MaterialTheme.colorScheme.secondary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+            }
+            IconButton(
+                onClick = onEditFolder,
+                modifier = Modifier.size(26.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.Key,
+                    contentDescription = strings.actionEditFolderCredentials,
+                    modifier = Modifier.size(14.dp),
+                    tint = if (explicitFolderCredentialName != null) {
+                        MaterialTheme.colorScheme.secondary
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    }
+                )
+            }
+        }
+
+        DropdownMenu(
+            expanded = folderMenuOpen,
+            onDismissRequest = { folderMenuOpen = false }
+        ) {
+            DropdownMenuItem(
+                text = { Text(strings.actionEditFolderCredentials) },
+                leadingIcon = { Icon(Icons.Outlined.Key, contentDescription = null) },
+                onClick = {
+                    folderMenuOpen = false
+                    onEditFolder()
+                }
+            )
         }
     }
 }
@@ -752,6 +884,7 @@ private fun ConnectionTreeRow(
     isSelected: Boolean,
     strings: WorkspaceLocalizedStrings,
     onSelect: () -> Unit,
+    onEdit: () -> Unit,
     onLaunch: (QuickLaunchPlacement) -> Unit
 ) {
     var contextMenuOpen by remember { mutableStateOf(false) }
@@ -797,12 +930,31 @@ private fun ConnectionTreeRow(
                     overflow = TextOverflow.Ellipsis
                 )
             }
+            IconButton(
+                onClick = onEdit,
+                modifier = Modifier.size(24.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.Edit,
+                    contentDescription = strings.actionEditConnection,
+                    modifier = Modifier.size(14.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
 
         DropdownMenu(
             expanded = contextMenuOpen,
             onDismissRequest = { contextMenuOpen = false }
         ) {
+            DropdownMenuItem(
+                text = { Text(strings.actionEditConnection) },
+                leadingIcon = { Icon(Icons.Outlined.Edit, contentDescription = null) },
+                onClick = {
+                    contextMenuOpen = false
+                    onEdit()
+                }
+            )
             DropdownMenuItem(
                 text = { Text(strings.splitRight) },
                 leadingIcon = { Icon(Icons.Outlined.VerticalSplit, contentDescription = null) },
@@ -826,12 +978,16 @@ private fun ConnectionTreeRow(
 @Composable
 private fun ContextualPropertyInspectorPane(
     profile: com.nexusts.app.core.vault.inheritance.EffectiveConnectionProfile?,
+    parentFolder: VaultFolder?,
     strings: WorkspaceLocalizedStrings,
+    onEditConnection: (VaultConnection) -> Unit,
+    onEditParentFolderCredentials: (VaultFolder) -> Unit,
     onGenerateSshKey: () -> Unit
 ) {
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .verticalScroll(rememberScrollState())
             .padding(14.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
@@ -848,7 +1004,7 @@ private fun ContextualPropertyInspectorPane(
                 color = MaterialTheme.colorScheme.surfaceContainer,
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text(strings.inspectorProtocolEndpoint, style = MaterialTheme.typography.labelMedium)
                     Text(profile.connection.name, style = MaterialTheme.typography.titleSmall)
                     Text(
@@ -856,6 +1012,14 @@ private fun ContextualPropertyInspectorPane(
                         style = NexusTheme.monospace.keycapShortcut,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                    OutlinedButton(
+                        onClick = { onEditConnection(profile.connection) },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Outlined.Edit, contentDescription = null, modifier = Modifier.size(15.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(strings.actionEditConnection, style = MaterialTheme.typography.labelSmall)
+                    }
                 }
             }
 
@@ -875,6 +1039,67 @@ private fun ContextualPropertyInspectorPane(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.secondary
                     )
+                    if (parentFolder != null) {
+                        Spacer(modifier = Modifier.height(4.dp))
+                        OutlinedButton(
+                            onClick = { onEditParentFolderCredentials(parentFolder) },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(Icons.Outlined.Folder, contentDescription = null, modifier = Modifier.size(15.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(strings.actionEditFolderCredentials, style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+                }
+            }
+
+            val rdpSettings = profile.connection.settings as? ProtocolSpecificSettings.Rdp
+            if (rdpSettings != null) {
+                val audioLabel = when (rdpSettings.audioRedirectionMode) {
+                    RdpAudioRedirectionMode.PLAY_ON_THIS_DEVICE -> strings.rdpAudioLocal
+                    RdpAudioRedirectionMode.PLAY_ON_REMOTE_HOST -> strings.rdpAudioRemote
+                    RdpAudioRedirectionMode.DO_NOT_PLAY -> strings.rdpAudioMute
+                }
+                Surface(
+                    shape = MaterialTheme.shapes.medium,
+                    color = MaterialTheme.colorScheme.surfaceContainer,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text("RDP Classic Options", style = MaterialTheme.typography.labelMedium)
+                        Text(
+                            text = buildString {
+                                append("Port ${rdpSettings.port} • ${rdpSettings.colorDepthBits}-bit")
+                                if (rdpSettings.connectToConsoleAdmin) append(" • /admin")
+                                if (rdpSettings.hiDpiEnabled) append(" • HiDPI ${rdpSettings.desktopScaleFactorPercent}%")
+                            },
+                            style = NexusTheme.monospace.keycapShortcut,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            text = buildString {
+                                append("Audio: $audioLabel")
+                                if (rdpSettings.redirectClipboard) append(" • Clipboard")
+                                if (rdpSettings.redirectDrives) append(" • Drives")
+                                if (rdpSettings.redirectPrinters) append(" • Printers")
+                                if (rdpSettings.redirectSmartcardYubiKey) append(" • Smartcard")
+                            },
+                            style = NexusTheme.monospace.keycapShortcut,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = buildString {
+                                if (rdpSettings.nlaSecurityRequired) append("NLA") else append("RDP-Sec")
+                                if (rdpSettings.restrictedAdminMode) append(" • RestrictedAdmin")
+                                if (rdpSettings.enableFontSmoothing) append(" • ClearType")
+                                if (rdpSettings.rdGatewayHostname.isNotBlank()) {
+                                    append(" • RDG ${rdpSettings.rdGatewayHostname}")
+                                }
+                            },
+                            style = NexusTheme.monospace.keycapShortcut,
+                            color = MaterialTheme.colorScheme.tertiary
+                        )
+                    }
                 }
             }
 
@@ -898,7 +1123,7 @@ private fun ContextualPropertyInspectorPane(
             }
         }
 
-        Spacer(modifier = Modifier.weight(1f))
+        Spacer(modifier = Modifier.height(6.dp))
 
         FilledTonalButton(
             onClick = onGenerateSshKey,

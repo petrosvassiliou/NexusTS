@@ -40,15 +40,35 @@ struct RdpConnectParams {
     uint32_t initial_width{1920};
     uint32_t initial_height{1080};
     uint32_t desktop_dpi{96};
+    bool connect_to_console{false};
+    bool hidpi_enabled{true};
+    uint32_t desktop_scale_factor{100};
+    uint32_t device_scale_factor{100};
+    uint32_t color_depth_bits{32};
     bool enable_gfx_pipeline{true};
     bool enable_h264_avc444{true};
     bool enable_remotefx{true};
     bool enable_dynamic_resize{true};
     bool multi_monitor_spanning{false};
     bool redirect_clipboard{true};
-    bool redirect_smartcard{true};
+    int32_t audio_redirection_mode{0}; // 0=PLAY_LOCAL, 1=PLAY_ON_REMOTE, 2=DO_NOT_PLAY
     bool redirect_audio_out{true};
     bool redirect_mic_in{false};
+    bool redirect_drives{false};
+    bool redirect_printers{false};
+    bool redirect_serial_ports{false};
+    bool redirect_smartcard{true};
+    bool enable_font_smoothing{true};
+    bool enable_desktop_composition{true};
+    bool enable_wallpaper{false};
+    bool enable_full_window_drag{false};
+    bool enable_menu_animations{false};
+    bool enable_themes{true};
+    bool compression_enabled{true};
+    bool nla_security{true};
+    bool tls_security{true};
+    bool restricted_admin_mode{false};
+    bool ignore_certificate{false};
     bool remote_app_mode{false};
     std::string remote_app_program;
     std::string remote_app_args;
@@ -146,7 +166,7 @@ public:
 
     /**
      * Sends MS-RDPEDI (`DISP_DVC`) Display Control PDU to dynamically resize remote desktop
-     * on Googlebook OS freeform window drag without reconnecting.
+     * on Googlebook OS freeform window drag or HiDPI scale toggle without reconnecting.
      * Aligns dimensions to even multiples of 2 pixels as required by H.264/AVC444 codecs.
      */
     bool request_dynamic_display_resize(
@@ -176,6 +196,7 @@ public:
 private:
     RdpConnectParams params_;
     std::atomic<bool> connected_{false};
+    std::atomic<uint32_t> active_scale_percent_{100};
     std::mutex state_mutex_;
     RdpGdiSurfacePresenter presenter_;
     RdpVirtualChannelHub channels_;
