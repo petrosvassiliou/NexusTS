@@ -1,5 +1,7 @@
 //! Dual-Pane SFTP / SCP / FTP / FTPS File Transfer Protocol Framing & Background Queue Engine.
 
+pub mod wire_clients;
+
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 
@@ -101,6 +103,36 @@ impl BackgroundTransferQueue {
                 TransferJobState::InProgress
             };
         }
+    }
+
+    pub fn pause_job(&mut self, job_id: &str) -> bool {
+        if let Some(item) = self.jobs.iter_mut().find(|j| j.job_id == job_id) {
+            if matches!(item.state, TransferJobState::InProgress | TransferJobState::Queued) {
+                item.state = TransferJobState::Paused;
+                item.speed_bytes_per_sec = 0;
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn resume_job(&mut self, job_id: &str) -> bool {
+        if let Some(item) = self.jobs.iter_mut().find(|j| j.job_id == job_id) {
+            if matches!(item.state, TransferJobState::Paused | TransferJobState::Failed) {
+                item.state = TransferJobState::Queued;
+                item.error_message = None;
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn cancel_job(&mut self, job_id: &str) -> bool {
+        if let Some(idx) = self.jobs.iter().position(|j| j.job_id == job_id) {
+            self.jobs.remove(idx);
+            return true;
+        }
+        false
     }
 
     pub fn next_schedulable_jobs(&self) -> Vec<TransferQueueItem> {

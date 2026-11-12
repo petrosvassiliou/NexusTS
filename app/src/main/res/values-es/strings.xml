@@ -82,6 +82,24 @@
     <string name="mdm_shared_drive_id_title">ID de unidad compartida de Google gestionada</string>
     <string name="mdm_shared_drive_id_desc">ID predeterminado de unidad compartida para bóvedas corporativas .nxts.</string>
 
+    <!-- Studios & Connection Editor -->
+    <string name="dialog_conn_title">Nueva / Editar conexión</string>
+    <string name="dialog_field_name">Nombre visible</string>
+    <string name="dialog_field_host">Host / IP / Punto de enlace</string>
+    <string name="dialog_field_protocol">Protocolo</string>
+    <string name="dialog_field_folder">Carpeta superior</string>
+    <string name="dialog_action_save">Guardar</string>
+    <string name="dialog_action_cancel">Cancelar</string>
+    <string name="studio_credentials_subtitle">Bóveda Zero-Knowledge, Agente OpenSSH Ed25519, 1Password, Bitwarden, KeePass (.kdbx) y FIDO2</string>
+    <string name="studio_action_add_credential">Añadir credencial</string>
+    <string name="studio_gateways_subtitle">Pasarelas seguras NexusTS, Bastiones SSH, Proxies SOCKS5 y HTTP CONNECT</string>
+    <string name="studio_action_add_gateway">Añadir pasarela</string>
+    <string name="studio_action_probe_gateway">Medir latencia</string>
+    <string name="studio_tasks_subtitle">Macros de comandos automatizados, Secuencias de teclas y Disparadores</string>
+    <string name="studio_action_add_task">Nueva tarea</string>
+    <string name="studio_action_run_task">Ejecutar</string>
+    <string name="studio_sync_subtitle">Sincronización Google Drive API v3, Revisiones Vector Clock y Bloqueos multiusuario</string>
+
     <!-- Language Names -->
     <string name="lang_en">English</string>
     <string name="lang_de">Deutsch</string>

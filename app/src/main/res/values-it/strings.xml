@@ -82,6 +82,24 @@
     <string name="mdm_shared_drive_id_title">ID Drive condiviso Google gestito</string>
     <string name="mdm_shared_drive_id_desc">ID Drive condiviso predefinito per le casseforti .nxts aziendali.</string>
 
+    <!-- Studios & Connection Editor -->
+    <string name="dialog_conn_title">Nuova / Modifica connessione</string>
+    <string name="dialog_field_name">Nome visualizzato</string>
+    <string name="dialog_field_host">Hostname / IP / Endpoint</string>
+    <string name="dialog_field_protocol">Protocollo</string>
+    <string name="dialog_field_folder">Cartella superiore</string>
+    <string name="dialog_action_save">Salva</string>
+    <string name="dialog_action_cancel">Annulla</string>
+    <string name="studio_credentials_subtitle">Cassaforte Zero-Knowledge, Agente OpenSSH Ed25519, 1Password, Bitwarden, KeePass (.kdbx) &amp; FIDO2</string>
+    <string name="studio_action_add_credential">Aggiungi credenziale</string>
+    <string name="studio_gateways_subtitle">NexusTS Secure Gateways, Bastion SSH, Proxy SOCKS5 &amp; HTTP CONNECT</string>
+    <string name="studio_action_add_gateway">Aggiungi gateway</string>
+    <string name="studio_action_probe_gateway">Verifica latenza</string>
+    <string name="studio_tasks_subtitle">Macro comandi automatizzate, Sequenze tasti &amp; Trigger di connessione</string>
+    <string name="studio_action_add_task">Nuova attività</string>
+    <string name="studio_action_run_task">Esegui</string>
+    <string name="studio_sync_subtitle">Sincronizzazione Google Drive API v3, Revisioni Vector Clock &amp; Blocchi multiutente</string>
+
     <!-- Language Names -->
     <string name="lang_en">English</string>
     <string name="lang_de">Deutsch</string>

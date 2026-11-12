@@ -82,6 +82,24 @@
     <string name="mdm_shared_drive_id_title">Verwaltete Google-Teamablage-ID</string>
     <string name="mdm_shared_drive_id_desc">Standard-Teamablage-ID für unternehmensweite .nxts-Verbindungstresore.</string>
 
+    <!-- Studios & Connection Editor -->
+    <string name="dialog_conn_title">Verbindung erstellen / bearbeiten</string>
+    <string name="dialog_field_name">Anzeigename</string>
+    <string name="dialog_field_host">Hostname / IP / Endpunkt</string>
+    <string name="dialog_field_protocol">Protokoll</string>
+    <string name="dialog_field_folder">Übergeordneter Ordner</string>
+    <string name="dialog_action_save">Speichern</string>
+    <string name="dialog_action_cancel">Abbrechen</string>
+    <string name="studio_credentials_subtitle">Zero-Knowledge-Tresor, OpenSSH-Ed25519-Agent, 1Password, Bitwarden, KeePass (.kdbx) &amp; FIDO2</string>
+    <string name="studio_action_add_credential">Zugangsdaten hinzufügen</string>
+    <string name="studio_gateways_subtitle">NexusTS Secure Gateways, SSH-Bastionen, SOCKS5- &amp; HTTP-CONNECT-Proxys</string>
+    <string name="studio_action_add_gateway">Gateway hinzufügen</string>
+    <string name="studio_action_probe_gateway">Latenz prüfen</string>
+    <string name="studio_tasks_subtitle">Automatisierte Befehlsmakros, Tastenfolgen &amp; Verbindungs-Trigger</string>
+    <string name="studio_action_add_task">Neue Aufgabe</string>
+    <string name="studio_action_run_task">Ausführen</string>
+    <string name="studio_sync_subtitle">Google Drive API v3-Synchronisierung, Vektoruhr-Revisionen &amp; Mehrbenutzer-Sperren</string>
+
     <!-- Language Names -->
     <string name="lang_en">English</string>
     <string name="lang_de">Deutsch</string>

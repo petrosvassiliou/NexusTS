@@ -1,5 +1,7 @@
 //! RFB 3.8 (UltraVNC, TightVNC, RealVNC) & Apple Screen Sharing Framebuffer Engine
-//! supporting Raw, CopyRect, and ZRLE (Zlib Run-Length Encoding) into RGBA8888 surfaces.
+//! supporting Raw, CopyRect, Hextile, Tight, and ZRLE (Zlib Run-Length Encoding) into RGBA8888 surfaces.
+
+pub mod rfb_client;
 
 use flate2::Decompress;
 use flate2::FlushDecompress;
@@ -17,7 +19,7 @@ pub enum VncError {
     OutOfBounds,
     #[error("Truncated RFB rectangle payload")]
     TruncatedPayload,
-    #[error("ZRLE zlib decompression failure: {0}")]
+    #[error("ZRLE/Tight zlib decompression failure: {0}")]
     ZlibError(String),
 }
 
@@ -26,6 +28,7 @@ pub struct RfbFramebuffer {
     pub height: u32,
     pub rgba_pixels: Vec<u8>,
     zrle_inflater: Decompress,
+    tight_inflaters: [Decompress; 4],
 }
 
 impl RfbFramebuffer {
@@ -36,6 +39,12 @@ impl RfbFramebuffer {
             height,
             rgba_pixels: vec![0u8; pixel_count * 4],
             zrle_inflater: Decompress::new(true),
+            tight_inflaters: [
+                Decompress::new(true),
+                Decompress::new(true),
+                Decompress::new(true),
+                Decompress::new(true),
+            ],
         }
     }
 
@@ -109,6 +118,104 @@ impl RfbFramebuffer {
             let d_off = (dy + row) * stride + dx * 4;
             self.rgba_pixels[d_off..d_off + w * 4]
                 .copy_from_slice(&scratch[row * w * 4..(row + 1) * w * 4]);
+        }
+        Ok(())
+    }
+
+    /// Decodes an RFB Tight (Encoding 7) rectangle supporting FillCompression (`0x80`)
+    /// and BasicCompression (`0x00..0x7F` with stream reset masks & TPIXEL 24-bit RGB).
+    pub fn apply_tight_rect(
+        &mut self,
+        x: u16,
+        y: u16,
+        w: u16,
+        h: u16,
+        payload: &[u8],
+    ) -> Result<(), VncError> {
+        if (x as usize) + (w as usize) > self.width as usize
+            || (y as usize) + (h as usize) > self.height as usize
+        {
+            return Err(VncError::OutOfBounds);
+        }
+        if payload.is_empty() {
+            return Err(VncError::TruncatedPayload);
+        }
+        let comp_ctl = payload[0];
+        for stream_id in 0..4 {
+            if (comp_ctl & (1 << stream_id)) != 0 {
+                self.tight_inflaters[stream_id] = Decompress::new(true);
+            }
+        }
+        let sub_type = comp_ctl >> 4;
+        if sub_type == 0x08 {
+            // FillCompression: 3-byte TPIXEL RGB solid fill
+            if payload.len() < 4 {
+                return Err(VncError::TruncatedPayload);
+            }
+            let rgba = [payload[1], payload[2], payload[3], 255];
+            for row in 0..h {
+                for col in 0..w {
+                    self.put_pixel(x + col, y + row, rgba);
+                }
+            }
+            return Ok(());
+        }
+
+        // BasicCompression: stream_id in bits 4..5, optional filter_id in bit 6
+        let stream_id = ((sub_type) & 0x03) as usize;
+        let read_filter = (sub_type & 0x04) != 0;
+        let mut cursor = 1usize;
+        let mut filter_id = 0u8;
+        if read_filter {
+            if cursor >= payload.len() {
+                return Err(VncError::TruncatedPayload);
+            }
+            filter_id = payload[cursor];
+            cursor += 1;
+        }
+
+        if filter_id == 0 {
+            // CopyFilter: 3 bytes per pixel; uncompressed if < 12 bytes, else compact-length + zlib
+            let raw_bytes_expected = (w as usize) * (h as usize) * 3;
+            let rgb_slice: Vec<u8> = if raw_bytes_expected < 12 {
+                if cursor + raw_bytes_expected > payload.len() {
+                    return Err(VncError::TruncatedPayload);
+                }
+                payload[cursor..cursor + raw_bytes_expected].to_vec()
+            } else {
+                let (comp_len, hdr_bytes) = decode_tight_compact_len(&payload[cursor..])?;
+                cursor += hdr_bytes;
+                if cursor + comp_len > payload.len() {
+                    return Err(VncError::TruncatedPayload);
+                }
+                let mut out = vec![0u8; raw_bytes_expected + 64];
+                let before = self.tight_inflaters[stream_id].total_out();
+                self.tight_inflaters[stream_id]
+                    .decompress(
+                        &payload[cursor..cursor + comp_len],
+                        &mut out,
+                        FlushDecompress::Sync,
+                    )
+                    .map_err(|e| VncError::ZlibError(e.to_string()))?;
+                let produced = (self.tight_inflaters[stream_id].total_out() - before) as usize;
+                if produced < raw_bytes_expected {
+                    return Err(VncError::TruncatedPayload);
+                }
+                out.truncate(raw_bytes_expected);
+                out
+            };
+
+            let mut p = 0usize;
+            for row in 0..h {
+                for col in 0..w {
+                    self.put_pixel(
+                        x + col,
+                        y + row,
+                        [rgb_slice[p], rgb_slice[p + 1], rgb_slice[p + 2], 255],
+                    );
+                    p += 3;
+                }
+            }
         }
         Ok(())
     }
@@ -188,6 +295,31 @@ impl RfbFramebuffer {
             self.rgba_pixels[idx..idx + 4].copy_from_slice(&rgba);
         }
     }
+}
+
+fn decode_tight_compact_len(buf: &[u8]) -> Result<(usize, usize), VncError> {
+    if buf.is_empty() {
+        return Err(VncError::TruncatedPayload);
+    }
+    let b0 = buf[0] as usize;
+    let mut len = b0 & 0x7F;
+    if (b0 & 0x80) == 0 {
+        return Ok((len, 1));
+    }
+    if buf.len() < 2 {
+        return Err(VncError::TruncatedPayload);
+    }
+    let b1 = buf[1] as usize;
+    len |= (b1 & 0x7F) << 7;
+    if (b1 & 0x80) == 0 {
+        return Ok((len, 2));
+    }
+    if buf.len() < 3 {
+        return Err(VncError::TruncatedPayload);
+    }
+    let b2 = buf[2] as usize;
+    len |= b2 << 14;
+    Ok((len, 3))
 }
 
 /// Encodes an RFB ClientCutText / KeyEvent (msg type 4) or PointerEvent (msg type 5).

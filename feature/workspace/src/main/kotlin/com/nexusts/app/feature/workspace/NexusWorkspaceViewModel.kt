@@ -15,6 +15,8 @@ import com.nexusts.app.core.vault.automation.AutomationTaskEngine
 import com.nexusts.app.core.vault.credentials.EnterpriseCredentialHub
 import com.nexusts.app.core.vault.credentials.ResolvedSessionSecret
 import com.nexusts.app.core.vault.crypto.NxtsVaultSerializer
+import com.nexusts.app.core.vault.gateway.GatewayHealthReport
+import com.nexusts.app.core.vault.gateway.SecureGatewayTunnelManager
 import com.nexusts.app.core.vault.importer.RtszDocumentImporter
 import com.nexusts.app.core.vault.inheritance.EffectiveConnectionProfile
 import com.nexusts.app.core.vault.inheritance.PropertyInheritanceResolver
@@ -23,6 +25,7 @@ import com.nexusts.app.core.vault.model.CredentialSourceKind
 import com.nexusts.app.core.vault.model.GatewayTransportKind
 import com.nexusts.app.core.vault.model.InheritableProperties
 import com.nexusts.app.core.vault.model.InheritanceMode
+import com.nexusts.app.core.vault.model.KeySequenceTask
 import com.nexusts.app.core.vault.model.NxtsVaultDocument
 import com.nexusts.app.core.vault.model.PortForwardKind
 import com.nexusts.app.core.vault.model.ProtocolSpecificSettings
@@ -51,11 +54,14 @@ data class WorkspaceUiState(
     val isInspectorVisible: Boolean = true,
     val isBottomDrawerVisible: Boolean = false,
     val isQuickConnectVisible: Boolean = false,
+    val isNewConnectionDialogVisible: Boolean = false,
+    val useSharedTeamDriveZone: Boolean = false,
     val remoteKeyCaptureEnabled: Boolean = false,
     val broadcastModeEnabled: Boolean = false,
     val isVaultLocked: Boolean = false,
     val vaultDocument: NxtsVaultDocument = createEnterpriseStarterVault(),
     val selectedConnectionId: String? = null,
+    val gatewayHealthReports: Map<String, GatewayHealthReport> = emptyMap(),
     val auditLogs: List<String> = listOf(
         "[NexusTS] Argon2id + AES-256-GCM Zero-Knowledge Engine initialized.",
         "[WindowManager] Native Googlebook OS Freeform & Multi-Monitor controller ready."
@@ -67,7 +73,8 @@ class NexusWorkspaceViewModel @Inject constructor(
     private val vaultSerializer: NxtsVaultSerializer,
     private val inheritanceResolver: PropertyInheritanceResolver,
     private val credentialHub: EnterpriseCredentialHub,
-    private val automationEngine: AutomationTaskEngine
+    private val automationEngine: AutomationTaskEngine,
+    private val gatewayTunnelManager: SecureGatewayTunnelManager
 ) : ViewModel() {
 
     val tilingController = WorkspaceTilingController()
@@ -97,6 +104,14 @@ class NexusWorkspaceViewModel @Inject constructor(
 
     fun selectRailDestination(id: String) {
         _uiState.update { it.copy(activeRailId = id) }
+    }
+
+    fun openNewConnectionDialog() {
+        _uiState.update { it.copy(isNewConnectionDialogVisible = true) }
+    }
+
+    fun dismissNewConnectionDialog() {
+        _uiState.update { it.copy(isNewConnectionDialogVisible = false) }
     }
 
     fun selectConnectionInTree(connectionId: String) {
@@ -236,6 +251,8 @@ class NexusWorkspaceViewModel @Inject constructor(
         when (action) {
             NexusShortcutAction.QUICK_CONNECT_PALETTE ->
                 _uiState.update { it.copy(isQuickConnectVisible = !it.isQuickConnectVisible) }
+            NexusShortcutAction.NEW_CONNECTION_DIALOG ->
+                _uiState.update { it.copy(isNewConnectionDialogVisible = !it.isNewConnectionDialogVisible) }
             NexusShortcutAction.RELEASE_REMOTE_KEY_CAPTURE ->
                 _uiState.update { it.copy(remoteKeyCaptureEnabled = false) }
             NexusShortcutAction.TOGGLE_SIDEBAR_TREE ->
@@ -264,6 +281,91 @@ class NexusWorkspaceViewModel @Inject constructor(
             }
             else -> Unit
         }
+    }
+
+    fun saveConnectionToVault(connection: VaultConnection) {
+        _uiState.update { state ->
+            val nextRev = state.vaultDocument.revision + 1L
+            val nextClock = state.vaultDocument.vectorClock.toMutableMap().apply {
+                put("googlebook", nextRev)
+            }
+            state.copy(
+                activeRailId = "connections",
+                selectedConnectionId = connection.id,
+                vaultDocument = state.vaultDocument.copy(
+                    revision = nextRev,
+                    vectorClock = nextClock,
+                    connections = state.vaultDocument.connections + connection
+                )
+            )
+        }
+        appendLog("[Vault] Added ${connection.protocol.name} connection '${connection.name}' (${connection.host})")
+    }
+
+    fun addCredentialToVault(credential: VaultCredential) {
+        _uiState.update { state ->
+            state.copy(
+                vaultDocument = state.vaultDocument.copy(
+                    revision = state.vaultDocument.revision + 1L,
+                    credentials = state.vaultDocument.credentials + credential
+                )
+            )
+        }
+        appendLog("[Credentials] Stored '${credential.name}' (${credential.sourceKind.name})")
+    }
+
+    fun addGatewayToVault(gateway: SecureGatewayConfig) {
+        _uiState.update { state ->
+            state.copy(
+                vaultDocument = state.vaultDocument.copy(
+                    revision = state.vaultDocument.revision + 1L,
+                    gateways = state.vaultDocument.gateways + gateway
+                )
+            )
+        }
+        appendLog("[Gateway] Registered ${gateway.kind.name} '${gateway.name}' (${gateway.host}:${gateway.port})")
+    }
+
+    fun probeGatewayLatency(gateway: SecureGatewayConfig) {
+        viewModelScope.launch {
+            val cred = _uiState.value.vaultDocument.credentials.firstOrNull { it.id == gateway.credentialId }
+            val report = gatewayTunnelManager.probeGatewayHealth(gateway, cred)
+            _uiState.update { state ->
+                state.copy(gatewayHealthReports = state.gatewayHealthReports + (gateway.id to report))
+            }
+            appendLog("[Gateway Probe] ${gateway.name}: reachable=${report.reachable}, rtt=${report.latencyMs}ms (${report.protocolBanner})")
+        }
+    }
+
+    fun addCommandTaskToVault(task: CommandTask) {
+        _uiState.update { state ->
+            state.copy(
+                vaultDocument = state.vaultDocument.copy(
+                    revision = state.vaultDocument.revision + 1L,
+                    commandTasks = state.vaultDocument.commandTasks + task
+                )
+            )
+        }
+        appendLog("[Automation] Added task '${task.name}'")
+    }
+
+    fun executeCommandTask(task: CommandTask) {
+        val line = if (task.appendNewline) "${task.commandTemplate}\r\n" else task.commandTemplate
+        val bytes = line.encodeToByteArray()
+        if (task.broadcastToAllSelectedSessions) {
+            automationEngine.emitBroadcastBytes(bytes, originTabId = null)
+        } else {
+            val focused = findFocusedActiveTab(tilingController.focusedPaneId.value)
+            if (focused != null) {
+                sshControllers[focused.tabId]?.sendUserBytes(bytes)
+            }
+        }
+        appendLog("[Automation] Executed '${task.name}': ${task.commandTemplate}")
+    }
+
+    fun setDriveSyncZone(useTeamDrive: Boolean) {
+        _uiState.update { it.copy(useSharedTeamDriveZone = useTeamDrive) }
+        appendLog("[Google Drive] Active sync zone = ${if (useTeamDrive) "Shared Team Drive" else "appDataFolder"}")
     }
 
     fun forwardRawKeyToFocusedSession(packet: RawHardwareKeyPacket): Boolean {
@@ -599,6 +701,13 @@ class NexusWorkspaceViewModel @Inject constructor(
                         name = "Cluster Pod Health Audit",
                         commandTemplate = "kubectl get pods -A -o wide && uptime",
                         broadcastToAllSelectedSessions = true
+                    )
+                ),
+                keySequenceTasks = listOf(
+                    KeySequenceTask(
+                        name = "Windows Domain Elevated Sign-In Macro",
+                        macroSequence = "{CTRL+ALT+DEL}{WAIT:350}\$EffectiveUsername\${TAB}\$EffectivePassword\${ENTER}",
+                        keystrokeDelayMs = 25
                     )
                 )
             )

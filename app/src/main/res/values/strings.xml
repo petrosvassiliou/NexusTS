@@ -82,6 +82,24 @@
     <string name="mdm_shared_drive_id_title">Managed Google Team Drive ID</string>
     <string name="mdm_shared_drive_id_desc">Default shared Google Drive ID for corporate .nxts connection vaults.</string>
 
+    <!-- Studios & Connection Editor -->
+    <string name="dialog_conn_title">New / Edit Connection</string>
+    <string name="dialog_field_name">Display Name</string>
+    <string name="dialog_field_host">Hostname / IP / Endpoint</string>
+    <string name="dialog_field_protocol">Protocol</string>
+    <string name="dialog_field_folder">Parent Folder</string>
+    <string name="dialog_action_save">Save</string>
+    <string name="dialog_action_cancel">Cancel</string>
+    <string name="studio_credentials_subtitle">Zero-Knowledge Vault, OpenSSH Ed25519 Agent, 1Password, Bitwarden, KeePass (.kdbx) &amp; FIDO2</string>
+    <string name="studio_action_add_credential">Add Credential</string>
+    <string name="studio_gateways_subtitle">NexusTS Secure Gateways, SSH Bastions, SOCKS5 &amp; HTTP CONNECT Proxies</string>
+    <string name="studio_action_add_gateway">Add Gateway</string>
+    <string name="studio_action_probe_gateway">Probe Latency</string>
+    <string name="studio_tasks_subtitle">Automated Command Macros, Key Sequence Tasks &amp; Connect Triggers</string>
+    <string name="studio_action_add_task">New Task</string>
+    <string name="studio_action_run_task">Execute</string>
+    <string name="studio_sync_subtitle">Google Drive API v3 Synchronization, Vector Clock Revisions &amp; Multi-User Advisory Locks</string>
+
     <!-- Language Names -->
     <string name="lang_en">English</string>
     <string name="lang_de">Deutsch</string>

@@ -53,6 +53,9 @@ object SshNativeBridge {
 
     @JvmStatic
     external fun nativeDestroyTerminalBuffer(handle: Long)
+
+    @JvmStatic
+    external fun nativeParseFtpMlsdJson(parentDir: String, mlsdBody: String): String
 }
 
 /**

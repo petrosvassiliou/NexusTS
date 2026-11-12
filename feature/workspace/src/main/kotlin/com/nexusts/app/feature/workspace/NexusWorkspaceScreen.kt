@@ -155,6 +155,7 @@ fun NexusWorkspaceScreen(
                 onOpenQuickConnect = {
                     viewModel.handleShortcut(com.nexusts.app.core.ui.input.NexusShortcutAction.QUICK_CONNECT_PALETTE) {}
                 },
+                onNewConnection = viewModel::openNewConnectionDialog,
                 onImportRtsz = onRequestImportFilePicker,
                 onSyncGoogleDrive = onRequestGoogleDriveSync,
                 onToggleBroadcast = viewModel::toggleGlobalBroadcast,
@@ -173,8 +174,12 @@ fun NexusWorkspaceScreen(
                     uiState = uiState,
                     strings = strings,
                     smartFolderCountProvider = viewModel::evaluateSmartFolderCount,
-                    onSelectConnection = viewModel::selectConnectionInTree,
+                    onSelectConnection = { id ->
+                        viewModel.selectConnectionInTree(id)
+                        viewModel.selectRailDestination("connections")
+                    },
                     onLaunchConnection = { conn, placement ->
+                        viewModel.selectRailDestination("connections")
                         viewModel.launchConnection(conn, placement) { detachedTab ->
                             onDetachTabToNativeWindow(detachedTab, null)
                         }
@@ -183,47 +188,80 @@ fun NexusWorkspaceScreen(
             }
         },
         mainWorkspaceContent = {
-            SplitPaneWorkspaceContainer(
-                node = rootPane,
-                focusedPaneId = focusedPaneId,
-                connectedDisplays = connectedDisplays,
-                labels = splitLabels,
-                onFocusPane = viewModel.tilingController::focusPane,
-                onSelectTab = viewModel.tilingController::selectTab,
-                onCloseTab = viewModel::closeSessionTab,
-                onSplitPane = { paneId, orientation ->
-                    viewModel.tilingController.splitPane(paneId, orientation)
-                },
-                onResizeSplit = viewModel.tilingController::updateSplitRatio,
-                onDetachTabToWindow = { tab, displayId ->
-                    viewModel.tilingController.extractTabForDetachedWindow(tab.tabId)?.let { extracted ->
-                        onDetachTabToNativeWindow(extracted, displayId)
-                    }
-                },
-                onToggleTabBroadcast = { tab ->
-                    viewModel.tilingController.updateTab(tab.tabId) {
-                        it.copy(broadcastEnabled = !it.broadcastEnabled)
-                    }
-                },
-                emptyStateContent = {
-                    ExpressiveEmptyWorkspaceHero(
-                        strings = strings,
-                        onOpenQuickConnect = {
-                            viewModel.handleShortcut(
-                                com.nexusts.app.core.ui.input.NexusShortcutAction.QUICK_CONNECT_PALETTE
-                            ) {}
+            when (uiState.activeRailId) {
+                "credentials" -> com.nexusts.app.feature.workspace.studios.CredentialVaultStudioView(
+                    credentials = uiState.vaultDocument.credentials,
+                    strings = strings,
+                    onGenerateEd25519Key = viewModel::generateAndStoreSshKeyPair,
+                    onCreateCredential = viewModel::addCredentialToVault
+                )
+
+                "gateways" -> com.nexusts.app.feature.workspace.studios.SecureGatewayStudioView(
+                    gateways = uiState.vaultDocument.gateways,
+                    healthReports = uiState.gatewayHealthReports,
+                    strings = strings,
+                    onProbeGateway = viewModel::probeGatewayLatency,
+                    onAddGateway = viewModel::addGatewayToVault
+                )
+
+                "tasks" -> com.nexusts.app.feature.workspace.studios.AutomationTasksStudioView(
+                    commandTasks = uiState.vaultDocument.commandTasks,
+                    keySequenceTasks = uiState.vaultDocument.keySequenceTasks,
+                    strings = strings,
+                    onRunCommandTask = viewModel::executeCommandTask,
+                    onAddCommandTask = viewModel::addCommandTaskToVault
+                )
+
+                "sync" -> com.nexusts.app.feature.workspace.studios.DriveSyncAndConflictStudioView(
+                    vaultDocument = uiState.vaultDocument,
+                    useSharedTeamDrive = uiState.useSharedTeamDriveZone,
+                    strings = strings,
+                    onSelectSyncZone = viewModel::setDriveSyncZone,
+                    onTriggerDeltaSync = onRequestGoogleDriveSync
+                )
+
+                else -> SplitPaneWorkspaceContainer(
+                    node = rootPane,
+                    focusedPaneId = focusedPaneId,
+                    connectedDisplays = connectedDisplays,
+                    labels = splitLabels,
+                    onFocusPane = viewModel.tilingController::focusPane,
+                    onSelectTab = viewModel.tilingController::selectTab,
+                    onCloseTab = viewModel::closeSessionTab,
+                    onSplitPane = { paneId, orientation ->
+                        viewModel.tilingController.splitPane(paneId, orientation)
+                    },
+                    onResizeSplit = viewModel.tilingController::updateSplitRatio,
+                    onDetachTabToWindow = { tab, displayId ->
+                        viewModel.tilingController.extractTabForDetachedWindow(tab.tabId)?.let { extracted ->
+                            onDetachTabToNativeWindow(extracted, displayId)
                         }
-                    )
-                },
-                sessionRenderer = { tab, isFocused ->
-                    ActiveProtocolSessionDispatcher(
-                        tab = tab,
-                        isFocused = isFocused,
-                        viewModel = viewModel,
-                        strings = strings
-                    )
-                }
-            )
+                    },
+                    onToggleTabBroadcast = { tab ->
+                        viewModel.tilingController.updateTab(tab.tabId) {
+                            it.copy(broadcastEnabled = !it.broadcastEnabled)
+                        }
+                    },
+                    emptyStateContent = {
+                        ExpressiveEmptyWorkspaceHero(
+                            strings = strings,
+                            onOpenQuickConnect = {
+                                viewModel.handleShortcut(
+                                    com.nexusts.app.core.ui.input.NexusShortcutAction.QUICK_CONNECT_PALETTE
+                                ) {}
+                            }
+                        )
+                    },
+                    sessionRenderer = { tab, isFocused ->
+                        ActiveProtocolSessionDispatcher(
+                            tab = tab,
+                            isFocused = isFocused,
+                            viewModel = viewModel,
+                            strings = strings
+                        )
+                    }
+                )
+            }
         },
         propertyInspectorContent = {
             ContextualPropertyInspectorPane(
@@ -253,10 +291,18 @@ fun NexusWorkspaceScreen(
                     ) {}
                 },
                 onLaunchCandidate = { candidate, placement ->
+                    viewModel.selectRailDestination("connections")
                     viewModel.launchQuickCandidate(candidate, placement) { tab ->
                         onDetachTabToNativeWindow(tab, null)
                     }
                 }
+            )
+            com.nexusts.app.feature.workspace.studios.NewOrEditConnectionDialog(
+                visible = uiState.isNewConnectionDialogVisible,
+                folders = uiState.vaultDocument.folders,
+                strings = strings,
+                onDismiss = viewModel::dismissNewConnectionDialog,
+                onSaveConnection = viewModel::saveConnectionToVault
             )
         },
         modifier = modifier
@@ -339,6 +385,7 @@ fun ActiveProtocolSessionDispatcher(
                 protocol = conn?.protocol ?: VaultProtocolType.PROXMOX_VE,
                 endpointHost = tab.subtitleHost,
                 settings = cloudSettings,
+                secret = secret,
                 openConsoleCallback = { vmName, vmIp, vmProto ->
                     val dynamicVmConn = VaultConnection(
                         name = vmName,
@@ -378,6 +425,7 @@ private fun DesktopTopWindowChrome(
     strings: WorkspaceLocalizedStrings,
     onToggleSidebar: () -> Unit,
     onOpenQuickConnect: () -> Unit,
+    onNewConnection: () -> Unit,
     onImportRtsz: () -> Unit,
     onSyncGoogleDrive: () -> Unit,
     onToggleBroadcast: () -> Unit,
@@ -429,7 +477,7 @@ private fun DesktopTopWindowChrome(
             // Center Expressive Quick-Connect Command Bar Trigger (`Ctrl/Cmd + K`)
             Surface(
                 modifier = Modifier
-                    .width(340.dp)
+                    .width(320.dp)
                     .height(36.dp)
                     .clip(RoundedCornerShape(99.dp))
                     .clickable(onClick = onOpenQuickConnect),
@@ -463,7 +511,7 @@ private fun DesktopTopWindowChrome(
                 }
             }
 
-            // Right Action Cluster: Play In-App Update Banner, Sync, Import .rtsz, Broadcast, Vault Lock, 6-Language Switcher
+            // Right Action Cluster: Play In-App Update Banner, New Connection, Sync, Import .rtsz, Broadcast, Vault Lock, 6-Language Switcher
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -475,6 +523,11 @@ private fun DesktopTopWindowChrome(
                         Text(strings.updateRestartAction, style = MaterialTheme.typography.labelMedium)
                     }
                 }
+
+                AssistChip(
+                    onClick = onNewConnection,
+                    label = { Text(strings.actionNewConnection, style = MaterialTheme.typography.labelSmall) }
+                )
 
                 AssistChip(
                     onClick = onSyncGoogleDrive,

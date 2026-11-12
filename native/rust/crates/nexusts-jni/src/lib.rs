@@ -7,9 +7,14 @@ use jni::JNIEnv;
 use nexusts_crypto::{
     generate_ed25519_ssh_keypair, open_nxts_vault, seal_nxts_vault, Argon2idProfile,
 };
-use nexusts_netutils::{probe_tcp_port, send_wake_on_lan};
+use nexusts_netutils::{grab_tcp_service_banner, probe_tcp_port, send_wake_on_lan, trace_route_hops};
 use nexusts_terminal::VtTerminalBuffer;
-use nexusts_vnc::RfbFramebuffer;
+use nexusts_transfer::wire_clients::parse_ftp_mlsd_listing;
+use nexusts_vnc::rfb_client::apply_hextile_rect;
+use nexusts_vnc::{
+    RfbFramebuffer, RFB_ENCODING_COPYRECT, RFB_ENCODING_HEXTILE, RFB_ENCODING_RAW,
+    RFB_ENCODING_TIGHT, RFB_ENCODING_ZRLE,
+};
 use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -222,6 +227,30 @@ pub extern "system" fn Java_com_nexusts_app_protocols_ssh_bridge_SshNativeBridge
 }
 
 #[no_mangle]
+pub extern "system" fn Java_com_nexusts_app_protocols_ssh_bridge_SshNativeBridge_nativeParseFtpMlsdJson<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    parent_dir: JString<'local>,
+    mlsd_body: JString<'local>,
+) -> jstring {
+    let dir_s: String = env
+        .get_string(&parent_dir)
+        .map(|s| s.into())
+        .unwrap_or_else(|_| "/".into());
+    let body_s: String = env
+        .get_string(&mlsd_body)
+        .map(|s| s.into())
+        .unwrap_or_default();
+    let entries = parse_ftp_mlsd_listing(&dir_s, &body_s);
+    let json = serde_json::to_string(&entries).unwrap_or_else(|_| "[]".into());
+    env.new_string(json)
+        .map(|s| s.into_raw())
+        .unwrap_or(std::ptr::null_mut())
+}
+
+#[no_mangle]
 pub extern "system" fn Java_com_nexusts_app_protocols_vnc_bridge_VncNativeBridge_nativeCreateFramebuffer<
     'local,
 >(
@@ -235,6 +264,70 @@ pub extern "system" fn Java_com_nexusts_app_protocols_vnc_bridge_VncNativeBridge
         reg.insert(handle, RfbFramebuffer::new(width as u32, height as u32));
     }
     handle
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_nexusts_app_protocols_vnc_bridge_VncNativeBridge_nativeApplyRfbRect<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    handle: jlong,
+    encoding: jint,
+    x: jint,
+    y: jint,
+    w: jint,
+    h: jint,
+    payload: JByteArray<'local>,
+) -> jbyteArray {
+    let raw_payload = env.convert_byte_array(&payload).unwrap_or_default();
+    let res: Result<Vec<u8>, String> = if let Ok(mut reg) = vnc_registry().lock() {
+        if let Some(fb) = reg.get_mut(&handle) {
+            let (ux, uy, uw, uh) = (x as u16, y as u16, w as u16, h as u16);
+            let step = match encoding {
+                RFB_ENCODING_RAW => fb.apply_raw_rect(ux, uy, uw, uh, &raw_payload),
+                RFB_ENCODING_COPYRECT if raw_payload.len() >= 4 => {
+                    let sx = u16::from_be_bytes([raw_payload[0], raw_payload[1]]);
+                    let sy = u16::from_be_bytes([raw_payload[2], raw_payload[3]]);
+                    fb.apply_copy_rect(ux, uy, uw, uh, sx, sy)
+                }
+                RFB_ENCODING_HEXTILE => apply_hextile_rect(fb, ux, uy, uw, uh, &raw_payload),
+                RFB_ENCODING_TIGHT => fb.apply_tight_rect(ux, uy, uw, uh, &raw_payload),
+                RFB_ENCODING_ZRLE => fb.apply_zrle_rect(ux, uy, uw, uh, &raw_payload),
+                _ => Ok(()),
+            };
+            step.map(|_| fb.rgba_pixels.clone())
+                .map_err(|e| e.to_string())
+        } else {
+            Err(String::from("Unknown VNC framebuffer handle"))
+        }
+    } else {
+        Err(String::from("Poisoned VNC registry mutex"))
+    };
+
+    match res {
+        Ok(rgba) => env
+            .byte_array_from_slice(&rgba)
+            .map(|a| a.into_raw())
+            .unwrap_or(std::ptr::null_mut()),
+        Err(msg) => {
+            throw_runtime_exception(&mut env, &msg);
+            std::ptr::null_mut()
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_nexusts_app_protocols_vnc_bridge_VncNativeBridge_nativeDestroyFramebuffer<
+    'local,
+>(
+    _env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    handle: jlong,
+) {
+    if let Ok(mut reg) = vnc_registry().lock() {
+        reg.remove(&handle);
+    }
 }
 
 #[no_mangle]
@@ -280,4 +373,52 @@ pub extern "system" fn Java_com_nexusts_app_protocols_vnc_bridge_VncNativeBridge
             throw_runtime_exception(&mut env, &e.to_string());
             std::ptr::null_mut()
         })
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_nexusts_app_protocols_vnc_bridge_VncNativeBridge_nativeTraceRouteJson<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    host: JString<'local>,
+    probe_port: jint,
+    max_hops: jint,
+    timeout_ms: jint,
+) -> jstring {
+    let host_s: String = env.get_string(&host).map(|s| s.into()).unwrap_or_default();
+    match trace_route_hops(
+        &host_s,
+        probe_port as u16,
+        (max_hops as u8).clamp(1, 32),
+        timeout_ms as u64,
+    ) {
+        Ok(hops) => {
+            let json = serde_json::to_string(&hops).unwrap_or_else(|_| "[]".into());
+            env.new_string(json)
+                .map(|s| s.into_raw())
+                .unwrap_or(std::ptr::null_mut())
+        }
+        Err(e) => {
+            throw_runtime_exception(&mut env, &e.to_string());
+            std::ptr::null_mut()
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_nexusts_app_protocols_vnc_bridge_VncNativeBridge_nativeGrabTcpBanner<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    host: JString<'local>,
+    port: jint,
+    timeout_ms: jint,
+) -> jstring {
+    let host_s: String = env.get_string(&host).map(|s| s.into()).unwrap_or_default();
+    let banner = grab_tcp_service_banner(&host_s, port as u16, timeout_ms as u64).unwrap_or_default();
+    env.new_string(banner)
+        .map(|s| s.into_raw())
+        .unwrap_or(std::ptr::null_mut())
 }

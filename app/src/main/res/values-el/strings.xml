@@ -82,6 +82,24 @@
     <string name="mdm_shared_drive_id_title">Αναγνωριστικό διαχειριζόμενου Κοινόχρηστου Drive</string>
     <string name="mdm_shared_drive_id_desc">Προεπιλεγμένο αναγνωριστικό Drive ομάδας για εταιρικά αρχεία .nxts.</string>
 
+    <!-- Studios & Connection Editor -->
+    <string name="dialog_conn_title">Νέα / Επεξεργασία σύνδεσης</string>
+    <string name="dialog_field_name">Όνομα εμφάνισης</string>
+    <string name="dialog_field_host">Όνομα κεντρικού υπολογιστή / IP</string>
+    <string name="dialog_field_protocol">Πρωτόκολλο</string>
+    <string name="dialog_field_folder">Γονικός φάκελος</string>
+    <string name="dialog_action_save">Αποθήκευση</string>
+    <string name="dialog_action_cancel">Ακύρωση</string>
+    <string name="studio_credentials_subtitle">Θησαυροφυλάκιο Zero-Knowledge, OpenSSH Ed25519 Agent, 1Password, Bitwarden, KeePass (.kdbx) &amp; FIDO2</string>
+    <string name="studio_action_add_credential">Προσθήκη διαπιστευτηρίων</string>
+    <string name="studio_gateways_subtitle">Ασφαλείς πύλες NexusTS, SSH Bastions, διακομιστές μεσολάβησης SOCKS5 &amp; HTTP CONNECT</string>
+    <string name="studio_action_add_gateway">Προσθήκη πύλης</string>
+    <string name="studio_action_probe_gateway">Έλεγχος καθυστέρησης</string>
+    <string name="studio_tasks_subtitle">Αυτοματοποιημένες μακροεντολές, ακολουθίες πλήκτρων &amp; εναύσματα σύνδεσης</string>
+    <string name="studio_action_add_task">Νέα εργασία</string>
+    <string name="studio_action_run_task">Εκτέλεση</string>
+    <string name="studio_sync_subtitle">Συγχρονισμός Google Drive API v3, αναθεωρήσεις Vector Clock &amp; κλειδώματα πολλαπλών χρηστών</string>
+
     <!-- Language Names -->
     <string name="lang_en">English</string>
     <string name="lang_de">Deutsch</string>

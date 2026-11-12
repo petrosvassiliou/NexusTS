@@ -1,5 +1,7 @@
 //! High-performance `xterm-256color` & 24-bit TrueColor VT100/VT520 Terminal Emulator,
-//! SSHv2 (`russh`) Session & Port/X11/Bastion Multiplexer, and Telnet (`IAC` NAWS) Engine.
+//! SSHv2 (`russh`) Session & Port/X11/Bastion Multiplexer, Serial Port Framing, and Telnet (`IAC` NAWS) Engine.
+
+pub mod ssh_transport;
 
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
@@ -497,3 +499,75 @@ pub fn build_telnet_naws_packet(cols: u16, rows: u16) -> Vec<u8> {
         240, // SE
     ]
 }
+
+/// Hardware Serial Port (USB-CDC / FTDI / CP210x / RS-232) framing parameters for Googlebook OS.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SerialLineConfig {
+    pub baud_rate: u32,
+    pub data_bits: u8,
+    pub parity: char, // 'N', 'E', 'O'
+    pub stop_bits: u8,
+    pub rts_cts_flow_control: bool,
+}
+
+impl Default for SerialLineConfig {
+    fn default() -> Self {
+        Self {
+            baud_rate: 115_200,
+            data_bits: 8,
+            parity: 'N',
+            stop_bits: 1,
+            rts_cts_flow_control: false,
+        }
+    }
+}
+
+impl SerialLineConfig {
+    /// Generates a POSIX `stty` raw line discipline configuration string (`115200 cs8 -parenb -cstopb`).
+    pub fn to_posix_stty_args(&self, device_path: &str) -> String {
+        let cs = match self.data_bits {
+            5 => "cs5",
+            6 => "cs6",
+            7 => "cs7",
+            _ => "cs8",
+        };
+        let parity_flag = match self.parity.to_ascii_uppercase() {
+            'E' => "parenb -parodd",
+            'O' => "parenb parodd",
+            _ => "-parenb",
+        };
+        let stop_flag = if self.stop_bits == 2 { "cstopb" } else { "-cstopb" };
+        let flow_flag = if self.rts_cts_flow_control { "crtscts" } else { "-crtscts" };
+        format!(
+            "stty -F {} {} {} {} {} {} raw -echo",
+            device_path, self.baud_rate, cs, parity_flag, stop_flag, flow_flag
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vt_buffer_renders_24bit_truecolor_and_alt_screen() {
+        let mut vt = VtTerminalBuffer::new(40, 10, 500);
+        vt.feed_bytes(b"\x1b]0;Prod-Bastion\x07\x1b[38;2;60;230;157mNEXUS\x1b[0m");
+        let snap = vt.snapshot();
+        assert_eq!(snap.title, "Prod-Bastion");
+        assert!(snap.visible_lines[0].starts_with("NEXUS"));
+
+        // Enter alternate screen (?1049h) and verify primary buffer is preserved upon exit (?1049l)
+        vt.feed_bytes(b"\x1b[?1049hALT_VIM");
+        assert!(vt.snapshot().visible_lines[0].starts_with("ALT_VIM"));
+        vt.feed_bytes(b"\x1b[?1049l");
+        assert!(vt.snapshot().visible_lines[0].starts_with("NEXUS"));
+    }
+
+    #[test]
+    fn telnet_naws_encodes_big_endian_dimensions() {
+        let pkt = build_telnet_naws_packet(132, 43);
+        assert_eq!(pkt, vec![255, 250, 31, 0, 132, 0, 43, 255, 240]);
+    }
+}
+

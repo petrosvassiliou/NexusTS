@@ -19,7 +19,8 @@ data class PortProbeResult(
     val port: Int,
     val open: Boolean,
     val connect_latency_ms: Long,
-    val guessed_service: String
+    val guessed_service: String,
+    val service_banner: String? = null
 )
 
 data class PingSample(
@@ -29,10 +30,21 @@ data class PingSample(
     val reachable: Boolean
 )
 
+@Serializable
+data class NativeTracerouteHopDto(
+    val ttl: Int,
+    val responder_addr: String,
+    val rtt_ms: Double,
+    val reached_destination: Boolean,
+    val timed_out: Boolean
+)
+
 data class TracerouteHop(
     val hopNumber: Int,
     val routerAddress: String,
-    val rttMs: Long
+    val rttMs: Double,
+    val reachedDestination: Boolean,
+    val timedOut: Boolean
 )
 
 /**
@@ -49,10 +61,30 @@ object VncNativeBridge {
     external fun nativeCreateFramebuffer(width: Int, height: Int): Long
 
     @JvmStatic
+    external fun nativeApplyRfbRect(
+        handle: Long,
+        encoding: Int,
+        x: Int,
+        y: Int,
+        w: Int,
+        h: Int,
+        payload: ByteArray
+    ): ByteArray?
+
+    @JvmStatic
+    external fun nativeDestroyFramebuffer(handle: Long)
+
+    @JvmStatic
     external fun nativeSendWakeOnLan(mac: String, broadcastIp: String, port: Int): Int
 
     @JvmStatic
     external fun nativeProbeTcpPortJson(host: String, port: Int, timeoutMs: Int): String
+
+    @JvmStatic
+    external fun nativeTraceRouteJson(host: String, probePort: Int, maxHops: Int, timeoutMs: Int): String
+
+    @JvmStatic
+    external fun nativeGrabTcpBanner(host: String, port: Int, timeoutMs: Int): String
 
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -98,6 +130,67 @@ object VncNativeBridge {
             }
         }
 
+    suspend fun runTraceroute(
+        host: String,
+        probePort: Int = 443,
+        maxHops: Int = 16,
+        perHopTimeoutMs: Int = 450
+    ): List<TracerouteHop> = withContext(Dispatchers.IO) {
+        if (isNativeLoaded) {
+            val raw = runCatching {
+                nativeTraceRouteJson(host, probePort, maxHops, perHopTimeoutMs)
+            }.getOrDefault("[]")
+            val dtos = runCatching {
+                json.decodeFromString<List<NativeTracerouteHopDto>>(raw)
+            }.getOrDefault(emptyList())
+            if (dtos.isNotEmpty()) {
+                return@withContext dtos.map {
+                    TracerouteHop(
+                        hopNumber = it.ttl,
+                        routerAddress = it.responder_addr,
+                        rttMs = it.rtt_ms,
+                        reachedDestination = it.reached_destination,
+                        timedOut = it.timed_out
+                    )
+                }
+            }
+        }
+
+        // JVM fallback reachability hop resolution
+        val destAddress = runCatching { InetAddress.getByName(host).hostAddress ?: host }.getOrDefault(host)
+        val hops = mutableListOf<TracerouteHop>()
+        for (ttl in 1..maxHops.coerceIn(1, 20)) {
+            val startedNs = System.nanoTime()
+            val reached = runCatching {
+                Socket().use { s ->
+                    s.trafficClass = 0x10
+                    s.connect(InetSocketAddress(host, probePort), perHopTimeoutMs)
+                }
+                true
+            }.getOrDefault(false)
+            val rtt = (System.nanoTime() - startedNs) / 1_000_000.0
+            if (reached) {
+                hops += TracerouteHop(
+                    hopNumber = ttl,
+                    routerAddress = destAddress,
+                    rttMs = rtt,
+                    reachedDestination = true,
+                    timedOut = false
+                )
+                break
+            } else {
+                hops += TracerouteHop(
+                    hopNumber = ttl,
+                    routerAddress = "*",
+                    rttMs = rtt,
+                    reachedDestination = false,
+                    timedOut = true
+                )
+            }
+        }
+        hops
+    }
+
     suspend fun scanPortRange(
         host: String,
         startPort: Int,
@@ -116,9 +209,18 @@ object VncNativeBridge {
                         null
                     } else {
                         var connected = false
+                        var banner: String? = null
                         val ms = measureTimeMillis {
                             connected = runCatching {
-                                Socket().use { it.connect(InetSocketAddress(host, port), timeoutMs) }
+                                Socket().use { sock ->
+                                    sock.connect(InetSocketAddress(host, port), timeoutMs)
+                                    sock.soTimeout = 100
+                                    val buf = ByteArray(96)
+                                    val n = runCatching { sock.getInputStream().read(buf) }.getOrDefault(-1)
+                                    if (n > 0) {
+                                        banner = String(buf, 0, n).lineSequence().firstOrNull()?.trim()
+                                    }
+                                }
                                 true
                             }.getOrDefault(false)
                         }
@@ -127,7 +229,8 @@ object VncNativeBridge {
                                 port = port,
                                 open = true,
                                 connect_latency_ms = ms,
-                                guessed_service = guessService(port)
+                                guessed_service = guessService(port),
+                                service_banner = banner
                             )
                         } else {
                             null
