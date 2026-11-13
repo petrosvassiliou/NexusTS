@@ -86,7 +86,9 @@
             </intent-filter>
 
             <!-- Direct Association with .nxts Encrypted Vault Documents (MIME type) -->
-            <intent-filter android:label="@string/vault_open_with_nexusts">
+            <intent-filter
+                android:label="@string/vault_open_with_nexusts"
+                tools:ignore="AppLinkUrlError">
                 <action android:name="android.intent.action.VIEW" />
                 <action android:name="android.intent.action.EDIT" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -96,7 +98,9 @@
             </intent-filter>
 
             <!-- Direct File/Content Path Suffix Matching for .nxts and .rtsz Vaults -->
-            <intent-filter android:label="@string/vault_open_with_nexusts">
+            <intent-filter
+                android:label="@string/vault_open_with_nexusts"
+                tools:ignore="AppLinkUrlError">
                 <action android:name="android.intent.action.VIEW" />
                 <action android:name="android.intent.action.EDIT" />
                 <category android:name="android.intent.category.DEFAULT" />

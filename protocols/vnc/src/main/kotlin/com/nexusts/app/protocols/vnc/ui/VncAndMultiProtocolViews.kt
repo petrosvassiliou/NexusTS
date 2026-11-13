@@ -288,7 +288,7 @@ fun CloudHypervisorConsoleView(
     settings: ProtocolSpecificSettings.CloudVirtualization,
     openConsoleCallback: (vmName: String, vmHost: String, vmProto: VaultProtocolType) -> Unit,
     modifier: Modifier = Modifier,
-    secret: ResolvedSessionSecret = ResolvedSessionSecret()
+    secret: ResolvedSessionSecret = ResolvedSessionSecret(username = "")
 ) {
     val scope = rememberCoroutineScope()
     var statusBanner by remember { mutableStateOf("") }

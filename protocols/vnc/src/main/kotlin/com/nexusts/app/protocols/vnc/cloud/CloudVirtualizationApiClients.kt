@@ -395,7 +395,7 @@ object CloudVirtualizationHubClient {
         settings: ProtocolSpecificSettings.CloudVirtualization,
         secret: ResolvedSessionSecret
     ): List<CloudManagedResource> {
-        val subId = settings.subscriptionOrTenantId
+        val subId = settings.subscriptionOrAccountId
         require(subId.isNotBlank()) { "Azure Subscription ID required" }
         val url = "https://management.azure.com/subscriptions/$subId/providers/Microsoft.Compute/virtualMachines?api-version=2024-03-01"
         val req = Request.Builder()

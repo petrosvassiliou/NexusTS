@@ -42,7 +42,7 @@ import javax.crypto.spec.SecretKeySpec
 import javax.xml.parsers.DocumentBuilderFactory
 
 data class ResolvedSessionSecret(
-    val username: String,
+    val username: String = "",
     val password: String = "",
     val domain: String = "",
     val privateKeyPem: String = "",

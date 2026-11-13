@@ -10,7 +10,7 @@ import androidx.room.PrimaryKey
 import androidx.room.Query
 import androidx.room.Room
 import androidx.room.RoomDatabase
-import net.sqlcipher.database.SupportFactory
+import net.zetetic.database.sqlcipher.SupportOpenHelperFactory
 
 @Entity(tableName = "synced_vaults")
 data class CachedVaultRecord(
@@ -71,7 +71,8 @@ abstract class OfflineEncryptedSyncDatabase : RoomDatabase() {
 
     companion object {
         fun buildEncrypted(context: Context, sqlCipherPassphrase: ByteArray): OfflineEncryptedSyncDatabase {
-            val supportFactory = SupportFactory(sqlCipherPassphrase.copyOf(), null, false)
+            runCatching { System.loadLibrary("sqlcipher") }
+            val supportFactory = SupportOpenHelperFactory(sqlCipherPassphrase.copyOf(), null, false)
             return Room.databaseBuilder(
                 context.applicationContext,
                 OfflineEncryptedSyncDatabase::class.java,

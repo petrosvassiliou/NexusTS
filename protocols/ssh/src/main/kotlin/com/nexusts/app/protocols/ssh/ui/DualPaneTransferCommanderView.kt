@@ -8,7 +8,6 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.draganddrop.dragAndDropSource
 import androidx.compose.foundation.draganddrop.dragAndDropTarget
-import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -599,19 +598,14 @@ private fun CommanderPaneCard(
                                 )
                                 .then(
                                     if (!item.isDirectory && item.name != "..") {
-                                        Modifier.dragAndDropSource {
-                                            detectDragGesturesAfterLongPress(
-                                                onDragStart = {
-                                                    val payload = "$paneId|${item.name}|${item.sizeBytes}|${item.permissions}"
-                                                    startTransfer(
-                                                        DragAndDropTransferData(
-                                                            clipData = ClipData.newPlainText("nexusts-sftp", payload)
-                                                        )
-                                                    )
-                                                },
-                                                onDrag = { _, _ -> }
-                                            )
-                                        }
+                                        Modifier.dragAndDropSource(
+                                            transferData = {
+                                                val payload = "$paneId|${item.name}|${item.sizeBytes}|${item.permissions}"
+                                                DragAndDropTransferData(
+                                                    clipData = ClipData.newPlainText("nexusts-sftp", payload)
+                                                )
+                                            }
+                                        )
                                     } else {
                                         Modifier
                                     }
