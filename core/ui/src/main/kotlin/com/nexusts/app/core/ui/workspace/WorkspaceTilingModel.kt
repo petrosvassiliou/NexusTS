@@ -50,6 +50,7 @@ data class WorkspaceSessionTab(
     val protocol: SessionProtocolKind,
     val status: SessionLifecycleStatus = SessionLifecycleStatus.CONNECTING,
     val environmentTag: String? = null,
+    val customColorHex: String? = null,
     val broadcastEnabled: Boolean = false,
     val zoomFactor: Float = 1.0f,
     val latencyMs: Int? = null,

@@ -49,6 +49,8 @@ class RtszDocumentImporter {
         val commandTasks = mutableListOf<CommandTask>()
         val keyTasks = mutableListOf<KeySequenceTask>()
         val dynamicFolders = mutableListOf<DynamicFolder>()
+        val templates = mutableListOf<com.nexusts.app.core.vault.model.ConnectionTemplate>()
+        val todoItems = mutableListOf<com.nexusts.app.core.vault.model.VaultTodoItem>()
 
         var documentId = UUID.randomUUID().toString()
         var docName = fallbackDocumentName
@@ -68,7 +70,7 @@ class RtszDocumentImporter {
             }
         }
 
-        // Pass 2: Materialize folders, connections, credentials, gateways, and automation tasks
+        // Pass 2: Materialize folders, connections, templates, credentials, gateways, to-dos, and automation tasks
         for (i in 0 until allElements.length) {
             val node = allElements.item(i)
             if (node.nodeType != Node.ELEMENT_NODE) continue
@@ -80,6 +82,22 @@ class RtszDocumentImporter {
             val parentIdRaw = elem.childText("ParentID").takeIf { it.isNotBlank() }
             val name = elem.childText("Name").ifBlank { tag }
             val uri = elem.childText("URI")
+            val isTemplate = elem.childText("IsTemplate").equals("true", true) || tag == "RoyalTemplate"
+            val isFavorite = elem.childText("Favorite").equals("true", true) || elem.childText("IsFavorite").equals("true", true)
+            val colorHex = elem.childText("Color").takeIf { it.startsWith("#") && (it.length == 7 || it.length == 9) }
+            val customProps = (1..10).mapNotNull { idx ->
+                val v = elem.childText("CustomField$idx")
+                if (v.isNotBlank()) {
+                    val fieldLabel = elem.childText("CustomField${idx}Name").ifBlank { "CustomField$idx" }
+                    com.nexusts.app.core.vault.model.CustomPropertyEntry(
+                        key = fieldLabel,
+                        value = v,
+                        isProtected = idx > 8
+                    )
+                } else {
+                    null
+                }
+            }
             val rawCredMode = elem.childText("CredentialMode").trim()
             val explicitCredId = elem.childText("CredentialID").takeIf { it.isNotBlank() }
 
@@ -130,7 +148,9 @@ class RtszDocumentImporter {
                 credentialMode = credMode,
                 explicitCredentialId = if (credMode == InheritanceMode.OVERRIDE_EXPLICIT) resolvedCredId else null,
                 gatewayMode = if (gwId != null) InheritanceMode.OVERRIDE_EXPLICIT else InheritanceMode.INHERIT_FROM_PARENT,
-                explicitGatewayId = gwId
+                explicitGatewayId = gwId,
+                displayColorAccentHex = colorHex,
+                customProperties = customProps
             )
 
             when (tag) {
@@ -146,7 +166,18 @@ class RtszDocumentImporter {
                     }
                 }
 
-                "RoyalRDSConnection" -> {
+                "RoyalToDoItem" -> {
+                    todoItems += com.nexusts.app.core.vault.model.VaultTodoItem(
+                        id = id,
+                        targetObjectId = parentIdRaw?.takeIf { it != documentId },
+                        title = name,
+                        completed = elem.childText("Completed").equals("true", true) || elem.childText("IsCompleted").equals("true", true),
+                        priority = elem.childText("Priority").ifBlank { "NORMAL" },
+                        dueIsoDate = elem.childText("DueDate")
+                    )
+                }
+
+                "RoyalRDSConnection", "RoyalTemplate" -> {
                     val port = elem.childText("RDPPort").toIntOrNull() ?: 3389
                     val audioModeRaw = elem.childText("AudioRedirectionMode").trim()
                     val audioMode = when {
@@ -167,61 +198,90 @@ class RtszDocumentImporter {
                         else ->
                             com.nexusts.app.core.vault.model.RdpResizeBehavior.DYNAMIC_DISP_DVC
                     }
-                    connections += VaultConnection(
-                        id = id,
-                        parentFolderId = parentIdRaw?.takeIf { it != documentId },
-                        name = name,
-                        host = uri,
-                        protocol = VaultProtocolType.RDP,
-                        osFamily = "Windows",
-                        notes = elem.childText("Notes"),
-                        inheritable = inheritable,
-                        settings = ProtocolSpecificSettings.Rdp(
-                            port = port,
-                            connectToConsoleAdmin = elem.childText("ConnectToAdministerOrConsole").equals("true", true) ||
-                                elem.childText("ConnectToConsole").equals("true", true),
-                            hiDpiEnabled = !elem.childText("AutoAdjustRetinaDisplay").equals("false", true),
-                            desktopScaleFactorPercent = scaleRaw,
-                            deviceScaleFactorPercent = if (scaleRaw >= 175) 180 else if (scaleRaw >= 125) 140 else 100,
-                            resizeBehavior = resizeBehavior,
-                            customDesktopWidth = elem.childText("DesktopWidth").toIntOrNull()?.takeIf { it >= 640 } ?: 1920,
-                            customDesktopHeight = elem.childText("DesktopHeight").toIntOrNull()?.takeIf { it >= 480 } ?: 1080,
-                            colorDepthBits = elem.childText("ColorDepth").toIntOrNull()?.takeIf { it in listOf(16, 24, 32) } ?: 32,
-                            redirectClipboard = !elem.childText("RedirectClipboard").equals("false", true),
-                            audioRedirectionMode = audioMode,
-                            redirectAudioPlayback = audioMode == com.nexusts.app.core.vault.model.RdpAudioRedirectionMode.PLAY_ON_THIS_DEVICE,
-                            redirectMicrophone = elem.childText("RedirectAudioCapture").equals("true", true) ||
-                                elem.childText("RedirectMicrophone").equals("true", true),
-                            redirectDrives = elem.childText("RedirectDrives").equals("true", true),
-                            redirectPrinters = elem.childText("RedirectPrinters").equals("true", true),
-                            redirectPorts = elem.childText("RedirectPorts").equals("true", true),
-                            redirectSmartcardYubiKey = elem.childText("RedirectSmartCards").equals("true", true),
-                            enableFontSmoothing = !elem.childText("AllowFontSmoothing").equals("false", true),
-                            enableDesktopComposition = !elem.childText("AllowDesktopComposition").equals("false", true),
-                            enableWallpaper = elem.childText("AllowWallpaper").equals("true", true),
-                            nlaSecurityRequired = !elem.childText("NetworkLevelAuthentication").equals("false", true),
-                            restrictedAdminMode = elem.childText("RestrictedAdminMode").equals("true", true),
-                            ignoreCertificateWarnings = elem.childText("IgnoreCertificateWarning").equals("true", true),
-                            rdGatewayHostname = elem.childText("RDGatewayHost"),
-                            rdGatewayPort = elem.childText("RDGatewayPort").toIntOrNull() ?: 443
-                        )
+                    val rdpSettings = ProtocolSpecificSettings.Rdp(
+                        port = port,
+                        connectToConsoleAdmin = elem.childText("ConnectToAdministerOrConsole").equals("true", true) ||
+                            elem.childText("ConnectToConsole").equals("true", true),
+                        hiDpiEnabled = !elem.childText("AutoAdjustRetinaDisplay").equals("false", true),
+                        desktopScaleFactorPercent = scaleRaw,
+                        deviceScaleFactorPercent = if (scaleRaw >= 175) 180 else if (scaleRaw >= 125) 140 else 100,
+                        resizeBehavior = resizeBehavior,
+                        customDesktopWidth = elem.childText("DesktopWidth").toIntOrNull()?.takeIf { it >= 640 } ?: 1920,
+                        customDesktopHeight = elem.childText("DesktopHeight").toIntOrNull()?.takeIf { it >= 480 } ?: 1080,
+                        colorDepthBits = elem.childText("ColorDepth").toIntOrNull()?.takeIf { it in listOf(16, 24, 32) } ?: 32,
+                        redirectClipboard = !elem.childText("RedirectClipboard").equals("false", true),
+                        audioRedirectionMode = audioMode,
+                        redirectAudioPlayback = audioMode == com.nexusts.app.core.vault.model.RdpAudioRedirectionMode.PLAY_ON_THIS_DEVICE,
+                        redirectMicrophone = elem.childText("RedirectAudioCapture").equals("true", true) ||
+                            elem.childText("RedirectMicrophone").equals("true", true),
+                        redirectDrives = elem.childText("RedirectDrives").equals("true", true),
+                        redirectPrinters = elem.childText("RedirectPrinters").equals("true", true),
+                        redirectPorts = elem.childText("RedirectPorts").equals("true", true),
+                        redirectSmartcardYubiKey = elem.childText("RedirectSmartCards").equals("true", true),
+                        enableFontSmoothing = !elem.childText("AllowFontSmoothing").equals("false", true),
+                        enableDesktopComposition = !elem.childText("AllowDesktopComposition").equals("false", true),
+                        enableWallpaper = elem.childText("AllowWallpaper").equals("true", true),
+                        nlaSecurityRequired = !elem.childText("NetworkLevelAuthentication").equals("false", true),
+                        restrictedAdminMode = elem.childText("RestrictedAdminMode").equals("true", true),
+                        ignoreCertificateWarnings = elem.childText("IgnoreCertificateWarning").equals("true", true),
+                        rdGatewayHostname = elem.childText("RDGatewayHost"),
+                        rdGatewayPort = elem.childText("RDGatewayPort").toIntOrNull() ?: 443
                     )
+                    if (isTemplate) {
+                        templates += com.nexusts.app.core.vault.model.ConnectionTemplate(
+                            id = id,
+                            name = name,
+                            description = elem.childText("Notes"),
+                            protocol = VaultProtocolType.RDP,
+                            colorAccentHex = colorHex,
+                            inheritable = inheritable,
+                            settings = rdpSettings
+                        )
+                    } else {
+                        connections += VaultConnection(
+                            id = id,
+                            parentFolderId = parentIdRaw?.takeIf { it != documentId },
+                            name = name,
+                            host = uri,
+                            protocol = VaultProtocolType.RDP,
+                            osFamily = "Windows",
+                            notes = elem.childText("Notes"),
+                            favorite = isFavorite,
+                            inheritable = inheritable,
+                            settings = rdpSettings
+                        )
+                    }
                 }
 
                 "RoyalSSHConnection" -> {
                     val isTelnet = elem.childText("IsTelnetConnection").equals("true", true)
                     val port = elem.childText("Port").toIntOrNull() ?: if (isTelnet) 23 else 22
-                    connections += VaultConnection(
-                        id = id,
-                        parentFolderId = parentIdRaw?.takeIf { it != documentId },
-                        name = name,
-                        host = uri,
-                        protocol = if (isTelnet) VaultProtocolType.TELNET else VaultProtocolType.SSH,
-                        osFamily = "Linux",
-                        notes = elem.childText("Notes"),
-                        inheritable = inheritable,
-                        settings = ProtocolSpecificSettings.Ssh(port = port)
-                    )
+                    val proto = if (isTelnet) VaultProtocolType.TELNET else VaultProtocolType.SSH
+                    val sshSettings = ProtocolSpecificSettings.Ssh(port = port)
+                    if (isTemplate) {
+                        templates += com.nexusts.app.core.vault.model.ConnectionTemplate(
+                            id = id,
+                            name = name,
+                            description = elem.childText("Notes"),
+                            protocol = proto,
+                            colorAccentHex = colorHex,
+                            inheritable = inheritable,
+                            settings = sshSettings
+                        )
+                    } else {
+                        connections += VaultConnection(
+                            id = id,
+                            parentFolderId = parentIdRaw?.takeIf { it != documentId },
+                            name = name,
+                            host = uri,
+                            protocol = proto,
+                            osFamily = "Linux",
+                            notes = elem.childText("Notes"),
+                            favorite = isFavorite,
+                            inheritable = inheritable,
+                            settings = sshSettings
+                        )
+                    }
                 }
 
                 "RoyalFileTransferConnection" -> {
@@ -239,6 +299,7 @@ class RtszDocumentImporter {
                         name = name,
                         host = uri,
                         protocol = proto,
+                        favorite = isFavorite,
                         inheritable = inheritable,
                         settings = ProtocolSpecificSettings.FileTransfer(
                             port = port,
@@ -257,6 +318,7 @@ class RtszDocumentImporter {
                         host = uri,
                         protocol = if (isArd) VaultProtocolType.APPLE_SCREEN_SHARING else VaultProtocolType.VNC,
                         osFamily = if (isArd) "macOS" else "Linux",
+                        favorite = isFavorite,
                         inheritable = inheritable,
                         settings = ProtocolSpecificSettings.Vnc(
                             port = port,
@@ -272,6 +334,7 @@ class RtszDocumentImporter {
                         name = name,
                         host = uri,
                         protocol = VaultProtocolType.WEB_PAGE,
+                        favorite = isFavorite,
                         inheritable = inheritable,
                         settings = ProtocolSpecificSettings.WebPage(
                             url = uri.ifBlank { "https://localhost" },
@@ -284,6 +347,8 @@ class RtszDocumentImporter {
                     val keyContent = elem.childText("KeyFileContent")
                     val rawUser = elem.childText("UserName")
                     val explicitDomain = elem.childText("Domain")
+                    val totpSecret = elem.childText("OneTimePasswordSecret")
+                        .ifBlank { elem.childText("TOTPSecret") }
                     val (parsedDomain, parsedUser) = splitDomainAndUsername(rawUser)
                     credentials += VaultCredential(
                         id = id,
@@ -297,7 +362,8 @@ class RtszDocumentImporter {
                         username = parsedUser,
                         domain = explicitDomain.ifBlank { parsedDomain },
                         secretPassword = elem.childText("Password"),
-                        privateKeyPem = keyContent
+                        privateKeyPem = keyContent,
+                        totpSecretBase32 = totpSecret
                     )
                 }
 
@@ -355,7 +421,9 @@ class RtszDocumentImporter {
             credentials = credentials,
             gateways = gateways,
             commandTasks = commandTasks,
-            keySequenceTasks = keyTasks
+            keySequenceTasks = keyTasks,
+            templates = templates,
+            todoItems = todoItems
         )
     }
 

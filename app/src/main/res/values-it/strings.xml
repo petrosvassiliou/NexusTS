@@ -140,6 +140,31 @@
     <string name="rdp_sync_clipboard_chip">Appunti</string>
     <string name="rdp_console_badge">Console /admin</string>
 
+    <!-- Royal TS Enterprise Parity -->
+    <string name="nav_templates">Modelli</string>
+    <string name="action_connect_with_options">Connetti con opzioni…</string>
+    <string name="action_connect_all_folder">Connetti tutto nella cartella</string>
+    <string name="action_duplicate_connection">Duplica connessione</string>
+    <string name="action_delete_item">Elimina</string>
+    <string name="action_toggle_favorite">Preferito</string>
+    <string name="action_reconnect_tab">Riconnetti sessione</string>
+    <string name="action_reload_dynamic_folder">Ricarica inventario</string>
+    <string name="action_new_smart_folder">Nuova cartella smart</string>
+    <string name="action_new_template">Nuovo modello</string>
+    <string name="sidebar_filter_placeholder">Filtra connessioni, host, tag…</string>
+    <string name="vault_section_favorites">Preferiti</string>
+    <string name="vault_section_recents">Sessioni recenti</string>
+    <string name="inspector_totp_code">Autenticatore 2FA / TOTP</string>
+    <string name="inspector_custom_properties">Proprietà personalizzate</string>
+    <string name="inspector_notes_docs">Note e documentazione</string>
+    <string name="inspector_todo_items">Elenco attività (To-Do)</string>
+    <string name="action_add_todo">Aggiungi attività</string>
+    <string name="studio_templates_subtitle">Modelli di connessione riutilizzabili, colori accento e profili protocollo</string>
+    <string name="dialog_connect_options_title">Connetti con opzioni</string>
+    <string name="dialog_field_template">Applica modello di connessione</string>
+    <string name="dialog_field_color_accent">Colore accento</string>
+    <string name="overview_active_sessions">Sessioni attive</string>
+
     <!-- Language Names -->
     <string name="lang_en">English</string>
     <string name="lang_de">Deutsch</string>

@@ -126,6 +126,9 @@ fun FolderPropertiesAndCredentialDialog(
     var inlineDomain by remember(editingFolder) { mutableStateOf("") }
     var inlineUsername by remember(editingFolder) { mutableStateOf("") }
     var inlinePassword by remember(editingFolder) { mutableStateOf("") }
+    var folderColorHex by remember(editingFolder) {
+        mutableStateOf(editingFolder?.inheritable?.displayColorAccentHex)
+    }
 
     val candidateParents = remember(allFolders, folderId) {
         val byId = allFolders.associateBy { it.id }
@@ -200,6 +203,12 @@ fun FolderPropertiesAndCredentialDialog(
                         }
                     }
                 }
+
+                RoyalColorSwatchSelector(
+                    label = strings.dialogFieldColorAccent,
+                    selectedHex = folderColorHex,
+                    onSelectHex = { folderColorHex = it }
+                )
 
                 HorizontalDivider()
 
@@ -354,19 +363,23 @@ fun FolderPropertiesAndCredentialDialog(
                     val updatedInheritable = when (credAssignChoice) {
                         0 -> baseInheritable.copy(
                             credentialMode = InheritanceMode.OVERRIDE_EXPLICIT,
-                            explicitCredentialId = newInlineCred?.id
+                            explicitCredentialId = newInlineCred?.id,
+                            displayColorAccentHex = folderColorHex
                         )
                         1 -> baseInheritable.copy(
                             credentialMode = InheritanceMode.OVERRIDE_EXPLICIT,
-                            explicitCredentialId = selectedCredId
+                            explicitCredentialId = selectedCredId,
+                            displayColorAccentHex = folderColorHex
                         )
                         3 -> baseInheritable.copy(
                             credentialMode = InheritanceMode.PROMPT_AT_CONNECT,
-                            explicitCredentialId = null
+                            explicitCredentialId = null,
+                            displayColorAccentHex = folderColorHex
                         )
                         else -> baseInheritable.copy(
                             credentialMode = InheritanceMode.INHERIT_FROM_PARENT,
-                            explicitCredentialId = null
+                            explicitCredentialId = null,
+                            displayColorAccentHex = folderColorHex
                         )
                     }
 
@@ -1023,6 +1036,7 @@ fun CredentialVaultStudioView(
     var credName by remember { mutableStateOf("") }
     var credUser by remember { mutableStateOf("") }
     var credSecret by remember { mutableStateOf("") }
+    var credTotpSecret by remember { mutableStateOf("") }
     var credKind by remember { mutableStateOf(CredentialSourceKind.VAULT_INTERNAL) }
 
     if (showAddDialog) {
@@ -1071,6 +1085,13 @@ fun CredentialVaultStudioView(
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
+                    OutlinedTextField(
+                        value = credTotpSecret,
+                        onValueChange = { credTotpSecret = it },
+                        label = { Text("${strings.inspectorTotpCode} (Base32)") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
                 }
             },
             confirmButton = {
@@ -1083,12 +1104,14 @@ fun CredentialVaultStudioView(
                                 sourceKind = credKind,
                                 username = credUser.trim(),
                                 secretPassword = credSecret,
+                                totpSecretBase32 = credTotpSecret.trim(),
                                 externalReferenceUri = if (credKind != CredentialSourceKind.VAULT_INTERNAL) credUser.trim() else ""
                             )
                         )
                         credName = ""
                         credUser = ""
                         credSecret = ""
+                        credTotpSecret = ""
                         showAddDialog = false
                     }
                 ) {
@@ -1153,28 +1176,39 @@ fun CredentialVaultStudioView(
                     color = MaterialTheme.colorScheme.surfaceContainer,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Row(
+                    Column(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 16.dp, vertical = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(cred.name, style = MaterialTheme.typography.titleSmall)
-                            Text(
-                                text = "${cred.sourceKind.name} • ${cred.username.ifBlank { "-" }}" +
-                                    if (cred.keyFingerprintSha256.isNotBlank()) " • ${cred.keyFingerprintSha256}" else "",
-                                style = NexusTheme.monospace.keycapShortcut,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        if (cred.publicKeyOpenSsh.isNotBlank()) {
-                            IconButton(
-                                onClick = { clipboard.setText(AnnotatedString(cred.publicKeyOpenSsh)) }
-                            ) {
-                                Icon(Icons.Outlined.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(cred.name, style = MaterialTheme.typography.titleSmall)
+                                Text(
+                                    text = "${cred.sourceKind.name} • ${cred.username.ifBlank { "-" }}" +
+                                        if (cred.keyFingerprintSha256.isNotBlank()) " • ${cred.keyFingerprintSha256}" else "",
+                                    style = NexusTheme.monospace.keycapShortcut,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
                             }
+                            if (cred.publicKeyOpenSsh.isNotBlank()) {
+                                IconButton(
+                                    onClick = { clipboard.setText(AnnotatedString(cred.publicKeyOpenSsh)) }
+                                ) {
+                                    Icon(Icons.Outlined.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))
+                                }
+                            }
+                        }
+                        if (cred.totpSecretBase32.isNotBlank()) {
+                            LiveTotpAuthenticatorCard(
+                                totpSecretBase32 = cred.totpSecretBase32,
+                                title = strings.inspectorTotpCode
+                            )
                         }
                     }
                 }

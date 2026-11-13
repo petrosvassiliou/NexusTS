@@ -134,26 +134,45 @@ fun NexusAdaptiveDesktopScaffold(
                     .weight(1f)
                     .fillMaxWidth()
             ) {
-                // Expressive Navigation Rail
+                // Expressive Navigation Rail with Live Session & Task Badges
                 NavigationRail(
                     containerColor = MaterialTheme.colorScheme.surfaceContainerLowest,
                     contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier
                         .fillMaxHeight()
-                        .width(74.dp)
+                        .width(78.dp)
                 ) {
-                    Spacer(modifier = Modifier.height(8.dp))
+                    Spacer(modifier = Modifier.height(10.dp))
                     destinations.forEach { dest ->
                         val selected = dest.id == selectedDestinationId
                         NavigationRailItem(
                             selected = selected,
                             onClick = { onSelectDestination(dest.id) },
                             icon = {
-                                Icon(
-                                    imageVector = dest.icon,
-                                    contentDescription = dest.label,
-                                    modifier = Modifier.size(22.dp)
-                                )
+                                if (dest.badgeCount > 0) {
+                                    androidx.compose.material3.BadgedBox(
+                                        badge = {
+                                            androidx.compose.material3.Badge(
+                                                containerColor = MaterialTheme.colorScheme.secondary,
+                                                contentColor = MaterialTheme.colorScheme.onSecondary
+                                            ) {
+                                                Text(dest.badgeCount.toString())
+                                            }
+                                        }
+                                    ) {
+                                        Icon(
+                                            imageVector = dest.icon,
+                                            contentDescription = dest.label,
+                                            modifier = Modifier.size(22.dp)
+                                        )
+                                    }
+                                } else {
+                                    Icon(
+                                        imageVector = dest.icon,
+                                        contentDescription = dest.label,
+                                        modifier = Modifier.size(22.dp)
+                                    )
+                                }
                             },
                             label = {
                                 Text(

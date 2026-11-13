@@ -1,5 +1,6 @@
 package com.nexusts.app.feature.workspace
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -7,7 +8,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -17,25 +17,38 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.Bookmarks
+import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.CloudSync
+import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.DeviceHub
+import androidx.compose.material.icons.outlined.DynamicFeed
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material.icons.outlined.History
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.outlined.Language
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.LockOpen
+import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Podcasts
+import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Security
+import androidx.compose.material.icons.outlined.Star
+import androidx.compose.material.icons.outlined.StarBorder
 import androidx.compose.material.icons.outlined.SystemUpdateAlt
 import androidx.compose.material.icons.outlined.Terminal
+import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material.icons.outlined.UploadFile
 import androidx.compose.material.icons.outlined.VerticalSplit
 import androidx.compose.material.icons.outlined.ViewSidebar
@@ -63,9 +76,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.nexusts.app.core.ui.components.ExpressiveMorphingIconButton
+import com.nexusts.app.core.ui.components.ExpressiveSplitActionButton
+import com.nexusts.app.core.ui.components.parseHexColorOrNull
+import com.nexusts.app.core.ui.input.NexusShortcutAction
 import com.nexusts.app.core.ui.input.nexusDesktopPointerButtons
 import com.nexusts.app.core.ui.theme.NexusTheme
 import com.nexusts.app.core.ui.workspace.ExternalDisplayDescriptor
@@ -74,21 +92,37 @@ import com.nexusts.app.core.ui.workspace.NexusRailDestination
 import com.nexusts.app.core.ui.workspace.QuickConnectCommandPalette
 import com.nexusts.app.core.ui.workspace.QuickLaunchPlacement
 import com.nexusts.app.core.ui.workspace.SessionProtocolKind
-import com.nexusts.app.core.ui.workspace.SplitOrientation
 import com.nexusts.app.core.ui.workspace.SplitPaneWorkspaceContainer
 import com.nexusts.app.core.ui.workspace.SplitWorkspaceLabels
 import com.nexusts.app.core.ui.workspace.WorkspaceSessionTab
 import com.nexusts.app.core.ui.workspace.protocolAccentColor
 import com.nexusts.app.core.ui.workspace.protocolIcon
+import com.nexusts.app.core.vault.inheritance.EffectiveConnectionProfile
+import com.nexusts.app.core.vault.model.CustomPropertyEntry
+import com.nexusts.app.core.vault.model.DynamicFolder
 import com.nexusts.app.core.vault.model.InheritanceMode
 import com.nexusts.app.core.vault.model.ProtocolSpecificSettings
 import com.nexusts.app.core.vault.model.RdpAudioRedirectionMode
+import com.nexusts.app.core.vault.model.SmartFolder
 import com.nexusts.app.core.vault.model.VaultConnection
 import com.nexusts.app.core.vault.model.VaultFolder
 import com.nexusts.app.core.vault.model.VaultProtocolType
+import com.nexusts.app.core.vault.model.VaultTodoItem
 import com.nexusts.app.feature.workspace.i18n.NexusLocaleController
 import com.nexusts.app.feature.workspace.i18n.SupportedNexusLocale
 import com.nexusts.app.feature.workspace.i18n.WorkspaceLocalizedStrings
+import com.nexusts.app.feature.workspace.studios.AutomationTasksStudioView
+import com.nexusts.app.feature.workspace.studios.ConnectWithOptionsDialog
+import com.nexusts.app.feature.workspace.studios.ConnectionTemplatesStudioView
+import com.nexusts.app.feature.workspace.studios.CredentialVaultStudioView
+import com.nexusts.app.feature.workspace.studios.DriveSyncAndConflictStudioView
+import com.nexusts.app.feature.workspace.studios.ExpressiveVaultOverviewDashboard
+import com.nexusts.app.feature.workspace.studios.FolderPropertiesAndCredentialDialog
+import com.nexusts.app.feature.workspace.studios.InspectorExtendedRoyalCards
+import com.nexusts.app.feature.workspace.studios.NewOrEditConnectionDialog
+import com.nexusts.app.feature.workspace.studios.NewSmartFolderDialog
+import com.nexusts.app.feature.workspace.studios.NewTemplateDialog
+import com.nexusts.app.feature.workspace.studios.SecureGatewayStudioView
 import com.nexusts.app.protocols.rdp.ui.RdpSessionSurfaceView
 import com.nexusts.app.protocols.ssh.ui.DualPaneTransferCommanderView
 import com.nexusts.app.protocols.ssh.ui.SshTerminalSessionView
@@ -98,7 +132,8 @@ import com.nexusts.app.protocols.vnc.ui.NetworkUtilitiesView
 import com.nexusts.app.protocols.vnc.ui.VncSessionCanvasView
 
 /**
- * Complete Adaptive Googlebook OS & Android Tablet Enterprise Workspace Screen.
+ * Complete Adaptive Googlebook OS & Android Tablet Enterprise Workspace Screen
+ * built on Material Design 3 Expressive with 100% Royal TS feature parity.
  */
 @Composable
 fun NexusWorkspaceScreen(
@@ -116,12 +151,20 @@ fun NexusWorkspaceScreen(
     val rootPane by viewModel.tilingController.rootNode.collectAsState()
     val focusedPaneId by viewModel.tilingController.focusedPaneId.collectAsState()
 
-    val destinations = remember(strings) {
+    val activeSessionCount = remember(rootPane) {
+        viewModel.tilingController.allActiveTabs().size
+    }
+    val pendingTodoCount = remember(uiState.vaultDocument.todoItems) {
+        uiState.vaultDocument.todoItems.count { !it.completed }
+    }
+
+    val destinations = remember(strings, activeSessionCount, uiState.vaultDocument.templates.size, pendingTodoCount) {
         listOf(
-            NexusRailDestination("connections", strings.navConnections, Icons.Outlined.Terminal),
+            NexusRailDestination("connections", strings.navConnections, Icons.Outlined.Terminal, badgeCount = activeSessionCount),
+            NexusRailDestination("templates", strings.navTemplates, Icons.Outlined.Bookmarks, badgeCount = uiState.vaultDocument.templates.size),
             NexusRailDestination("credentials", strings.navCredentials, Icons.Outlined.Key),
             NexusRailDestination("gateways", strings.navGateways, Icons.Outlined.DeviceHub),
-            NexusRailDestination("tasks", strings.navTasks, Icons.Outlined.AutoAwesome),
+            NexusRailDestination("tasks", strings.navTasks, Icons.Outlined.AutoAwesome, badgeCount = pendingTodoCount),
             NexusRailDestination("sync", strings.navDriveSync, Icons.Outlined.CloudSync)
         )
     }
@@ -133,6 +176,7 @@ fun NexusWorkspaceScreen(
             detachNewWindowLabel = strings.detachNewWindow,
             detachToDisplayPrefix = strings.detachToDisplayPrefix,
             toggleBroadcastLabel = strings.toggleBroadcast,
+            reconnectTabLabel = strings.actionReconnectTab,
             closeTabLabel = strings.closeTab,
             emptyWorkspaceTitle = strings.emptyWorkspaceTitle,
             emptyWorkspaceSubtitle = strings.emptyWorkspaceSubtitle
@@ -159,17 +203,30 @@ fun NexusWorkspaceScreen(
             DesktopTopWindowChrome(
                 vaultName = uiState.vaultDocument.name,
                 vaultRevision = uiState.vaultDocument.revision,
+                isSidebarVisible = uiState.isSidebarVisible,
+                isInspectorVisible = uiState.isInspectorVisible,
+                isBottomDrawerVisible = uiState.isBottomDrawerVisible,
                 isVaultLocked = uiState.isVaultLocked,
                 broadcastEnabled = uiState.broadcastModeEnabled,
                 flexibleUpdateDownloaded = flexibleUpdateDownloaded,
                 strings = strings,
                 onToggleSidebar = {
-                    viewModel.handleShortcut(com.nexusts.app.core.ui.input.NexusShortcutAction.TOGGLE_SIDEBAR_TREE) {}
+                    viewModel.handleShortcut(NexusShortcutAction.TOGGLE_SIDEBAR_TREE) {}
+                },
+                onToggleInspector = {
+                    viewModel.handleShortcut(NexusShortcutAction.TOGGLE_PROPERTY_INSPECTOR) {}
+                },
+                onToggleBottomDrawer = {
+                    viewModel.handleShortcut(NexusShortcutAction.TOGGLE_BOTTOM_LOG_DRAWER) {}
                 },
                 onOpenQuickConnect = {
-                    viewModel.handleShortcut(com.nexusts.app.core.ui.input.NexusShortcutAction.QUICK_CONNECT_PALETTE) {}
+                    viewModel.handleShortcut(NexusShortcutAction.QUICK_CONNECT_PALETTE) {}
                 },
                 onNewConnection = viewModel::openNewConnectionDialog,
+                onNewFolder = viewModel::openNewFolderDialog,
+                onNewSmartFolder = viewModel::openNewSmartFolderDialog,
+                onNewTemplate = viewModel::openNewTemplateDialog,
+                onNewLocalShell = viewModel::launchLocalShellTab,
                 onImportRtsz = onRequestImportFilePicker,
                 onSyncGoogleDrive = onRequestGoogleDriveSync,
                 onToggleBroadcast = viewModel::toggleGlobalBroadcast,
@@ -187,15 +244,28 @@ fun NexusWorkspaceScreen(
                 VaultHierarchySidebarTree(
                     uiState = uiState,
                     strings = strings,
+                    onFilterQueryChanged = viewModel::updateSidebarFilterQuery,
                     smartFolderConnectionsProvider = viewModel::evaluateSmartFolderConnections,
                     onToggleSmartFolder = viewModel::toggleSmartFolderSelection,
+                    onNewSmartFolder = viewModel::openNewSmartFolderDialog,
+                    onToggleDynamicFolder = viewModel::toggleDynamicFolder,
+                    onReloadDynamicFolder = viewModel::reloadDynamicFolder,
                     onNewFolder = viewModel::openNewFolderDialog,
                     onEditFolder = viewModel::openEditFolderDialog,
+                    onConnectAllInFolder = { folderId ->
+                        viewModel.connectAllInFolder(folderId) { tab ->
+                            onDetachTabToNativeWindow(tab, null)
+                        }
+                    },
                     onSelectConnection = { id ->
                         viewModel.selectConnectionInTree(id)
                         viewModel.selectRailDestination("connections")
                     },
                     onEditConnection = viewModel::openEditConnectionDialog,
+                    onConnectWithOptions = viewModel::openConnectWithOptions,
+                    onToggleFavorite = viewModel::toggleFavoriteConnection,
+                    onDuplicateConnection = viewModel::duplicateConnection,
+                    onDeleteConnection = viewModel::deleteConnection,
                     onLaunchConnection = { conn, placement ->
                         viewModel.selectRailDestination("connections")
                         viewModel.launchConnection(conn, placement) { detachedTab ->
@@ -207,14 +277,21 @@ fun NexusWorkspaceScreen(
         },
         mainWorkspaceContent = {
             when (uiState.activeRailId) {
-                "credentials" -> com.nexusts.app.feature.workspace.studios.CredentialVaultStudioView(
+                "templates" -> ConnectionTemplatesStudioView(
+                    templates = uiState.vaultDocument.templates,
+                    strings = strings,
+                    onCreateConnectionFromTemplate = viewModel::createConnectionFromTemplate,
+                    onOpenNewTemplateDialog = viewModel::openNewTemplateDialog
+                )
+
+                "credentials" -> CredentialVaultStudioView(
                     credentials = uiState.vaultDocument.credentials,
                     strings = strings,
                     onGenerateEd25519Key = viewModel::generateAndStoreSshKeyPair,
                     onCreateCredential = viewModel::addCredentialToVault
                 )
 
-                "gateways" -> com.nexusts.app.feature.workspace.studios.SecureGatewayStudioView(
+                "gateways" -> SecureGatewayStudioView(
                     gateways = uiState.vaultDocument.gateways,
                     healthReports = uiState.gatewayHealthReports,
                     strings = strings,
@@ -222,7 +299,7 @@ fun NexusWorkspaceScreen(
                     onAddGateway = viewModel::addGatewayToVault
                 )
 
-                "tasks" -> com.nexusts.app.feature.workspace.studios.AutomationTasksStudioView(
+                "tasks" -> AutomationTasksStudioView(
                     commandTasks = uiState.vaultDocument.commandTasks,
                     keySequenceTasks = uiState.vaultDocument.keySequenceTasks,
                     strings = strings,
@@ -231,7 +308,7 @@ fun NexusWorkspaceScreen(
                     onAddCommandTask = viewModel::addCommandTaskToVault
                 )
 
-                "sync" -> com.nexusts.app.feature.workspace.studios.DriveSyncAndConflictStudioView(
+                "sync" -> DriveSyncAndConflictStudioView(
                     vaultDocument = uiState.vaultDocument,
                     useSharedTeamDrive = uiState.useSharedTeamDriveZone,
                     strings = strings,
@@ -261,14 +338,28 @@ fun NexusWorkspaceScreen(
                             it.copy(broadcastEnabled = !it.broadcastEnabled)
                         }
                     },
+                    onReconnectTab = viewModel::reconnectSessionTab,
                     emptyStateContent = {
-                        ExpressiveEmptyWorkspaceHero(
+                        ExpressiveVaultOverviewDashboard(
+                            vaultDocument = uiState.vaultDocument,
+                            activeSessionCount = activeSessionCount,
                             strings = strings,
                             onOpenQuickConnect = {
-                                viewModel.handleShortcut(
-                                    com.nexusts.app.core.ui.input.NexusShortcutAction.QUICK_CONNECT_PALETTE
-                                ) {}
-                            }
+                                viewModel.handleShortcut(NexusShortcutAction.QUICK_CONNECT_PALETTE) {}
+                            },
+                            onNewConnection = viewModel::openNewConnectionDialog,
+                            onOpenTemplates = { viewModel.selectRailDestination("templates") },
+                            onLaunchConnection = { conn ->
+                                viewModel.launchConnection(conn, QuickLaunchPlacement.ACTIVE_PANE_TAB)
+                            },
+                            onConnectWithOptions = viewModel::openConnectWithOptions,
+                            onConnectAllInFolder = { folderId ->
+                                viewModel.connectAllInFolder(folderId) { tab ->
+                                    onDetachTabToNativeWindow(tab, null)
+                                }
+                            },
+                            onAddTodo = { title -> viewModel.addTodoItem(title, targetObjectId = null) },
+                            onToggleTodo = viewModel::toggleTodoItem
                         )
                     },
                     sessionRenderer = { tab, isFocused ->
@@ -290,9 +381,16 @@ fun NexusWorkspaceScreen(
             ContextualPropertyInspectorPane(
                 profile = activeProfile,
                 parentFolder = parentFolder,
+                todoItems = uiState.vaultDocument.todoItems,
                 strings = strings,
                 onEditConnection = viewModel::openEditConnectionDialog,
+                onConnectWithOptions = viewModel::openConnectWithOptions,
                 onEditParentFolderCredentials = viewModel::openEditFolderDialog,
+                onSaveNotesAndCustomProps = { connId, notes, props, accent ->
+                    viewModel.updateConnectionNotesAndCustomProps(connId, notes, props, accent)
+                },
+                onAddTodo = { connId, title -> viewModel.addTodoItem(title, targetObjectId = connId) },
+                onToggleTodo = viewModel::toggleTodoItem,
                 onGenerateSshKey = viewModel::generateAndStoreSshKeyPair
             )
         },
@@ -312,9 +410,7 @@ fun NexusWorkspaceScreen(
                 placeholderText = strings.quickConnectPlaceholder,
                 footerHintText = strings.quickConnectFooterHint,
                 onDismiss = {
-                    viewModel.handleShortcut(
-                        com.nexusts.app.core.ui.input.NexusShortcutAction.QUICK_CONNECT_PALETTE
-                    ) {}
+                    viewModel.handleShortcut(NexusShortcutAction.QUICK_CONNECT_PALETTE) {}
                 },
                 onLaunchCandidate = { candidate, placement ->
                     viewModel.selectRailDestination("connections")
@@ -323,7 +419,7 @@ fun NexusWorkspaceScreen(
                     }
                 }
             )
-            com.nexusts.app.feature.workspace.studios.NewOrEditConnectionDialog(
+            NewOrEditConnectionDialog(
                 visible = uiState.isNewConnectionDialogVisible,
                 initialConnection = uiState.editingConnection,
                 folders = uiState.vaultDocument.folders,
@@ -336,7 +432,7 @@ fun NexusWorkspaceScreen(
             val folderChildCount = uiState.editingFolder?.let { f ->
                 uiState.vaultDocument.connections.count { it.parentFolderId == f.id }
             } ?: 0
-            com.nexusts.app.feature.workspace.studios.FolderPropertiesAndCredentialDialog(
+            FolderPropertiesAndCredentialDialog(
                 visible = uiState.isFolderDialogVisible,
                 editingFolder = uiState.editingFolder,
                 allFolders = uiState.vaultDocument.folders,
@@ -345,6 +441,30 @@ fun NexusWorkspaceScreen(
                 strings = strings,
                 onDismiss = viewModel::dismissFolderDialog,
                 onSaveFolderAndCredential = viewModel::saveFolderAndCredentialToVault
+            )
+            ConnectWithOptionsDialog(
+                targetConnection = uiState.connectWithOptionsTarget,
+                credentials = uiState.vaultDocument.credentials,
+                templates = uiState.vaultDocument.templates,
+                strings = strings,
+                onDismiss = viewModel::dismissConnectWithOptions,
+                onConnectWithOverride = { conn, override, placement ->
+                    viewModel.launchConnectionWithOptions(conn, override, placement) { tab ->
+                        onDetachTabToNativeWindow(tab, null)
+                    }
+                }
+            )
+            NewSmartFolderDialog(
+                visible = uiState.isNewSmartFolderDialogVisible,
+                strings = strings,
+                onDismiss = viewModel::dismissNewSmartFolderDialog,
+                onSaveSmartFolder = viewModel::saveSmartFolderToVault
+            )
+            NewTemplateDialog(
+                visible = uiState.isNewTemplateDialogVisible,
+                strings = strings,
+                onDismiss = viewModel::dismissNewTemplateDialog,
+                onSaveTemplate = viewModel::saveTemplateToVault
             )
             LockVaultPassphraseDialog(
                 visible = uiState.isLockVaultDialogVisible,
@@ -365,8 +485,8 @@ fun ActiveProtocolSessionDispatcher(
     strings: WorkspaceLocalizedStrings
 ) {
     val uiState by viewModel.uiState.collectAsState()
-    val (conn, secret) = remember(tab.connectionId, uiState.vaultDocument, viewModel) {
-        viewModel.resolveConnectionAndSecret(tab.connectionId)
+    val (conn, secret) = remember(tab.tabId, tab.connectionId, uiState.vaultDocument, viewModel) {
+        viewModel.resolveConnectionAndSecret(tab.connectionId, tab.tabId)
     }
     val onZoomChanged: (Float) -> Unit = remember(tab.tabId, viewModel) {
         { nextZoom ->
@@ -481,13 +601,22 @@ fun ActiveProtocolSessionDispatcher(
 private fun DesktopTopWindowChrome(
     vaultName: String,
     vaultRevision: Long,
+    isSidebarVisible: Boolean,
+    isInspectorVisible: Boolean,
+    isBottomDrawerVisible: Boolean,
     isVaultLocked: Boolean,
     broadcastEnabled: Boolean,
     flexibleUpdateDownloaded: Boolean,
     strings: WorkspaceLocalizedStrings,
     onToggleSidebar: () -> Unit,
+    onToggleInspector: () -> Unit,
+    onToggleBottomDrawer: () -> Unit,
     onOpenQuickConnect: () -> Unit,
     onNewConnection: () -> Unit,
+    onNewFolder: () -> Unit,
+    onNewSmartFolder: () -> Unit,
+    onNewTemplate: () -> Unit,
+    onNewLocalShell: () -> Unit,
     onImportRtsz: () -> Unit,
     onSyncGoogleDrive: () -> Unit,
     onToggleBroadcast: () -> Unit,
@@ -495,56 +624,76 @@ private fun DesktopTopWindowChrome(
     onCompleteFlexibleUpdate: () -> Unit
 ) {
     var langMenuExpanded by remember { mutableStateOf(false) }
+    var createMenuExpanded by remember { mutableStateOf(false) }
 
     Surface(
         color = MaterialTheme.colorScheme.surfaceContainerLowest,
         modifier = Modifier
             .fillMaxWidth()
-            .height(54.dp)
+            .height(56.dp)
     ) {
         Row(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(horizontal = 12.dp),
+                .padding(horizontal = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
+            // Left Window Identity Cluster
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                IconButton(onClick = onToggleSidebar, modifier = Modifier.size(34.dp)) {
-                    Icon(Icons.Outlined.ViewSidebar, contentDescription = null)
-                }
-                Icon(
-                    imageVector = Icons.Outlined.Security,
+                ExpressiveMorphingIconButton(
+                    icon = Icons.Outlined.ViewSidebar,
                     contentDescription = null,
-                    tint = MaterialTheme.colorScheme.secondary,
-                    modifier = Modifier.size(20.dp)
+                    isActive = isSidebarVisible,
+                    onClick = onToggleSidebar
                 )
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f),
+                    modifier = Modifier.size(30.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = Icons.Outlined.Security,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(17.dp)
+                        )
+                    }
+                }
                 Text(
                     text = strings.appName,
                     style = MaterialTheme.typography.titleMedium,
                     color = MaterialTheme.colorScheme.onSurface
                 )
-                Text(
-                    text = "• $vaultName",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+                Surface(
+                    shape = RoundedCornerShape(99.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh
+                ) {
+                    Text(
+                        text = vaultName,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                    )
+                }
             }
 
             // Center Expressive Quick-Connect Command Bar Trigger (`Ctrl/Cmd + K`)
             Surface(
                 modifier = Modifier
-                    .width(320.dp)
-                    .height(36.dp)
+                    .width(330.dp)
+                    .height(38.dp)
                     .clip(RoundedCornerShape(99.dp))
                     .clickable(onClick = onOpenQuickConnect),
                 shape = RoundedCornerShape(99.dp),
-                color = MaterialTheme.colorScheme.surfaceContainerHigh
+                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
             ) {
                 Row(
                     modifier = Modifier.padding(horizontal = 14.dp),
@@ -565,15 +714,21 @@ private fun DesktopTopWindowChrome(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
-                    Text(
-                        text = "⌘K",
-                        style = NexusTheme.monospace.keycapShortcut,
-                        color = MaterialTheme.colorScheme.secondary
-                    )
+                    Surface(
+                        shape = RoundedCornerShape(99.dp),
+                        color = MaterialTheme.colorScheme.surfaceContainerLowest
+                    ) {
+                        Text(
+                            text = "⌘K",
+                            style = NexusTheme.monospace.keycapShortcut,
+                            color = MaterialTheme.colorScheme.secondary,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                        )
+                    }
                 }
             }
 
-            // Right Action Cluster: Play In-App Update Banner, New Connection, Sync, Import .rtsz, Broadcast, Vault Lock, 6-Language Switcher
+            // Right Expressive Action Cluster
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -586,10 +741,70 @@ private fun DesktopTopWindowChrome(
                     }
                 }
 
-                AssistChip(
-                    onClick = onNewConnection,
-                    label = { Text(strings.actionNewConnection, style = MaterialTheme.typography.labelSmall) }
-                )
+                // M3 Expressive Split-Action Button (`[ + New Connection | ▾ ]`)
+                Box {
+                    ExpressiveSplitActionButton(
+                        label = strings.actionNewConnection,
+                        leadingIcon = Icons.Outlined.Add,
+                        isMenuExpanded = createMenuExpanded,
+                        onPrimaryClick = onNewConnection,
+                        onTrailingMenuClick = { createMenuExpanded = true }
+                    )
+                    DropdownMenu(
+                        expanded = createMenuExpanded,
+                        onDismissRequest = { createMenuExpanded = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text(strings.actionNewConnection) },
+                            leadingIcon = { Icon(Icons.Outlined.Add, contentDescription = null) },
+                            onClick = {
+                                createMenuExpanded = false
+                                onNewConnection()
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text(strings.actionNewFolder) },
+                            leadingIcon = { Icon(Icons.Outlined.Folder, contentDescription = null) },
+                            onClick = {
+                                createMenuExpanded = false
+                                onNewFolder()
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text(strings.actionNewSmartFolder) },
+                            leadingIcon = { Icon(Icons.Outlined.AutoAwesome, contentDescription = null) },
+                            onClick = {
+                                createMenuExpanded = false
+                                onNewSmartFolder()
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text(strings.actionNewTemplate) },
+                            leadingIcon = { Icon(Icons.Outlined.Bookmarks, contentDescription = null) },
+                            onClick = {
+                                createMenuExpanded = false
+                                onNewTemplate()
+                            }
+                        )
+                        HorizontalDivider()
+                        DropdownMenuItem(
+                            text = { Text("Local Terminal") },
+                            leadingIcon = { Icon(Icons.Outlined.Terminal, contentDescription = null) },
+                            onClick = {
+                                createMenuExpanded = false
+                                onNewLocalShell()
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text(strings.actionImportRtsz) },
+                            leadingIcon = { Icon(Icons.Outlined.UploadFile, contentDescription = null) },
+                            onClick = {
+                                createMenuExpanded = false
+                                onImportRtsz()
+                            }
+                        )
+                    }
+                }
 
                 AssistChip(
                     onClick = onSyncGoogleDrive,
@@ -604,40 +819,43 @@ private fun DesktopTopWindowChrome(
                     }
                 )
 
-                AssistChip(
-                    onClick = onImportRtsz,
-                    label = { Text(strings.actionImportRtsz, style = MaterialTheme.typography.labelSmall) },
-                    leadingIcon = {
-                        Icon(Icons.Outlined.UploadFile, contentDescription = null, modifier = Modifier.size(15.dp))
-                    }
+                ExpressiveMorphingIconButton(
+                    icon = Icons.Outlined.Podcasts,
+                    contentDescription = strings.actionBroadcastInput,
+                    isActive = broadcastEnabled,
+                    activeTint = NexusTheme.extendedColors.broadcastActiveBanner,
+                    activeContainer = NexusTheme.extendedColors.broadcastActiveBanner.copy(alpha = 0.16f),
+                    onClick = onToggleBroadcast
                 )
 
-                IconButton(onClick = onToggleBroadcast, modifier = Modifier.size(34.dp)) {
-                    Icon(
-                        imageVector = Icons.Outlined.Podcasts,
-                        contentDescription = strings.actionBroadcastInput,
-                        tint = if (broadcastEnabled) {
-                            NexusTheme.extendedColors.broadcastActiveBanner
-                        } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        }
-                    )
-                }
+                ExpressiveMorphingIconButton(
+                    icon = Icons.Outlined.Info,
+                    contentDescription = strings.inspectorTitle,
+                    isActive = isInspectorVisible,
+                    onClick = onToggleInspector
+                )
 
-                IconButton(onClick = onLockVault, modifier = Modifier.size(34.dp)) {
-                    Icon(
-                        imageVector = if (isVaultLocked) Icons.Outlined.Lock else Icons.Outlined.LockOpen,
-                        contentDescription = strings.actionLockVault
-                    )
-                }
+                ExpressiveMorphingIconButton(
+                    icon = Icons.Outlined.Terminal,
+                    contentDescription = strings.drawerAuditLogs,
+                    isActive = isBottomDrawerVisible,
+                    onClick = onToggleBottomDrawer
+                )
+
+                ExpressiveMorphingIconButton(
+                    icon = if (isVaultLocked) Icons.Outlined.Lock else Icons.Outlined.LockOpen,
+                    contentDescription = strings.actionLockVault,
+                    isActive = isVaultLocked,
+                    onClick = onLockVault
+                )
 
                 Box {
-                    IconButton(onClick = { langMenuExpanded = true }, modifier = Modifier.size(34.dp)) {
-                        Icon(
-                            imageVector = Icons.Outlined.Language,
-                            contentDescription = strings.actionLanguagePicker
-                        )
-                    }
+                    ExpressiveMorphingIconButton(
+                        icon = Icons.Outlined.Language,
+                        contentDescription = strings.actionLanguagePicker,
+                        isActive = langMenuExpanded,
+                        onClick = { langMenuExpanded = true }
+                    )
                     DropdownMenu(
                         expanded = langMenuExpanded,
                         onDismissRequest = { langMenuExpanded = false }
@@ -664,149 +882,388 @@ private fun DesktopTopWindowChrome(
 private fun VaultHierarchySidebarTree(
     uiState: WorkspaceUiState,
     strings: WorkspaceLocalizedStrings,
-    smartFolderConnectionsProvider: (com.nexusts.app.core.vault.model.SmartFolder) -> List<VaultConnection>,
+    onFilterQueryChanged: (String) -> Unit,
+    smartFolderConnectionsProvider: (SmartFolder) -> List<VaultConnection>,
     onToggleSmartFolder: (String) -> Unit,
+    onNewSmartFolder: () -> Unit,
+    onToggleDynamicFolder: (DynamicFolder) -> Unit,
+    onReloadDynamicFolder: (DynamicFolder) -> Unit,
     onNewFolder: () -> Unit,
     onEditFolder: (VaultFolder) -> Unit,
+    onConnectAllInFolder: (String) -> Unit,
     onSelectConnection: (String) -> Unit,
     onEditConnection: (VaultConnection) -> Unit,
+    onConnectWithOptions: (VaultConnection) -> Unit,
+    onToggleFavorite: (String) -> Unit,
+    onDuplicateConnection: (VaultConnection) -> Unit,
+    onDeleteConnection: (String) -> Unit,
     onLaunchConnection: (VaultConnection, QuickLaunchPlacement) -> Unit
 ) {
     val doc = uiState.vaultDocument
+    val query = uiState.sidebarFilterQuery.trim().lowercase()
 
-    LazyColumn(
+    fun matchesFilter(conn: VaultConnection): Boolean {
+        if (conn.id in doc.tombstonedObjectIds) return false
+        if (query.isEmpty()) return true
+        return conn.name.lowercase().contains(query) ||
+            conn.host.lowercase().contains(query) ||
+            conn.protocol.name.lowercase().contains(query) ||
+            conn.osFamily.lowercase().contains(query) ||
+            conn.inheritable.tags.any { it.lowercase().contains(query) }
+    }
+
+    val favorites = remember(doc.connections, doc.tombstonedObjectIds, query) {
+        doc.connections.filter { it.favorite && matchesFilter(it) }
+    }
+    val recentConnections = remember(doc.recentConnectionIds, doc.connections, doc.tombstonedObjectIds, query) {
+        doc.recentConnectionIds.mapNotNull { id ->
+            doc.connections.firstOrNull { it.id == id && matchesFilter(it) }
+        }
+    }
+
+    Column(
         modifier = Modifier
             .fillMaxSize()
             .padding(10.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp)
+        verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        item {
-            Text(
-                text = strings.vaultSectionSmartFolders,
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.secondary,
-                modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp)
-            )
-        }
-        doc.smartFolders.forEach { smart ->
-            val matchedConnections = smartFolderConnectionsProvider(smart)
-            val isExpanded = uiState.selectedSmartFolderId == smart.id
-            item(key = "smart-${smart.id}") {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(MaterialTheme.shapes.small)
-                        .background(
-                            if (isExpanded) MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.45f)
-                            else androidx.compose.ui.graphics.Color.Transparent
-                        )
-                        .clickable { onToggleSmartFolder(smart.id) }
-                        .padding(horizontal = 8.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = Icons.Outlined.AutoAwesome,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp),
-                            tint = MaterialTheme.colorScheme.tertiary
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(smart.name, style = MaterialTheme.typography.bodyMedium)
+        // Instant Sidebar Filter Bar
+        OutlinedTextField(
+            value = uiState.sidebarFilterQuery,
+            onValueChange = onFilterQueryChanged,
+            placeholder = { Text(strings.sidebarFilterPlaceholder, style = MaterialTheme.typography.bodySmall) },
+            leadingIcon = {
+                Icon(Icons.Outlined.Search, contentDescription = null, modifier = Modifier.size(16.dp))
+            },
+            trailingIcon = {
+                if (uiState.sidebarFilterQuery.isNotEmpty()) {
+                    IconButton(onClick = { onFilterQueryChanged("") }, modifier = Modifier.size(24.dp)) {
+                        Icon(Icons.Outlined.Close, contentDescription = null, modifier = Modifier.size(14.dp))
                     }
-                    Text(
-                        text = matchedConnections.size.toString(),
-                        style = NexusTheme.monospace.keycapShortcut,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
                 }
-            }
-            if (isExpanded) {
-                items(matchedConnections, key = { "smart-${smart.id}-${it.id}" }) { conn ->
+            },
+            singleLine = true,
+            shape = RoundedCornerShape(99.dp),
+            modifier = Modifier.fillMaxWidth()
+        )
+
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            // 1. Pinned Favorites Section
+            if (favorites.isNotEmpty()) {
+                item(key = "header-favorites") {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Star,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.tertiary,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Text(
+                            text = strings.vaultSectionFavorites,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.tertiary
+                        )
+                    }
+                }
+                items(favorites, key = { "fav-${it.id}" }) { conn ->
                     ConnectionTreeRow(
                         connection = conn,
                         isSelected = conn.id == uiState.selectedConnectionId,
                         strings = strings,
                         onSelect = { onSelectConnection(conn.id) },
                         onEdit = { onEditConnection(conn) },
+                        onConnectWithOptions = { onConnectWithOptions(conn) },
+                        onToggleFavorite = { onToggleFavorite(conn.id) },
+                        onDuplicate = { onDuplicateConnection(conn) },
+                        onDelete = { onDeleteConnection(conn.id) },
                         onLaunch = { placement -> onLaunchConnection(conn, placement) }
                     )
                 }
             }
-        }
 
-        item {
-            Spacer(modifier = Modifier.height(8.dp))
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-            Spacer(modifier = Modifier.height(6.dp))
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 6.dp, vertical = 2.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Text(
-                    text = strings.vaultSectionFolders,
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.secondary
-                )
-                IconButton(
-                    onClick = onNewFolder,
-                    modifier = Modifier.size(26.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Outlined.Add,
-                        contentDescription = strings.actionNewFolder,
-                        modifier = Modifier.size(16.dp),
-                        tint = MaterialTheme.colorScheme.secondary
+            // 2. Recent Sessions Section (shown when not filtering)
+            if (query.isEmpty() && recentConnections.isNotEmpty()) {
+                item(key = "header-recents") {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.History,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.secondary,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Text(
+                            text = strings.vaultSectionRecents,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.secondary
+                        )
+                    }
+                }
+                items(recentConnections.take(4), key = { "recent-${it.id}" }) { conn ->
+                    ConnectionTreeRow(
+                        connection = conn,
+                        isSelected = conn.id == uiState.selectedConnectionId,
+                        strings = strings,
+                        onSelect = { onSelectConnection(conn.id) },
+                        onEdit = { onEditConnection(conn) },
+                        onConnectWithOptions = { onConnectWithOptions(conn) },
+                        onToggleFavorite = { onToggleFavorite(conn.id) },
+                        onDuplicate = { onDuplicateConnection(conn) },
+                        onDelete = { onDeleteConnection(conn.id) },
+                        onLaunch = { placement -> onLaunchConnection(conn, placement) }
                     )
                 }
             }
-        }
 
-        doc.folders.forEach { folder ->
-            val explicitFolderCred = if (folder.inheritable.credentialMode == InheritanceMode.OVERRIDE_EXPLICIT) {
-                doc.credentials.firstOrNull { it.id == folder.inheritable.explicitCredentialId }
-            } else {
-                null
+            // 3. Smart Folders Section
+            item(key = "header-smart-folders") {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 6.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = strings.vaultSectionSmartFolders,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.secondary
+                    )
+                    IconButton(onClick = onNewSmartFolder, modifier = Modifier.size(24.dp)) {
+                        Icon(
+                            imageVector = Icons.Outlined.Add,
+                            contentDescription = strings.actionNewSmartFolder,
+                            modifier = Modifier.size(15.dp),
+                            tint = MaterialTheme.colorScheme.secondary
+                        )
+                    }
+                }
             }
-            item(key = "folder-${folder.id}") {
-                FolderTreeRow(
-                    folder = folder,
-                    explicitFolderCredentialName = explicitFolderCred?.name,
-                    strings = strings,
-                    onEditFolder = { onEditFolder(folder) }
-                )
+            doc.smartFolders.forEach { smart ->
+                val matchedConnections = smartFolderConnectionsProvider(smart).filter(::matchesFilter)
+                val isExpanded = uiState.selectedSmartFolderId == smart.id
+                item(key = "smart-${smart.id}") {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(MaterialTheme.shapes.small)
+                            .background(
+                                if (isExpanded) MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.45f)
+                                else Color.Transparent
+                            )
+                            .clickable { onToggleSmartFolder(smart.id) }
+                            .padding(horizontal = 8.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Outlined.AutoAwesome,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp),
+                                tint = MaterialTheme.colorScheme.tertiary
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(smart.name, style = MaterialTheme.typography.bodyMedium)
+                        }
+                        Text(
+                            text = matchedConnections.size.toString(),
+                            style = NexusTheme.monospace.keycapShortcut,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+                if (isExpanded) {
+                    items(matchedConnections, key = { "smart-${smart.id}-${it.id}" }) { conn ->
+                        ConnectionTreeRow(
+                            connection = conn,
+                            isSelected = conn.id == uiState.selectedConnectionId,
+                            strings = strings,
+                            onSelect = { onSelectConnection(conn.id) },
+                            onEdit = { onEditConnection(conn) },
+                            onConnectWithOptions = { onConnectWithOptions(conn) },
+                            onToggleFavorite = { onToggleFavorite(conn.id) },
+                            onDuplicate = { onDuplicateConnection(conn) },
+                            onDelete = { onDeleteConnection(conn.id) },
+                            onLaunch = { placement -> onLaunchConnection(conn, placement) }
+                        )
+                    }
+                }
             }
 
-            val folderConnections = doc.connections.filter { it.parentFolderId == folder.id }
-            items(folderConnections, key = { it.id }) { conn ->
+            // 4. Dynamic Folders Section (Script / Cloud JSON Inventory)
+            if (doc.dynamicFolders.isNotEmpty()) {
+                item(key = "header-dynamic-folders") {
+                    Text(
+                        text = strings.vaultSectionDynamicFolders,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.secondary,
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp)
+                    )
+                }
+                doc.dynamicFolders.forEach { dyn ->
+                    val hydrated = uiState.hydratedDynamicConnections[dyn.id].orEmpty().filter(::matchesFilter)
+                    val isExpanded = uiState.selectedDynamicFolderId == dyn.id
+                    item(key = "dyn-${dyn.id}") {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(MaterialTheme.shapes.small)
+                                .background(
+                                    if (isExpanded) MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.45f)
+                                    else Color.Transparent
+                                )
+                                .clickable { onToggleDynamicFolder(dyn) }
+                                .padding(horizontal = 8.dp, vertical = 5.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(
+                                modifier = Modifier.weight(1f),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Outlined.DynamicFeed,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp),
+                                    tint = MaterialTheme.colorScheme.secondary
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = dyn.name,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            IconButton(
+                                onClick = { onReloadDynamicFolder(dyn) },
+                                modifier = Modifier.size(24.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Outlined.Refresh,
+                                    contentDescription = strings.actionReloadDynamicFolder,
+                                    modifier = Modifier.size(14.dp),
+                                    tint = MaterialTheme.colorScheme.secondary
+                                )
+                            }
+                        }
+                    }
+                    if (isExpanded) {
+                        items(hydrated, key = { "dyn-${dyn.id}-${it.id}" }) { conn ->
+                            ConnectionTreeRow(
+                                connection = conn,
+                                isSelected = conn.id == uiState.selectedConnectionId,
+                                strings = strings,
+                                onSelect = { onSelectConnection(conn.id) },
+                                onEdit = { onEditConnection(conn) },
+                                onConnectWithOptions = { onConnectWithOptions(conn) },
+                                onToggleFavorite = { onToggleFavorite(conn.id) },
+                                onDuplicate = { onDuplicateConnection(conn) },
+                                onDelete = { onDeleteConnection(conn.id) },
+                                onLaunch = { placement -> onLaunchConnection(conn, placement) }
+                            )
+                        }
+                    }
+                }
+            }
+
+            // 5. Hierarchical Folders & Connections Section
+            item(key = "header-folders") {
+                Spacer(modifier = Modifier.height(6.dp))
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                Spacer(modifier = Modifier.height(6.dp))
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 6.dp, vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = strings.vaultSectionFolders,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.secondary
+                    )
+                    IconButton(
+                        onClick = onNewFolder,
+                        modifier = Modifier.size(26.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Add,
+                            contentDescription = strings.actionNewFolder,
+                            modifier = Modifier.size(16.dp),
+                            tint = MaterialTheme.colorScheme.secondary
+                        )
+                    }
+                }
+            }
+
+            doc.folders.forEach { folder ->
+                val folderConnections = doc.connections.filter {
+                    it.parentFolderId == folder.id && matchesFilter(it)
+                }
+                if (query.isEmpty() || folderConnections.isNotEmpty()) {
+                    val explicitFolderCred = if (folder.inheritable.credentialMode == InheritanceMode.OVERRIDE_EXPLICIT) {
+                        doc.credentials.firstOrNull { it.id == folder.inheritable.explicitCredentialId }
+                    } else {
+                        null
+                    }
+                    item(key = "folder-${folder.id}") {
+                        FolderTreeRow(
+                            folder = folder,
+                            explicitFolderCredentialName = explicitFolderCred?.name,
+                            childCount = folderConnections.size,
+                            strings = strings,
+                            onEditFolder = { onEditFolder(folder) },
+                            onConnectAllInFolder = { onConnectAllInFolder(folder.id) }
+                        )
+                    }
+                    items(folderConnections, key = { it.id }) { conn ->
+                        ConnectionTreeRow(
+                            connection = conn,
+                            isSelected = conn.id == uiState.selectedConnectionId,
+                            strings = strings,
+                            onSelect = { onSelectConnection(conn.id) },
+                            onEdit = { onEditConnection(conn) },
+                            onConnectWithOptions = { onConnectWithOptions(conn) },
+                            onToggleFavorite = { onToggleFavorite(conn.id) },
+                            onDuplicate = { onDuplicateConnection(conn) },
+                            onDelete = { onDeleteConnection(conn.id) },
+                            onLaunch = { placement -> onLaunchConnection(conn, placement) }
+                        )
+                    }
+                }
+            }
+
+            val knownFolderIds = doc.folders.map { it.id }.toSet()
+            val rootConnections = doc.connections.filter {
+                (it.parentFolderId == null || it.parentFolderId !in knownFolderIds) && matchesFilter(it)
+            }
+            items(rootConnections, key = { "root-${it.id}" }) { conn ->
                 ConnectionTreeRow(
                     connection = conn,
                     isSelected = conn.id == uiState.selectedConnectionId,
                     strings = strings,
                     onSelect = { onSelectConnection(conn.id) },
                     onEdit = { onEditConnection(conn) },
+                    onConnectWithOptions = { onConnectWithOptions(conn) },
+                    onToggleFavorite = { onToggleFavorite(conn.id) },
+                    onDuplicate = { onDuplicateConnection(conn) },
+                    onDelete = { onDeleteConnection(conn.id) },
                     onLaunch = { placement -> onLaunchConnection(conn, placement) }
                 )
             }
-        }
-
-        val knownFolderIds = doc.folders.map { it.id }.toSet()
-        val rootConnections = doc.connections.filter {
-            it.parentFolderId == null || it.parentFolderId !in knownFolderIds
-        }
-        items(rootConnections, key = { "root-${it.id}" }) { conn ->
-            ConnectionTreeRow(
-                connection = conn,
-                isSelected = conn.id == uiState.selectedConnectionId,
-                strings = strings,
-                onSelect = { onSelectConnection(conn.id) },
-                onEdit = { onEditConnection(conn) },
-                onLaunch = { placement -> onLaunchConnection(conn, placement) }
-            )
         }
     }
 }
@@ -815,10 +1272,14 @@ private fun VaultHierarchySidebarTree(
 private fun FolderTreeRow(
     folder: VaultFolder,
     explicitFolderCredentialName: String?,
+    childCount: Int,
     strings: WorkspaceLocalizedStrings,
-    onEditFolder: () -> Unit
+    onEditFolder: () -> Unit,
+    onConnectAllInFolder: () -> Unit
 ) {
     var folderMenuOpen by remember { mutableStateOf(false) }
+    val folderAccent = parseHexColorOrNull(folder.inheritable.displayColorAccentHex)
+        ?: MaterialTheme.colorScheme.primary
 
     Box {
         Row(
@@ -838,7 +1299,7 @@ private fun FolderTreeRow(
                 Icon(
                     imageVector = Icons.Outlined.Folder,
                     contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
+                    tint = folderAccent,
                     modifier = Modifier.size(17.dp)
                 )
                 Spacer(modifier = Modifier.width(8.dp))
@@ -860,20 +1321,35 @@ private fun FolderTreeRow(
                     }
                 }
             }
-            IconButton(
-                onClick = onEditFolder,
-                modifier = Modifier.size(26.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Outlined.Key,
-                    contentDescription = strings.actionEditFolderCredentials,
-                    modifier = Modifier.size(14.dp),
-                    tint = if (explicitFolderCredentialName != null) {
-                        MaterialTheme.colorScheme.secondary
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (childCount > 0) {
+                    IconButton(
+                        onClick = onConnectAllInFolder,
+                        modifier = Modifier.size(24.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.PlayArrow,
+                            contentDescription = strings.actionConnectAllFolder,
+                            modifier = Modifier.size(15.dp),
+                            tint = folderAccent
+                        )
                     }
-                )
+                }
+                IconButton(
+                    onClick = onEditFolder,
+                    modifier = Modifier.size(24.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.Key,
+                        contentDescription = strings.actionEditFolderCredentials,
+                        modifier = Modifier.size(14.dp),
+                        tint = if (explicitFolderCredentialName != null) {
+                            MaterialTheme.colorScheme.secondary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        }
+                    )
+                }
             }
         }
 
@@ -881,6 +1357,16 @@ private fun FolderTreeRow(
             expanded = folderMenuOpen,
             onDismissRequest = { folderMenuOpen = false }
         ) {
+            if (childCount > 0) {
+                DropdownMenuItem(
+                    text = { Text(strings.actionConnectAllFolder) },
+                    leadingIcon = { Icon(Icons.Outlined.PlayArrow, contentDescription = null) },
+                    onClick = {
+                        folderMenuOpen = false
+                        onConnectAllInFolder()
+                    }
+                )
+            }
             DropdownMenuItem(
                 text = { Text(strings.actionEditFolderCredentials) },
                 leadingIcon = { Icon(Icons.Outlined.Key, contentDescription = null) },
@@ -900,33 +1386,48 @@ private fun ConnectionTreeRow(
     strings: WorkspaceLocalizedStrings,
     onSelect: () -> Unit,
     onEdit: () -> Unit,
+    onConnectWithOptions: () -> Unit,
+    onToggleFavorite: () -> Unit,
+    onDuplicate: () -> Unit,
+    onDelete: () -> Unit,
     onLaunch: (QuickLaunchPlacement) -> Unit
 ) {
     var contextMenuOpen by remember { mutableStateOf(false) }
     val uiProto = NexusWorkspaceViewModel.mapProtocolToUiKind(connection.protocol)
+    val customAccent = parseHexColorOrNull(connection.inheritable.displayColorAccentHex)
+    val effectiveIconTint = customAccent ?: protocolAccentColor(uiProto)
 
     Box {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(start = 16.dp)
+                .padding(start = 14.dp)
                 .clip(MaterialTheme.shapes.medium)
                 .background(
                     if (isSelected) MaterialTheme.colorScheme.secondaryContainer
-                    else androidx.compose.ui.graphics.Color.Transparent
+                    else Color.Transparent
                 )
                 .nexusDesktopPointerButtons(onSecondaryClick = { contextMenuOpen = true })
                 .clickable {
                     onSelect()
                     onLaunch(QuickLaunchPlacement.ACTIVE_PANE_TAB)
                 }
-                .padding(horizontal = 10.dp, vertical = 8.dp),
+                .padding(horizontal = 10.dp, vertical = 7.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            if (customAccent != null) {
+                Box(
+                    modifier = Modifier
+                        .size(6.dp)
+                        .clip(CircleShape)
+                        .background(customAccent)
+                )
+                Spacer(modifier = Modifier.width(6.dp))
+            }
             Icon(
                 imageVector = protocolIcon(uiProto),
                 contentDescription = null,
-                tint = protocolAccentColor(uiProto),
+                tint = effectiveIconTint,
                 modifier = Modifier.size(16.dp)
             )
             Spacer(modifier = Modifier.width(8.dp))
@@ -943,6 +1444,21 @@ private fun ConnectionTreeRow(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
+                )
+            }
+            IconButton(
+                onClick = onToggleFavorite,
+                modifier = Modifier.size(24.dp)
+            ) {
+                Icon(
+                    imageVector = if (connection.favorite) Icons.Outlined.Star else Icons.Outlined.StarBorder,
+                    contentDescription = strings.actionToggleFavorite,
+                    modifier = Modifier.size(14.dp),
+                    tint = if (connection.favorite) {
+                        MaterialTheme.colorScheme.tertiary
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    }
                 )
             }
             IconButton(
@@ -963,6 +1479,14 @@ private fun ConnectionTreeRow(
             onDismissRequest = { contextMenuOpen = false }
         ) {
             DropdownMenuItem(
+                text = { Text(strings.actionConnectWithOptions) },
+                leadingIcon = { Icon(Icons.Outlined.Tune, contentDescription = null) },
+                onClick = {
+                    contextMenuOpen = false
+                    onConnectWithOptions()
+                }
+            )
+            DropdownMenuItem(
                 text = { Text(strings.actionEditConnection) },
                 leadingIcon = { Icon(Icons.Outlined.Edit, contentDescription = null) },
                 onClick = {
@@ -970,6 +1494,28 @@ private fun ConnectionTreeRow(
                     onEdit()
                 }
             )
+            DropdownMenuItem(
+                text = { Text(strings.actionDuplicateConnection) },
+                leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null) },
+                onClick = {
+                    contextMenuOpen = false
+                    onDuplicate()
+                }
+            )
+            DropdownMenuItem(
+                text = { Text(strings.actionToggleFavorite) },
+                leadingIcon = {
+                    Icon(
+                        if (connection.favorite) Icons.Outlined.Star else Icons.Outlined.StarBorder,
+                        contentDescription = null
+                    )
+                },
+                onClick = {
+                    contextMenuOpen = false
+                    onToggleFavorite()
+                }
+            )
+            HorizontalDivider()
             DropdownMenuItem(
                 text = { Text(strings.splitRight) },
                 leadingIcon = { Icon(Icons.Outlined.VerticalSplit, contentDescription = null) },
@@ -986,17 +1532,33 @@ private fun ConnectionTreeRow(
                     onLaunch(QuickLaunchPlacement.DETACHED_NEW_WINDOW)
                 }
             )
+            HorizontalDivider()
+            DropdownMenuItem(
+                text = { Text(strings.actionDeleteItem, color = MaterialTheme.colorScheme.error) },
+                leadingIcon = {
+                    Icon(Icons.Outlined.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error)
+                },
+                onClick = {
+                    contextMenuOpen = false
+                    onDelete()
+                }
+            )
         }
     }
 }
 
 @Composable
 private fun ContextualPropertyInspectorPane(
-    profile: com.nexusts.app.core.vault.inheritance.EffectiveConnectionProfile?,
+    profile: EffectiveConnectionProfile?,
     parentFolder: VaultFolder?,
+    todoItems: List<VaultTodoItem>,
     strings: WorkspaceLocalizedStrings,
     onEditConnection: (VaultConnection) -> Unit,
+    onConnectWithOptions: (VaultConnection) -> Unit,
     onEditParentFolderCredentials: (VaultFolder) -> Unit,
+    onSaveNotesAndCustomProps: (String, String, List<CustomPropertyEntry>, String?) -> Unit,
+    onAddTodo: (String, String) -> Unit,
+    onToggleTodo: (String) -> Unit,
     onGenerateSshKey: () -> Unit
 ) {
     Column(
@@ -1027,13 +1589,23 @@ private fun ContextualPropertyInspectorPane(
                         style = NexusTheme.monospace.keycapShortcut,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    OutlinedButton(
-                        onClick = { onEditConnection(profile.connection) },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Icon(Icons.Outlined.Edit, contentDescription = null, modifier = Modifier.size(15.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(strings.actionEditConnection, style = MaterialTheme.typography.labelSmall)
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        OutlinedButton(
+                            onClick = { onEditConnection(profile.connection) },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(Icons.Outlined.Edit, contentDescription = null, modifier = Modifier.size(14.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(strings.actionEditConnection, style = MaterialTheme.typography.labelSmall, maxLines = 1)
+                        }
+                        FilledTonalButton(
+                            onClick = { onConnectWithOptions(profile.connection) },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(Icons.Outlined.Tune, contentDescription = null, modifier = Modifier.size(14.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(strings.actionConnectWithOptions, style = MaterialTheme.typography.labelSmall, maxLines = 1)
+                        }
                     }
                 }
             }
@@ -1136,6 +1708,18 @@ private fun ContextualPropertyInspectorPane(
                     )
                 }
             }
+
+            // Live 2FA/TOTP Authenticator, Custom Properties (`$CustomProperty.*$`), Notes, and To-Do Checklist
+            InspectorExtendedRoyalCards(
+                profile = profile,
+                todoItems = todoItems,
+                strings = strings,
+                onSaveNotesAndCustomProps = { notes, props, accent ->
+                    onSaveNotesAndCustomProps(profile.connection.id, notes, props, accent)
+                },
+                onAddTodo = { title -> onAddTodo(profile.connection.id, title) },
+                onToggleTodo = onToggleTodo
+            )
         }
 
         Spacer(modifier = Modifier.height(6.dp))
@@ -1287,41 +1871,6 @@ private fun BottomTelemetryAndBroadcastDrawer(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-        }
-    }
-}
-
-@Composable
-private fun ExpressiveEmptyWorkspaceHero(
-    strings: WorkspaceLocalizedStrings,
-    onOpenQuickConnect: () -> Unit
-) {
-    Column(
-        modifier = Modifier.padding(32.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        Icon(
-            imageVector = Icons.Outlined.Security,
-            contentDescription = null,
-            modifier = Modifier.size(48.dp),
-            tint = MaterialTheme.colorScheme.secondary
-        )
-        Text(
-            text = strings.emptyWorkspaceTitle,
-            style = MaterialTheme.typography.headlineMedium,
-            color = MaterialTheme.colorScheme.onSurface
-        )
-        Text(
-            text = strings.emptyWorkspaceSubtitle,
-            style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Spacer(modifier = Modifier.height(6.dp))
-        Button(onClick = onOpenQuickConnect) {
-            Icon(Icons.Outlined.Search, contentDescription = null, modifier = Modifier.size(18.dp))
-            Spacer(modifier = Modifier.width(8.dp))
-            Text(strings.quickConnectButton)
         }
     }
 }

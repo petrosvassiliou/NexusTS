@@ -75,6 +75,7 @@ data class SplitWorkspaceLabels(
     val detachNewWindowLabel: String,
     val detachToDisplayPrefix: String,
     val toggleBroadcastLabel: String,
+    val reconnectTabLabel: String = "Reconnect",
     val closeTabLabel: String,
     val emptyWorkspaceTitle: String,
     val emptyWorkspaceSubtitle: String
@@ -98,6 +99,7 @@ fun SplitPaneWorkspaceContainer(
     onResizeSplit: (splitId: String, newRatio: Float) -> Unit,
     onDetachTabToWindow: (tab: WorkspaceSessionTab, displayId: Int?) -> Unit,
     onToggleTabBroadcast: (tab: WorkspaceSessionTab) -> Unit,
+    onReconnectTab: ((tab: WorkspaceSessionTab) -> Unit)? = null,
     emptyStateContent: @Composable () -> Unit,
     sessionRenderer: @Composable (WorkspaceSessionTab, isPaneFocused: Boolean) -> Unit,
     modifier: Modifier = Modifier
@@ -127,6 +129,7 @@ fun SplitPaneWorkspaceContainer(
                     onSplit = { orientation -> onSplitPane(node.nodeId, orientation) },
                     onDetachToWindow = onDetachTabToWindow,
                     onToggleBroadcast = onToggleTabBroadcast,
+                    onReconnectTab = onReconnectTab,
                     sessionRenderer = sessionRenderer,
                     modifier = modifier
                 )
@@ -153,6 +156,7 @@ fun SplitPaneWorkspaceContainer(
                             onResizeSplit = onResizeSplit,
                             onDetachTabToWindow = onDetachTabToWindow,
                             onToggleTabBroadcast = onToggleTabBroadcast,
+                            onReconnectTab = onReconnectTab,
                             emptyStateContent = emptyStateContent,
                             sessionRenderer = sessionRenderer,
                             modifier = Modifier
@@ -181,6 +185,7 @@ fun SplitPaneWorkspaceContainer(
                             onResizeSplit = onResizeSplit,
                             onDetachTabToWindow = onDetachTabToWindow,
                             onToggleTabBroadcast = onToggleTabBroadcast,
+                            onReconnectTab = onReconnectTab,
                             emptyStateContent = emptyStateContent,
                             sessionRenderer = sessionRenderer,
                             modifier = Modifier
@@ -202,6 +207,7 @@ fun SplitPaneWorkspaceContainer(
                             onResizeSplit = onResizeSplit,
                             onDetachTabToWindow = onDetachTabToWindow,
                             onToggleTabBroadcast = onToggleTabBroadcast,
+                            onReconnectTab = onReconnectTab,
                             emptyStateContent = emptyStateContent,
                             sessionRenderer = sessionRenderer,
                             modifier = Modifier
@@ -230,6 +236,7 @@ fun SplitPaneWorkspaceContainer(
                             onResizeSplit = onResizeSplit,
                             onDetachTabToWindow = onDetachTabToWindow,
                             onToggleTabBroadcast = onToggleTabBroadcast,
+                            onReconnectTab = onReconnectTab,
                             emptyStateContent = emptyStateContent,
                             sessionRenderer = sessionRenderer,
                             modifier = Modifier
@@ -255,6 +262,7 @@ private fun LeafSessionPane(
     onSplit: (SplitOrientation) -> Unit,
     onDetachToWindow: (WorkspaceSessionTab, Int?) -> Unit,
     onToggleBroadcast: (WorkspaceSessionTab) -> Unit,
+    onReconnectTab: ((WorkspaceSessionTab) -> Unit)? = null,
     sessionRenderer: @Composable (WorkspaceSessionTab, Boolean) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -323,12 +331,29 @@ private fun LeafSessionPane(
                                 onSplit(SplitOrientation.VERTICAL)
                             },
                             onDetachToWindow = { displayId -> onDetachToWindow(tab, displayId) },
-                            onToggleBroadcast = { onToggleBroadcast(tab) }
+                            onToggleBroadcast = { onToggleBroadcast(tab) },
+                            onReconnect = onReconnectTab?.let { cb -> { cb(tab) } }
                         )
                     }
                 }
 
                 Spacer(modifier = Modifier.width(4.dp))
+
+                leaf.activeTab?.let { active ->
+                    if (onReconnectTab != null) {
+                        IconButton(
+                            onClick = { onReconnectTab(active) },
+                            modifier = Modifier.size(28.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.Refresh,
+                                contentDescription = labels.reconnectTabLabel,
+                                modifier = Modifier.size(16.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
 
                 IconButton(
                     onClick = { onSplit(SplitOrientation.HORIZONTAL) },
@@ -426,18 +451,22 @@ private fun ExpressiveSessionTabChip(
     onSplitRight: () -> Unit,
     onSplitDown: () -> Unit,
     onDetachToWindow: (Int?) -> Unit,
-    onToggleBroadcast: () -> Unit
+    onToggleBroadcast: () -> Unit,
+    onReconnect: (() -> Unit)? = null
 ) {
     val hoverState = rememberDesktopHoverState()
     var contextMenuOpen by remember { mutableStateOf(false) }
+    val customAccent = parseHexColorOrNull(tab.customColorHex)
     val tabShape = rememberExpressiveTabShape(
         isSelected = isSelected,
         isHovered = hoverState.value.isHovered
     )
     val bgColor by animateColorAsState(
         targetValue = when {
+            isSelected && customAccent != null -> customAccent.copy(alpha = 0.20f)
             isSelected -> MaterialTheme.colorScheme.secondaryContainer
             hoverState.value.isHovered -> MaterialTheme.colorScheme.surfaceContainerHighest
+            customAccent != null -> customAccent.copy(alpha = 0.08f)
             else -> Color.Transparent
         },
         animationSpec = createColorSpec(),
@@ -458,7 +487,7 @@ private fun ExpressiveSessionTabChip(
             shape = tabShape,
             color = bgColor,
             border = if (isSelected) {
-                BorderStroke(1.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.45f))
+                BorderStroke(1.dp, (customAccent ?: MaterialTheme.colorScheme.secondary).copy(alpha = 0.55f))
             } else {
                 null
             }
@@ -468,6 +497,16 @@ private fun ExpressiveSessionTabChip(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
+                if (customAccent != null) {
+                    Box(
+                        modifier = Modifier
+                            .width(3.dp)
+                            .height(14.dp)
+                            .clip(RoundedCornerShape(99.dp))
+                            .background(customAccent)
+                    )
+                }
+
                 // Live Status Indicator Dot
                 val statusColor = statusDotColor(tab.status)
                 Box(
@@ -481,7 +520,7 @@ private fun ExpressiveSessionTabChip(
                     imageVector = protocolIcon(tab.protocol),
                     contentDescription = null,
                     modifier = Modifier.size(15.dp),
-                    tint = protocolAccentColor(tab.protocol)
+                    tint = customAccent ?: protocolAccentColor(tab.protocol)
                 )
 
                 Text(
@@ -490,7 +529,7 @@ private fun ExpressiveSessionTabChip(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     color = if (isSelected) {
-                        MaterialTheme.colorScheme.onSecondaryContainer
+                        MaterialTheme.colorScheme.onSurface
                     } else {
                         MaterialTheme.colorScheme.onSurfaceVariant
                     }
@@ -523,6 +562,17 @@ private fun ExpressiveSessionTabChip(
             expanded = contextMenuOpen,
             onDismissRequest = { contextMenuOpen = false }
         ) {
+            if (onReconnect != null) {
+                DropdownMenuItem(
+                    text = { Text(labels.reconnectTabLabel) },
+                    leadingIcon = { Icon(Icons.Outlined.Refresh, contentDescription = null) },
+                    onClick = {
+                        contextMenuOpen = false
+                        onReconnect()
+                    }
+                )
+                HorizontalDivider()
+            }
             DropdownMenuItem(
                 text = { Text(labels.splitRightLabel) },
                 leadingIcon = { Icon(Icons.Outlined.VerticalSplit, contentDescription = null) },

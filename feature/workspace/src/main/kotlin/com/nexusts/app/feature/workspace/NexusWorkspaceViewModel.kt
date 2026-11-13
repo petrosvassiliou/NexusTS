@@ -21,7 +21,11 @@ import com.nexusts.app.core.vault.importer.RtszDocumentImporter
 import com.nexusts.app.core.vault.inheritance.EffectiveConnectionProfile
 import com.nexusts.app.core.vault.inheritance.PropertyInheritanceResolver
 import com.nexusts.app.core.vault.model.CommandTask
+import com.nexusts.app.core.vault.model.ConnectionTemplate
 import com.nexusts.app.core.vault.model.CredentialSourceKind
+import com.nexusts.app.core.vault.model.CustomPropertyEntry
+import com.nexusts.app.core.vault.model.DynamicFolder
+import com.nexusts.app.core.vault.model.DynamicScriptInterpreter
 import com.nexusts.app.core.vault.model.GatewayTransportKind
 import com.nexusts.app.core.vault.model.InheritableProperties
 import com.nexusts.app.core.vault.model.InheritanceMode
@@ -37,16 +41,29 @@ import com.nexusts.app.core.vault.model.VaultConnection
 import com.nexusts.app.core.vault.model.VaultCredential
 import com.nexusts.app.core.vault.model.VaultFolder
 import com.nexusts.app.core.vault.model.VaultProtocolType
+import com.nexusts.app.core.vault.model.VaultTodoItem
 import com.nexusts.app.protocols.rdp.bridge.RdpManagedSession
 import com.nexusts.app.protocols.ssh.bridge.SshTerminalSessionController
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
+
+data class AdHocLaunchOverride(
+    val overrideCredentialId: String? = null,
+    val adHocUsername: String = "",
+    val adHocDomain: String = "",
+    val adHocPassword: String = "",
+    val forceRdpConsoleAdmin: Boolean? = null,
+    val appliedTemplateId: String? = null
+)
 
 data class WorkspaceUiState(
     val activeRailId: String = "connections",
@@ -58,7 +75,11 @@ data class WorkspaceUiState(
     val editingConnection: VaultConnection? = null,
     val isFolderDialogVisible: Boolean = false,
     val editingFolder: VaultFolder? = null,
+    val connectWithOptionsTarget: VaultConnection? = null,
+    val isNewSmartFolderDialogVisible: Boolean = false,
+    val isNewTemplateDialogVisible: Boolean = false,
     val isLockVaultDialogVisible: Boolean = false,
+    val sidebarFilterQuery: String = "",
     val useSharedTeamDriveZone: Boolean = false,
     val remoteKeyCaptureEnabled: Boolean = false,
     val broadcastModeEnabled: Boolean = false,
@@ -66,6 +87,8 @@ data class WorkspaceUiState(
     val vaultDocument: NxtsVaultDocument = createEnterpriseStarterVault(),
     val selectedConnectionId: String? = null,
     val selectedSmartFolderId: String? = null,
+    val selectedDynamicFolderId: String? = null,
+    val hydratedDynamicConnections: Map<String, List<VaultConnection>> = emptyMap(),
     val gatewayHealthReports: Map<String, GatewayHealthReport> = emptyMap(),
     val auditLogs: List<String> = listOf(
         "[NexusTS] Argon2id + AES-256-GCM Zero-Knowledge Engine initialized.",
@@ -97,6 +120,7 @@ class NexusWorkspaceViewModel @Inject constructor(
 
     private val sshControllers = ConcurrentHashMap<String, SshTerminalSessionController>()
     private val rdpSessions = ConcurrentHashMap<String, RdpManagedSession>()
+    private val adHocOverrides = ConcurrentHashMap<String, AdHocLaunchOverride>()
 
     init {
         viewModelScope.launch {
@@ -214,29 +238,59 @@ class NexusWorkspaceViewModel @Inject constructor(
         return inheritanceResolver.resolveEffectiveProfile(state.vaultDocument, conn)
     }
 
-    fun resolveConnectionAndSecret(connectionId: String): Pair<VaultConnection?, ResolvedSessionSecret> {
+    fun resolveConnectionAndSecret(connectionId: String, tabId: String? = null): Pair<VaultConnection?, ResolvedSessionSecret> {
         val doc = _uiState.value.vaultDocument
-        val conn = doc.connections.firstOrNull { it.id == connectionId }
+        val dynamicAll = _uiState.value.hydratedDynamicConnections.values.flatten()
+        val rawConn = doc.connections.firstOrNull { it.id == connectionId }
+            ?: dynamicAll.firstOrNull { it.id == connectionId }
             ?: return null to ResolvedSessionSecret(username = "admin")
+
+        val override = tabId?.let { adHocOverrides[it] }
+        val appliedTemplate = override?.appliedTemplateId?.let { tplId ->
+            doc.templates.firstOrNull { it.id == tplId }
+        }
+        val templatedConn = if (appliedTemplate != null && appliedTemplate.protocol == rawConn.protocol) {
+            rawConn.copy(settings = appliedTemplate.settings)
+        } else {
+            rawConn
+        }
+        val conn = if (override?.forceRdpConsoleAdmin != null && templatedConn.settings is ProtocolSpecificSettings.Rdp) {
+            templatedConn.copy(
+                settings = (templatedConn.settings as ProtocolSpecificSettings.Rdp).copy(
+                    connectToConsoleAdmin = override.forceRdpConsoleAdmin
+                )
+            )
+        } else {
+            templatedConn
+        }
+
         val effective = inheritanceResolver.resolveEffectiveProfile(doc, conn)
-        val cred = effective.effectiveCredential
-        val secret = if (cred != null) {
-            ResolvedSessionSecret(
+        val explicitOverrideCred = override?.overrideCredentialId?.let { cid ->
+            doc.credentials.firstOrNull { it.id == cid }
+        }
+        val cred = explicitOverrideCred ?: effective.effectiveCredential
+
+        val secret = when {
+            override != null && override.adHocUsername.isNotBlank() -> ResolvedSessionSecret(
+                username = override.adHocUsername,
+                password = override.adHocPassword,
+                domain = override.adHocDomain
+            )
+            cred != null -> ResolvedSessionSecret(
                 username = cred.username,
                 password = cred.secretPassword,
                 domain = cred.domain,
                 privateKeyPem = cred.privateKeyPem,
                 keyPassphrase = cred.keyPassphrase
             )
-        } else {
-            ResolvedSessionSecret(username = "root")
+            else -> ResolvedSessionSecret(username = "root")
         }
         return conn to secret
     }
 
     fun getOrCreateSshController(tab: WorkspaceSessionTab): SshTerminalSessionController {
         return sshControllers.getOrPut(tab.tabId) {
-            val (conn, secret) = resolveConnectionAndSecret(tab.connectionId)
+            val (conn, secret) = resolveConnectionAndSecret(tab.connectionId, tab.tabId)
             val sshSettings = conn?.settings as? ProtocolSpecificSettings.Ssh
             val doc = _uiState.value.vaultDocument
             val bastion = sshSettings?.bastionJumpConnectionId?.let { id ->
@@ -256,7 +310,7 @@ class NexusWorkspaceViewModel @Inject constructor(
 
     fun getOrCreateRdpSession(tab: WorkspaceSessionTab): RdpManagedSession {
         return rdpSessions.getOrPut(tab.tabId) {
-            val (conn, secret) = resolveConnectionAndSecret(tab.connectionId)
+            val (conn, secret) = resolveConnectionAndSecret(tab.connectionId, tab.tabId)
             val fallbackConn = conn ?: VaultConnection(
                 id = tab.connectionId,
                 name = tab.title,
@@ -287,8 +341,10 @@ class NexusWorkspaceViewModel @Inject constructor(
             protocol = mapProtocolToUiKind(connection.protocol),
             status = SessionLifecycleStatus.CONNECTED,
             environmentTag = profile.effectiveEnvironmentBadge,
+            customColorHex = profile.effectiveColorAccentHex,
             broadcastEnabled = _uiState.value.broadcastModeEnabled
         )
+        recordRecentConnection(connection.id)
         appendLog("[Connect] Opening ${connection.protocol.name} session '${connection.name}' (${connection.host})")
 
         when (placement) {
@@ -299,6 +355,293 @@ class NexusWorkspaceViewModel @Inject constructor(
             )
             QuickLaunchPlacement.DETACHED_NEW_WINDOW -> onDetachWindowRequested?.invoke(tab)
         }
+    }
+
+    fun openConnectWithOptions(connection: VaultConnection) {
+        _uiState.update { it.copy(connectWithOptionsTarget = connection) }
+    }
+
+    fun dismissConnectWithOptions() {
+        _uiState.update { it.copy(connectWithOptionsTarget = null) }
+    }
+
+    fun launchConnectionWithOptions(
+        connection: VaultConnection,
+        override: AdHocLaunchOverride,
+        placement: QuickLaunchPlacement = QuickLaunchPlacement.ACTIVE_PANE_TAB,
+        onDetachWindowRequested: ((WorkspaceSessionTab) -> Unit)? = null
+    ) {
+        val profile = inheritanceResolver.resolveEffectiveProfile(_uiState.value.vaultDocument, connection)
+        val tplAccent = override.appliedTemplateId?.let { id ->
+            _uiState.value.vaultDocument.templates.firstOrNull { it.id == id }?.colorAccentHex
+        }
+        val consoleSuffix = if (override.forceRdpConsoleAdmin == true && !connection.name.contains("/admin")) {
+            " (/admin)"
+        } else {
+            ""
+        }
+        val tab = WorkspaceSessionTab(
+            connectionId = connection.id,
+            title = connection.name + consoleSuffix,
+            subtitleHost = connection.host,
+            protocol = mapProtocolToUiKind(connection.protocol),
+            status = SessionLifecycleStatus.CONNECTED,
+            environmentTag = profile.effectiveEnvironmentBadge,
+            customColorHex = tplAccent ?: profile.effectiveColorAccentHex,
+            broadcastEnabled = _uiState.value.broadcastModeEnabled
+        )
+        adHocOverrides[tab.tabId] = override
+        recordRecentConnection(connection.id)
+        _uiState.update { it.copy(connectWithOptionsTarget = null, activeRailId = "connections") }
+        appendLog("[Connect+Options] Launched '${connection.name}' with custom session overrides")
+
+        when (placement) {
+            QuickLaunchPlacement.ACTIVE_PANE_TAB -> tilingController.openTab(tab)
+            QuickLaunchPlacement.SPLIT_RIGHT_PANE -> tilingController.splitPane(
+                orientation = SplitOrientation.HORIZONTAL,
+                tabForNewPane = tab
+            )
+            QuickLaunchPlacement.DETACHED_NEW_WINDOW -> onDetachWindowRequested?.invoke(tab)
+        }
+    }
+
+    fun connectAllInFolder(
+        folderId: String,
+        onDetachWindowRequested: ((WorkspaceSessionTab) -> Unit)? = null
+    ) {
+        val doc = _uiState.value.vaultDocument
+        val children = doc.connections.filter {
+            it.parentFolderId == folderId && it.id !in doc.tombstonedObjectIds
+        }
+        if (children.isEmpty()) return
+        _uiState.update { it.copy(activeRailId = "connections") }
+        children.forEach { conn ->
+            launchConnection(conn, QuickLaunchPlacement.ACTIVE_PANE_TAB, onDetachWindowRequested)
+        }
+        val folderName = doc.folders.firstOrNull { it.id == folderId }?.name ?: folderId
+        appendLog("[Bulk Connect] Opened ${children.size} session(s) from folder '$folderName'")
+    }
+
+    fun reconnectSessionTab(tab: WorkspaceSessionTab) {
+        sshControllers.remove(tab.tabId)?.close()
+        rdpSessions.remove(tab.tabId)?.close()
+        tilingController.updateTab(tab.tabId) { it.copy(status = SessionLifecycleStatus.RECONNECTING) }
+        tilingController.updateTab(tab.tabId) { it.copy(status = SessionLifecycleStatus.CONNECTED) }
+        appendLog("[Session] Reconnected '${tab.title}' (${tab.subtitleHost})")
+    }
+
+    fun updateSidebarFilterQuery(query: String) {
+        _uiState.update { it.copy(sidebarFilterQuery = query) }
+    }
+
+    fun toggleFavoriteConnection(connectionId: String) {
+        activeVaultStore.updateVaultDocument { doc ->
+            doc.copy(
+                revision = doc.revision + 1L,
+                connections = doc.connections.map {
+                    if (it.id == connectionId) it.copy(favorite = !it.favorite, updatedAtEpochMs = System.currentTimeMillis()) else it
+                }
+            )
+        }
+        _uiState.update { it.copy(vaultDocument = activeVaultStore.snapshot.value.vaultDocument) }
+    }
+
+    fun duplicateConnection(connection: VaultConnection) {
+        val cloned = connection.copy(
+            id = UUID.randomUUID().toString(),
+            name = "${connection.name} (Copy)",
+            updatedAtEpochMs = System.currentTimeMillis()
+        )
+        saveConnectionToVault(cloned)
+    }
+
+    fun deleteConnection(connectionId: String) {
+        tilingController.allActiveTabs()
+            .filter { it.connectionId == connectionId }
+            .forEach { closeSessionTab(it.tabId) }
+
+        activeVaultStore.updateVaultDocument { doc ->
+            doc.copy(
+                revision = doc.revision + 1L,
+                connections = doc.connections.filterNot { it.id == connectionId },
+                recentConnectionIds = doc.recentConnectionIds.filterNot { it == connectionId },
+                tombstonedObjectIds = doc.tombstonedObjectIds + connectionId
+            )
+        }
+        _uiState.update { state ->
+            val updatedDoc = activeVaultStore.snapshot.value.vaultDocument
+            state.copy(
+                vaultDocument = updatedDoc,
+                selectedConnectionId = if (state.selectedConnectionId == connectionId) {
+                    updatedDoc.connections.firstOrNull()?.id
+                } else {
+                    state.selectedConnectionId
+                }
+            )
+        }
+        appendLog("[Vault] Deleted connection ($connectionId) with tombstone marker")
+    }
+
+    fun toggleDynamicFolder(dynamicFolder: DynamicFolder) {
+        val currentlyOpen = _uiState.value.selectedDynamicFolderId == dynamicFolder.id
+        _uiState.update { it.copy(selectedDynamicFolderId = if (currentlyOpen) null else dynamicFolder.id) }
+        if (!currentlyOpen && !_uiState.value.hydratedDynamicConnections.containsKey(dynamicFolder.id)) {
+            reloadDynamicFolder(dynamicFolder)
+        }
+    }
+
+    fun reloadDynamicFolder(dynamicFolder: DynamicFolder) {
+        viewModelScope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    inheritanceResolver.evaluateDynamicFolder(dynamicFolder)
+                }
+            }.onSuccess { items ->
+                _uiState.update { state ->
+                    state.copy(
+                        selectedDynamicFolderId = dynamicFolder.id,
+                        hydratedDynamicConnections = state.hydratedDynamicConnections + (dynamicFolder.id to items)
+                    )
+                }
+                appendLog("[DynamicFolder] Hydrated ${items.size} host(s) from '${dynamicFolder.name}'")
+            }.onFailure { err ->
+                appendLog("[DynamicFolder Error] '${dynamicFolder.name}': ${err.message}")
+            }
+        }
+    }
+
+    fun openNewSmartFolderDialog() {
+        _uiState.update { it.copy(isNewSmartFolderDialogVisible = true) }
+    }
+
+    fun dismissNewSmartFolderDialog() {
+        _uiState.update { it.copy(isNewSmartFolderDialogVisible = false) }
+    }
+
+    fun saveSmartFolderToVault(smartFolder: SmartFolder) {
+        activeVaultStore.updateVaultDocument { doc ->
+            doc.copy(
+                revision = doc.revision + 1L,
+                smartFolders = doc.smartFolders + smartFolder
+            )
+        }
+        _uiState.update {
+            it.copy(
+                isNewSmartFolderDialogVisible = false,
+                selectedSmartFolderId = smartFolder.id,
+                vaultDocument = activeVaultStore.snapshot.value.vaultDocument
+            )
+        }
+        appendLog("[SmartFolder] Created dynamic filter '${smartFolder.name}'")
+    }
+
+    fun openNewTemplateDialog() {
+        _uiState.update { it.copy(isNewTemplateDialogVisible = true) }
+    }
+
+    fun dismissNewTemplateDialog() {
+        _uiState.update { it.copy(isNewTemplateDialogVisible = false) }
+    }
+
+    fun saveTemplateToVault(template: ConnectionTemplate) {
+        activeVaultStore.updateVaultDocument { doc ->
+            doc.copy(
+                revision = doc.revision + 1L,
+                templates = doc.templates + template
+            )
+        }
+        _uiState.update {
+            it.copy(
+                isNewTemplateDialogVisible = false,
+                vaultDocument = activeVaultStore.snapshot.value.vaultDocument
+            )
+        }
+        appendLog("[Templates] Saved reusable Royal TS template '${template.name}' (${template.protocol.name})")
+    }
+
+    fun createConnectionFromTemplate(template: ConnectionTemplate) {
+        val draft = VaultConnection(
+            name = "${template.name} Host",
+            host = "",
+            protocol = template.protocol,
+            osFamily = if (template.protocol == VaultProtocolType.RDP) "Windows" else "Linux",
+            inheritable = template.inheritable.copy(
+                displayColorAccentHex = template.colorAccentHex ?: template.inheritable.displayColorAccentHex
+            ),
+            settings = template.settings
+        )
+        _uiState.update {
+            it.copy(
+                editingConnection = draft,
+                isNewConnectionDialogVisible = true
+            )
+        }
+    }
+
+    fun addTodoItem(title: String, targetObjectId: String? = _uiState.value.selectedConnectionId, priority: String = "NORMAL") {
+        if (title.isBlank()) return
+        val item = VaultTodoItem(
+            targetObjectId = targetObjectId,
+            title = title.trim(),
+            priority = priority
+        )
+        activeVaultStore.updateVaultDocument { doc ->
+            doc.copy(
+                revision = doc.revision + 1L,
+                todoItems = listOf(item) + doc.todoItems
+            )
+        }
+        _uiState.update { it.copy(vaultDocument = activeVaultStore.snapshot.value.vaultDocument) }
+        appendLog("[To-Do] Added task '${item.title}'")
+    }
+
+    fun toggleTodoItem(todoId: String) {
+        activeVaultStore.updateVaultDocument { doc ->
+            doc.copy(
+                revision = doc.revision + 1L,
+                todoItems = doc.todoItems.map {
+                    if (it.id == todoId) it.copy(completed = !it.completed, updatedAtEpochMs = System.currentTimeMillis()) else it
+                }
+            )
+        }
+        _uiState.update { it.copy(vaultDocument = activeVaultStore.snapshot.value.vaultDocument) }
+    }
+
+    fun updateConnectionNotesAndCustomProps(
+        connectionId: String,
+        notes: String,
+        customProps: List<CustomPropertyEntry>,
+        colorAccentHex: String?
+    ) {
+        activeVaultStore.updateVaultDocument { doc ->
+            doc.copy(
+                revision = doc.revision + 1L,
+                connections = doc.connections.map { conn ->
+                    if (conn.id == connectionId) {
+                        conn.copy(
+                            notes = notes,
+                            inheritable = conn.inheritable.copy(
+                                displayColorAccentHex = colorAccentHex,
+                                customProperties = customProps
+                            ),
+                            updatedAtEpochMs = System.currentTimeMillis()
+                        )
+                    } else {
+                        conn
+                    }
+                }
+            )
+        }
+        _uiState.update { it.copy(vaultDocument = activeVaultStore.snapshot.value.vaultDocument) }
+        appendLog("[Inspector] Updated notes & custom properties for connection $connectionId")
+    }
+
+    private fun recordRecentConnection(connectionId: String) {
+        activeVaultStore.updateVaultDocument { doc ->
+            val updatedRecents = (listOf(connectionId) + doc.recentConnectionIds.filterNot { it == connectionId }).take(8)
+            doc.copy(recentConnectionIds = updatedRecents)
+        }
+        _uiState.update { it.copy(vaultDocument = activeVaultStore.snapshot.value.vaultDocument) }
     }
 
     fun launchQuickCandidate(
@@ -331,6 +674,7 @@ class NexusWorkspaceViewModel @Inject constructor(
     }
 
     fun closeSessionTab(tabId: String) {
+        adHocOverrides.remove(tabId)
         sshControllers.remove(tabId)?.close()
         rdpSessions.remove(tabId)?.close()
         tilingController.closeTab(tabId)
@@ -829,41 +1173,54 @@ class NexusWorkspaceViewModel @Inject constructor(
                 rootInheritable = InheritableProperties(
                     credentialMode = InheritanceMode.OVERRIDE_EXPLICIT,
                     explicitCredentialId = opsCredId,
-                    gatewayMode = InheritanceMode.NONE_DIRECT
+                    gatewayMode = InheritanceMode.NONE_DIRECT,
+                    customProperties = listOf(
+                        CustomPropertyEntry("CostCenter", "INFRA-EU-01"),
+                        CustomPropertyEntry("PagerDutyEscalation", "P0-SRE-CORE")
+                    )
                 ),
                 folders = listOf(
                     VaultFolder(
                         id = folderWinAdId,
                         name = "Windows Server Farm (AD)",
+                        description = "Tier-0 Active Directory Domain Controllers & RDS Session Hosts",
                         tags = listOf("ad", "windows", "tier-0"),
                         inheritable = InheritableProperties(
                             credentialMode = InheritanceMode.OVERRIDE_EXPLICIT,
                             explicitCredentialId = winCredId,
                             gatewayMode = InheritanceMode.OVERRIDE_EXPLICIT,
                             explicitGatewayId = bastionGwId,
-                            environmentBadge = "PRODUCTION"
+                            environmentBadge = "PRODUCTION",
+                            displayColorAccentHex = "#6EA2FF",
+                            customProperties = listOf(
+                                CustomPropertyEntry("ADForest", "corp.nexusts.internal")
+                            )
                         )
                     ),
                     VaultFolder(
                         id = folderProdId,
                         name = "Production Core (EU-Central)",
+                        description = "Kubernetes Control Plane & Release Artifact Nodes",
                         tags = listOf("prod", "tier-0"),
                         inheritable = InheritableProperties(
                             credentialMode = InheritanceMode.INHERIT_FROM_PARENT,
                             gatewayMode = InheritanceMode.OVERRIDE_EXPLICIT,
                             explicitGatewayId = bastionGwId,
-                            environmentBadge = "PRODUCTION"
+                            environmentBadge = "PRODUCTION",
+                            displayColorAccentHex = "#3CE6B8"
                         )
                     ),
                     VaultFolder(
                         id = folderCloudId,
                         name = "Hybrid Cloud & Hypervisors",
+                        description = "Proxmox VE, macOS M4 CI Builders & Diagnostic Tooling",
                         tags = listOf("cloud", "infra"),
                         inheritable = InheritableProperties(
                             credentialMode = InheritanceMode.OVERRIDE_EXPLICIT,
                             explicitCredentialId = winCredId,
                             gatewayMode = InheritanceMode.INHERIT_FROM_PARENT,
-                            environmentBadge = "STAGING"
+                            environmentBadge = "STAGING",
+                            displayColorAccentHex = "#FFB86B"
                         )
                     )
                 ),
@@ -883,6 +1240,20 @@ class NexusWorkspaceViewModel @Inject constructor(
                         )
                     )
                 ),
+                dynamicFolders = listOf(
+                    DynamicFolder(
+                        id = "dyn-cloud-fleet",
+                        parentFolderId = folderCloudId,
+                        name = "Ephemeral Cloud Fleet (Dynamic JSON)",
+                        interpreter = DynamicScriptInterpreter.JSON_HTTP_API,
+                        scriptOrEndpointPayload = """{"Objects":[{"Type":"SSH","Name":"ephemeral-gpu-worker-01","ComputerName":"10.88.4.11","Port":22,"OS":"Linux","Tags":["gpu","dynamic"]},{"Type":"RDP","Name":"ephemeral-win-qa-04","ComputerName":"10.88.4.40","Port":3389,"OS":"Windows","Tags":["qa","dynamic"]}]}""",
+                        inheritable = InheritableProperties(
+                            credentialMode = InheritanceMode.OVERRIDE_EXPLICIT,
+                            explicitCredentialId = opsCredId,
+                            displayColorAccentHex = "#59D2FE"
+                        )
+                    )
+                ),
                 connections = listOf(
                     VaultConnection(
                         id = "conn-win-rds-01",
@@ -892,9 +1263,15 @@ class NexusWorkspaceViewModel @Inject constructor(
                         protocol = VaultProtocolType.RDP,
                         osFamily = "Windows",
                         tags = listOf("ad", "rdp", "smartcard"),
+                        notes = "Primary FSMO Role Holder • Requires YubiKey PIV or DomainAdmin + TOTP.",
+                        favorite = true,
                         inheritable = InheritableProperties(
                             credentialMode = InheritanceMode.INHERIT_FROM_PARENT,
-                            gatewayMode = InheritanceMode.INHERIT_FROM_PARENT
+                            gatewayMode = InheritanceMode.INHERIT_FROM_PARENT,
+                            customProperties = listOf(
+                                CustomPropertyEntry("Rack", "FRA1-RACK-04"),
+                                CustomPropertyEntry("iDRAC", "https://idrac-dc01.corp.internal")
+                            )
                         ),
                         settings = ProtocolSpecificSettings.Rdp(
                             connectToConsoleAdmin = false,
@@ -918,6 +1295,7 @@ class NexusWorkspaceViewModel @Inject constructor(
                         protocol = VaultProtocolType.RDP,
                         osFamily = "Windows",
                         tags = listOf("rds", "console", "rdp"),
+                        notes = "Direct Console Session 0 maintenance endpoint.",
                         inheritable = InheritableProperties(
                             credentialMode = InheritanceMode.INHERIT_FROM_PARENT,
                             gatewayMode = InheritanceMode.INHERIT_FROM_PARENT
@@ -941,6 +1319,8 @@ class NexusWorkspaceViewModel @Inject constructor(
                         protocol = VaultProtocolType.SSH,
                         osFamily = "Linux",
                         tags = listOf("k8s", "prod"),
+                        notes = "Forwards localhost:16443 -> 127.0.0.1:6443 kube-apiserver.",
+                        favorite = true,
                         settings = ProtocolSpecificSettings.Ssh(
                             port = 22,
                             enableX11Forwarding = true,
@@ -971,6 +1351,7 @@ class NexusWorkspaceViewModel @Inject constructor(
                         host = "10.40.8.22",
                         protocol = VaultProtocolType.APPLE_SCREEN_SHARING,
                         osFamily = "macOS",
+                        favorite = true,
                         settings = ProtocolSpecificSettings.Vnc(appleArdDiffieHellmanAuth = true)
                     ),
                     VaultConnection(
@@ -1001,14 +1382,16 @@ class NexusWorkspaceViewModel @Inject constructor(
                         name = "SRE Root SSH Identity",
                         sourceKind = CredentialSourceKind.SSH_KEY_PAIR,
                         username = "sre-admin",
-                        keyFingerprintSha256 = "SHA256:kX9pNexusTSZeroKnowledgeEd25519Key"
+                        keyFingerprintSha256 = "SHA256:kX9pNexusTSZeroKnowledgeEd25519Key",
+                        totpSecretBase32 = "JBSWY3DPEHPK3PXP"
                     ),
                     VaultCredential(
                         id = winCredId,
                         name = "CORP\\DomainAdmin + YubiKey PIV",
                         sourceKind = CredentialSourceKind.HARDWARE_FIDO2_PASSKEY,
                         username = "adm.architect",
-                        domain = "CORP"
+                        domain = "CORP",
+                        totpSecretBase32 = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"
                     )
                 ),
                 gateways = listOf(
@@ -1030,11 +1413,56 @@ class NexusWorkspaceViewModel @Inject constructor(
                 ),
                 keySequenceTasks = listOf(
                     KeySequenceTask(
-                        name = "Windows Domain Elevated Sign-In Macro",
-                        macroSequence = "{CTRL+ALT+DEL}{WAIT:350}\$EffectiveUsername\${TAB}\$EffectivePassword\${ENTER}",
+                        name = "Windows Domain Elevated Sign-In + 2FA Macro",
+                        macroSequence = "{CTRL+ALT+DEL}{WAIT:350}\$EffectiveUsername\${TAB}\$EffectivePassword\${ENTER}{WAIT:500}\$EffectiveTOTP\${ENTER}",
                         keystrokeDelayMs = 25
                     )
-                )
+                ),
+                templates = listOf(
+                    ConnectionTemplate(
+                        id = "tpl-win-console-hidpi",
+                        name = "Windows Server Console + HiDPI 150%",
+                        description = "Connects to /admin console with 150% Retina/HiDPI scale, Smartcard & Clipboard",
+                        protocol = VaultProtocolType.RDP,
+                        colorAccentHex = "#6EA2FF",
+                        settings = ProtocolSpecificSettings.Rdp(
+                            connectToConsoleAdmin = true,
+                            hiDpiEnabled = true,
+                            desktopScaleFactorPercent = 150,
+                            redirectClipboard = true,
+                            redirectSmartcardYubiKey = true
+                        )
+                    ),
+                    ConnectionTemplate(
+                        id = "tpl-hardened-ssh",
+                        name = "Hardened Bastion SSH + X11",
+                        description = "xterm-256color with X11 forwarding and 15s keep-alive",
+                        protocol = VaultProtocolType.SSH,
+                        colorAccentHex = "#3CE6B8",
+                        settings = ProtocolSpecificSettings.Ssh(
+                            enableX11Forwarding = true,
+                            keepAliveIntervalSec = 15
+                        )
+                    )
+                ),
+                todoItems = listOf(
+                    VaultTodoItem(
+                        id = "todo-cert-rotate",
+                        targetObjectId = "conn-win-rds-01",
+                        title = "Rotate LDAPS & RD Gateway TLS leaf certificates before Q4 window",
+                        completed = false,
+                        priority = "HIGH",
+                        dueIsoDate = "2026-12-01"
+                    ),
+                    VaultTodoItem(
+                        id = "todo-k8s-etcd",
+                        targetObjectId = "conn-k8s-bastion-ssh",
+                        title = "Verify etcd encrypted snapshot replication on EU-Central",
+                        completed = true,
+                        priority = "NORMAL"
+                    )
+                ),
+                recentConnectionIds = listOf("conn-win-rds-01", "conn-k8s-bastion-ssh")
             )
         }
     }

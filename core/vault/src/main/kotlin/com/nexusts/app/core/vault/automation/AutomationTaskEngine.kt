@@ -93,11 +93,27 @@ class AutomationTaskEngine {
     }
 
     private fun expandVariables(template: String, profile: EffectiveConnectionProfile): String {
-        return template
+        val totpCode = profile.effectiveCredential?.totpSecretBase32
+            ?.takeIf { it.isNotBlank() }
+            ?.let { com.nexusts.app.core.vault.credentials.TotpCodeGenerator.generateTotp(it)?.code }
+            .orEmpty()
+
+        var result = template
             .replace("\$URI\$", profile.connection.host)
             .replace("{URI}", profile.connection.host)
             .replace("\$Name\$", profile.connection.name)
             .replace("\$OS\$", profile.connection.osFamily)
+            .replace("\$Notes\$", profile.connection.notes)
             .replace("\$EffectiveUsername\$", profile.effectiveCredential?.username.orEmpty())
+            .replace("\$EffectiveDomain\$", profile.effectiveCredential?.domain.orEmpty())
+            .replace("\$EffectivePassword\$", profile.effectiveCredential?.secretPassword.orEmpty())
+            .replace("\$EffectiveTOTP\$", totpCode)
+
+        val customPropRegex = Regex("\\\$CustomProperty\\.([A-Za-z0-9_.-]+)\\\$")
+        result = customPropRegex.replace(result) { match ->
+            val propKey = match.groupValues[1]
+            profile.effectiveCustomProperties[propKey]?.value.orEmpty()
+        }
+        return result
     }
 }

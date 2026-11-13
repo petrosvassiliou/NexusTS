@@ -140,6 +140,31 @@
     <string name="rdp_sync_clipboard_chip">Clipboard</string>
     <string name="rdp_console_badge">Console /admin</string>
 
+    <!-- Royal TS Enterprise Parity: Templates, Connect with Options, TOTP, Favorites, Overview & To-Dos -->
+    <string name="nav_templates">Templates</string>
+    <string name="action_connect_with_options">Connect with Options…</string>
+    <string name="action_connect_all_folder">Connect All in Folder</string>
+    <string name="action_duplicate_connection">Duplicate Connection</string>
+    <string name="action_delete_item">Delete</string>
+    <string name="action_toggle_favorite">Toggle Favorite</string>
+    <string name="action_reconnect_tab">Reconnect Session</string>
+    <string name="action_reload_dynamic_folder">Reload Inventory</string>
+    <string name="action_new_smart_folder">New Smart Folder</string>
+    <string name="action_new_template">New Template</string>
+    <string name="sidebar_filter_placeholder">Filter connections, hosts, tags…</string>
+    <string name="vault_section_favorites">Favorites</string>
+    <string name="vault_section_recents">Recent Sessions</string>
+    <string name="inspector_totp_code">2FA / TOTP Authenticator</string>
+    <string name="inspector_custom_properties">Custom Properties</string>
+    <string name="inspector_notes_docs">Notes &amp; Documentation</string>
+    <string name="inspector_todo_items">To-Do Checklist</string>
+    <string name="action_add_todo">Add To-Do</string>
+    <string name="studio_templates_subtitle">Reusable Connection Templates, Color Accents &amp; Protocol Profiles</string>
+    <string name="dialog_connect_options_title">Connect with Options</string>
+    <string name="dialog_field_template">Apply Connection Template</string>
+    <string name="dialog_field_color_accent">Accent Color</string>
+    <string name="overview_active_sessions">Active Sessions</string>
+
     <!-- Language Names -->
     <string name="lang_en">English</string>
     <string name="lang_de">Deutsch</string>

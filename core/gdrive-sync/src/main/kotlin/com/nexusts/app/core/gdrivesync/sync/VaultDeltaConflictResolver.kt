@@ -165,6 +165,33 @@ object VaultDeltaConflictResolver {
             conflictsOut = conflicts
         )
 
+        val mergedTemplates = mergeById(
+            kind = "ConnectionTemplate",
+            localList = local.templates,
+            remoteList = remote.templates,
+            tombstones = tombstones,
+            idOf = com.nexusts.app.core.vault.model.ConnectionTemplate::id,
+            nameOf = com.nexusts.app.core.vault.model.ConnectionTemplate::name,
+            timeOf = com.nexusts.app.core.vault.model.ConnectionTemplate::updatedAtEpochMs,
+            conflictsOut = conflicts
+        )
+
+        val mergedTodos = mergeById(
+            kind = "VaultTodoItem",
+            localList = local.todoItems,
+            remoteList = remote.todoItems,
+            tombstones = tombstones,
+            idOf = com.nexusts.app.core.vault.model.VaultTodoItem::id,
+            nameOf = com.nexusts.app.core.vault.model.VaultTodoItem::title,
+            timeOf = com.nexusts.app.core.vault.model.VaultTodoItem::updatedAtEpochMs,
+            conflictsOut = conflicts
+        )
+
+        val mergedRecents = (local.recentConnectionIds + remote.recentConnectionIds)
+            .distinct()
+            .filterNot { it in tombstones }
+            .take(12)
+
         val allActors = local.vectorClock.keys + remote.vectorClock.keys + localDeviceId
         val nextVectorClock = allActors.associateWith { actor ->
             val base = max(local.vectorClock[actor] ?: 0L, remote.vectorClock[actor] ?: 0L)
@@ -184,6 +211,9 @@ object VaultDeltaConflictResolver {
             gateways = mergedGateways,
             commandTasks = mergedCmdTasks,
             keySequenceTasks = mergedKeyTasks,
+            templates = mergedTemplates,
+            todoItems = mergedTodos,
+            recentConnectionIds = mergedRecents,
             tombstonedObjectIds = tombstones
         )
 

@@ -30,7 +30,10 @@ data class EffectiveConnectionProfile(
     val gatewaySourceLabel: String,
     val effectiveEnvironmentBadge: String?,
     val effectivePreConnectTask: CommandTask?,
-    val effectivePostDisconnectTask: CommandTask?
+    val effectivePostDisconnectTask: CommandTask?,
+    val effectiveColorAccentHex: String? = null,
+    val effectiveCustomProperties: Map<String, com.nexusts.app.core.vault.model.CustomPropertyEntry> = emptyMap(),
+    val requireConnectConfirmation: Boolean = false
 )
 
 /**
@@ -118,10 +121,20 @@ class PropertyInheritanceResolver(
         var resolvedEnv: String? = null
         var preTaskId: String? = null
         var postTaskId: String? = null
+        var resolvedColorHex: String? = null
+        var confirmRequired = false
+        val mergedCustomProps = linkedMapOf<String, com.nexusts.app.core.vault.model.CustomPropertyEntry>()
         for ((_, props) in chain) {
             if (!props.environmentBadge.isNullOrBlank()) resolvedEnv = props.environmentBadge
             if (!props.preConnectTaskId.isNullOrBlank()) preTaskId = props.preConnectTaskId
             if (!props.postDisconnectTaskId.isNullOrBlank()) postTaskId = props.postDisconnectTaskId
+            if (!props.displayColorAccentHex.isNullOrBlank()) resolvedColorHex = props.displayColorAccentHex
+            if (props.requireConnectConfirmation) confirmRequired = true
+            props.customProperties.forEach { entry ->
+                if (entry.key.isNotBlank()) {
+                    mergedCustomProps[entry.key] = entry
+                }
+            }
         }
 
         return EffectiveConnectionProfile(
@@ -134,12 +147,15 @@ class PropertyInheritanceResolver(
             gatewaySourceLabel = gatewaySourceLabel,
             effectiveEnvironmentBadge = resolvedEnv,
             effectivePreConnectTask = preTaskId?.let { taskIndex[it] },
-            effectivePostDisconnectTask = postTaskId?.let { taskIndex[it] }
+            effectivePostDisconnectTask = postTaskId?.let { taskIndex[it] },
+            effectiveColorAccentHex = resolvedColorHex,
+            effectiveCustomProperties = mergedCustomProps,
+            requireConnectConfirmation = confirmRequired
         )
     }
 
     /**
-     * Evaluates a [SmartFolder] dynamically against all connections in [document].
+     * Evaluates a [SmartFolder] dynamically against all non-tombstoned connections in [document].
      */
     fun evaluateSmartFolder(
         document: NxtsVaultDocument,
@@ -151,6 +167,7 @@ class PropertyInheritanceResolver(
             ?.let { runCatching { Regex(it, RegexOption.IGNORE_CASE) }.getOrNull() }
 
         return document.connections.filter { conn ->
+            if (conn.id in document.tombstonedObjectIds) return@filter false
             val tagsMatch = filter.includeTags.isEmpty() ||
                 filter.includeTags.all { wanted -> conn.tags.any { it.equals(wanted, ignoreCase = true) } }
             val protoMatch = filter.includeProtocols.isEmpty() || conn.protocol in filter.includeProtocols

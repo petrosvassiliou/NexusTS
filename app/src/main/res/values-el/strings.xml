@@ -140,6 +140,31 @@
     <string name="rdp_sync_clipboard_chip">Πρόχειρο</string>
     <string name="rdp_console_badge">Κονσόλα /admin</string>
 
+    <!-- Royal TS Enterprise Parity -->
+    <string name="nav_templates">Πρότυπα</string>
+    <string name="action_connect_with_options">Σύνδεση με επιλογές…</string>
+    <string name="action_connect_all_folder">Σύνδεση όλων στον φάκελο</string>
+    <string name="action_duplicate_connection">Διπλότυπο σύνδεσης</string>
+    <string name="action_delete_item">Διαγραφή</string>
+    <string name="action_toggle_favorite">Εναλλαγή αγαπημένου</string>
+    <string name="action_reconnect_tab">Επανασύνδεση συνεδρίας</string>
+    <string name="action_reload_dynamic_folder">Ανανέωση αποθέματος</string>
+    <string name="action_new_smart_folder">Νέος έξυπνος φάκελος</string>
+    <string name="action_new_template">Νέο πρότυπο</string>
+    <string name="sidebar_filter_placeholder">Φιλτράρισμα συνδέσεων, hosts, ετικετών…</string>
+    <string name="vault_section_favorites">Αγαπημένα</string>
+    <string name="vault_section_recents">Πρόσφατες συνεδρίες</string>
+    <string name="inspector_totp_code">Έλεγχος ταυτότητας 2FA / TOTP</string>
+    <string name="inspector_custom_properties">Προσαρμοσμένες ιδιότητες</string>
+    <string name="inspector_notes_docs">Σημειώσεις &amp; τεκμηρίωση</string>
+    <string name="inspector_todo_items">Λίστα εκκρεμοτήτων (To-Do)</string>
+    <string name="action_add_todo">Προσθήκη εκκρεμότητας</string>
+    <string name="studio_templates_subtitle">Επαναχρησιμοποιήσιμα πρότυπα συνδέσεων, χρώματα έμφασης &amp; προφίλ πρωτοκόλλων</string>
+    <string name="dialog_connect_options_title">Σύνδεση με επιλογές</string>
+    <string name="dialog_field_template">Εφαρμογή προτύπου σύνδεσης</string>
+    <string name="dialog_field_color_accent">Χρώμα έμφασης</string>
+    <string name="overview_active_sessions">Ενεργές συνεδρίες</string>
+
     <!-- Language Names -->
     <string name="lang_en">English</string>
     <string name="lang_de">Deutsch</string>

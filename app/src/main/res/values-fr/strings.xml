@@ -140,6 +140,31 @@
     <string name="rdp_sync_clipboard_chip">Presse-papiers</string>
     <string name="rdp_console_badge">Console /admin</string>
 
+    <!-- Royal TS Enterprise Parity -->
+    <string name="nav_templates">Modèles</string>
+    <string name="action_connect_with_options">Se connecter avec options…</string>
+    <string name="action_connect_all_folder">Tout connecter dans le dossier</string>
+    <string name="action_duplicate_connection">Dupliquer la connexion</string>
+    <string name="action_delete_item">Supprimer</string>
+    <string name="action_toggle_favorite">Basculer favori</string>
+    <string name="action_reconnect_tab">Reconnecter la session</string>
+    <string name="action_reload_dynamic_folder">Recharger l’inventaire</string>
+    <string name="action_new_smart_folder">Nouveau dossier intelligent</string>
+    <string name="action_new_template">Nouveau modèle</string>
+    <string name="sidebar_filter_placeholder">Filtrer connexions, hôtes, tags…</string>
+    <string name="vault_section_favorites">Favoris</string>
+    <string name="vault_section_recents">Sessions récentes</string>
+    <string name="inspector_totp_code">Authentificateur 2FA / TOTP</string>
+    <string name="inspector_custom_properties">Propriétés personnalisées</string>
+    <string name="inspector_notes_docs">Notes &amp; documentation</string>
+    <string name="inspector_todo_items">Liste de tâches (To-Do)</string>
+    <string name="action_add_todo">Ajouter une tâche</string>
+    <string name="studio_templates_subtitle">Modèles de connexion réutilisables, couleurs d’accentuation &amp; profils</string>
+    <string name="dialog_connect_options_title">Se connecter avec options</string>
+    <string name="dialog_field_template">Appliquer un modèle de connexion</string>
+    <string name="dialog_field_color_accent">Couleur d’accentuation</string>
+    <string name="overview_active_sessions">Sessions actives</string>
+
     <!-- Language Names -->
     <string name="lang_en">English</string>
     <string name="lang_de">Deutsch</string>

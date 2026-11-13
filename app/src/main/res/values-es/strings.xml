@@ -140,6 +140,31 @@
     <string name="rdp_sync_clipboard_chip">Portapapeles</string>
     <string name="rdp_console_badge">Consola /admin</string>
 
+    <!-- Royal TS Enterprise Parity -->
+    <string name="nav_templates">Plantillas</string>
+    <string name="action_connect_with_options">Conectar con opciones…</string>
+    <string name="action_connect_all_folder">Conectar todo en carpeta</string>
+    <string name="action_duplicate_connection">Duplicar conexión</string>
+    <string name="action_delete_item">Eliminar</string>
+    <string name="action_toggle_favorite">Alternar favorito</string>
+    <string name="action_reconnect_tab">Reconectar sesión</string>
+    <string name="action_reload_dynamic_folder">Recargar inventario</string>
+    <string name="action_new_smart_folder">Nueva carpeta inteligente</string>
+    <string name="action_new_template">Nueva plantilla</string>
+    <string name="sidebar_filter_placeholder">Filtrar conexiones, hosts, etiquetas…</string>
+    <string name="vault_section_favorites">Favoritos</string>
+    <string name="vault_section_recents">Sesiones recientes</string>
+    <string name="inspector_totp_code">Autenticador 2FA / TOTP</string>
+    <string name="inspector_custom_properties">Propiedades personalizadas</string>
+    <string name="inspector_notes_docs">Notas y documentación</string>
+    <string name="inspector_todo_items">Lista de pendientes (To-Do)</string>
+    <string name="action_add_todo">Añadir tarea</string>
+    <string name="studio_templates_subtitle">Plantillas de conexión reutilizables, colores de acento y perfiles de protocolo</string>
+    <string name="dialog_connect_options_title">Conectar con opciones</string>
+    <string name="dialog_field_template">Aplicar plantilla de conexión</string>
+    <string name="dialog_field_color_accent">Color de acento</string>
+    <string name="overview_active_sessions">Sesiones activas</string>
+
     <!-- Language Names -->
     <string name="lang_en">English</string>
     <string name="lang_de">Deutsch</string>

@@ -132,4 +132,75 @@ class VaultCryptoAndInheritanceTest {
         assertEquals(1, imported.connections.size)
         assertEquals(VaultProtocolType.RDP, imported.connections.first().protocol)
     }
+
+    @Test
+    fun `rfc6238 totp generator and custom property inheritance expand in automation tasks`() {
+        // RFC 6238 Appendix B SHA1 vector: secret = "12345678901234567890" -> Base32 "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"
+        // At T = 59s, 6-digit HOTP(K, 1) = 287082
+        val vectorSecret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"
+        val snap = com.nexusts.app.core.vault.credentials.TotpCodeGenerator.generateTotp(
+            base32Secret = vectorSecret,
+            epochMillis = 59_000L,
+            periodSeconds = 30,
+            digits = 6
+        )
+        assertNotNull(snap)
+        assertEquals("287082", snap?.code)
+        assertEquals(1, snap?.secondsRemaining)
+
+        val cred = VaultCredential(
+            id = "c-totp",
+            name = "Ops 2FA",
+            username = "ops",
+            domain = "CORP",
+            totpSecretBase32 = vectorSecret
+        )
+        val folder = VaultFolder(
+            id = "f-1",
+            name = "Tier-0",
+            inheritable = InheritableProperties(
+                credentialMode = InheritanceMode.OVERRIDE_EXPLICIT,
+                explicitCredentialId = "c-totp",
+                displayColorAccentHex = "#3CE6B8",
+                customProperties = listOf(
+                    com.nexusts.app.core.vault.model.CustomPropertyEntry("Rack", "EU-RACK-04"),
+                    com.nexusts.app.core.vault.model.CustomPropertyEntry("EnvTier", "Gold")
+                )
+            )
+        )
+        val conn = VaultConnection(
+            id = "conn-1",
+            parentFolderId = "f-1",
+            name = "bastion-01",
+            host = "10.0.1.9",
+            protocol = VaultProtocolType.SSH,
+            inheritable = InheritableProperties(
+                credentialMode = InheritanceMode.INHERIT_FROM_PARENT,
+                customProperties = listOf(
+                    com.nexusts.app.core.vault.model.CustomPropertyEntry("EnvTier", "Platinum")
+                )
+            ),
+            settings = ProtocolSpecificSettings.Ssh()
+        )
+        val doc = NxtsVaultDocument(
+            name = "ParityTest.nxts",
+            folders = listOf(folder),
+            connections = listOf(conn),
+            credentials = listOf(cred)
+        )
+        val profile = PropertyInheritanceResolver().resolveEffectiveProfile(doc, conn)
+        assertEquals("#3CE6B8", profile.effectiveColorAccentHex)
+        assertEquals("EU-RACK-04", profile.effectiveCustomProperties["Rack"]?.value)
+        assertEquals("Platinum", profile.effectiveCustomProperties["EnvTier"]?.value)
+
+        val rendered = com.nexusts.app.core.vault.automation.AutomationTaskEngine().renderCommandTask(
+            com.nexusts.app.core.vault.model.CommandTask(
+                name = "Audit",
+                commandTemplate = "echo \$EffectiveDomain\$/\$EffectiveUsername\$ rack=\$CustomProperty.Rack\$ tier=\$CustomProperty.EnvTier\$",
+                appendNewline = false
+            ),
+            profile
+        )
+        assertEquals("echo CORP/ops rack=EU-RACK-04 tier=Platinum", rendered)
+    }
 }

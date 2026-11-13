@@ -92,3 +92,43 @@ fun rememberExpressiveTabShape(
         bottomEnd = bottomRadius
     )
 }
+
+/**
+ * Material 3 Expressive Split-Button leading segment shape:
+ * Full pill outer start (24.dp), crisp 6.dp inner seam that morphs to 14.dp on hover/press.
+ */
+@Composable
+fun rememberExpressiveSplitLeadingShape(isActiveOrHovered: Boolean): Shape {
+    val motion = LocalNexusMotion.current
+    val innerSeam by animateDpAsState(
+        targetValue = if (isActiveOrHovered) 14.dp else 6.dp,
+        animationSpec = motion.spatialFastDp,
+        label = "SplitLeadingSeam"
+    )
+    return RoundedCornerShape(
+        topStart = 24.dp,
+        bottomStart = 24.dp,
+        topEnd = innerSeam,
+        bottomEnd = innerSeam
+    )
+}
+
+/**
+ * Material 3 Expressive Split-Button trailing chevron segment shape:
+ * Crisp 6.dp inner seam morphing to 14.dp on hover/open, full pill outer end (24.dp).
+ */
+@Composable
+fun rememberExpressiveSplitTrailingShape(isMenuExpandedOrHovered: Boolean): Shape {
+    val motion = LocalNexusMotion.current
+    val innerSeam by animateDpAsState(
+        targetValue = if (isMenuExpandedOrHovered) 14.dp else 6.dp,
+        animationSpec = motion.spatialFastDp,
+        label = "SplitTrailingSeam"
+    )
+    return RoundedCornerShape(
+        topStart = innerSeam,
+        bottomStart = innerSeam,
+        topEnd = 24.dp,
+        bottomEnd = 24.dp
+    )
+}

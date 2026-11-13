@@ -140,6 +140,31 @@
     <string name="rdp_sync_clipboard_chip">Zwischenablage</string>
     <string name="rdp_console_badge">Konsole /admin</string>
 
+    <!-- Royal TS Enterprise Parity -->
+    <string name="nav_templates">Vorlagen</string>
+    <string name="action_connect_with_options">Mit Optionen verbinden…</string>
+    <string name="action_connect_all_folder">Alle im Ordner verbinden</string>
+    <string name="action_duplicate_connection">Verbindung duplizieren</string>
+    <string name="action_delete_item">Löschen</string>
+    <string name="action_toggle_favorite">Favorit umschalten</string>
+    <string name="action_reconnect_tab">Sitzung neu verbinden</string>
+    <string name="action_reload_dynamic_folder">Inventar neu laden</string>
+    <string name="action_new_smart_folder">Neuer intelligenter Ordner</string>
+    <string name="action_new_template">Neue Vorlage</string>
+    <string name="sidebar_filter_placeholder">Verbindungen, Hosts, Tags filtern…</string>
+    <string name="vault_section_favorites">Favoriten</string>
+    <string name="vault_section_recents">Zuletzt verwendet</string>
+    <string name="inspector_totp_code">2FA- / TOTP-Authenticator</string>
+    <string name="inspector_custom_properties">Benutzerdefinierte Felder</string>
+    <string name="inspector_notes_docs">Notizen &amp; Dokumentation</string>
+    <string name="inspector_todo_items">Aufgabenliste (To-Do)</string>
+    <string name="action_add_todo">Aufgabe hinzufügen</string>
+    <string name="studio_templates_subtitle">Wiederverwendbare Verbindungsvorlagen, Farbakzente &amp; Protokollprofile</string>
+    <string name="dialog_connect_options_title">Mit Optionen verbinden</string>
+    <string name="dialog_field_template">Verbindungsvorlage anwenden</string>
+    <string name="dialog_field_color_accent">Akzentfarbe</string>
+    <string name="overview_active_sessions">Aktive Sitzungen</string>
+
     <!-- Language Names -->
     <string name="lang_en">English</string>
     <string name="lang_de">Deutsch</string>

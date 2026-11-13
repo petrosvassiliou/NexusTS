@@ -13,6 +13,13 @@ enum class InheritanceMode {
 }
 
 @Serializable
+data class CustomPropertyEntry(
+    val key: String,
+    val value: String,
+    val isProtected: Boolean = false
+)
+
+@Serializable
 data class InheritableProperties(
     val credentialMode: InheritanceMode = InheritanceMode.INHERIT_FROM_PARENT,
     val explicitCredentialId: String? = null,
@@ -21,7 +28,9 @@ data class InheritableProperties(
     val environmentBadge: String? = null,
     val preConnectTaskId: String? = null,
     val postDisconnectTaskId: String? = null,
-    val displayColorAccentHex: String? = null
+    val displayColorAccentHex: String? = null,
+    val customProperties: List<CustomPropertyEntry> = emptyList(),
+    val requireConnectConfirmation: Boolean = false
 )
 
 @Serializable
@@ -343,6 +352,29 @@ data class KeySequenceTask(
     val updatedAtEpochMs: Long = System.currentTimeMillis()
 )
 
+@Serializable
+data class ConnectionTemplate(
+    val id: String = UUID.randomUUID().toString(),
+    val name: String,
+    val description: String = "",
+    val protocol: VaultProtocolType,
+    val colorAccentHex: String? = null,
+    val inheritable: InheritableProperties = InheritableProperties(),
+    val settings: ProtocolSpecificSettings,
+    val updatedAtEpochMs: Long = System.currentTimeMillis()
+)
+
+@Serializable
+data class VaultTodoItem(
+    val id: String = UUID.randomUUID().toString(),
+    val targetObjectId: String? = null,
+    val title: String,
+    val completed: Boolean = false,
+    val priority: String = "NORMAL",
+    val dueIsoDate: String = "",
+    val updatedAtEpochMs: Long = System.currentTimeMillis()
+)
+
 /**
  * Root Zero-Knowledge `.nxts` Encrypted Vault Document Model.
  */
@@ -368,5 +400,8 @@ data class NxtsVaultDocument(
     val gateways: List<SecureGatewayConfig> = emptyList(),
     val commandTasks: List<CommandTask> = emptyList(),
     val keySequenceTasks: List<KeySequenceTask> = emptyList(),
+    val templates: List<ConnectionTemplate> = emptyList(),
+    val todoItems: List<VaultTodoItem> = emptyList(),
+    val recentConnectionIds: List<String> = emptyList(),
     val tombstonedObjectIds: Set<String> = emptySet()
 )
