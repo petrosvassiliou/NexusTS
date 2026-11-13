@@ -26,7 +26,7 @@ enum class VaultExportFormat(val extension: String, val mimeType: String) {
  * 2. Royal TS `.rtsx` raw XML document.
  * 3. RFC 4180 `.csv` inventory spreadsheet export for security compliance & asset audits.
  */
-object VaultDocumentExporter {
+class VaultDocumentExporter {
 
     fun exportToRtszBytes(
         document: NxtsVaultDocument,
@@ -36,7 +36,7 @@ object VaultDocumentExporter {
         val baos = ByteArrayOutputStream(xmlBytes.size)
         ZipOutputStream(baos, StandardCharsets.UTF_8).use { zip ->
             val entry = ZipEntry("document.rtsx")
-            entry.time = document.lastSyncedEpochMs.takeIf { it > 0L } ?: System.currentTimeMillis()
+            entry.time = document.updatedAtEpochMs.takeIf { it > 0L } ?: System.currentTimeMillis()
             zip.putNextEntry(entry)
             zip.write(xmlBytes)
             zip.closeEntry()
@@ -84,9 +84,9 @@ object VaultDocumentExporter {
             appendLine("  </RoyalCredential>")
         }
 
-        // 4. <RoyalSecureGateway> / <RoyalSSHConnection> Gateways
+        // 4. <RoyalSecureGateway> / <RoyalSSHGateway> Gateways
         document.gateways.filter { it.id !in document.tombstonedObjectIds }.forEach { gw ->
-            val gwTag = if (gw.kind == GatewayTransportKind.NEXUSTS_SECURE_GATEWAY) "RoyalSecureGateway" else "RoyalGateway"
+            val gwTag = if (gw.kind == GatewayTransportKind.NEXUSTS_SECURE_GATEWAY) "RoyalSecureGateway" else "RoyalSSHGateway"
             appendLine("  <$gwTag>")
             appendXmlTag("ID", gw.id, indent = 4)
             appendXmlTag("ParentID", document.documentId, indent = 4)
@@ -133,7 +133,7 @@ object VaultDocumentExporter {
             appendXmlTag("ID", task.id, indent = 4)
             appendXmlTag("ParentID", document.documentId, indent = 4)
             appendXmlTag("Name", task.name, indent = 4)
-            appendXmlTag("Command", task.commandLine, indent = 4)
+            appendXmlTag("Command", task.commandTemplate, indent = 4)
             appendLine("  </RoyalCommandTask>")
         }
         document.keySequenceTasks.filter { it.id !in document.tombstonedObjectIds }.forEach { macro ->
@@ -141,7 +141,7 @@ object VaultDocumentExporter {
             appendXmlTag("ID", macro.id, indent = 4)
             appendXmlTag("ParentID", document.documentId, indent = 4)
             appendXmlTag("Name", macro.name, indent = 4)
-            appendXmlTag("KeySequence", macro.sequencePattern, indent = 4)
+            appendXmlTag("KeySequence", macro.macroSequence, indent = 4)
             appendLine("  </RoyalKeySequenceTask>")
         }
 
@@ -161,13 +161,13 @@ object VaultDocumentExporter {
     }
 
     /**
-     * Exports all active connections in RFC 4180 CSV format for compliance, CMDB, and spreadsheet import.
+     * Exports all active connections in RFC 4180 CSV format (CRLF) for compliance, CMDB, and spreadsheet import.
      */
     fun exportToEnterpriseCsv(document: NxtsVaultDocument): String = buildString(8_192) {
         val folderNames = document.folders.associate { it.id to it.name }
         val credNames = document.credentials.associate { it.id to it.name }
 
-        appendLine(
+        append(
             listOf(
                 "ConnectionID",
                 "Name",
@@ -183,16 +183,16 @@ object VaultDocumentExporter {
                 "ColorHex",
                 "Notes"
             ).joinToString(",") { csvEscape(it) }
-        )
+        ).append("\r\n")
 
         document.connections.filter { it.id !in document.tombstonedObjectIds }.forEach { conn ->
             val port = extractDefaultOrConfiguredPort(conn.protocol, conn.settings)
             val folderLabel = conn.parentFolderId?.let { folderNames[it] }.orEmpty()
             val credLabel = conn.inheritable.explicitCredentialId?.let { credNames[it] }.orEmpty()
-            val tagsJoined = conn.inheritable.tags.joinToString(";")
+            val tagsJoined = conn.tags.joinToString(";")
             val color = conn.inheritable.displayColorAccentHex.orEmpty()
 
-            appendLine(
+            append(
                 listOf(
                     conn.id,
                     conn.name,
@@ -208,16 +208,16 @@ object VaultDocumentExporter {
                     color,
                     conn.notes
                 ).joinToString(",") { csvEscape(it) }
-            )
+            ).append("\r\n")
         }
     }
 
     private fun StringBuilder.appendInheritableXml(inheritable: InheritableProperties, indent: Int) {
         val credModeCode = when (inheritable.credentialMode) {
-            InheritanceMode.INHERIT_FROM_PARENT -> "0"
+            InheritanceMode.NONE_DIRECT -> "0"
             InheritanceMode.OVERRIDE_EXPLICIT -> "2"
             InheritanceMode.PROMPT_AT_CONNECT -> "3"
-            InheritanceMode.NONE -> "4"
+            InheritanceMode.INHERIT_FROM_PARENT -> "4"
         }
         appendXmlTag("CredentialMode", credModeCode, indent)
         inheritable.explicitCredentialId?.let { appendXmlTag("CredentialID", it, indent) }
@@ -293,7 +293,7 @@ object VaultDocumentExporter {
         VaultProtocolType.SSH, VaultProtocolType.TELNET, VaultProtocolType.SERIAL -> "RoyalSSHConnection"
         VaultProtocolType.SFTP, VaultProtocolType.FTP, VaultProtocolType.FTPS, VaultProtocolType.SCP -> "RoyalFileTransferConnection"
         VaultProtocolType.VNC, VaultProtocolType.APPLE_SCREEN_SHARING -> "RoyalVNCConnection"
-        VaultProtocolType.WEB_PAGE -> "RoyalWebConnection"
+        VaultProtocolType.WEB_PAGE -> "RoyalWebPageConnection"
         VaultProtocolType.VMWARE_VSPHERE -> "RoyalVMwareConnection"
         VaultProtocolType.HYPER_V -> "RoyalHyperVConnection"
         else -> "RoyalSSHConnection"

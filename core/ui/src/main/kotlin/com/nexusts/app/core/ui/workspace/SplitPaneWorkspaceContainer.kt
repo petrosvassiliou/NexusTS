@@ -32,6 +32,7 @@ import androidx.compose.material.icons.outlined.Computer
 import androidx.compose.material.icons.outlined.FolderShared
 import androidx.compose.material.icons.outlined.Language
 import androidx.compose.material.icons.outlined.Podcasts
+import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.SmartDisplay
 import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material.icons.outlined.VerticalSplit
@@ -59,6 +60,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.nexusts.app.core.ui.components.parseHexColorOrNull
 import com.nexusts.app.core.ui.input.nexusDesktopPointerButtons
 import com.nexusts.app.core.ui.input.nexusHoverTracker
 import com.nexusts.app.core.ui.input.nexusResizeCursor
