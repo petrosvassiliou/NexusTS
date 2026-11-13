@@ -1,0 +1,5 @@
+NexusTS 1.1.0 (Googlebook OS & Android Tablets):
+• Ζωντανός Συγχρονισμός Google Drive: μόνιμος συγχρονισμός SAF με συγχώνευση 3 κατευθύνσεων & αυτόματος συγχρονισμός OAuth 2.0.
+• Εισαγωγή Κωδικών: KeePass 2.x XML, Bitwarden JSON, 1Password (.1pux) & CSV με TOTP και κλειδιά SSH.
+• Enterprise Πρωτόκολλα: Κονσόλα USB-C Serial/UART (FTDI/CP210x/CH340, Send BREAK) & τερματικά Kubernetes Pod / Docker + Live Logs.
+• Έλεγχος ενημερώσεων GitHub συμβατός με Play Protect & σουίτα δοκιμών Compose E2E.

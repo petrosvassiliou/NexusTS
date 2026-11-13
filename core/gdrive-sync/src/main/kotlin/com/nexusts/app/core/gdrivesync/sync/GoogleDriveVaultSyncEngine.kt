@@ -316,6 +316,47 @@ class GoogleDriveVaultSyncEngine(
         }
     }
 
+    suspend fun stageLocalEncryptedVaultForSync(
+        document: NxtsVaultDocument,
+        passphrase: CharArray,
+        zone: DriveStorageZone = DriveStorageZone.APPDATA_PRIVATE,
+        sharedFolderId: String? = null
+    ): ByteArray = withContext(Dispatchers.IO) {
+        val localFile = File(localVaultDir, "${document.documentId}.nxts")
+        val sealedBytes = serializer.sealDocument(document, passphrase.copyOf())
+        localFile.writeBytes(sealedBytes)
+
+        val existing = vaultDao.getByDocumentId(document.documentId)
+        val record = if (existing != null) {
+            existing.copy(
+                storageZone = zone.name,
+                parentFolderDriveId = sharedFolderId ?: existing.parentFolderDriveId,
+                displayName = document.name,
+                localRevision = document.revision,
+                localEncryptedPath = localFile.absolutePath,
+                hasPendingLocalEdits = true
+            )
+        } else {
+            CachedVaultRecord(
+                documentId = document.documentId,
+                driveFileId = null,
+                storageZone = zone.name,
+                sharedDriveId = null,
+                parentFolderDriveId = sharedFolderId,
+                displayName = document.name,
+                localRevision = document.revision,
+                lastSyncedHeadRevisionId = null,
+                localEncryptedPath = localFile.absolutePath,
+                hasPendingLocalEdits = true,
+                activeRemoteLockHolder = null,
+                activeRemoteLockExpiresEpochMs = null,
+                lastSyncedEpochMs = 0L
+            )
+        }
+        vaultDao.upsertVault(record)
+        sealedBytes
+    }
+
     suspend fun createAutomatedLocalSnapshot(
         documentId: String,
         revision: Long,
@@ -388,13 +429,57 @@ class GoogleDriveVaultSyncEngine(
 class VaultDriveSyncWorker @AssistedInject constructor(
     @Assisted appContext: Context,
     @Assisted workerParams: WorkerParameters,
-    private val vaultDao: SyncedVaultDao
+    private val vaultDao: SyncedVaultDao,
+    private val authManager: com.nexusts.app.core.gdrivesync.auth.GoogleDriveAuthManager,
+    private val syncEngine: GoogleDriveVaultSyncEngine,
+    private val safBridge: SafLiveGoogleDriveBridge
 ) : CoroutineWorker(appContext, workerParams) {
 
     override suspend fun doWork(): Result {
-        // Inspects dirty vaults queued in encrypted offline metadata store; active session token sync
-        // runs via GoogleDriveVaultSyncEngine when OAuth session is active.
-        val dirtyCount = vaultDao.listDirtyVaults().size
-        return if (dirtyCount >= 0) Result.success() else Result.retry()
+        val dirtyVaults = vaultDao.listDirtyVaults()
+        if (dirtyVaults.isEmpty()) return Result.success()
+
+        // 1. Sync via persistent Google Drive SAF URI if linked
+        if (safBridge.getLinkedVaultInfo() != null) {
+            dirtyVaults.forEach { record ->
+                val file = File(record.localEncryptedPath)
+                if (file.exists()) {
+                    runCatching {
+                        if (safBridge.pushPreSealedSnapshotIfRemoteUnchanged(file.readBytes(), record.localRevision)) {
+                            vaultDao.upsertVault(
+                                record.copy(
+                                    hasPendingLocalEdits = false,
+                                    lastSyncedEpochMs = System.currentTimeMillis()
+                                )
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Sync via silent Google Drive REST API v3 OAuth 2.0 session if authorized
+        val token = authManager.trySilentBackgroundAccessToken()
+        if (!token.isNullOrBlank()) {
+            val drive = authManager.buildDriveService(token)
+            for (record in vaultDao.listDirtyVaults()) {
+                val zone = runCatching { DriveStorageZone.valueOf(record.storageZone) }
+                    .getOrDefault(DriveStorageZone.APPDATA_PRIVATE)
+                runCatching {
+                    syncEngine.synchronizeVault(
+                        drive = drive,
+                        documentId = record.documentId,
+                        displayName = record.displayName,
+                        zone = zone,
+                        sharedDriveId = record.sharedDriveId,
+                        parentFolderId = record.parentFolderDriveId
+                    )
+                }.onFailure {
+                    return Result.retry()
+                }
+            }
+        }
+
+        return Result.success()
     }
 }

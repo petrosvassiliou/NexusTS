@@ -232,6 +232,9 @@ class PropertyInheritanceResolver(
                 "royalsftpconnection", "sftp", "filetransfer" -> VaultProtocolType.SFTP
                 "royalvncconnection", "vnc" -> VaultProtocolType.VNC
                 "royalwebpageconnection", "web", "https" -> VaultProtocolType.WEB_PAGE
+                "kubernetes", "k8s", "pod", "kubernetes_pod" -> VaultProtocolType.KUBERNETES_POD
+                "docker", "container", "docker_container" -> VaultProtocolType.DOCKER_CONTAINER
+                "serial", "uart" -> VaultProtocolType.SERIAL
                 else -> VaultProtocolType.SSH
             }
             val settings = when (protocol) {
@@ -239,6 +242,9 @@ class PropertyInheritanceResolver(
                 VaultProtocolType.SFTP -> ProtocolSpecificSettings.FileTransfer(port = obj.Port ?: 22)
                 VaultProtocolType.VNC -> ProtocolSpecificSettings.Vnc(port = obj.Port ?: 5900)
                 VaultProtocolType.WEB_PAGE -> ProtocolSpecificSettings.WebPage(url = obj.ComputerName)
+                VaultProtocolType.SERIAL -> ProtocolSpecificSettings.SerialUart(baudRate = obj.Port ?: 115_200, devicePathHint = obj.ComputerName)
+                VaultProtocolType.KUBERNETES_POD, VaultProtocolType.DOCKER_CONTAINER ->
+                    ProtocolSpecificSettings.ContainerExec(podOrContainerName = obj.Name, clusterOrSocketEndpoint = obj.ComputerName)
                 else -> ProtocolSpecificSettings.Ssh(port = obj.Port ?: 22)
             }
             VaultConnection(

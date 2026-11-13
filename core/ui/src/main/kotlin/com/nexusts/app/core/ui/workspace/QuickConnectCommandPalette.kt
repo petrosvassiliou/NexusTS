@@ -89,7 +89,7 @@ object AdHocConnectionSyntaxParser {
         val trimmed = rawQuery.trim()
         if (trimmed.length < 4) return null
 
-        val shorthandRegex = Regex("^(ssh|rdp|sftp|scp|ftp|ftps|vnc|telnet)\\s+([^\\s]+)$", RegexOption.IGNORE_CASE)
+        val shorthandRegex = Regex("^(ssh|rdp|sftp|scp|ftp|ftps|vnc|telnet|serial|k8s|kubectl|docker)\\s+([^\\s]+)$", RegexOption.IGNORE_CASE)
         shorthandRegex.matchEntire(trimmed)?.let { match ->
             val protoToken = match.groupValues[1].lowercase()
             val target = match.groupValues[2]
@@ -104,7 +104,7 @@ object AdHocConnectionSyntaxParser {
             )
         }
 
-        val uriRegex = Regex("^(ssh|rdp|sftp|scp|ftp|ftps|vnc|http|https)://(.+)$", RegexOption.IGNORE_CASE)
+        val uriRegex = Regex("^(ssh|rdp|sftp|scp|ftp|ftps|vnc|telnet|serial|k8s|kubectl|docker|http|https)://(.+)$", RegexOption.IGNORE_CASE)
         uriRegex.matchEntire(trimmed)?.let { match ->
             val scheme = match.groupValues[1].lowercase()
             val target = match.groupValues[2]
@@ -125,6 +125,9 @@ object AdHocConnectionSyntaxParser {
         "rdp" -> SessionProtocolKind.RDP
         "ssh" -> SessionProtocolKind.SSH
         "telnet" -> SessionProtocolKind.TELNET
+        "serial" -> SessionProtocolKind.SERIAL
+        "k8s", "kubectl" -> SessionProtocolKind.KUBERNETES_POD
+        "docker" -> SessionProtocolKind.DOCKER_CONTAINER
         "sftp" -> SessionProtocolKind.SFTP
         "scp" -> SessionProtocolKind.SCP
         "ftp" -> SessionProtocolKind.FTP

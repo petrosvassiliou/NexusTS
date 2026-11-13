@@ -79,6 +79,14 @@ object NexusAppModule {
 
     @Provides
     @Singleton
+    fun provideSafLiveGoogleDriveBridge(
+        @ApplicationContext context: Context,
+        serializer: NxtsVaultSerializer
+    ): com.nexusts.app.core.gdrivesync.sync.SafLiveGoogleDriveBridge =
+        com.nexusts.app.core.gdrivesync.sync.SafLiveGoogleDriveBridge(context, serializer)
+
+    @Provides
+    @Singleton
     fun providePlayProtectUpdater(
         @ApplicationContext context: Context
     ): PlayProtectCompliantUpdateCoordinator = PlayProtectCompliantUpdateCoordinator(context)

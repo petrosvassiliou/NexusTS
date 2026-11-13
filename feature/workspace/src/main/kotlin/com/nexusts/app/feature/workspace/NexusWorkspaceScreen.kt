@@ -126,10 +126,12 @@ import com.nexusts.app.feature.workspace.studios.NewSmartFolderDialog
 import com.nexusts.app.feature.workspace.studios.NewTemplateDialog
 import com.nexusts.app.feature.workspace.studios.SecureGatewayStudioView
 import com.nexusts.app.protocols.rdp.ui.RdpSessionSurfaceView
+import com.nexusts.app.protocols.ssh.serial.UsbSerialConsoleView
 import com.nexusts.app.protocols.ssh.ui.DualPaneTransferCommanderView
 import com.nexusts.app.protocols.ssh.ui.SshTerminalSessionView
 import com.nexusts.app.protocols.vnc.ui.CloudHypervisorConsoleView
 import com.nexusts.app.protocols.vnc.ui.IsolatedWebSessionView
+import com.nexusts.app.protocols.vnc.ui.KubernetesAndContainerTerminalView
 import com.nexusts.app.protocols.vnc.ui.NetworkUtilitiesView
 import com.nexusts.app.protocols.vnc.ui.VncSessionCanvasView
 
@@ -149,8 +151,16 @@ fun NexusWorkspaceScreen(
     onDetachTabToNativeWindow: (WorkspaceSessionTab, Int?) -> Unit,
     onRequestExportVault: (VaultExportFormat) -> Unit = {},
     initialOAuthWebClientId: String = "",
-    initialSharedDriveFolderId: String = "",
+    initialSharedDriveFolderId: String = "17C98pGqQUAoQwQ-OSLUHPj4_dtb4_wtS",
     onSaveOAuthConfig: (String, String) -> Unit = { _, _ -> },
+    onCreateLiveSafDriveVault: () -> Unit = {},
+    onLinkExistingSafDriveVault: () -> Unit = {},
+    onUnlinkSafDriveVault: () -> Unit = {},
+    onAuthorizeAndSyncOAuthDrive: () -> Unit = {},
+    onSignOutOAuthDrive: () -> Unit = {},
+    onToggleAutoSyncOnSave: (Boolean) -> Unit = { viewModel.setDriveAutoSyncOnSave(it) },
+    onCheckGitHubReleases: () -> Unit = {},
+    onOpenGitHubReleaseUrl: (String) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val uiState by viewModel.uiState.collectAsState()
@@ -295,7 +305,8 @@ fun NexusWorkspaceScreen(
                     credentials = uiState.vaultDocument.credentials,
                     strings = strings,
                     onGenerateEd25519Key = viewModel::generateAndStoreSshKeyPair,
-                    onCreateCredential = viewModel::addCredentialToVault
+                    onCreateCredential = viewModel::addCredentialToVault,
+                    onRequestImportVaultFile = onRequestImportFilePicker
                 )
 
                 "gateways" -> SecureGatewayStudioView(
@@ -323,7 +334,22 @@ fun NexusWorkspaceScreen(
                     onTriggerDeltaSync = onRequestGoogleDriveSync,
                     initialOAuthWebClientId = initialOAuthWebClientId,
                     initialSharedFolderId = initialSharedDriveFolderId,
-                    onSaveOAuthConfig = onSaveOAuthConfig
+                    onSaveOAuthConfig = onSaveOAuthConfig,
+                    driveSignedInEmail = uiState.driveSignedInEmail,
+                    driveLinkedSafLabel = uiState.driveLinkedSafLabel,
+                    driveSyncStatusBanner = uiState.driveSyncStatusBanner,
+                    driveIsSyncing = uiState.driveIsSyncing,
+                    driveAutoSyncOnSave = uiState.driveAutoSyncOnSave,
+                    onToggleAutoSyncOnSave = onToggleAutoSyncOnSave,
+                    onCreateLiveSafDriveVault = onCreateLiveSafDriveVault,
+                    onLinkExistingSafDriveVault = onLinkExistingSafDriveVault,
+                    onUnlinkSafDriveVault = onUnlinkSafDriveVault,
+                    onAuthorizeAndSyncOAuthDrive = onAuthorizeAndSyncOAuthDrive,
+                    onSignOutOAuthDrive = onSignOutOAuthDrive,
+                    githubReleaseBanner = uiState.githubLatestReleaseBanner,
+                    githubReleaseUrl = uiState.githubLatestReleaseUrl,
+                    onCheckGitHubReleases = onCheckGitHubReleases,
+                    onOpenGitHubReleaseUrl = onOpenGitHubReleaseUrl
                 )
 
                 else -> SplitPaneWorkspaceContainer(
@@ -523,7 +549,7 @@ fun ActiveProtocolSessionDispatcher(
             )
         }
 
-        SessionProtocolKind.SSH, SessionProtocolKind.TELNET, SessionProtocolKind.SERIAL -> {
+        SessionProtocolKind.SSH, SessionProtocolKind.TELNET -> {
             val sshController = remember(tab.tabId) { viewModel.getOrCreateSshController(tab) }
             SshTerminalSessionView(
                 controller = sshController,
@@ -533,6 +559,26 @@ fun ActiveProtocolSessionDispatcher(
                 tunnelsActiveLabel = strings.sshTunnelsActive,
                 externalZoomFactor = tab.zoomFactor,
                 onZoomFactorChanged = onZoomChanged
+            )
+        }
+
+        SessionProtocolKind.SERIAL -> {
+            val serialSettings = (conn?.settings as? ProtocolSpecificSettings.SerialUart)
+                ?: ProtocolSpecificSettings.SerialUart(devicePathHint = tab.subtitleHost)
+            UsbSerialConsoleView(
+                endpointLabel = tab.subtitleHost,
+                initialSettings = serialSettings
+            )
+        }
+
+        SessionProtocolKind.KUBERNETES_POD, SessionProtocolKind.DOCKER_CONTAINER -> {
+            val containerSettings = (conn?.settings as? ProtocolSpecificSettings.ContainerExec)
+                ?: ProtocolSpecificSettings.ContainerExec(podOrContainerName = tab.subtitleHost)
+            KubernetesAndContainerTerminalView(
+                isKubernetes = tab.protocol == SessionProtocolKind.KUBERNETES_POD,
+                endpointHost = tab.subtitleHost,
+                settings = containerSettings,
+                secret = secret
             )
         }
 

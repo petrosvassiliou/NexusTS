@@ -55,7 +55,9 @@ enum class VaultProtocolType {
     UTILITY_PING,
     UTILITY_TRACEROUTE,
     UTILITY_PORT_SCANNER,
-    UTILITY_WAKE_ON_LAN
+    UTILITY_WAKE_ON_LAN,
+    KUBERNETES_POD,
+    DOCKER_CONTAINER
 }
 
 @Serializable
@@ -198,6 +200,36 @@ sealed interface ProtocolSpecificSettings {
         val wolBroadcastAddress: String = "255.255.255.255",
         val wolUdpPort: Int = 9,
         val wolSecureOnHex: String = ""
+    ) : ProtocolSpecificSettings
+
+    @Serializable
+    @SerialName("serial_uart")
+    data class SerialUart(
+        val baudRate: Int = 115_200,
+        val dataBits: Int = 8,
+        val stopBits: Int = 1,
+        val parity: String = "NONE",
+        val flowControl: String = "NONE",
+        val dtrEnabled: Boolean = true,
+        val rtsEnabled: Boolean = true,
+        val usbVendorIdFilter: Int = 0,
+        val devicePathHint: String = "/dev/ttyUSB0",
+        val lineEnding: String = "CRLF"
+    ) : ProtocolSpecificSettings
+
+    @Serializable
+    @SerialName("container_exec")
+    data class ContainerExec(
+        val clusterOrSocketEndpoint: String = "https://kubernetes.default.svc:6443",
+        val contextName: String = "prod-eu-central",
+        val namespace: String = "default",
+        val podOrContainerName: String = "",
+        val subContainerName: String = "",
+        val shellCommand: String = "/bin/sh",
+        val followLogsOnOpen: Boolean = false,
+        val logTailLines: Int = 200,
+        val portForwards: List<SshPortForwardRule> = emptyList(),
+        val verifyTls: Boolean = true
     ) : ProtocolSpecificSettings
 }
 

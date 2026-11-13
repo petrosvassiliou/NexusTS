@@ -27,7 +27,9 @@ enum class SessionProtocolKind {
     AWS_EC2,
     AZURE_VM,
     WINDOWS_TS,
-    NET_UTILITY
+    NET_UTILITY,
+    KUBERNETES_POD,
+    DOCKER_CONTAINER
 }
 
 @Serializable
@@ -283,7 +285,9 @@ class WorkspaceTilingController(
                 tabs = leaf.tabs.map { tab ->
                     if (tab.protocol == SessionProtocolKind.SSH ||
                         tab.protocol == SessionProtocolKind.TELNET ||
-                        tab.protocol == SessionProtocolKind.SERIAL
+                        tab.protocol == SessionProtocolKind.SERIAL ||
+                        tab.protocol == SessionProtocolKind.KUBERNETES_POD ||
+                        tab.protocol == SessionProtocolKind.DOCKER_CONTAINER
                     ) {
                         tab.copy(broadcastEnabled = enabled)
                     } else {

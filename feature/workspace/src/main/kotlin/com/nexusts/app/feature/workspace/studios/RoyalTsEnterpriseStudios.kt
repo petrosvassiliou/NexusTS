@@ -773,6 +773,9 @@ fun NewTemplateDialog(
                         listOf(
                             VaultProtocolType.RDP,
                             VaultProtocolType.SSH,
+                            VaultProtocolType.SERIAL,
+                            VaultProtocolType.KUBERNETES_POD,
+                            VaultProtocolType.DOCKER_CONTAINER,
                             VaultProtocolType.SFTP,
                             VaultProtocolType.VNC,
                             VaultProtocolType.PROXMOX_VE,
@@ -825,6 +828,9 @@ fun NewTemplateDialog(
                             desktopScaleFactorPercent = rdpScalePercent
                         )
                         VaultProtocolType.SSH -> ProtocolSpecificSettings.Ssh()
+                        VaultProtocolType.SERIAL -> ProtocolSpecificSettings.SerialUart()
+                        VaultProtocolType.KUBERNETES_POD,
+                        VaultProtocolType.DOCKER_CONTAINER -> ProtocolSpecificSettings.ContainerExec()
                         VaultProtocolType.SFTP -> ProtocolSpecificSettings.FileTransfer()
                         VaultProtocolType.VNC -> ProtocolSpecificSettings.Vnc()
                         VaultProtocolType.WEB_PAGE -> ProtocolSpecificSettings.WebPage(url = "https://")

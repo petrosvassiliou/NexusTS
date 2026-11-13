@@ -4,8 +4,10 @@
     <usb-device vendor-id="4176" />
     <!-- Generic USB CCID Smartcard Class (Class 0x0B) -->
     <usb-device class="11" />
-    <!-- FTDI / CP210x / CDC-ACM USB Serial Console Adapters -->
+    <!-- FTDI (0x0403=1027), Silicon Labs CP210x (0x10C4=4292), Prolific PL2303 (0x067B=1659), QinHeng CH340 (0x1A86=6790), & CDC-ACM USB Serial Console Adapters -->
     <usb-device vendor-id="1027" />
     <usb-device vendor-id="4292" />
+    <usb-device vendor-id="1659" />
+    <usb-device vendor-id="6790" />
     <usb-device class="2" subclass="2" />
 </resources>

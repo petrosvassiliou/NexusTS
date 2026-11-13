@@ -28,6 +28,8 @@ import androidx.compose.material.icons.outlined.DeviceHub
 import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.outlined.NetworkCheck
 import androidx.compose.material.icons.outlined.PlayArrow
+import androidx.compose.material.icons.outlined.SystemUpdateAlt
+import androidx.compose.material.icons.outlined.UploadFile
 import androidx.compose.material.icons.outlined.VpnKey
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
@@ -435,6 +437,8 @@ fun NewOrEditConnectionDialog(
 
     val initialRdp = (initialConnection?.settings as? ProtocolSpecificSettings.Rdp) ?: ProtocolSpecificSettings.Rdp()
     val initialSsh = (initialConnection?.settings as? ProtocolSpecificSettings.Ssh) ?: ProtocolSpecificSettings.Ssh()
+    val initialSerial = (initialConnection?.settings as? ProtocolSpecificSettings.SerialUart) ?: ProtocolSpecificSettings.SerialUart()
+    val initialContainer = (initialConnection?.settings as? ProtocolSpecificSettings.ContainerExec) ?: ProtocolSpecificSettings.ContainerExec()
 
     var name by remember(initialConnection) { mutableStateOf(initialConnection?.name.orEmpty()) }
     var host by remember(initialConnection) { mutableStateOf(initialConnection?.host.orEmpty()) }
@@ -456,6 +460,19 @@ fun NewOrEditConnectionDialog(
     var credMenuOpen by remember { mutableStateOf(false) }
     var bastionMenuOpen by remember { mutableStateOf(false) }
     var activeRdpTab by remember(initialConnection) { mutableIntStateOf(0) }
+
+    // USB-C Hardware Serial / UART state
+    var serialBaudRate by remember(initialConnection) { mutableIntStateOf(initialSerial.baudRate) }
+    var serialParity by remember(initialConnection) { mutableStateOf(initialSerial.parity) }
+    var serialFlowControl by remember(initialConnection) { mutableStateOf(initialSerial.flowControl) }
+    var serialDtr by remember(initialConnection) { mutableStateOf(initialSerial.dtrEnabled) }
+    var serialRts by remember(initialConnection) { mutableStateOf(initialSerial.rtsEnabled) }
+
+    // Kubernetes Pod & Docker Container Exec state
+    var containerNamespace by remember(initialConnection) { mutableStateOf(initialContainer.namespace) }
+    var containerTargetName by remember(initialConnection) { mutableStateOf(initialContainer.podOrContainerName) }
+    var containerShell by remember(initialConnection) { mutableStateOf(initialContainer.shellCommand) }
+    var containerFollowLogs by remember(initialConnection) { mutableStateOf(initialContainer.followLogsOnOpen) }
 
     // SSH Port-Forwarding (-L / -R / -D), X11 & Bastion Jump state
     var sshPortText by remember(initialConnection) { mutableStateOf(initialSsh.port.toString()) }
@@ -1090,6 +1107,120 @@ fun NewOrEditConnectionDialog(
                         }
                     }
                 }
+
+                // USB-C Hardware Serial / UART Configuration Section
+                if (selectedProto == VaultProtocolType.SERIAL) {
+                    HorizontalDivider()
+                    Text(
+                        text = strings.serialSectionUart,
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.secondary
+                    )
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = MaterialTheme.colorScheme.surfaceContainer,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text("Baud Rate", style = MaterialTheme.typography.labelMedium)
+                            Row(
+                                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                listOf(9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600).forEach { baud ->
+                                    FilterChip(
+                                        selected = serialBaudRate == baud,
+                                        onClick = { serialBaudRate = baud },
+                                        label = { Text("$baud", style = MaterialTheme.typography.labelSmall) }
+                                    )
+                                }
+                            }
+                            Row(
+                                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                listOf("NONE", "EVEN", "ODD").forEach { p ->
+                                    FilterChip(
+                                        selected = serialParity == p,
+                                        onClick = { serialParity = p },
+                                        label = { Text("Parity: $p", style = MaterialTheme.typography.labelSmall) }
+                                    )
+                                }
+                                listOf("NONE", "RTS_CTS", "XON_XOFF").forEach { fc ->
+                                    FilterChip(
+                                        selected = serialFlowControl == fc,
+                                        onClick = { serialFlowControl = fc },
+                                        label = { Text("Flow: $fc", style = MaterialTheme.typography.labelSmall) }
+                                    )
+                                }
+                            }
+                            RdpOptionSwitchRow("Assert DTR Line on Connect", serialDtr) { serialDtr = it }
+                            RdpOptionSwitchRow("Assert RTS Line on Connect", serialRts) { serialRts = it }
+                        }
+                    }
+                }
+
+                // Kubernetes Pod & Docker Container Exec Configuration Section
+                if (selectedProto == VaultProtocolType.KUBERNETES_POD ||
+                    selectedProto == VaultProtocolType.DOCKER_CONTAINER
+                ) {
+                    HorizontalDivider()
+                    Text(
+                        text = strings.containerSectionExec,
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.secondary
+                    )
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = MaterialTheme.colorScheme.surfaceContainer,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            if (selectedProto == VaultProtocolType.KUBERNETES_POD) {
+                                OutlinedTextField(
+                                    value = containerNamespace,
+                                    onValueChange = { containerNamespace = it },
+                                    label = { Text("Kubernetes Namespace") },
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            }
+                            OutlinedTextField(
+                                value = containerTargetName,
+                                onValueChange = { containerTargetName = it },
+                                label = {
+                                    Text(
+                                        if (selectedProto == VaultProtocolType.KUBERNETES_POD) {
+                                            "Pod Name"
+                                        } else {
+                                            "Docker Container Name / ID"
+                                        }
+                                    )
+                                },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                listOf("/bin/sh", "/bin/bash", "/bin/ash").forEach { sh ->
+                                    FilterChip(
+                                        selected = containerShell == sh,
+                                        onClick = { containerShell = sh },
+                                        label = { Text(sh, style = MaterialTheme.typography.labelSmall) }
+                                    )
+                                }
+                            }
+                            RdpOptionSwitchRow("Open Directly to Live Log Stream (--follow)", containerFollowLogs) {
+                                containerFollowLogs = it
+                            }
+                        }
+                    }
+                }
             }
         },
         confirmButton = {
@@ -1135,9 +1266,27 @@ fun NewOrEditConnectionDialog(
                             startupCommand = sshStartupCommand.trim()
                         )
 
-                        VaultProtocolType.TELNET, VaultProtocolType.SERIAL ->
+                        VaultProtocolType.TELNET ->
                             (initialConnection?.settings as? ProtocolSpecificSettings.Ssh)
-                                ?: ProtocolSpecificSettings.Ssh()
+                                ?: ProtocolSpecificSettings.Ssh(port = 23)
+
+                        VaultProtocolType.SERIAL -> initialSerial.copy(
+                            devicePathHint = host.trim(),
+                            baudRate = serialBaudRate,
+                            parity = serialParity,
+                            flowControl = serialFlowControl,
+                            dtrEnabled = serialDtr,
+                            rtsEnabled = serialRts
+                        )
+
+                        VaultProtocolType.KUBERNETES_POD,
+                        VaultProtocolType.DOCKER_CONTAINER -> initialContainer.copy(
+                            clusterOrSocketEndpoint = if (host.startsWith("http")) host.trim() else "https://${host.trim()}",
+                            namespace = containerNamespace.trim().ifBlank { "default" },
+                            podOrContainerName = containerTargetName.trim().ifBlank { host.trim() },
+                            shellCommand = containerShell,
+                            followLogsOnOpen = containerFollowLogs
+                        )
 
                         VaultProtocolType.SFTP, VaultProtocolType.FTP,
                         VaultProtocolType.FTPS, VaultProtocolType.SCP ->
@@ -1248,6 +1397,7 @@ fun CredentialVaultStudioView(
     strings: WorkspaceLocalizedStrings,
     onGenerateEd25519Key: () -> Unit,
     onCreateCredential: (VaultCredential) -> Unit,
+    onRequestImportVaultFile: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val clipboard = LocalClipboardManager.current
@@ -1373,6 +1523,11 @@ fun CredentialVaultStudioView(
                 }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = onRequestImportVaultFile) {
+                    Icon(Icons.Outlined.UploadFile, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(strings.studioActionImportPasswords)
+                }
                 FilledTonalButton(onClick = onGenerateEd25519Key) {
                     Icon(Icons.Outlined.VpnKey, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(6.dp))
@@ -1769,7 +1924,8 @@ fun AutomationTasksStudioView(
 }
 
 /**
- * 5. Google Drive API v3 Sync, Team Drive Sharing, Vector Clock Revision & Advisory Lock Studio.
+ * 5. Dual-Engine Live Google Drive Sync (Direct Persistent SAF + Drive REST API v3 OAuth 2.0),
+ *    3-Way Vector Clock Conflict Merge, & Play-Protect-Safe GitHub Releases Update Studio (`v1.1`).
  */
 @Composable
 fun DriveSyncAndConflictStudioView(
@@ -1779,13 +1935,30 @@ fun DriveSyncAndConflictStudioView(
     onSelectSyncZone: (Boolean) -> Unit,
     onTriggerDeltaSync: () -> Unit,
     initialOAuthWebClientId: String = "",
-    initialSharedFolderId: String = "",
+    initialSharedFolderId: String = "17C98pGqQUAoQwQ-OSLUHPj4_dtb4_wtS",
     onSaveOAuthConfig: (String, String) -> Unit = { _, _ -> },
+    driveSignedInEmail: String = "",
+    driveLinkedSafLabel: String = "",
+    driveSyncStatusBanner: String = "",
+    driveIsSyncing: Boolean = false,
+    driveAutoSyncOnSave: Boolean = true,
+    onToggleAutoSyncOnSave: (Boolean) -> Unit = {},
+    onCreateLiveSafDriveVault: () -> Unit = {},
+    onLinkExistingSafDriveVault: () -> Unit = {},
+    onUnlinkSafDriveVault: () -> Unit = {},
+    onAuthorizeAndSyncOAuthDrive: () -> Unit = {},
+    onSignOutOAuthDrive: () -> Unit = {},
+    githubReleaseBanner: String = "",
+    githubReleaseUrl: String = "",
+    onCheckGitHubReleases: () -> Unit = {},
+    onOpenGitHubReleaseUrl: (String) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val clipboard = LocalClipboardManager.current
     var webClientIdInput by remember(initialOAuthWebClientId) { mutableStateOf(initialOAuthWebClientId) }
-    var sharedFolderInput by remember(initialSharedFolderId) { mutableStateOf(initialSharedFolderId) }
+    var sharedFolderInput by remember(initialSharedFolderId) {
+        mutableStateOf(initialSharedFolderId.ifBlank { "17C98pGqQUAoQwQ-OSLUHPj4_dtb4_wtS" })
+    }
     var savedBanner by remember { mutableStateOf(false) }
 
     Column(
@@ -1801,7 +1974,7 @@ fun DriveSyncAndConflictStudioView(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
                 Icon(
                     imageVector = Icons.Outlined.CloudSync,
                     contentDescription = null,
@@ -1818,26 +1991,32 @@ fun DriveSyncAndConflictStudioView(
                     )
                 }
             }
-            Button(onClick = onTriggerDeltaSync) {
+            Spacer(modifier = Modifier.width(12.dp))
+            Button(
+                enabled = !driveIsSyncing,
+                onClick = onTriggerDeltaSync
+            ) {
                 Icon(Icons.Outlined.CloudSync, contentDescription = null, modifier = Modifier.size(16.dp))
                 Spacer(modifier = Modifier.width(6.dp))
-                Text(strings.actionSyncNow)
+                Text(if (driveIsSyncing) "Syncing…" else strings.actionSyncNow)
             }
         }
 
         HorizontalDivider()
 
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            FilterChip(
-                selected = !useSharedTeamDrive,
-                onClick = { onSelectSyncZone(false) },
-                label = { Text(strings.syncZoneAppData) }
-            )
-            FilterChip(
-                selected = useSharedTeamDrive,
-                onClick = { onSelectSyncZone(true) },
-                label = { Text(strings.syncZoneTeamDrive) }
-            )
+        if (driveSyncStatusBanner.isNotBlank()) {
+            Surface(
+                shape = RoundedCornerShape(14.dp),
+                color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.55f),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    text = driveSyncStatusBanner,
+                    style = NexusTheme.monospace.keycapShortcut,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
+                )
+            }
         }
 
         Surface(
@@ -1854,14 +2033,14 @@ fun DriveSyncAndConflictStudioView(
                     color = NexusTheme.extendedColors.statusConnected
                 )
                 Text(
-                    text = "Argon2id (64 MiB, t=3, p=4) + AES-256-GCM • SQLCipher Local Cache Active",
+                    text = "Argon2id (64 MiB, t=3, p=4) + AES-256-GCM • Provisioned Folder: NexusTS Vaults (17C98pGqQUAoQwQ-OSLUHPj4_dtb4_wtS)",
                     style = NexusTheme.monospace.keycapShortcut,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }
 
-        // Enterprise OAuth 2.0 Web Client ID & Team Drive Provisioning Card
+        // Card 1: Zero-Cloud-Console Live Google Drive SAF Sync (Works Immediately on Direct APK Installs!)
         Surface(
             shape = RoundedCornerShape(16.dp),
             color = MaterialTheme.colorScheme.surfaceContainerLow,
@@ -1869,19 +2048,94 @@ fun DriveSyncAndConflictStudioView(
         ) {
             Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(
-                    text = "Google Cloud OAuth 2.0 & Credential Manager Provisioning",
+                    text = "1. Zero-Setup Live Google Drive Sync (Direct SAF — Recommended for Direct Installs)",
                     style = MaterialTheme.typography.titleSmall,
                     color = MaterialTheme.colorScheme.primary
                 )
+                Text(
+                    text = if (driveLinkedSafLabel.isNotBlank()) {
+                        "Linked Live Google Drive Vault: $driveLinkedSafLabel"
+                    } else {
+                        "Select 'NexusTS Vaults' in Google Drive once to grant persistent two-way 3-way-merge sync — zero Cloud Console OAuth setup required."
+                    },
+                    style = NexusTheme.monospace.keycapShortcut,
+                    color = if (driveLinkedSafLabel.isNotBlank()) {
+                        NexusTheme.extendedColors.statusConnected
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    }
+                )
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Button(onClick = onCreateLiveSafDriveVault) {
+                        Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(strings.syncLinkDriveSafCreate)
+                    }
+                    FilledTonalButton(onClick = onLinkExistingSafDriveVault) {
+                        Icon(Icons.Outlined.Folder, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(strings.syncLinkDriveSafOpen)
+                    }
+                    if (driveLinkedSafLabel.isNotBlank()) {
+                        OutlinedButton(onClick = onUnlinkSafDriveVault) {
+                            Icon(Icons.Outlined.Delete, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Unlink")
+                        }
+                    }
+                }
+                RdpOptionSwitchRow(
+                    label = "Auto-Sync Encrypted .nxts to Google Drive on Every Vault Save",
+                    checked = driveAutoSyncOnSave,
+                    onCheckedChange = onToggleAutoSyncOnSave
+                )
+            }
+        }
+
+        // Card 2: Google Drive REST API v3 (OAuth 2.0 AuthorizationClient — Web Client ID Optional)
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            color = MaterialTheme.colorScheme.surfaceContainerLow,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    text = "2. Google Drive REST API v3 & Team Drive Advisory Locking (OAuth 2.0)",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    FilterChip(
+                        selected = !useSharedTeamDrive,
+                        onClick = { onSelectSyncZone(false) },
+                        label = { Text(strings.syncZoneAppData) }
+                    )
+                    FilterChip(
+                        selected = useSharedTeamDrive,
+                        onClick = { onSelectSyncZone(true) },
+                        label = { Text(strings.syncZoneTeamDrive) }
+                    )
+                }
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Text(
-                        text = "com.nexusts.app • Release SHA-1: A6:AF:15:A9:BF:0B:FE:38:D4:66:46:3E:3E:72:A6:5B:4F:9C:4D:F6",
+                        text = if (driveSignedInEmail.isNotBlank()) {
+                            "Authorized Account: $driveSignedInEmail"
+                        } else {
+                            "com.nexusts.app • Release SHA-1: A6:AF:15:A9:BF:0B:FE:38:D4:66:46:3E:3E:72:A6:5B:4F:9C:4D:F6"
+                        },
                         style = NexusTheme.monospace.keycapShortcut,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = if (driveSignedInEmail.isNotBlank()) {
+                            NexusTheme.extendedColors.statusConnected
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
                         modifier = Modifier.weight(1f)
                     )
                     AssistChip(
@@ -1892,28 +2146,41 @@ fun DriveSyncAndConflictStudioView(
                         leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null, modifier = Modifier.size(14.dp)) }
                     )
                 }
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Button(onClick = onAuthorizeAndSyncOAuthDrive) {
+                        Icon(Icons.Outlined.CloudSync, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(strings.syncOAuthConnectButton)
+                    }
+                    if (driveSignedInEmail.isNotBlank()) {
+                        OutlinedButton(onClick = onSignOutOAuthDrive) {
+                            Text("Sign Out")
+                        }
+                    }
+                }
                 OutlinedTextField(
                     value = webClientIdInput,
                     onValueChange = {
                         webClientIdInput = it
                         savedBanner = false
                     },
-                    label = { Text("OAuth 2.0 Web Client ID (*.apps.googleusercontent.com)") },
+                    label = { Text("Optional Enterprise OIDC Web Client ID (*.apps.googleusercontent.com)") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
-                if (useSharedTeamDrive) {
-                    OutlinedTextField(
-                        value = sharedFolderInput,
-                        onValueChange = {
-                            sharedFolderInput = it
-                            savedBanner = false
-                        },
-                        label = { Text("Shared Google Drive / Team Drive Folder ID") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
+                OutlinedTextField(
+                    value = sharedFolderInput,
+                    onValueChange = {
+                        sharedFolderInput = it
+                        savedBanner = false
+                    },
+                    label = { Text("Google Drive Folder ID (Default: NexusTS Vaults)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -1938,5 +2205,40 @@ fun DriveSyncAndConflictStudioView(
                 }
             }
         }
+
+        // Card 3: Direct-Install GitHub Releases Update Checker (Play Protect Compliant)
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            color = MaterialTheme.colorScheme.surfaceContainerLow,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    text = "3. Direct-Install GitHub Releases Update Checker (Play Protect Compliant)",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Text(
+                    text = githubReleaseBanner.ifBlank {
+                        "Checks https://github.com/petrosvassiliou/NexusTS/releases/latest over TLS with zero REQUEST_INSTALL_PACKAGES permissions."
+                    },
+                    style = NexusTheme.monospace.keycapShortcut,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilledTonalButton(onClick = onCheckGitHubReleases) {
+                        Icon(Icons.Outlined.SystemUpdateAlt, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(strings.syncCheckGitHubUpdates)
+                    }
+                    if (githubReleaseUrl.isNotBlank()) {
+                        Button(onClick = { onOpenGitHubReleaseUrl(githubReleaseUrl) }) {
+                            Text("Open Verified GitHub Release")
+                        }
+                    }
+                }
+            }
+        }
     }
 }
+

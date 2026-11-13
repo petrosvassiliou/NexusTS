@@ -112,9 +112,10 @@
                 <data android:pathSuffix=".nxts" />
                 <data android:pathSuffix=".rtsz" />
                 <data android:pathSuffix=".rtsx" />
+                <data android:pathSuffix=".1pux" />
             </intent-filter>
 
-            <!-- URI Scheme Support for ssh://, rdp://, vnc://, sftp:// Enterprise Launch Links -->
+            <!-- URI Scheme Support for ssh://, rdp://, vnc://, sftp://, serial://, k8s://, docker:// Enterprise Launch Links -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -123,6 +124,10 @@
                 <data android:scheme="rdp" />
                 <data android:scheme="vnc" />
                 <data android:scheme="sftp" />
+                <data android:scheme="serial" />
+                <data android:scheme="k8s" />
+                <data android:scheme="kubectl" />
+                <data android:scheme="docker" />
                 <data android:scheme="nexusts" />
             </intent-filter>
 

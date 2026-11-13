@@ -142,6 +142,13 @@ fun rememberLocalizedWorkspaceStrings(): WorkspaceLocalizedStrings {
         actionExportRtsz = stringResource(R.string.action_export_rtsz),
         actionExportCsv = stringResource(R.string.action_export_csv),
         sshSectionTunnels = stringResource(R.string.ssh_section_tunnels),
+        studioActionImportPasswords = stringResource(R.string.studio_action_import_passwords),
+        syncLinkDriveSafCreate = stringResource(R.string.sync_link_drive_saf_create),
+        syncLinkDriveSafOpen = stringResource(R.string.sync_link_drive_saf_open),
+        syncOAuthConnectButton = stringResource(R.string.sync_oauth_connect_button),
+        syncCheckGitHubUpdates = stringResource(R.string.sync_check_github_updates),
+        serialSectionUart = stringResource(R.string.serial_section_uart),
+        containerSectionExec = stringResource(R.string.container_section_exec),
         languageLabels = mapOf(
             SupportedNexusLocale.ENGLISH to stringResource(R.string.lang_en),
             SupportedNexusLocale.GERMAN to stringResource(R.string.lang_de),

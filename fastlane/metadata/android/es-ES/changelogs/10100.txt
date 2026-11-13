@@ -1,0 +1,5 @@
+NexusTS 1.1.0 (Googlebook OS y Tablets Android):
+• Sincronización en Vivo con Google Drive: sync persistente SAF con fusión de 3 vías y auto-sync OAuth 2.0 Drive API v3 al guardar.
+• Importador Multiformato: KeePass 2.x XML, Bitwarden JSON, 1Password (.1pux) y CSV con TOTP y claves SSH.
+• Protocolos Enterprise: Consola Serie/UART USB-C (FTDI/CP210x/CH340, Send BREAK) y terminales Kubernetes Pod / Docker + Logs en vivo.
+• Comprobador GitHub Releases compatible con Play Protect y suite E2E Compose.

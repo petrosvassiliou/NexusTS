@@ -611,7 +611,9 @@ private fun ExpressiveSessionTabChip(
             }
             if (tab.protocol == SessionProtocolKind.SSH ||
                 tab.protocol == SessionProtocolKind.TELNET ||
-                tab.protocol == SessionProtocolKind.SERIAL
+                tab.protocol == SessionProtocolKind.SERIAL ||
+                tab.protocol == SessionProtocolKind.KUBERNETES_POD ||
+                tab.protocol == SessionProtocolKind.DOCKER_CONTAINER
             ) {
                 HorizontalDivider()
                 DropdownMenuItem(
@@ -714,7 +716,8 @@ fun protocolIcon(protocol: SessionProtocolKind): ImageVector = when (protocol) {
     SessionProtocolKind.WEB_PAGE -> Icons.Outlined.Language
     SessionProtocolKind.VMWARE_VSPHERE, SessionProtocolKind.PROXMOX_VE,
     SessionProtocolKind.HYPER_V, SessionProtocolKind.AWS_EC2,
-    SessionProtocolKind.AZURE_VM -> Icons.Outlined.CloudQueue
+    SessionProtocolKind.AZURE_VM, SessionProtocolKind.KUBERNETES_POD,
+    SessionProtocolKind.DOCKER_CONTAINER -> Icons.Outlined.CloudQueue
 }
 
 @Composable
@@ -730,7 +733,8 @@ fun protocolAccentColor(protocol: SessionProtocolKind): Color {
         SessionProtocolKind.WEB_PAGE -> ext.webAccent
         SessionProtocolKind.VMWARE_VSPHERE, SessionProtocolKind.PROXMOX_VE,
         SessionProtocolKind.HYPER_V, SessionProtocolKind.AWS_EC2,
-        SessionProtocolKind.AZURE_VM -> ext.cloudAccent
+        SessionProtocolKind.AZURE_VM, SessionProtocolKind.KUBERNETES_POD,
+        SessionProtocolKind.DOCKER_CONTAINER -> ext.cloudAccent
     }
 }
 

@@ -170,6 +170,13 @@
     <string name="ssh_section_tunnels">Port Forwarding SSH (-L / -R / -D) e Bastion</string>
     <string name="mdm_google_web_client_id_title">ID client Web OAuth 2.0 Google</string>
     <string name="mdm_google_web_client_id_desc">ID client Web OAuth 2.0 aziendale Google Cloud per Credential Manager e sincronizzazione Google Drive API v3.</string>
+    <string name="studio_action_import_passwords">Importa KeePass / Bitwarden / 1Password</string>
+    <string name="sync_link_drive_saf_create">Crea cassaforte live in Google Drive</string>
+    <string name="sync_link_drive_saf_open">Collega file .nxts Google Drive esistente</string>
+    <string name="sync_oauth_connect_button">Connetti Google Drive API v3 (OAuth 2.0)</string>
+    <string name="sync_check_github_updates">Verifica aggiornamenti su GitHub Releases</string>
+    <string name="serial_section_uart">Seriale hardware USB-C / UART (FTDI, CP210x, CDC-ACM)</string>
+    <string name="container_section_exec">Pod Kubernetes e runtime container</string>
 
     <!-- Language Names -->
     <string name="lang_en">English</string>

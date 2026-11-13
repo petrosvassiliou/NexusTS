@@ -284,13 +284,26 @@ class VaultDocumentExporter {
             is ProtocolSpecificSettings.WebPage -> {
                 if (settings.url.isNotBlank()) appendXmlTag("URI", settings.url, indent)
             }
+            is ProtocolSpecificSettings.SerialUart -> {
+                appendXmlTag("BaudRate", settings.baudRate.toString(), indent)
+                appendXmlTag("DataBits", settings.dataBits.toString(), indent)
+                appendXmlTag("StopBits", settings.stopBits.toString(), indent)
+                appendXmlTag("Parity", settings.parity, indent)
+                appendXmlTag("FlowControl", settings.flowControl, indent)
+            }
+            is ProtocolSpecificSettings.ContainerExec -> {
+                appendXmlTag("Namespace", settings.namespace, indent)
+                appendXmlTag("Workload", settings.podOrContainerName, indent)
+                appendXmlTag("Shell", settings.shellCommand, indent)
+            }
             else -> Unit
         }
     }
 
     private fun royalTagForProtocol(protocol: VaultProtocolType): String = when (protocol) {
         VaultProtocolType.RDP, VaultProtocolType.WINDOWS_TERMINAL_SERVICES -> "RoyalRDSConnection"
-        VaultProtocolType.SSH, VaultProtocolType.TELNET, VaultProtocolType.SERIAL -> "RoyalSSHConnection"
+        VaultProtocolType.SSH, VaultProtocolType.TELNET, VaultProtocolType.SERIAL,
+        VaultProtocolType.KUBERNETES_POD, VaultProtocolType.DOCKER_CONTAINER -> "RoyalSSHConnection"
         VaultProtocolType.SFTP, VaultProtocolType.FTP, VaultProtocolType.FTPS, VaultProtocolType.SCP -> "RoyalFileTransferConnection"
         VaultProtocolType.VNC, VaultProtocolType.APPLE_SCREEN_SHARING -> "RoyalVNCConnection"
         VaultProtocolType.WEB_PAGE -> "RoyalWebPageConnection"
@@ -304,9 +317,12 @@ class VaultDocumentExporter {
         is ProtocolSpecificSettings.Ssh -> settings.port
         is ProtocolSpecificSettings.FileTransfer -> settings.port
         is ProtocolSpecificSettings.Vnc -> settings.port
+        is ProtocolSpecificSettings.SerialUart -> settings.baudRate
         else -> when (protocol) {
             VaultProtocolType.WEB_PAGE -> 443
             VaultProtocolType.PROXMOX_VE -> 8006
+            VaultProtocolType.KUBERNETES_POD -> 6443
+            VaultProtocolType.DOCKER_CONTAINER -> 2376
             else -> 0
         }
     }

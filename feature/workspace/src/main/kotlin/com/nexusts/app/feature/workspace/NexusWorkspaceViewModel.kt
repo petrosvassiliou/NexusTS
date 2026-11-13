@@ -19,6 +19,8 @@ import com.nexusts.app.core.vault.exporter.VaultDocumentExporter
 import com.nexusts.app.core.vault.exporter.VaultExportFormat
 import com.nexusts.app.core.vault.gateway.GatewayHealthReport
 import com.nexusts.app.core.vault.gateway.SecureGatewayTunnelManager
+import com.nexusts.app.core.vault.importer.DetectedExternalVaultFormat
+import com.nexusts.app.core.vault.importer.EnterpriseVaultFormatImporter
 import com.nexusts.app.core.vault.importer.RtszDocumentImporter
 import com.nexusts.app.core.vault.inheritance.EffectiveConnectionProfile
 import com.nexusts.app.core.vault.inheritance.PropertyInheritanceResolver
@@ -83,6 +85,13 @@ data class WorkspaceUiState(
     val isLockVaultDialogVisible: Boolean = false,
     val sidebarFilterQuery: String = "",
     val useSharedTeamDriveZone: Boolean = false,
+    val driveSignedInEmail: String = "",
+    val driveLinkedSafLabel: String = "",
+    val driveSyncStatusBanner: String = "",
+    val driveIsSyncing: Boolean = false,
+    val driveAutoSyncOnSave: Boolean = true,
+    val githubLatestReleaseBanner: String = "",
+    val githubLatestReleaseUrl: String = "",
     val remoteKeyCaptureEnabled: Boolean = false,
     val broadcastModeEnabled: Boolean = false,
     val isVaultLocked: Boolean = false,
@@ -110,6 +119,7 @@ class NexusWorkspaceViewModel @Inject constructor(
 
     val tilingController = WorkspaceTilingController()
     private val rtszImporter = RtszDocumentImporter()
+    private val enterpriseFormatImporter = EnterpriseVaultFormatImporter()
     private val vaultExporter = VaultDocumentExporter()
 
     private val _uiState = MutableStateFlow(
@@ -948,11 +958,70 @@ class NexusWorkspaceViewModel @Inject constructor(
         appendLog("[Google Drive] Active sync zone = ${if (useTeamDrive) "Shared Team Drive" else "appDataFolder"}")
     }
 
+    fun updateDriveAccountAndSafState(
+        signedInEmail: String = _uiState.value.driveSignedInEmail,
+        linkedSafLabel: String = _uiState.value.driveLinkedSafLabel,
+        autoSyncOnSave: Boolean = _uiState.value.driveAutoSyncOnSave
+    ) {
+        _uiState.update {
+            it.copy(
+                driveSignedInEmail = signedInEmail,
+                driveLinkedSafLabel = linkedSafLabel,
+                driveAutoSyncOnSave = autoSyncOnSave
+            )
+        }
+    }
+
+    fun updateDriveSyncProgress(isSyncing: Boolean, banner: String) {
+        _uiState.update {
+            it.copy(
+                driveIsSyncing = isSyncing,
+                driveSyncStatusBanner = banner
+            )
+        }
+        if (banner.isNotBlank()) {
+            appendLog("[Google Drive] $banner")
+        }
+    }
+
+    fun applySyncedVaultDocument(syncedDoc: NxtsVaultDocument, summaryBanner: String) {
+        activeVaultStore.replaceUnlockedVault(syncedDoc)
+        _uiState.update {
+            it.copy(
+                vaultDocument = syncedDoc,
+                selectedConnectionId = it.selectedConnectionId
+                    ?.takeIf { selId -> syncedDoc.connections.any { c -> c.id == selId } }
+                    ?: syncedDoc.connections.firstOrNull()?.id,
+                isVaultLocked = false,
+                driveIsSyncing = false,
+                driveSyncStatusBanner = summaryBanner
+            )
+        }
+        appendLog("[Google Drive] $summaryBanner")
+    }
+
+    fun setDriveAutoSyncOnSave(enabled: Boolean) {
+        _uiState.update { it.copy(driveAutoSyncOnSave = enabled) }
+        appendLog("[Google Drive] Auto-Sync on vault save = $enabled")
+    }
+
+    fun updateGitHubReleaseState(banner: String, releaseUrl: String = "") {
+        _uiState.update {
+            it.copy(
+                githubLatestReleaseBanner = banner,
+                githubLatestReleaseUrl = releaseUrl
+            )
+        }
+        if (banner.isNotBlank()) {
+            appendLog("[Update Checker] $banner")
+        }
+    }
+
     fun forwardRawKeyToFocusedSession(packet: RawHardwareKeyPacket): Boolean {
         val activeTab = findFocusedActiveTab(tilingController.focusedPaneId.value) ?: return false
         return when (activeTab.protocol) {
             SessionProtocolKind.RDP -> rdpSessions[activeTab.tabId]?.sendHardwareKey(packet) ?: false
-            SessionProtocolKind.SSH, SessionProtocolKind.TELNET, SessionProtocolKind.SERIAL -> {
+            SessionProtocolKind.SSH, SessionProtocolKind.TELNET -> {
                 if (packet.isKeyDown && packet.unicodeChar > 0) {
                     val bytes = packet.unicodeChar.toChar().toString().encodeToByteArray()
                     if (activeTab.broadcastEnabled) {
@@ -1044,48 +1113,83 @@ class NexusWorkspaceViewModel @Inject constructor(
         }
     }
 
-    fun importVaultOrRtszBytes(fileName: String, bytes: ByteArray, passphraseOrNull: CharArray? = null) {
-        val hasNxtsMagic = bytes.size >= 4 &&
-            bytes[0] == 0x4E.toByte() &&
-            bytes[1] == 0x58.toByte() &&
-            bytes[2] == 0x54.toByte() &&
-            bytes[3] == 0x53.toByte()
-        val isRtszFormat = !hasNxtsMagic && (
-            fileName.endsWith(".rtsz", true) ||
-                fileName.endsWith(".rtsx", true) ||
-                (bytes.size >= 4 && bytes[0] == 0x50.toByte() && bytes[1] == 0x4B.toByte() && bytes[2] == 0x03.toByte() && bytes[3] == 0x04.toByte()) ||
-                bytes.decodeToString(0, minOf(bytes.size, 64), throwOnInvalidSequence = false).trimStart().startsWith("<")
-            )
+    fun importVaultOrRtszBytes(
+        fileName: String,
+        bytes: ByteArray,
+        passphraseOrNull: CharArray? = null,
+        mergePasswordManagerEntries: Boolean = true
+    ) {
+        val detected = enterpriseFormatImporter.detectFormat(fileName, bytes)
 
-        if (!isRtszFormat && passphraseOrNull == null) {
-            activeVaultStore.stageEncryptedBytesForUnlock(bytes, fileName)
-            _uiState.update {
-                it.copy(
-                    isVaultLocked = true,
-                    isSidebarVisible = true
-                )
+        if (detected == DetectedExternalVaultFormat.NXTS_ENCRYPTED_BINARY ||
+            (detected == DetectedExternalVaultFormat.UNKNOWN && passphraseOrNull == null)
+        ) {
+            if (passphraseOrNull == null) {
+                activeVaultStore.stageEncryptedBytesForUnlock(bytes, fileName)
+                _uiState.update {
+                    it.copy(
+                        isVaultLocked = true,
+                        isSidebarVisible = true
+                    )
+                }
+                appendLog("[Import] Staged encrypted vault '$fileName' — enter passphrase in sidebar to unlock.")
+                return
             }
-            appendLog("[Import] Staged encrypted vault '$fileName' — enter passphrase in sidebar to unlock.")
-            return
         }
 
         viewModelScope.launch {
             runCatching {
-                if (isRtszFormat) {
-                    rtszImporter.importRtszBytes(bytes, fileName.substringBeforeLast('.'))
-                } else {
-                    vaultSerializer.unsealDocument(bytes, passphraseOrNull!!)
+                when (detected) {
+                    DetectedExternalVaultFormat.NXTS_ENCRYPTED_BINARY,
+                    DetectedExternalVaultFormat.UNKNOWN ->
+                        vaultSerializer.unsealDocument(bytes, passphraseOrNull!!)
+
+                    DetectedExternalVaultFormat.ROYAL_TS_RTSZ_OR_RTSX ->
+                        rtszImporter.importRtszBytes(bytes, fileName.substringBeforeLast('.'))
+
+                    DetectedExternalVaultFormat.KEEPASS_XML_2X,
+                    DetectedExternalVaultFormat.BITWARDEN_JSON,
+                    DetectedExternalVaultFormat.ONEPASSWORD_1PUX_OR_JSON,
+                    DetectedExternalVaultFormat.CSV_INVENTORY_OR_PASSWORDS ->
+                        enterpriseFormatImporter.importExternalFormat(detected, bytes, fileName)
                 }
             }.onSuccess { importedDoc ->
-                activeVaultStore.replaceUnlockedVault(importedDoc)
+                val isPasswordManagerFormat = detected in setOf(
+                    DetectedExternalVaultFormat.KEEPASS_XML_2X,
+                    DetectedExternalVaultFormat.BITWARDEN_JSON,
+                    DetectedExternalVaultFormat.ONEPASSWORD_1PUX_OR_JSON,
+                    DetectedExternalVaultFormat.CSV_INVENTORY_OR_PASSWORDS
+                )
+                val finalDoc = if (isPasswordManagerFormat && mergePasswordManagerEntries) {
+                    val cur = activeVaultStore.snapshot.value.vaultDocument
+                    val nextRev = cur.revision + 1L
+                    val nextClock = cur.vectorClock.toMutableMap().apply { put("googlebook", nextRev) }
+                    val mergedFolders = (cur.folders.filterNot { f -> importedDoc.folders.any { it.id == f.id } } + importedDoc.folders)
+                    val mergedCreds = (cur.credentials.filterNot { c -> importedDoc.credentials.any { it.id == c.id } } + importedDoc.credentials)
+                    val mergedConns = (cur.connections.filterNot { c -> importedDoc.connections.any { it.id == c.id } } + importedDoc.connections)
+                    cur.copy(
+                        revision = nextRev,
+                        vectorClock = nextClock,
+                        folders = mergedFolders,
+                        credentials = mergedCreds,
+                        connections = mergedConns
+                    )
+                } else {
+                    importedDoc
+                }
+
+                activeVaultStore.replaceUnlockedVault(finalDoc)
                 _uiState.update {
                     it.copy(
-                        vaultDocument = importedDoc,
-                        selectedConnectionId = importedDoc.connections.firstOrNull()?.id,
+                        vaultDocument = finalDoc,
+                        selectedConnectionId = importedDoc.connections.firstOrNull()?.id ?: finalDoc.connections.firstOrNull()?.id,
                         isVaultLocked = false
                     )
                 }
-                appendLog("[Import] Loaded '${importedDoc.name}' (${importedDoc.connections.size} connections)")
+                appendLog(
+                    "[Import ${detected.name}] Imported ${importedDoc.credentials.size} credential(s), " +
+                        "${importedDoc.connections.size} connection(s), ${importedDoc.folders.size} folder(s) from '$fileName'"
+                )
             }.onFailure { err ->
                 appendLog("[Import Error] ${err.message}")
             }
@@ -1169,6 +1273,8 @@ class NexusWorkspaceViewModel @Inject constructor(
             VaultProtocolType.SSH -> SessionProtocolKind.SSH
             VaultProtocolType.TELNET -> SessionProtocolKind.TELNET
             VaultProtocolType.SERIAL -> SessionProtocolKind.SERIAL
+            VaultProtocolType.KUBERNETES_POD -> SessionProtocolKind.KUBERNETES_POD
+            VaultProtocolType.DOCKER_CONTAINER -> SessionProtocolKind.DOCKER_CONTAINER
             VaultProtocolType.SFTP -> SessionProtocolKind.SFTP
             VaultProtocolType.FTP -> SessionProtocolKind.FTP
             VaultProtocolType.FTPS -> SessionProtocolKind.FTPS
@@ -1405,6 +1511,43 @@ class NexusWorkspaceViewModel @Inject constructor(
                         protocol = VaultProtocolType.UTILITY_PORT_SCANNER,
                         osFamily = "Network",
                         settings = ProtocolSpecificSettings.NetUtility(portScanRangeStart = 20, portScanRangeEnd = 445)
+                    ),
+                    VaultConnection(
+                        id = "conn-serial-switch-01",
+                        parentFolderId = folderProdId,
+                        name = "Cisco-Core-Switch-UART0",
+                        host = "/dev/ttyUSB0",
+                        protocol = VaultProtocolType.SERIAL,
+                        osFamily = "Cisco IOS-XE",
+                        tags = listOf("serial", "uart", "oob"),
+                        notes = "Out-of-Band USB-C FTDI Console @ 115200 8N1 • Send BREAK for ROMMON.",
+                        settings = ProtocolSpecificSettings.SerialUart(
+                            devicePathHint = "/dev/ttyUSB0",
+                            baudRate = 115200,
+                            dataBits = 8,
+                            stopBits = 1,
+                            parity = "NONE",
+                            flowControl = "NONE",
+                            dtrEnabled = true,
+                            rtsEnabled = true
+                        )
+                    ),
+                    VaultConnection(
+                        id = "conn-k8s-pod-exec-01",
+                        parentFolderId = folderProdId,
+                        name = "prod-eu/api-gateway-pod",
+                        host = "https://k8s-eu.nexusts.internal:6443",
+                        protocol = VaultProtocolType.KUBERNETES_POD,
+                        osFamily = "Kubernetes",
+                        tags = listOf("k8s", "containers", "prod"),
+                        notes = "Interactive Pod Exec Shell & Live Log Streamer.",
+                        settings = ProtocolSpecificSettings.ContainerExec(
+                            clusterOrSocketEndpoint = "https://k8s-eu.nexusts.internal:6443",
+                            contextName = "prod-eu-central",
+                            namespace = "prod-eu",
+                            podOrContainerName = "api-gateway-7d8f9c-xk2p",
+                            shellCommand = "/bin/sh"
+                        )
                     )
                 ),
                 credentials = listOf(
