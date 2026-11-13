@@ -86,7 +86,7 @@ import com.nexusts.app.core.ui.input.nexusMouseWheelHandler
 import com.nexusts.app.core.ui.theme.NexusTheme
 import com.nexusts.app.protocols.ssh.bridge.SshNativeBridge
 import com.nexusts.app.protocols.ssh.bridge.SshTerminalSessionController
-import com.nexusts.app.protocols.ssh.recording.AsciicastFrame
+import com.nexusts.app.protocols.ssh.recording.AsciicastEventFrame
 import com.nexusts.app.protocols.ssh.recording.AsciicastSessionRecorder
 import kotlinx.coroutines.delay
 import kotlin.math.max
@@ -660,7 +660,7 @@ private fun TerminalSpecialKeyButton(
  * Renders asciicast output frames up to `frameCount`, cleanly applying `\r` carriage-return overwrites,
  * `\b` backspaces, and screen/line erasures.
  */
-private fun renderAsciicastFramesCleanly(frames: List<AsciicastFrame>): String {
+private fun renderAsciicastFramesCleanly(frames: List<AsciicastEventFrame>): String {
     val lines = mutableListOf(StringBuilder())
     var row = 0
     var col = 0

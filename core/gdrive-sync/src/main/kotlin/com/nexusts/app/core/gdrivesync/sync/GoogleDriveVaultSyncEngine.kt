@@ -653,9 +653,9 @@ class GoogleDriveVaultSyncEngine(
 
     private fun downloadDriveBytes(drive: Drive, fileId: String): ByteArray {
         val out = ByteArrayOutputStream()
-        drive.files().get(fileId)
-            .setSupportsAllDrives(true)
-            .executeMediaAndDownloadTo(out)
+        val request = drive.files().get(fileId).setSupportsAllDrives(true)
+        request.mediaHttpDownloader?.isDirectDownloadEnabled = true
+        request.executeMediaAndDownloadTo(out)
         return out.toByteArray()
     }
 

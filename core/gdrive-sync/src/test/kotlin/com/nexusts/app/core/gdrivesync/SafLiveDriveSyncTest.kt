@@ -399,7 +399,7 @@ class SafLiveDriveSyncTest {
                                 )
                             }
                             // 2. Search for "NexusTS Vaults" folder returns empty -> triggers creation
-                            method == "GET" && url.contains("application%2Fvnd.google-apps.folder") -> {
+                            method == "GET" && url.contains("vnd.google-apps.folder") -> {
                                 Triple(
                                     200,
                                     "application/json",
