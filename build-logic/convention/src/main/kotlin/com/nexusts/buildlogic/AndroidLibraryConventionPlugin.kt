@@ -27,7 +27,15 @@ class AndroidLibraryConventionPlugin : Plugin<Project> {
                 }
                 packaging {
                     resources {
-                        excludes += "/META-INF/{AL2.0,LGPL2.1,DEPENDENCIES,INDEX.LIST}"
+                        excludes += setOf(
+                            "/META-INF/{AL2.0,LGPL2.1,DEPENDENCIES,INDEX.LIST}",
+                            "/META-INF/LICENSE*",
+                            "/META-INF/NOTICE*",
+                            "/META-INF/versions/9/OSGI-INF/MANIFEST.MF",
+                            "/META-INF/*.SF",
+                            "/META-INF/*.DSA",
+                            "/META-INF/*.RSA"
+                        )
                     }
                 }
             }

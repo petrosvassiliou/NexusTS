@@ -212,7 +212,7 @@ jobs:
           NEXUSTS_KEY_ALIAS: ${{ secrets.NEXUSTS_KEY_ALIAS }}
           NEXUSTS_KEY_PASSWORD: ${{ secrets.NEXUSTS_KEY_PASSWORD }}
           NEXUSTS_GOOGLE_WEB_CLIENT_ID: ${{ secrets.NEXUSTS_GOOGLE_WEB_CLIENT_ID }}
-        run: gradle assembleDebug assembleDebugAndroidTest bundleRelease assembleRelease --continue --stacktrace
+        run: gradle assembleDebug :app:assembleDebugAndroidTest bundleRelease assembleRelease --continue --stacktrace
 
       - name: Automated Play Protect, v2/v3 Signing & 16 KB ELF Page Alignment QA
         run: |
