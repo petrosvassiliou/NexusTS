@@ -223,11 +223,11 @@ class EnterpriseVaultImporterTest {
 
     @Test
     fun importRfc4180CsvAndExportXmlRoundTripForSerialAndContainerSettings() {
-        val csvText = """
-            name,folder,protocol,host,port,username,password,totp,notes
-            "Juniper Edge, Rack 4",OOB Consoles,SERIAL,/dev/ttyACM0,9600,root,"Pass,With,Commas",JBSWY3DPEHPK3PXP,"9600 8N1 ""Console"""
-            "Redis Cache Container",Containers,DOCKER_CONTAINER,prod/redis-primary,2376,ops,dockertoken,,Live container exec
-        """.trimIndent().toByteArray(StandardCharsets.UTF_8)
+        val csvText = listOf(
+            "name,folder,protocol,host,port,username,password,totp,notes",
+            "\"Juniper Edge, Rack 4\",OOB Consoles,SERIAL,/dev/ttyACM0,9600,root,\"Pass,With,Commas\",JBSWY3DPEHPK3PXP,\"9600 8N1 \"\"Console\"\"\"",
+            "\"Redis Cache Container\",Containers,DOCKER_CONTAINER,prod/redis-primary,2376,ops,dockertoken,,Live container exec"
+        ).joinToString("\r\n").toByteArray(StandardCharsets.UTF_8)
 
         val detected = importer.detectFormat("cmdb-inventory.csv", csvText)
         assertEquals(DetectedExternalVaultFormat.CSV_INVENTORY_OR_PASSWORDS, detected)

@@ -31,9 +31,9 @@ dependencies {
     implementation(libs.androidx.credentials.play.services)
     implementation(libs.google.identity.googleid)
     implementation(libs.play.services.auth)
-    implementation(libs.google.api.client.android)
-    implementation(libs.google.api.services.drive)
-    implementation(libs.google.http.client.gson)
+    api(libs.google.api.client.android)
+    api(libs.google.api.services.drive)
+    api(libs.google.http.client.gson)
 
     // Encrypted Local Offline Sync Cache (Room + SQLCipher)
     api(libs.androidx.room.runtime)

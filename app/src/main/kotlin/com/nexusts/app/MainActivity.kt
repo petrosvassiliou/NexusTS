@@ -115,7 +115,7 @@ class MainActivity : AppCompatActivity() {
             linkedSafLabel = persistedSaf?.displayName.orEmpty(),
             autoSyncOnSave = driveAuthManager.isAutoSyncOnSaveEnabled()
         )
-        GoogleDriveVaultSyncEngine.schedulePeriodicSync(this)
+        GoogleDriveVaultSyncEngine.scheduleBackgroundSync(this)
 
         updateCoordinator.registerFlexibleListener()
         lifecycleScope.launch {
