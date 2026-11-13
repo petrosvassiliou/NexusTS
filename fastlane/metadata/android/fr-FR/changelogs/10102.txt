@@ -1,0 +1,5 @@
+NexusTS 1.1.2 — Interface Épurée, Correction Typographique et Nouvelle Icône :
+• Correction des textes compressés dans Vue d'ensemble, Studios, navigation et Inspecteur (6 langues).
+• Espace de travail épuré à 2 volets au démarrage avec carte d'accueil centrée.
+• Suppression de tous les exemples fictifs avec nettoyage automatique lors de la mise à jour.
+• Nouvelle icône adaptative Bureau à distance + Terminal SSH compatible monochrome Android 13+.

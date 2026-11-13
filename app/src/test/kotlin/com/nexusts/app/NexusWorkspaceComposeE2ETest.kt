@@ -32,6 +32,7 @@ import com.nexusts.app.core.vault.model.GatewayTransportKind
 import com.nexusts.app.core.vault.model.InheritableProperties
 import com.nexusts.app.core.vault.model.InheritanceMode
 import com.nexusts.app.core.vault.model.KeySequenceTask
+import com.nexusts.app.core.vault.model.NxtsVaultDocument
 import com.nexusts.app.core.vault.model.ProtocolSpecificSettings
 import com.nexusts.app.core.vault.model.SecureGatewayConfig
 import com.nexusts.app.core.vault.model.SmartFolder
@@ -133,7 +134,8 @@ class NexusWorkspaceComposeE2ETest {
 
     @Test
     fun desktopWorkspaceRendersInheritedFolderCredentialsAndSupportsFolderInlineSave() {
-        val vm = buildRealViewModel()
+        val serializer = buildFastSerializer()
+        val vm = buildRealViewModel(serializer = serializer)
         val strings = WorkspaceLocalizedStrings.defaultEnglish()
 
         composeRule.setContent {
@@ -152,9 +154,11 @@ class NexusWorkspaceComposeE2ETest {
         }
         composeRule.waitForIdle()
 
-        // Starter enterprise vault renders WinServer-2025-DC01 and its inherited folder credential in the Inspector
-        assertTextRendered("WinServer-2025-DC01")
-        assertTextRendered("CORP\\DomainAdmin + YubiKey PIV")
+        // Clean empty default vault: zero fake connections, Inspector hidden by default, spacious Welcome Card rendered
+        assertTrue(vm.uiState.value.vaultDocument.connections.isEmpty())
+        assertTrue(vm.uiState.value.vaultDocument.folders.isEmpty())
+        assertFalse(vm.uiState.value.isInspectorVisible)
+        assertTextRendered(strings.emptyWorkspaceTitle)
 
         // Create a new DMZ folder with an inline folder-level credential and a child RDP connection inheriting from it
         val dmzFolder = VaultFolder(
@@ -188,11 +192,45 @@ class NexusWorkspaceComposeE2ETest {
                 )
             )
             vm.selectConnectionInTree("conn-dmz-rdp-01")
+            vm.handleShortcut(NexusShortcutAction.TOGGLE_PROPERTY_INSPECTOR) {}
         }
         composeRule.waitForIdle()
 
+        assertTrue(vm.uiState.value.isInspectorVisible)
         assertTextRendered("DMZ-JumpBox-01")
         assertTextRendered("DMZ\\BastionOperator")
+
+        // Verify upgrade migration automatically discards a persisted pure-demo v1.1.1 starter vault
+        val upgradeDir = Files.createTempDirectory("nexusts-legacy-upgrade").toFile()
+        try {
+            val legacyDemoDoc = NxtsVaultDocument(
+                documentId = "nxts-enterprise-core",
+                name = "Legacy Starter",
+                connections = listOf(
+                    VaultConnection(
+                        id = "conn-win-rds-01",
+                        name = "LegacyDemoServer",
+                        host = "10.0.0.1",
+                        protocol = VaultProtocolType.RDP,
+                        settings = ProtocolSpecificSettings.Rdp()
+                    )
+                )
+            )
+            val legacyFile = java.io.File(upgradeDir, ActiveVaultSessionStore.LOCAL_VAULT_FILE_NAME)
+            legacyFile.writeBytes(
+                serializer.sealDocument(
+                    legacyDemoDoc,
+                    ActiveVaultSessionStore.DEFAULT_LOCAL_VAULT_PASSPHRASE.toCharArray()
+                )
+            )
+            val upgradedStore = ActiveVaultSessionStore()
+            val restored = upgradedStore.loadPersistedVaultIfNeeded(upgradeDir, serializer)
+            assertFalse("Pure legacy v1.1.1 demo vault must be discarded on upgrade", restored)
+            assertFalse("Stale legacy demo vault file must be deleted", legacyFile.exists())
+            assertTrue(upgradedStore.snapshot.value.vaultDocument.connections.isEmpty())
+        } finally {
+            upgradeDir.deleteRecursively()
+        }
     }
 
     @Test
@@ -216,11 +254,21 @@ class NexusWorkspaceComposeE2ETest {
         }
         composeRule.waitForIdle()
 
-        // 1. Launch Out-of-Band USB-C Hardware Serial Console session
+        // 1. Create and launch Out-of-Band USB-C Hardware Serial Console session
         composeRule.runOnIdle {
-            val serialConn = vm.uiState.value.vaultDocument.connections.first {
-                it.protocol == VaultProtocolType.SERIAL
-            }
+            val serialConn = VaultConnection(
+                id = "conn-serial-e2e-01",
+                name = "CoreSwitch-UART0",
+                host = "/dev/ttyUSB0",
+                protocol = VaultProtocolType.SERIAL,
+                settings = ProtocolSpecificSettings.SerialUart(
+                    baudRate = 115_200,
+                    dataBits = 8,
+                    stopBits = 1,
+                    parity = "NONE"
+                )
+            )
+            vm.saveConnectionToVault(serialConn)
             vm.launchConnection(serialConn)
         }
         composeRule.waitForIdle()
@@ -231,11 +279,19 @@ class NexusWorkspaceComposeE2ETest {
         composeRule.waitForIdle()
         assertTextRendered("[UART BREAK]")
 
-        // 2. Launch Kubernetes Pod Exec & Live Log Streamer session
+        // 2. Create and launch Kubernetes Pod Exec & Live Log Streamer session
         composeRule.runOnIdle {
-            val k8sConn = vm.uiState.value.vaultDocument.connections.first {
-                it.protocol == VaultProtocolType.KUBERNETES_POD
-            }
+            val k8sConn = VaultConnection(
+                id = "conn-k8s-e2e-01",
+                name = "prod-eu/api-gateway-7d8f9c-xk2p",
+                host = "https://k8s.prod-eu.internal:6443",
+                protocol = VaultProtocolType.KUBERNETES_POD,
+                settings = ProtocolSpecificSettings.ContainerExec(
+                    namespace = "prod-eu",
+                    podOrContainerName = "api-gateway-7d8f9c-xk2p"
+                )
+            )
+            vm.saveConnectionToVault(k8sConn)
             vm.launchConnection(k8sConn)
         }
         composeRule.waitForIdle()
@@ -369,9 +425,8 @@ class NexusWorkspaceComposeE2ETest {
             }
         }
         composeRule.waitForIdle()
-        assertTextRendered("WinServer-2025-DC01")
+        assertTrue(vm.uiState.value.vaultDocument.connections.isEmpty())
 
-        // Seal & lock vault -> FullScreenVaultUnlockShield hides all connections, sidebar, and inspector metadata
         composeRule.runOnIdle {
             vm.saveConnectionToVault(
                 VaultConnection(
@@ -382,6 +437,12 @@ class NexusWorkspaceComposeE2ETest {
                     settings = ProtocolSpecificSettings.Ssh()
                 )
             )
+        }
+        composeRule.waitForIdle()
+        assertTextRendered("Persisted-ZeroKnowledge-Node")
+
+        // Seal & lock vault -> FullScreenVaultUnlockShield hides all connections, sidebar, and inspector metadata
+        composeRule.runOnIdle {
             vm.lockVaultWithPassphrase("MasterSecret#2026".toCharArray())
         }
         composeRule.waitUntil(timeoutMillis = 8_000) {
@@ -391,7 +452,6 @@ class NexusWorkspaceComposeE2ETest {
         composeRule.waitForIdle()
 
         assertTextRendered(strings.vaultLockedBanner)
-        assertTextNotRendered("WinServer-2025-DC01")
         assertTextNotRendered("Persisted-ZeroKnowledge-Node")
         assertTrue(vm.buildQuickConnectCandidates().isEmpty())
 
@@ -405,7 +465,7 @@ class NexusWorkspaceComposeE2ETest {
         }
         composeRule.waitForIdle()
         assertTrue(vm.uiState.value.isVaultLocked)
-        assertTextNotRendered("WinServer-2025-DC01")
+        assertTextNotRendered("Persisted-ZeroKnowledge-Node")
 
         // Valid passphrase cleanly unseals the vault and restores the full workspace
         composeRule.runOnIdle {
@@ -414,11 +474,6 @@ class NexusWorkspaceComposeE2ETest {
         composeRule.waitUntil(timeoutMillis = 8_000) {
             Shadows.shadowOf(Looper.getMainLooper()).idle()
             !vm.uiState.value.isVaultLocked
-        }
-        composeRule.waitForIdle()
-        assertTextRendered("WinServer-2025-DC01")
-        composeRule.runOnIdle {
-            vm.updateSidebarFilterQuery("Persisted-ZeroKnowledge-Node")
         }
         composeRule.waitForIdle()
         assertTextRendered("Persisted-ZeroKnowledge-Node")
@@ -474,9 +529,14 @@ class NexusWorkspaceComposeE2ETest {
 
         var launchedTabId = ""
         composeRule.runOnIdle {
-            val sshConn = vm.uiState.value.vaultDocument.connections.first {
-                it.protocol == VaultProtocolType.SSH
-            }
+            val sshConn = VaultConnection(
+                id = "conn-ssh-live-e2e-01",
+                name = "prod-bastion-01",
+                host = "10.20.0.10",
+                protocol = VaultProtocolType.SSH,
+                settings = ProtocolSpecificSettings.Ssh()
+            )
+            vm.saveConnectionToVault(sshConn)
             vm.launchConnection(sshConn)
             val activeTab = vm.tilingController.allActiveTabs().first()
             launchedTabId = activeTab.tabId

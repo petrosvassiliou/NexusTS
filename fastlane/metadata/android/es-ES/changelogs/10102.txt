@@ -1,0 +1,5 @@
+NexusTS 1.1.2 — Interfaz Limpia, Mejora de Tipografía y Nuevo Icono:
+• Corregido el texto comprimido en Resumen, Estudios, barra lateral e Inspector en los 6 idiomas.
+• Diseño inicial despejado de 2 paneles con tarjeta de bienvenida centrada y barra superior limpia.
+• Eliminados todos los ejemplos de demostración con limpieza automática al actualizar desde v1.1.1.
+• Nuevo icono adaptable de Escritorio Remoto + Terminal SSH con soporte monocromático Android 13+.

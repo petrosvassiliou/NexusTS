@@ -1,0 +1,5 @@
+NexusTS 1.1.2 — Clean Interface, Typography Fix & New App Icon:
+• Fixed squished/clipped text across Overview, Studios, Navigation Rail, and Inspector in all 6 languages.
+• Decluttered 2-pane startup workspace with centered Welcome Card and streamlined Top Chrome & Sidebar.
+• Removed all demo servers/entries and added automatic cleanup for legacy demo vaults on upgrade.
+• New Remote Desktop + SSH Terminal adaptive launcher icon with Android 13+ monochrome support.

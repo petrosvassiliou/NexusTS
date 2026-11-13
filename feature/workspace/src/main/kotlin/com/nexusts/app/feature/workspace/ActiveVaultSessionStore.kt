@@ -306,8 +306,16 @@ class ActiveVaultSessionStore @Inject constructor() {
             for (candidate in allCandidates) {
                 val doc = runCatching { serializer.unsealDocument(sealedBytes, candidate.copyOf()) }.getOrNull()
                 if (doc != null) {
+                    if (NexusWorkspaceViewModel.isPureLegacyStarterDemoVault(doc)) {
+                        runCatching { targetFile.delete() }
+                        return false
+                    }
+                    val cleanedDoc = NexusWorkspaceViewModel.sanitizeLegacyDemoEntries(doc)
                     setActivePassphrase(candidate)
-                    replaceUnlockedVault(doc, markInitialized = true)
+                    replaceUnlockedVault(cleanedDoc, markInitialized = true)
+                    if (cleanedDoc !== doc) {
+                        runCatching { persistVaultToDisk(filesDir, serializer, candidate) }
+                    }
                     return true
                 }
             }

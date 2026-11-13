@@ -4,6 +4,7 @@ import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -30,10 +31,19 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.nexusts.app.core.ui.input.nexusHoverTracker
 import com.nexusts.app.core.ui.input.rememberDesktopHoverState
@@ -240,8 +250,10 @@ fun ExpressiveMetricCard(
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
                 )
+                Spacer(modifier = Modifier.width(8.dp))
                 Box(
                     modifier = Modifier
                         .size(30.dp)
@@ -272,3 +284,110 @@ fun ExpressiveMetricCard(
         }
     }
 }
+
+/**
+ * Crisp custom vector-drawn NexusTS Remote Desktop Display + SSH Terminal + Server Hub emblem
+ * matching the Android Adaptive Launcher Icon (`ic_launcher_foreground.xml`).
+ */
+@Composable
+fun NexusBrandEmblem(
+    size: Dp = 32.dp,
+    cornerRadius: Dp = 10.dp,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        shape = RoundedCornerShape(cornerRadius),
+        color = Color(0xFF0A182D),
+        border = BorderStroke(1.dp, Color(0xFF2CE5B5).copy(alpha = 0.28f)),
+        modifier = modifier.size(size)
+    ) {
+        Canvas(modifier = Modifier.size(size)) {
+            val w = this.size.width
+            val h = this.size.height
+
+            // Subtle ambient sapphire-teal background gradient
+            drawRect(
+                brush = Brush.linearGradient(
+                    colors = listOf(Color(0xFF0D213F), Color(0xFF071120)),
+                    start = Offset.Zero,
+                    end = Offset(w, h)
+                )
+            )
+
+            // Remote Desktop Monitor Outer Frame
+            val monLeft = w * 0.17f
+            val monTop = h * 0.18f
+            val monW = w * 0.66f
+            val monH = h * 0.48f
+            drawRoundRect(
+                color = Color(0xFFDCEBFF),
+                topLeft = Offset(monLeft, monTop),
+                size = Size(monW, monH),
+                cornerRadius = CornerRadius(w * 0.09f, w * 0.09f)
+            )
+
+            // Inner Dark Screen
+            val pad = w * 0.055f
+            val scrLeft = monLeft + pad
+            val scrTop = monTop + pad
+            val scrW = monW - pad * 2f
+            val scrH = monH - pad * 2f
+            drawRoundRect(
+                color = Color(0xFF081426),
+                topLeft = Offset(scrLeft, scrTop),
+                size = Size(scrW, scrH),
+                cornerRadius = CornerRadius(w * 0.05f, w * 0.05f)
+            )
+
+            // Left Terminal Chevron `>_`
+            val chevPath = Path().apply {
+                moveTo(scrLeft + scrW * 0.14f, scrTop + scrH * 0.30f)
+                lineTo(scrLeft + scrW * 0.34f, scrTop + scrH * 0.54f)
+                lineTo(scrLeft + scrW * 0.14f, scrTop + scrH * 0.78f)
+            }
+            drawPath(
+                path = chevPath,
+                color = Color(0xFF2CE5B5),
+                style = Stroke(
+                    width = (w * 0.065f).coerceAtLeast(1.6f),
+                    cap = StrokeCap.Round,
+                    join = StrokeJoin.Round
+                )
+            )
+            drawLine(
+                color = Color(0xFF2CE5B5),
+                start = Offset(scrLeft + scrW * 0.40f, scrTop + scrH * 0.76f),
+                end = Offset(scrLeft + scrW * 0.56f, scrTop + scrH * 0.76f),
+                strokeWidth = (w * 0.06f).coerceAtLeast(1.5f),
+                cap = StrokeCap.Round
+            )
+
+            // Right Remote Desktop Pane Card
+            drawRoundRect(
+                color = Color(0xFF7AA8FF),
+                topLeft = Offset(scrLeft + scrW * 0.64f, scrTop + scrH * 0.25f),
+                size = Size(scrW * 0.26f, scrH * 0.52f),
+                cornerRadius = CornerRadius(w * 0.035f, w * 0.035f)
+            )
+
+            // Stand Neck + Server Hub Base + Active Node Dot
+            drawRect(
+                color = Color(0xFF9BBDF2),
+                topLeft = Offset(w * 0.45f, monTop + monH),
+                size = Size(w * 0.10f, h * 0.10f)
+            )
+            drawRoundRect(
+                color = Color(0xFFDCEBFF),
+                topLeft = Offset(w * 0.30f, h * 0.75f),
+                size = Size(w * 0.40f, h * 0.075f),
+                cornerRadius = CornerRadius(w * 0.04f, w * 0.04f)
+            )
+            drawCircle(
+                color = Color(0xFF2CE5B5),
+                radius = (w * 0.048f).coerceAtLeast(1.5f),
+                center = Offset(w * 0.50f, h * 0.788f)
+            )
+        }
+    }
+}
+

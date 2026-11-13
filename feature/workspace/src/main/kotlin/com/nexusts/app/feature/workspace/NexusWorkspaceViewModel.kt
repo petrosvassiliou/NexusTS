@@ -66,7 +66,7 @@ import javax.inject.Inject
 data class WorkspaceUiState(
     val activeRailId: String = "connections",
     val isSidebarVisible: Boolean = true,
-    val isInspectorVisible: Boolean = true,
+    val isInspectorVisible: Boolean = false,
     val isBottomDrawerVisible: Boolean = false,
     val isQuickConnectVisible: Boolean = false,
     val isNewConnectionDialogVisible: Boolean = false,
@@ -2149,350 +2149,109 @@ class NexusWorkspaceViewModel @Inject constructor(
             VaultProtocolType.UTILITY_WAKE_ON_LAN -> SessionProtocolKind.NET_UTILITY
         }
 
-        fun createEnterpriseStarterVault(): NxtsVaultDocument {
-            val opsCredId = "cred-ops-root"
-            val winCredId = "cred-corp-domain"
-            val bastionGwId = "gw-eu-bastion"
+        const val DEFAULT_VAULT_DOCUMENT_ID = "nxts-default-vault"
+        const val DEFAULT_VAULT_NAME = "NexusTS Vault"
 
-            val folderProdId = "folder-prod-core"
-            val folderWinAdId = "folder-win-ad"
-            val folderCloudId = "folder-hybrid-cloud"
+        private val LEGACY_DEMO_CONNECTION_IDS = setOf(
+            "conn-win-rds-01",
+            "conn-win-rds-02",
+            "conn-k8s-bastion-ssh",
+            "conn-prod-sftp",
+            "conn-macos-ard",
+            "conn-proxmox-ve",
+            "conn-net-scanner",
+            "conn-serial-switch-01",
+            "conn-k8s-pod-exec-01"
+        )
 
-            return NxtsVaultDocument(
-                documentId = "nxts-enterprise-core",
-                name = "NexusCorp Infrastructure.nxts",
-                revision = 12L,
-                rootInheritable = InheritableProperties(
-                    credentialMode = InheritanceMode.OVERRIDE_EXPLICIT,
-                    explicitCredentialId = opsCredId,
-                    gatewayMode = InheritanceMode.NONE_DIRECT,
-                    customProperties = listOf(
-                        CustomPropertyEntry("CostCenter", "INFRA-EU-01"),
-                        CustomPropertyEntry("PagerDutyEscalation", "P0-SRE-CORE")
-                    )
-                ),
-                folders = listOf(
-                    VaultFolder(
-                        id = folderWinAdId,
-                        name = "Windows Server Farm (AD)",
-                        description = "Tier-0 Active Directory Domain Controllers & RDS Session Hosts",
-                        tags = listOf("ad", "windows", "tier-0"),
-                        inheritable = InheritableProperties(
-                            credentialMode = InheritanceMode.OVERRIDE_EXPLICIT,
-                            explicitCredentialId = winCredId,
-                            gatewayMode = InheritanceMode.OVERRIDE_EXPLICIT,
-                            explicitGatewayId = bastionGwId,
-                            environmentBadge = "PRODUCTION",
-                            displayColorAccentHex = "#6EA2FF",
-                            customProperties = listOf(
-                                CustomPropertyEntry("ADForest", "corp.nexusts.internal")
-                            )
-                        )
-                    ),
-                    VaultFolder(
-                        id = folderProdId,
-                        name = "Production Core (EU-Central)",
-                        description = "Kubernetes Control Plane & Release Artifact Nodes",
-                        tags = listOf("prod", "tier-0"),
-                        inheritable = InheritableProperties(
-                            credentialMode = InheritanceMode.INHERIT_FROM_PARENT,
-                            gatewayMode = InheritanceMode.OVERRIDE_EXPLICIT,
-                            explicitGatewayId = bastionGwId,
-                            environmentBadge = "PRODUCTION",
-                            displayColorAccentHex = "#3CE6B8"
-                        )
-                    ),
-                    VaultFolder(
-                        id = folderCloudId,
-                        name = "Hybrid Cloud & Hypervisors",
-                        description = "Proxmox VE, macOS M4 CI Builders & Diagnostic Tooling",
-                        tags = listOf("cloud", "infra"),
-                        inheritable = InheritableProperties(
-                            credentialMode = InheritanceMode.OVERRIDE_EXPLICIT,
-                            explicitCredentialId = winCredId,
-                            gatewayMode = InheritanceMode.INHERIT_FROM_PARENT,
-                            environmentBadge = "STAGING",
-                            displayColorAccentHex = "#FFB86B"
-                        )
-                    )
-                ),
-                smartFolders = listOf(
-                    SmartFolder(
-                        name = "All Production Linux Nodes",
-                        filter = SmartFolderFilter(osFamilyFilter = "Linux", environmentFilter = "PRODUCTION")
-                    ),
-                    SmartFolder(
-                        name = "All Remote Desktop (RDP/VNC)",
-                        filter = SmartFolderFilter(
-                            includeProtocols = listOf(
-                                VaultProtocolType.RDP,
-                                VaultProtocolType.VNC,
-                                VaultProtocolType.APPLE_SCREEN_SHARING
-                            )
-                        )
-                    )
-                ),
-                dynamicFolders = listOf(
-                    DynamicFolder(
-                        id = "dyn-cloud-fleet",
-                        parentFolderId = folderCloudId,
-                        name = "Ephemeral Cloud Fleet (Dynamic JSON)",
-                        interpreter = DynamicScriptInterpreter.JSON_HTTP_API,
-                        scriptOrEndpointPayload = """{"Objects":[{"Type":"SSH","Name":"ephemeral-gpu-worker-01","ComputerName":"10.88.4.11","Port":22,"OS":"Linux","Tags":["gpu","dynamic"]},{"Type":"RDP","Name":"ephemeral-win-qa-04","ComputerName":"10.88.4.40","Port":3389,"OS":"Windows","Tags":["qa","dynamic"]}]}""",
-                        inheritable = InheritableProperties(
-                            credentialMode = InheritanceMode.OVERRIDE_EXPLICIT,
-                            explicitCredentialId = opsCredId,
-                            displayColorAccentHex = "#59D2FE"
-                        )
-                    )
-                ),
-                connections = listOf(
-                    VaultConnection(
-                        id = "conn-win-rds-01",
-                        parentFolderId = folderWinAdId,
-                        name = "WinServer-2025-DC01",
-                        host = "dc01.corp.nexusts.internal",
-                        protocol = VaultProtocolType.RDP,
-                        osFamily = "Windows",
-                        tags = listOf("ad", "rdp", "smartcard"),
-                        notes = "Primary FSMO Role Holder • Requires YubiKey PIV or DomainAdmin + TOTP.",
-                        favorite = true,
-                        inheritable = InheritableProperties(
-                            credentialMode = InheritanceMode.INHERIT_FROM_PARENT,
-                            gatewayMode = InheritanceMode.INHERIT_FROM_PARENT,
-                            customProperties = listOf(
-                                CustomPropertyEntry("Rack", "FRA1-RACK-04"),
-                                CustomPropertyEntry("iDRAC", "https://idrac-dc01.corp.internal")
-                            )
-                        ),
-                        settings = ProtocolSpecificSettings.Rdp(
-                            connectToConsoleAdmin = false,
-                            hiDpiEnabled = true,
-                            desktopScaleFactorPercent = 150,
-                            enableH264Avc444 = true,
-                            redirectClipboard = true,
-                            audioRedirectionMode = RdpAudioRedirectionMode.PLAY_ON_THIS_DEVICE,
-                            redirectDrives = true,
-                            redirectSmartcardYubiKey = true,
-                            enableFontSmoothing = true,
-                            enableDesktopComposition = true,
-                            multiMonitorSpanning = true
-                        )
-                    ),
-                    VaultConnection(
-                        id = "conn-win-rds-02",
-                        parentFolderId = folderWinAdId,
-                        name = "RDS-ConsoleHost-02 (/admin)",
-                        host = "rds02.corp.nexusts.internal",
-                        protocol = VaultProtocolType.RDP,
-                        osFamily = "Windows",
-                        tags = listOf("rds", "console", "rdp"),
-                        notes = "Direct Console Session 0 maintenance endpoint.",
-                        inheritable = InheritableProperties(
-                            credentialMode = InheritanceMode.INHERIT_FROM_PARENT,
-                            gatewayMode = InheritanceMode.INHERIT_FROM_PARENT
-                        ),
-                        settings = ProtocolSpecificSettings.Rdp(
-                            connectToConsoleAdmin = true,
-                            hiDpiEnabled = true,
-                            desktopScaleFactorPercent = 125,
-                            redirectClipboard = true,
-                            audioRedirectionMode = RdpAudioRedirectionMode.PLAY_ON_REMOTE_HOST,
-                            redirectPrinters = true,
-                            enableFontSmoothing = true,
-                            nlaSecurityRequired = true
-                        )
-                    ),
-                    VaultConnection(
-                        id = "conn-k8s-bastion-ssh",
-                        parentFolderId = folderProdId,
-                        name = "k8s-control-plane-01",
-                        host = "10.24.0.10",
-                        protocol = VaultProtocolType.SSH,
-                        osFamily = "Linux",
-                        tags = listOf("k8s", "prod"),
-                        notes = "Forwards localhost:16443 -> 127.0.0.1:6443 kube-apiserver.",
-                        favorite = true,
-                        settings = ProtocolSpecificSettings.Ssh(
-                            port = 22,
-                            enableX11Forwarding = true,
-                            portForwards = listOf(
-                                SshPortForwardRule(
-                                    kind = PortForwardKind.LOCAL,
-                                    bindPort = 16443,
-                                    targetHost = "127.0.0.1",
-                                    targetPort = 6443
-                                )
-                            )
-                        )
-                    ),
-                    VaultConnection(
-                        id = "conn-prod-sftp",
-                        parentFolderId = folderProdId,
-                        name = "Artifact-Vault-SFTP",
-                        host = "artifacts.nexusts.internal",
-                        protocol = VaultProtocolType.SFTP,
-                        osFamily = "Linux",
-                        tags = listOf("sftp", "releases"),
-                        settings = ProtocolSpecificSettings.FileTransfer(port = 22)
-                    ),
-                    VaultConnection(
-                        id = "conn-macos-ard",
-                        parentFolderId = folderCloudId,
-                        name = "macOS-BuildCluster-M4",
-                        host = "10.40.8.22",
-                        protocol = VaultProtocolType.APPLE_SCREEN_SHARING,
-                        osFamily = "macOS",
-                        favorite = true,
-                        settings = ProtocolSpecificSettings.Vnc(appleArdDiffieHellmanAuth = true)
-                    ),
-                    VaultConnection(
-                        id = "conn-proxmox-ve",
-                        parentFolderId = folderCloudId,
-                        name = "Proxmox-VE-Cluster",
-                        host = "pve01.nexusts.internal",
-                        protocol = VaultProtocolType.PROXMOX_VE,
-                        osFamily = "Linux",
-                        settings = ProtocolSpecificSettings.CloudVirtualization(
-                            apiEndpointUrl = "https://pve01.nexusts.internal:8006/api2/json",
-                            regionOrCluster = "eu-fra-cluster01"
-                        )
-                    ),
-                    VaultConnection(
-                        id = "conn-net-scanner",
-                        parentFolderId = folderCloudId,
-                        name = "Subnet Port & WoL Diagnostic",
-                        host = "127.0.0.1",
-                        protocol = VaultProtocolType.UTILITY_PORT_SCANNER,
-                        osFamily = "Network",
-                        settings = ProtocolSpecificSettings.NetUtility(portScanRangeStart = 20, portScanRangeEnd = 445)
-                    ),
-                    VaultConnection(
-                        id = "conn-serial-switch-01",
-                        parentFolderId = folderProdId,
-                        name = "Cisco-Core-Switch-UART0",
-                        host = "/dev/ttyUSB0",
-                        protocol = VaultProtocolType.SERIAL,
-                        osFamily = "Cisco IOS-XE",
-                        tags = listOf("serial", "uart", "oob"),
-                        notes = "Out-of-Band USB-C FTDI Console @ 115200 8N1 • Send BREAK for ROMMON.",
-                        settings = ProtocolSpecificSettings.SerialUart(
-                            devicePathHint = "/dev/ttyUSB0",
-                            baudRate = 115200,
-                            dataBits = 8,
-                            stopBits = 1,
-                            parity = "NONE",
-                            flowControl = "NONE",
-                            dtrEnabled = true,
-                            rtsEnabled = true
-                        )
-                    ),
-                    VaultConnection(
-                        id = "conn-k8s-pod-exec-01",
-                        parentFolderId = folderProdId,
-                        name = "prod-eu/api-gateway-pod",
-                        host = "https://k8s-eu.nexusts.internal:6443",
-                        protocol = VaultProtocolType.KUBERNETES_POD,
-                        osFamily = "Kubernetes",
-                        tags = listOf("k8s", "containers", "prod"),
-                        notes = "Interactive Pod Exec Shell & Live Log Streamer.",
-                        settings = ProtocolSpecificSettings.ContainerExec(
-                            clusterOrSocketEndpoint = "https://k8s-eu.nexusts.internal:6443",
-                            contextName = "prod-eu-central",
-                            namespace = "prod-eu",
-                            podOrContainerName = "api-gateway-7d8f9c-xk2p",
-                            shellCommand = "/bin/sh"
-                        )
-                    )
-                ),
-                credentials = listOf(
-                    VaultCredential(
-                        id = opsCredId,
-                        name = "SRE Root SSH Identity",
-                        sourceKind = CredentialSourceKind.SSH_KEY_PAIR,
-                        username = "sre-admin",
-                        keyFingerprintSha256 = "SHA256:kX9pNexusTSZeroKnowledgeEd25519Key",
-                        totpSecretBase32 = "JBSWY3DPEHPK3PXP"
-                    ),
-                    VaultCredential(
-                        id = winCredId,
-                        name = "CORP\\DomainAdmin + YubiKey PIV",
-                        sourceKind = CredentialSourceKind.HARDWARE_FIDO2_PASSKEY,
-                        username = "adm.architect",
-                        domain = "CORP",
-                        totpSecretBase32 = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"
-                    )
-                ),
-                gateways = listOf(
-                    SecureGatewayConfig(
-                        id = bastionGwId,
-                        name = "EU-Central NexusTS Gateway",
-                        kind = GatewayTransportKind.NEXUSTS_SECURE_GATEWAY,
-                        host = "gw-eu.nexusts.app",
-                        port = 443,
-                        credentialId = opsCredId
-                    )
-                ),
-                commandTasks = listOf(
-                    CommandTask(
-                        name = "Cluster Pod Health Audit",
-                        commandTemplate = "kubectl get pods -A -o wide && uptime",
-                        broadcastToAllSelectedSessions = true
-                    )
-                ),
-                keySequenceTasks = listOf(
-                    KeySequenceTask(
-                        name = "Windows Domain Elevated Sign-In + 2FA Macro",
-                        macroSequence = "{CTRL+ALT+DEL}{WAIT:350}\$EffectiveUsername\${TAB}\$EffectivePassword\${ENTER}{WAIT:500}\$EffectiveTOTP\${ENTER}",
-                        keystrokeDelayMs = 25
-                    )
-                ),
-                templates = listOf(
-                    ConnectionTemplate(
-                        id = "tpl-win-console-hidpi",
-                        name = "Windows Server Console + HiDPI 150%",
-                        description = "Connects to /admin console with 150% Retina/HiDPI scale, Smartcard & Clipboard",
-                        protocol = VaultProtocolType.RDP,
-                        colorAccentHex = "#6EA2FF",
-                        settings = ProtocolSpecificSettings.Rdp(
-                            connectToConsoleAdmin = true,
-                            hiDpiEnabled = true,
-                            desktopScaleFactorPercent = 150,
-                            redirectClipboard = true,
-                            redirectSmartcardYubiKey = true
-                        )
-                    ),
-                    ConnectionTemplate(
-                        id = "tpl-hardened-ssh",
-                        name = "Hardened Bastion SSH + X11",
-                        description = "xterm-256color with X11 forwarding and 15s keep-alive",
-                        protocol = VaultProtocolType.SSH,
-                        colorAccentHex = "#3CE6B8",
-                        settings = ProtocolSpecificSettings.Ssh(
-                            enableX11Forwarding = true,
-                            keepAliveIntervalSec = 15
-                        )
-                    )
-                ),
-                todoItems = listOf(
-                    VaultTodoItem(
-                        id = "todo-cert-rotate",
-                        targetObjectId = "conn-win-rds-01",
-                        title = "Rotate LDAPS & RD Gateway TLS leaf certificates before Q4 window",
-                        completed = false,
-                        priority = "HIGH",
-                        dueIsoDate = "2026-12-01"
-                    ),
-                    VaultTodoItem(
-                        id = "todo-k8s-etcd",
-                        targetObjectId = "conn-k8s-bastion-ssh",
-                        title = "Verify etcd encrypted snapshot replication on EU-Central",
-                        completed = true,
-                        priority = "NORMAL"
-                    )
-                ),
-                recentConnectionIds = listOf("conn-win-rds-01", "conn-k8s-bastion-ssh")
+        private val LEGACY_DEMO_FOLDER_IDS = setOf(
+            "folder-prod-core",
+            "folder-win-ad",
+            "folder-hybrid-cloud"
+        )
+
+        private val LEGACY_DEMO_CREDENTIAL_IDS = setOf(
+            "cred-ops-root",
+            "cred-corp-domain"
+        )
+
+        private val LEGACY_DEMO_GATEWAY_IDS = setOf(
+            "gw-eu-bastion"
+        )
+
+        private val LEGACY_DEMO_DYNAMIC_FOLDER_IDS = setOf(
+            "dyn-cloud-fleet"
+        )
+
+        private val LEGACY_DEMO_TEMPLATE_IDS = setOf(
+            "tpl-win-console-hidpi",
+            "tpl-hardened-ssh"
+        )
+
+        private val LEGACY_DEMO_TODO_IDS = setOf(
+            "todo-cert-rotate",
+            "todo-k8s-etcd"
+        )
+
+        private val LEGACY_DEMO_SMART_FOLDER_NAMES = setOf(
+            "All Production Linux Nodes",
+            "All Remote Desktop (RDP/VNC)"
+        )
+
+        private val LEGACY_DEMO_COMMAND_TASK_NAMES = setOf(
+            "Cluster Pod Health Audit"
+        )
+
+        private val LEGACY_DEMO_MACRO_NAMES = setOf(
+            "Windows Domain Elevated Sign-In + 2FA Macro"
+        )
+
+        /**
+         * Returns `true` when [doc] is the auto-seeded legacy `v1.1.1` demo vault (`nxts-enterprise-core`)
+         * with zero user-added connections, allowing `ActiveVaultSessionStore` to discard it cleanly on upgrade.
+         */
+        fun isPureLegacyStarterDemoVault(doc: NxtsVaultDocument): Boolean {
+            if (doc.documentId != "nxts-enterprise-core") return false
+            val hasUserConnections = doc.connections.any { it.id !in LEGACY_DEMO_CONNECTION_IDS }
+            val hasUserFolders = doc.folders.any { it.id !in LEGACY_DEMO_FOLDER_IDS }
+            val hasUserCredentials = doc.credentials.any { it.id !in LEGACY_DEMO_CREDENTIAL_IDS }
+            return !hasUserConnections && !hasUserFolders && !hasUserCredentials
+        }
+
+        /**
+         * Strips any legacy `v1.1.1` demo entries if a user created custom connections inside the old starter vault.
+         */
+        fun sanitizeLegacyDemoEntries(doc: NxtsVaultDocument): NxtsVaultDocument {
+            if (doc.documentId != "nxts-enterprise-core") return doc
+            val referencedFolderIds = doc.connections
+                .filterNot { it.id in LEGACY_DEMO_CONNECTION_IDS }
+                .mapNotNull { it.parentFolderId }
+                .toSet()
+            return doc.copy(
+                documentId = DEFAULT_VAULT_DOCUMENT_ID,
+                name = DEFAULT_VAULT_NAME,
+                rootInheritable = InheritableProperties(),
+                folders = doc.folders.filter { it.id !in LEGACY_DEMO_FOLDER_IDS || it.id in referencedFolderIds },
+                smartFolders = doc.smartFolders.filterNot { it.name in LEGACY_DEMO_SMART_FOLDER_NAMES },
+                dynamicFolders = doc.dynamicFolders.filterNot { it.id in LEGACY_DEMO_DYNAMIC_FOLDER_IDS },
+                connections = doc.connections.filterNot { it.id in LEGACY_DEMO_CONNECTION_IDS },
+                credentials = doc.credentials.filterNot { it.id in LEGACY_DEMO_CREDENTIAL_IDS },
+                gateways = doc.gateways.filterNot { it.id in LEGACY_DEMO_GATEWAY_IDS },
+                commandTasks = doc.commandTasks.filterNot { it.name in LEGACY_DEMO_COMMAND_TASK_NAMES },
+                keySequenceTasks = doc.keySequenceTasks.filterNot { it.name in LEGACY_DEMO_MACRO_NAMES },
+                templates = doc.templates.filterNot { it.id in LEGACY_DEMO_TEMPLATE_IDS },
+                todoItems = doc.todoItems.filterNot { it.id in LEGACY_DEMO_TODO_IDS },
+                recentConnectionIds = doc.recentConnectionIds.filterNot { it in LEGACY_DEMO_CONNECTION_IDS }
             )
         }
+
+        /**
+         * Clean, zero-clutter default empty vault initialized on first launch.
+         */
+        fun createEnterpriseStarterVault(): NxtsVaultDocument = NxtsVaultDocument(
+            documentId = DEFAULT_VAULT_DOCUMENT_ID,
+            name = DEFAULT_VAULT_NAME,
+            revision = 1L
+        )
     }
 }

@@ -10,11 +10,14 @@ import com.nexusts.app.core.vault.crypto.KdfSecurityParameters
 import com.nexusts.app.core.vault.crypto.NxtsVaultSerializer
 import com.nexusts.app.core.vault.gateway.SecureGatewayTunnelManager
 import com.nexusts.app.core.vault.inheritance.PropertyInheritanceResolver
+import com.nexusts.app.core.vault.model.ProtocolSpecificSettings
+import com.nexusts.app.core.vault.model.VaultConnection
 import com.nexusts.app.core.vault.model.VaultProtocolType
 import com.nexusts.app.feature.workspace.ActiveVaultSessionStore
 import com.nexusts.app.feature.workspace.NexusWorkspaceScreen
 import com.nexusts.app.feature.workspace.NexusWorkspaceViewModel
 import com.nexusts.app.feature.workspace.i18n.WorkspaceLocalizedStrings
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -56,15 +59,25 @@ class NexusWorkspaceInstrumentedTest {
         }
         composeRule.waitForIdle()
 
+        assertTrue(viewModel.uiState.value.vaultDocument.connections.isEmpty())
+        assertFalse(viewModel.uiState.value.isInspectorVisible)
         assertTrue(
-            composeRule.onAllNodesWithText("WinServer-2025-DC01", substring = true)
+            composeRule.onAllNodesWithText(strings.emptyWorkspaceTitle, substring = true)
                 .fetchSemanticsNodes().isNotEmpty()
         )
 
         composeRule.runOnIdle {
-            val k8sConn = viewModel.uiState.value.vaultDocument.connections.first {
-                it.protocol == VaultProtocolType.KUBERNETES_POD
-            }
+            val k8sConn = VaultConnection(
+                id = "conn-k8s-inst-01",
+                name = "prod-eu/api-gateway",
+                host = "k8s.eu-central.internal",
+                protocol = VaultProtocolType.KUBERNETES_POD,
+                settings = ProtocolSpecificSettings.ContainerExec(
+                    namespace = "prod-eu",
+                    podOrContainerName = "api-gateway-7d8f9c-xk2p"
+                )
+            )
+            viewModel.saveConnectionToVault(k8sConn)
             viewModel.launchConnection(k8sConn)
         }
         composeRule.waitForIdle()

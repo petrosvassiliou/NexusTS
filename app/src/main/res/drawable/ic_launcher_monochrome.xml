@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Monitor Frame Ring -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="M32,27L76,27A7,7 0,0 1,83 34L83,60A7,7 0,0 1,76 67L32,67A7,7 0,0 1,25 60L25,34A7,7 0,0 1,32 27ZM33,31L75,31A4,4 0,0 1,79 35L79,59A4,4 0,0 1,75 63L33,63A4,4 0,0 1,29 59L29,35A4,4 0,0 1,33 31Z" />
+    <!-- Terminal Chevron & Cursor -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M34.5,41.5L44.5,49.5L34.5,57.5L32,54.5L38.2,49.5L32,44.5Z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M45.5,53.8h9v3.4h-9z" />
+    <!-- Remote Window Tile -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="M60,40.5L73.5,40.5A2.5,2.5 0,0 1,76 43L76,56.5A2.5,2.5 0,0 1,73.5 59L60,59A2.5,2.5 0,0 1,57.5 56.5L57.5,43A2.5,2.5 0,0 1,60 40.5ZM60.5,45.5L73,45.5L73,56L60.5,56Z" />
+    <!-- Stand & Server Hub Base -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M50.5,67h7v7h-7z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M39.5,73.5L68.5,73.5A2.5,2.5 0,0 1,71 76A2.5,2.5 0,0 1,68.5 78.5L39.5,78.5A2.5,2.5 0,0 1,37 76A2.5,2.5 0,0 1,39.5 73.5Z" />
+</vector>

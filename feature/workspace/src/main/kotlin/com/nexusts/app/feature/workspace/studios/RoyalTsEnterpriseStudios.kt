@@ -7,7 +7,10 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -16,6 +19,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -38,6 +42,7 @@ import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material.icons.outlined.Terminal
+import androidx.compose.material.icons.outlined.UploadFile
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
@@ -72,10 +77,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.nexusts.app.core.ui.components.ExpressiveMetricCard
+import com.nexusts.app.core.ui.components.NexusBrandEmblem
 import com.nexusts.app.core.ui.components.parseHexColorOrNull
 import com.nexusts.app.core.ui.theme.MorphContainerState
 import com.nexusts.app.core.ui.theme.NexusTheme
@@ -282,6 +289,7 @@ fun LiveTotpAuthenticatorCard(
  * Material 3 Expressive Vault & Folder Overview Dashboard (Royal TS Dashboard Parity).
  * Rendered in the main workspace canvas when zero protocol tabs are active.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun ExpressiveVaultOverviewDashboard(
     vaultDocument: NxtsVaultDocument,
@@ -296,6 +304,7 @@ fun ExpressiveVaultOverviewDashboard(
     onAddTodo: (String) -> Unit,
     onToggleTodo: (String) -> Unit,
     onDeleteTodo: (String) -> Unit = {},
+    onImportVault: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     var newTodoTitle by remember { mutableStateOf("") }
@@ -315,165 +324,105 @@ fun ExpressiveVaultOverviewDashboard(
         activeTodos.count { !it.completed }
     }
 
-    Column(
-        modifier = modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(24.dp),
-        verticalArrangement = Arrangement.spacedBy(20.dp)
-    ) {
-        // Expressive Hero Banner
-        val heroShape = rememberMorphingContainerShape(MorphContainerState.Resting, restingRadius = 26.dp, hoveredRadius = 30.dp)
-        Surface(
-            shape = heroShape,
-            color = MaterialTheme.colorScheme.surfaceContainerLow,
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
-            modifier = Modifier.fillMaxWidth()
+    val isVaultCleanEmpty = activeConnections.isEmpty() && activeFolders.isEmpty() && activeTodos.isEmpty()
+
+    if (isVaultCleanEmpty) {
+        // Serene, spacious Material 3 Expressive Welcome State for a clean empty workspace
+        Box(
+            modifier = modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 28.dp, vertical = 24.dp),
+            contentAlignment = Alignment.Center
         ) {
-            Row(
+            val welcomeShape = rememberMorphingContainerShape(
+                MorphContainerState.Resting,
+                restingRadius = 28.dp,
+                hoveredRadius = 32.dp
+            )
+            Surface(
+                shape = welcomeShape,
+                color = MaterialTheme.colorScheme.surfaceContainerLow,
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)),
                 modifier = Modifier
+                    .widthIn(max = 560.dp)
                     .fillMaxWidth()
-                    .padding(horizontal = 24.dp, vertical = 20.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Column(
-                    modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 32.dp, vertical = 36.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
+                    NexusBrandEmblem(size = 72.dp, cornerRadius = 20.dp)
+
+                    Spacer(modifier = Modifier.height(2.dp))
+
                     Text(
-                        text = vaultDocument.name,
+                        text = strings.emptyWorkspaceTitle,
                         style = MaterialTheme.typography.headlineSmall,
-                        color = MaterialTheme.colorScheme.onSurface
+                        color = MaterialTheme.colorScheme.onSurface,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth()
                     )
+
                     Text(
                         text = strings.emptyWorkspaceSubtitle,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier
+                            .widthIn(max = 460.dp)
+                            .fillMaxWidth()
                     )
-                }
-                Spacer(modifier = Modifier.width(16.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    FilledTonalButton(onClick = onNewConnection) {
-                        Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(17.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(strings.actionNewConnection)
-                    }
-                    Button(onClick = onOpenQuickConnect) {
-                        Icon(Icons.Outlined.Search, contentDescription = null, modifier = Modifier.size(17.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(strings.quickConnectButton)
-                    }
-                }
-            }
-        }
 
-        // 4-Column Material 3 Expressive Metric Row
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            ExpressiveMetricCard(
-                label = strings.navConnections,
-                value = activeConnections.size.toString(),
-                subtitle = "${activeFolders.size} ${strings.vaultSectionFolders}",
-                icon = Icons.Outlined.Terminal,
-                accentColor = MaterialTheme.colorScheme.primary,
-                onClick = onNewConnection,
-                modifier = Modifier.weight(1f)
-            )
-            ExpressiveMetricCard(
-                label = strings.overviewActiveSessions,
-                value = activeSessionCount.toString(),
-                subtitle = "Native Googlebook Windows",
-                icon = Icons.Outlined.PlayArrow,
-                accentColor = MaterialTheme.colorScheme.secondary,
-                onClick = onOpenQuickConnect,
-                modifier = Modifier.weight(1f)
-            )
-            ExpressiveMetricCard(
-                label = strings.navTemplates,
-                value = vaultDocument.templates.size.toString(),
-                subtitle = "Royal TS Profiles",
-                icon = Icons.Outlined.Bookmarks,
-                accentColor = MaterialTheme.colorScheme.tertiary,
-                onClick = onOpenTemplates,
-                modifier = Modifier.weight(1f)
-            )
-            ExpressiveMetricCard(
-                label = strings.inspectorTodoItems,
-                value = pendingTodos.toString(),
-                subtitle = "${activeTodos.size} total tasks",
-                icon = Icons.Outlined.CheckCircle,
-                accentColor = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.weight(1f)
-            )
-        }
+                    Spacer(modifier = Modifier.height(6.dp))
 
-        // Pinned Favorites Quick-Launch Strip
-        if (favorites.isNotEmpty()) {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Outlined.Star,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.tertiary,
-                        modifier = Modifier.size(18.dp)
+                    FlowRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterHorizontally),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Button(onClick = onNewConnection) {
+                            Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(strings.actionNewConnection)
+                        }
+                        FilledTonalButton(onClick = onOpenQuickConnect) {
+                            Icon(Icons.Outlined.Search, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(strings.quickConnectButton)
+                        }
+                        if (onImportVault != null) {
+                            OutlinedButton(onClick = onImportVault) {
+                                Icon(Icons.Outlined.UploadFile, contentDescription = null, modifier = Modifier.size(17.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(strings.actionImportRtsz)
+                            }
+                        }
+                    }
+
+                    HorizontalDivider(
+                        modifier = Modifier.padding(top = 8.dp),
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f)
                     )
-                    Text(
-                        text = strings.vaultSectionFavorites,
-                        style = MaterialTheme.typography.titleMedium
-                    )
-                }
-                Row(
-                    modifier = Modifier.horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    favorites.forEach { fav ->
-                        val accent = parseHexColorOrNull(fav.inheritable.displayColorAccentHex)
-                            ?: MaterialTheme.colorScheme.primary
-                        Surface(
-                            shape = RoundedCornerShape(20.dp),
-                            color = MaterialTheme.colorScheme.surfaceContainer,
-                            border = BorderStroke(1.dp, accent.copy(alpha = 0.35f)),
-                            modifier = Modifier
-                                .width(250.dp)
-                                .clip(RoundedCornerShape(20.dp))
-                                .clickable { onLaunchConnection(fav) }
-                        ) {
-                            Column(
-                                modifier = Modifier.padding(14.dp),
-                                verticalArrangement = Arrangement.spacedBy(6.dp)
+
+                    FlowRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        listOf("RDP", "SSH", "SFTP", "VNC", "HTTPS", "K8s", "Serial").forEach { proto ->
+                            Surface(
+                                shape = RoundedCornerShape(99.dp),
+                                color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.7f)
                             ) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.SpaceBetween
-                                ) {
-                                    Text(
-                                        text = fav.protocol.name,
-                                        style = NexusTheme.monospace.keycapShortcut,
-                                        color = accent
-                                    )
-                                    TextButton(onClick = { onConnectWithOptions(fav) }) {
-                                        Text(strings.actionConnectWithOptions, style = MaterialTheme.typography.labelSmall)
-                                    }
-                                }
                                 Text(
-                                    text = fav.name,
-                                    style = MaterialTheme.typography.titleSmall,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                                Text(
-                                    text = fav.host,
+                                    text = proto,
                                     style = NexusTheme.monospace.keycapShortcut,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
                                 )
                             }
                         }
@@ -481,156 +430,434 @@ fun ExpressiveVaultOverviewDashboard(
                 }
             }
         }
+        return
+    }
 
-        // Two-Column Bottom Deck: Bulk Connect Folders + Vault To-Do Checklist
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(16.dp)
+    // Populated Vault Overview — responsive layout that never squishes titles or metrics at any width
+    BoxWithConstraints(modifier = modifier.fillMaxSize()) {
+        val isWide = maxWidth >= 680.dp
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(24.dp),
+            verticalArrangement = Arrangement.spacedBy(20.dp)
         ) {
-            // Left: Color-Coded Folders with One-Click Bulk "Connect All"
+            // Expressive Hero Banner — stacks text cleanly above FlowRow actions so text always has 100% width
+            val heroShape = rememberMorphingContainerShape(
+                MorphContainerState.Resting,
+                restingRadius = 26.dp,
+                hoveredRadius = 30.dp
+            )
             Surface(
-                shape = RoundedCornerShape(22.dp),
+                shape = heroShape,
                 color = MaterialTheme.colorScheme.surfaceContainerLow,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)),
-                modifier = Modifier.weight(1f)
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+                modifier = Modifier.fillMaxWidth()
             ) {
                 Column(
-                    modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 24.dp, vertical = 20.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
-                    Text(strings.vaultSectionFolders, style = MaterialTheme.typography.titleMedium)
-                    activeFolders.forEach { folder ->
-                        val childCount = activeConnections.count { it.parentFolderId == folder.id }
-                        val folderAccent = parseHexColorOrNull(folder.inheritable.displayColorAccentHex)
-                            ?: MaterialTheme.colorScheme.primary
-                        Surface(
-                            shape = RoundedCornerShape(14.dp),
-                            color = MaterialTheme.colorScheme.surfaceContainer,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 12.dp, vertical = 10.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Row(
-                                    modifier = Modifier.weight(1f),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Outlined.Folder,
-                                        contentDescription = null,
-                                        tint = folderAccent,
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                    Column {
-                                        Text(folder.name, style = MaterialTheme.typography.titleSmall)
-                                        Text(
-                                            text = "$childCount host(s)",
-                                            style = NexusTheme.monospace.keycapShortcut,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                    }
-                                }
-                                FilledTonalButton(
-                                    enabled = childCount > 0,
-                                    onClick = { onConnectAllInFolder(folder.id) }
-                                ) {
-                                    Icon(Icons.Outlined.PlayArrow, contentDescription = null, modifier = Modifier.size(15.dp))
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text(strings.actionConnectAllFolder, style = MaterialTheme.typography.labelSmall)
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Right: Royal TS Operations To-Do Checklist
-            Surface(
-                shape = RoundedCornerShape(22.dp),
-                color = MaterialTheme.colorScheme.surfaceContainerLow,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)),
-                modifier = Modifier.weight(1f)
-            ) {
-                Column(
-                    modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Text(strings.inspectorTodoItems, style = MaterialTheme.typography.titleMedium)
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        horizontalArrangement = Arrangement.spacedBy(14.dp)
                     ) {
-                        OutlinedTextField(
-                            value = newTodoTitle,
-                            onValueChange = { newTodoTitle = it },
-                            placeholder = { Text(strings.actionAddTodo, style = MaterialTheme.typography.bodySmall) },
-                            singleLine = true,
-                            modifier = Modifier.weight(1f)
-                        )
-                        FilledTonalButton(
-                            enabled = newTodoTitle.isNotBlank(),
-                            onClick = {
-                                onAddTodo(newTodoTitle)
-                                newTodoTitle = ""
-                            }
+                        NexusBrandEmblem(size = 44.dp, cornerRadius = 13.dp)
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
-                            Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Text(
+                                text = vaultDocument.name,
+                                style = MaterialTheme.typography.headlineSmall,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = strings.emptyWorkspaceSubtitle,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
                     }
-                    activeTodos.forEach { todo ->
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(10.dp))
-                                .clickable { onToggleTodo(todo.id) }
-                                .padding(horizontal = 6.dp, vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Row(
-                                modifier = Modifier.weight(1f),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                Icon(
-                                    imageVector = if (todo.completed) Icons.Outlined.CheckCircle else Icons.Outlined.RadioButtonUnchecked,
-                                    contentDescription = null,
-                                    tint = if (todo.completed) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                                Text(
-                                    text = todo.title,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    textDecoration = if (todo.completed) TextDecoration.LineThrough else TextDecoration.None,
-                                    color = if (todo.completed) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
+
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Button(onClick = onNewConnection) {
+                            Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(17.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(strings.actionNewConnection)
+                        }
+                        FilledTonalButton(onClick = onOpenQuickConnect) {
+                            Icon(Icons.Outlined.Search, contentDescription = null, modifier = Modifier.size(17.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(strings.quickConnectButton)
+                        }
+                        if (onImportVault != null) {
+                            OutlinedButton(onClick = onImportVault) {
+                                Icon(Icons.Outlined.UploadFile, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(strings.actionImportRtsz)
                             }
-                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                Text(
-                                    text = todo.priority,
-                                    style = NexusTheme.monospace.keycapShortcut,
-                                    color = if (todo.priority == "HIGH") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                                IconButton(
-                                    onClick = { onDeleteTodo(todo.id) },
-                                    modifier = Modifier.size(24.dp)
+                        }
+                    }
+                }
+            }
+
+            // Adaptive Material 3 Expressive Metric Grid (4-col on wide windows, 2x2 on compact/medium panes)
+            if (isWide) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    ExpressiveMetricCard(
+                        label = strings.navConnections,
+                        value = activeConnections.size.toString(),
+                        subtitle = "${activeFolders.size} ${strings.vaultSectionFolders}",
+                        icon = Icons.Outlined.Terminal,
+                        accentColor = MaterialTheme.colorScheme.primary,
+                        onClick = onNewConnection,
+                        modifier = Modifier.weight(1f)
+                    )
+                    ExpressiveMetricCard(
+                        label = strings.overviewActiveSessions,
+                        value = activeSessionCount.toString(),
+                        subtitle = strings.quickConnectButton,
+                        icon = Icons.Outlined.PlayArrow,
+                        accentColor = MaterialTheme.colorScheme.secondary,
+                        onClick = onOpenQuickConnect,
+                        modifier = Modifier.weight(1f)
+                    )
+                    ExpressiveMetricCard(
+                        label = strings.navTemplates,
+                        value = vaultDocument.templates.size.toString(),
+                        subtitle = strings.actionNewTemplate,
+                        icon = Icons.Outlined.Bookmarks,
+                        accentColor = MaterialTheme.colorScheme.tertiary,
+                        onClick = onOpenTemplates,
+                        modifier = Modifier.weight(1f)
+                    )
+                    ExpressiveMetricCard(
+                        label = strings.inspectorTodoItems,
+                        value = pendingTodos.toString(),
+                        subtitle = "${activeTodos.size}",
+                        icon = Icons.Outlined.CheckCircle,
+                        accentColor = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            } else {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        ExpressiveMetricCard(
+                            label = strings.navConnections,
+                            value = activeConnections.size.toString(),
+                            subtitle = "${activeFolders.size} ${strings.vaultSectionFolders}",
+                            icon = Icons.Outlined.Terminal,
+                            accentColor = MaterialTheme.colorScheme.primary,
+                            onClick = onNewConnection,
+                            modifier = Modifier.weight(1f)
+                        )
+                        ExpressiveMetricCard(
+                            label = strings.overviewActiveSessions,
+                            value = activeSessionCount.toString(),
+                            subtitle = strings.quickConnectButton,
+                            icon = Icons.Outlined.PlayArrow,
+                            accentColor = MaterialTheme.colorScheme.secondary,
+                            onClick = onOpenQuickConnect,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        ExpressiveMetricCard(
+                            label = strings.navTemplates,
+                            value = vaultDocument.templates.size.toString(),
+                            subtitle = strings.actionNewTemplate,
+                            icon = Icons.Outlined.Bookmarks,
+                            accentColor = MaterialTheme.colorScheme.tertiary,
+                            onClick = onOpenTemplates,
+                            modifier = Modifier.weight(1f)
+                        )
+                        ExpressiveMetricCard(
+                            label = strings.inspectorTodoItems,
+                            value = pendingTodos.toString(),
+                            subtitle = "${activeTodos.size}",
+                            icon = Icons.Outlined.CheckCircle,
+                            accentColor = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+            }
+
+            // Pinned Favorites Quick-Launch Strip
+            if (favorites.isNotEmpty()) {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Star,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.tertiary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Text(
+                            text = strings.vaultSectionFavorites,
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                    }
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        favorites.forEach { fav ->
+                            val accent = parseHexColorOrNull(fav.inheritable.displayColorAccentHex)
+                                ?: MaterialTheme.colorScheme.primary
+                            Surface(
+                                shape = RoundedCornerShape(20.dp),
+                                color = MaterialTheme.colorScheme.surfaceContainer,
+                                border = BorderStroke(1.dp, accent.copy(alpha = 0.35f)),
+                                modifier = Modifier
+                                    .width(250.dp)
+                                    .clip(RoundedCornerShape(20.dp))
+                                    .clickable { onLaunchConnection(fav) }
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(14.dp),
+                                    verticalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
-                                    Icon(
-                                        Icons.Outlined.Delete,
-                                        contentDescription = "Delete To-Do",
-                                        tint = MaterialTheme.colorScheme.error,
-                                        modifier = Modifier.size(14.dp)
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Text(
+                                            text = fav.protocol.name,
+                                            style = NexusTheme.monospace.keycapShortcut,
+                                            color = accent
+                                        )
+                                        TextButton(onClick = { onConnectWithOptions(fav) }) {
+                                            Text(
+                                                text = strings.actionConnectWithOptions,
+                                                style = MaterialTheme.typography.labelSmall,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+                                    }
+                                    Text(
+                                        text = fav.name,
+                                        style = MaterialTheme.typography.titleSmall,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        text = fav.host,
+                                        style = NexusTheme.monospace.keycapShortcut,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
                                     )
                                 }
                             }
+                        }
+                    }
+                }
+            }
+
+            // Adaptive Bottom Deck: Folders (only when folders exist) + To-Do Checklist (only when todos exist)
+            if (activeFolders.isNotEmpty() || activeTodos.isNotEmpty()) {
+                val foldersCard: @Composable (Modifier) -> Unit = { cardMod ->
+                    Surface(
+                        shape = RoundedCornerShape(22.dp),
+                        color = MaterialTheme.colorScheme.surfaceContainerLow,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)),
+                        modifier = cardMod
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Text(strings.vaultSectionFolders, style = MaterialTheme.typography.titleMedium)
+                            activeFolders.forEach { folder ->
+                                val childCount = activeConnections.count { it.parentFolderId == folder.id }
+                                val folderAccent = parseHexColorOrNull(folder.inheritable.displayColorAccentHex)
+                                    ?: MaterialTheme.colorScheme.primary
+                                Surface(
+                                    shape = RoundedCornerShape(14.dp),
+                                    color = MaterialTheme.colorScheme.surfaceContainer,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.weight(1f),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Outlined.Folder,
+                                                contentDescription = null,
+                                                tint = folderAccent,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text(
+                                                    text = folder.name,
+                                                    style = MaterialTheme.typography.titleSmall,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                                Text(
+                                                    text = "$childCount",
+                                                    style = NexusTheme.monospace.keycapShortcut,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                            }
+                                        }
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        FilledTonalButton(
+                                            enabled = childCount > 0,
+                                            onClick = { onConnectAllInFolder(folder.id) }
+                                        ) {
+                                            Icon(Icons.Outlined.PlayArrow, contentDescription = null, modifier = Modifier.size(15.dp))
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text(
+                                                text = strings.actionConnectAllFolder,
+                                                style = MaterialTheme.typography.labelSmall,
+                                                maxLines = 1
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                val todosCard: @Composable (Modifier) -> Unit = { cardMod ->
+                    Surface(
+                        shape = RoundedCornerShape(22.dp),
+                        color = MaterialTheme.colorScheme.surfaceContainerLow,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)),
+                        modifier = cardMod
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Text(strings.inspectorTodoItems, style = MaterialTheme.typography.titleMedium)
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                OutlinedTextField(
+                                    value = newTodoTitle,
+                                    onValueChange = { newTodoTitle = it },
+                                    placeholder = { Text(strings.actionAddTodo, style = MaterialTheme.typography.bodySmall) },
+                                    singleLine = true,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                FilledTonalButton(
+                                    enabled = newTodoTitle.isNotBlank(),
+                                    onClick = {
+                                        onAddTodo(newTodoTitle)
+                                        newTodoTitle = ""
+                                    }
+                                ) {
+                                    Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                                }
+                            }
+                            activeTodos.forEach { todo ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .clickable { onToggleTodo(todo.id) }
+                                        .padding(horizontal = 6.dp, vertical = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Row(
+                                        modifier = Modifier.weight(1f),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = if (todo.completed) Icons.Outlined.CheckCircle else Icons.Outlined.RadioButtonUnchecked,
+                                            contentDescription = null,
+                                            tint = if (todo.completed) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                        Text(
+                                            text = todo.title,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            textDecoration = if (todo.completed) TextDecoration.LineThrough else TextDecoration.None,
+                                            color = if (todo.completed) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                    }
+                                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                        Text(
+                                            text = todo.priority,
+                                            style = NexusTheme.monospace.keycapShortcut,
+                                            color = if (todo.priority == "HIGH") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                        IconButton(
+                                            onClick = { onDeleteTodo(todo.id) },
+                                            modifier = Modifier.size(24.dp)
+                                        ) {
+                                            Icon(
+                                                Icons.Outlined.Delete,
+                                                contentDescription = "Delete To-Do",
+                                                tint = MaterialTheme.colorScheme.error,
+                                                modifier = Modifier.size(14.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (isWide && activeFolders.isNotEmpty() && activeTodos.isNotEmpty()) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        foldersCard(Modifier.weight(1f))
+                        todosCard(Modifier.weight(1f))
+                    }
+                } else {
+                    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                        if (activeFolders.isNotEmpty()) {
+                            foldersCard(Modifier.fillMaxWidth())
+                        }
+                        if (activeTodos.isNotEmpty()) {
+                            todosCard(Modifier.fillMaxWidth())
                         }
                     }
                 }
@@ -642,6 +869,7 @@ fun ExpressiveVaultOverviewDashboard(
 /**
  * Royal TS Connection Templates Studio (`"templates"` rail destination).
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun ConnectionTemplatesStudioView(
     templates: List<ConnectionTemplate>,
@@ -655,23 +883,25 @@ fun ConnectionTemplatesStudioView(
         modifier = modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.surfaceContainerLowest)
-            .padding(20.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+            .padding(24.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        Row(
+        Column(
             modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
                 Icon(
                     imageVector = Icons.Outlined.Bookmarks,
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.tertiary,
                     modifier = Modifier.size(26.dp)
                 )
-                Spacer(modifier = Modifier.width(12.dp))
-                Column {
+                Column(modifier = Modifier.weight(1f)) {
                     Text(strings.navTemplates, style = MaterialTheme.typography.headlineSmall)
                     Text(
                         text = strings.studioTemplatesSubtitle,
@@ -680,74 +910,124 @@ fun ConnectionTemplatesStudioView(
                     )
                 }
             }
-            Button(onClick = onOpenNewTemplateDialog) {
-                Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                Spacer(modifier = Modifier.width(6.dp))
-                Text(strings.actionNewTemplate)
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Button(onClick = onOpenNewTemplateDialog) {
+                    Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(strings.actionNewTemplate)
+                }
             }
         }
 
-        HorizontalDivider()
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
 
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            items(templates, key = { it.id }) { tpl ->
-                val accent = parseHexColorOrNull(tpl.colorAccentHex) ?: MaterialTheme.colorScheme.tertiary
+        if (templates.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+                contentAlignment = Alignment.Center
+            ) {
                 Surface(
-                    shape = RoundedCornerShape(20.dp),
-                    color = MaterialTheme.colorScheme.surfaceContainer,
-                    border = BorderStroke(1.dp, accent.copy(alpha = 0.35f)),
-                    modifier = Modifier.fillMaxWidth()
+                    shape = RoundedCornerShape(24.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerLow,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)),
+                    modifier = Modifier.widthIn(max = 440.dp).fillMaxWidth()
                 ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(16.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
+                    Column(
+                        modifier = Modifier.padding(28.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        Column(
-                            modifier = Modifier.weight(1f),
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(10.dp)
-                                        .clip(CircleShape)
-                                        .background(accent)
-                                )
-                                Text(tpl.name, style = MaterialTheme.typography.titleMedium)
-                                Text(
-                                    text = tpl.protocol.name,
-                                    style = NexusTheme.monospace.keycapShortcut,
-                                    color = accent
-                                )
-                            }
-                            if (tpl.description.isNotBlank()) {
-                                Text(
-                                    text = tpl.description,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
+                        Icon(
+                            imageVector = Icons.Outlined.Bookmarks,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.tertiary,
+                            modifier = Modifier.size(34.dp)
+                        )
+                        Text(
+                            text = strings.navTemplates,
+                            style = MaterialTheme.typography.titleMedium,
+                            textAlign = TextAlign.Center
+                        )
+                        Text(
+                            text = strings.studioTemplatesSubtitle,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center
+                        )
+                        Button(onClick = onOpenNewTemplateDialog) {
+                            Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(strings.actionNewTemplate)
                         }
-                        Spacer(modifier = Modifier.width(12.dp))
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                            FilledTonalButton(onClick = { onCreateConnectionFromTemplate(tpl) }) {
-                                Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(strings.actionNewConnection)
+                    }
+                }
+            }
+        } else {
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                items(templates, key = { it.id }) { tpl ->
+                    val accent = parseHexColorOrNull(tpl.colorAccentHex) ?: MaterialTheme.colorScheme.tertiary
+                    Surface(
+                        shape = RoundedCornerShape(20.dp),
+                        color = MaterialTheme.colorScheme.surfaceContainer,
+                        border = BorderStroke(1.dp, accent.copy(alpha = 0.35f)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(
+                                modifier = Modifier.weight(1f),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(10.dp)
+                                            .clip(CircleShape)
+                                            .background(accent)
+                                    )
+                                    Text(tpl.name, style = MaterialTheme.typography.titleMedium)
+                                    Text(
+                                        text = tpl.protocol.name,
+                                        style = NexusTheme.monospace.keycapShortcut,
+                                        color = accent
+                                    )
+                                }
+                                if (tpl.description.isNotBlank()) {
+                                    Text(
+                                        text = tpl.description,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
                             }
-                            IconButton(onClick = { onDeleteTemplate(tpl.id) }) {
-                                Icon(
-                                    Icons.Outlined.Delete,
-                                    contentDescription = "Delete Template",
-                                    tint = MaterialTheme.colorScheme.error,
-                                    modifier = Modifier.size(18.dp)
-                                )
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                FilledTonalButton(onClick = { onCreateConnectionFromTemplate(tpl) }) {
+                                    Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(strings.actionNewConnection)
+                                }
+                                IconButton(onClick = { onDeleteTemplate(tpl.id) }) {
+                                    Icon(
+                                        Icons.Outlined.Delete,
+                                        contentDescription = "Delete Template",
+                                        tint = MaterialTheme.colorScheme.error,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
                             }
                         }
                     }

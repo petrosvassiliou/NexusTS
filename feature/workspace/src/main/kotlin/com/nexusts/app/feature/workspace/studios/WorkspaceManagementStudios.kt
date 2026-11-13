@@ -1,11 +1,14 @@
 package com.nexusts.app.feature.workspace.studios
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -14,6 +17,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -62,6 +66,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.nexusts.app.core.ui.theme.NexusTheme
 import com.nexusts.app.core.vault.gateway.ActiveTunnelLease
@@ -1524,6 +1529,7 @@ private fun RdpOptionSwitchRow(
  * 2. Credential Vault & SSH Agent Studio supporting Internal Zero-Knowledge Credentials,
  *    OpenSSH Ed25519 Keygen, 1Password Connect, Bitwarden, KeePass (.kdbx), and FIDO2 Passkeys.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun CredentialVaultStudioView(
     credentials: List<VaultCredential>,
@@ -1678,23 +1684,25 @@ fun CredentialVaultStudioView(
         modifier = modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.surfaceContainerLowest)
-            .padding(20.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+            .padding(24.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        Row(
+        Column(
             modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
                 Icon(
                     imageVector = Icons.Outlined.Key,
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.size(26.dp)
                 )
-                Spacer(modifier = Modifier.width(12.dp))
-                Column {
+                Column(modifier = Modifier.weight(1f)) {
                     Text(strings.navCredentials, style = MaterialTheme.typography.headlineSmall)
                     Text(
                         text = strings.studioCredentialsSubtitle,
@@ -1703,101 +1711,149 @@ fun CredentialVaultStudioView(
                     )
                 }
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = onRequestImportVaultFile) {
-                    Icon(Icons.Outlined.UploadFile, contentDescription = null, modifier = Modifier.size(16.dp))
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Button(onClick = { openForCreate() }) {
+                    Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text(strings.studioActionImportPasswords)
+                    Text(strings.studioActionAddCredential)
                 }
                 FilledTonalButton(onClick = onGenerateEd25519Key) {
                     Icon(Icons.Outlined.VpnKey, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(strings.inspectorGenerateSshKey)
                 }
-                Button(onClick = { openForCreate() }) {
-                    Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                OutlinedButton(onClick = onRequestImportVaultFile) {
+                    Icon(Icons.Outlined.UploadFile, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text(strings.studioActionAddCredential)
+                    Text(strings.studioActionImportPasswords)
                 }
             }
         }
 
-        HorizontalDivider()
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
 
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(credentials, key = { it.id }) { cred ->
-                val userDisplay = if (cred.domain.isNotBlank()) {
-                    "${cred.domain}\\${cred.username.ifBlank { "-" }}"
-                } else {
-                    cred.username.ifBlank { "-" }
-                }
+        if (credentials.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+                contentAlignment = Alignment.Center
+            ) {
                 Surface(
-                    shape = MaterialTheme.shapes.large,
-                    color = MaterialTheme.colorScheme.surfaceContainer,
-                    modifier = Modifier.fillMaxWidth()
+                    shape = RoundedCornerShape(24.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerLow,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)),
+                    modifier = Modifier.widthIn(max = 460.dp).fillMaxWidth()
                 ) {
                     Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 12.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                        modifier = Modifier.padding(28.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
+                        Icon(
+                            imageVector = Icons.Outlined.Key,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(34.dp)
+                        )
+                        Text(
+                            text = strings.navCredentials,
+                            style = MaterialTheme.typography.titleMedium,
+                            textAlign = TextAlign.Center
+                        )
+                        Text(
+                            text = strings.studioCredentialsSubtitle,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center
+                        )
+                        Button(onClick = { openForCreate() }) {
+                            Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(strings.studioActionAddCredential)
+                        }
+                    }
+                }
+            }
+        } else {
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(credentials, key = { it.id }) { cred ->
+                    val userDisplay = if (cred.domain.isNotBlank()) {
+                        "${cred.domain}\\${cred.username.ifBlank { "-" }}"
+                    } else {
+                        cred.username.ifBlank { "-" }
+                    }
+                    Surface(
+                        shape = MaterialTheme.shapes.large,
+                        color = MaterialTheme.colorScheme.surfaceContainer,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 12.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(cred.name, style = MaterialTheme.typography.titleSmall)
-                                Text(
-                                    text = "${cred.sourceKind.name} • $userDisplay" +
-                                        if (cred.keyFingerprintSha256.isNotBlank()) " • ${cred.keyFingerprintSha256}" else "",
-                                    style = NexusTheme.monospace.keycapShortcut,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                if (cred.username.isNotBlank()) {
-                                    AssistChip(
-                                        onClick = { clipboard.setText(AnnotatedString(cred.username)) },
-                                        label = { Text("User", style = MaterialTheme.typography.labelSmall) },
-                                        leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null, modifier = Modifier.size(13.dp)) }
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(cred.name, style = MaterialTheme.typography.titleSmall)
+                                    Text(
+                                        text = "${cred.sourceKind.name} • $userDisplay" +
+                                            if (cred.keyFingerprintSha256.isNotBlank()) " • ${cred.keyFingerprintSha256}" else "",
+                                        style = NexusTheme.monospace.keycapShortcut,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
-                                    Spacer(modifier = Modifier.width(4.dp))
                                 }
-                                if (cred.secretPassword.isNotBlank()) {
-                                    AssistChip(
-                                        onClick = { clipboard.setText(AnnotatedString(cred.secretPassword)) },
-                                        label = { Text("Secret", style = MaterialTheme.typography.labelSmall) },
-                                        leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null, modifier = Modifier.size(13.dp)) }
-                                    )
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                }
-                                if (cred.publicKeyOpenSsh.isNotBlank()) {
-                                    IconButton(
-                                        onClick = { clipboard.setText(AnnotatedString(cred.publicKeyOpenSsh)) }
-                                    ) {
-                                        Icon(Icons.Outlined.ContentCopy, contentDescription = "Copy SSH Public Key", modifier = Modifier.size(18.dp))
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    if (cred.username.isNotBlank()) {
+                                        AssistChip(
+                                            onClick = { clipboard.setText(AnnotatedString(cred.username)) },
+                                            label = { Text("User", style = MaterialTheme.typography.labelSmall) },
+                                            leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null, modifier = Modifier.size(13.dp)) }
+                                        )
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                    }
+                                    if (cred.secretPassword.isNotBlank()) {
+                                        AssistChip(
+                                            onClick = { clipboard.setText(AnnotatedString(cred.secretPassword)) },
+                                            label = { Text("Secret", style = MaterialTheme.typography.labelSmall) },
+                                            leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null, modifier = Modifier.size(13.dp)) }
+                                        )
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                    }
+                                    if (cred.publicKeyOpenSsh.isNotBlank()) {
+                                        IconButton(
+                                            onClick = { clipboard.setText(AnnotatedString(cred.publicKeyOpenSsh)) }
+                                        ) {
+                                            Icon(Icons.Outlined.ContentCopy, contentDescription = "Copy SSH Public Key", modifier = Modifier.size(18.dp))
+                                        }
+                                    }
+                                    IconButton(onClick = { openForEdit(cred) }) {
+                                        Icon(Icons.Outlined.Edit, contentDescription = "Edit Credential", modifier = Modifier.size(18.dp))
+                                    }
+                                    IconButton(onClick = { onDeleteCredential(cred.id) }) {
+                                        Icon(
+                                            Icons.Outlined.Delete,
+                                            contentDescription = "Delete Credential",
+                                            tint = MaterialTheme.colorScheme.error,
+                                            modifier = Modifier.size(18.dp)
+                                        )
                                     }
                                 }
-                                IconButton(onClick = { openForEdit(cred) }) {
-                                    Icon(Icons.Outlined.Edit, contentDescription = "Edit Credential", modifier = Modifier.size(18.dp))
-                                }
-                                IconButton(onClick = { onDeleteCredential(cred.id) }) {
-                                    Icon(
-                                        Icons.Outlined.Delete,
-                                        contentDescription = "Delete Credential",
-                                        tint = MaterialTheme.colorScheme.error,
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                }
                             }
-                        }
-                        if (cred.totpSecretBase32.isNotBlank()) {
-                            LiveTotpAuthenticatorCard(
-                                totpSecretBase32 = cred.totpSecretBase32,
-                                title = strings.inspectorTotpCode
-                            )
+                            if (cred.totpSecretBase32.isNotBlank()) {
+                                LiveTotpAuthenticatorCard(
+                                    totpSecretBase32 = cred.totpSecretBase32,
+                                    title = strings.inspectorTotpCode
+                                )
+                            }
                         }
                     }
                 }
@@ -1971,23 +2027,25 @@ fun SecureGatewayStudioView(
         modifier = modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.surfaceContainerLowest)
-            .padding(20.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+            .padding(24.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        Row(
+        Column(
             modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
                 Icon(
                     imageVector = Icons.Outlined.DeviceHub,
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.tertiary,
                     modifier = Modifier.size(26.dp)
                 )
-                Spacer(modifier = Modifier.width(12.dp))
-                Column {
+                Column(modifier = Modifier.weight(1f)) {
                     Text(strings.navGateways, style = MaterialTheme.typography.headlineSmall)
                     Text(
                         text = strings.studioGatewaysSubtitle,
@@ -1996,14 +2054,16 @@ fun SecureGatewayStudioView(
                     )
                 }
             }
-            Button(onClick = { openAddGateway() }) {
-                Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                Spacer(modifier = Modifier.width(6.dp))
-                Text(strings.studioActionAddGateway)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = { openAddGateway() }) {
+                    Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(strings.studioActionAddGateway)
+                }
             }
         }
 
-        HorizontalDivider()
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
 
         if (activeLeases.isNotEmpty()) {
             Surface(
@@ -2033,53 +2093,98 @@ fun SecureGatewayStudioView(
             }
         }
 
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(gateways, key = { it.id }) { gw ->
-                val report = healthReports[gw.id]
+        if (gateways.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+                contentAlignment = Alignment.Center
+            ) {
                 Surface(
-                    shape = MaterialTheme.shapes.large,
-                    color = MaterialTheme.colorScheme.surfaceContainer,
-                    modifier = Modifier.fillMaxWidth()
+                    shape = RoundedCornerShape(24.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerLow,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)),
+                    modifier = Modifier.widthIn(max = 460.dp).fillMaxWidth()
                 ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
+                    Column(
+                        modifier = Modifier.padding(28.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(gw.name, style = MaterialTheme.typography.titleSmall)
-                            Text(
-                                text = "${gw.kind.name} • ${gw.host}:${gw.port}" +
-                                    (report?.let { " • ${it.latencyMs} ms (${it.protocolBanner})" }.orEmpty()),
-                                style = NexusTheme.monospace.keycapShortcut,
-                                color = if (report?.reachable == true) {
-                                    NexusTheme.extendedColors.statusConnected
-                                } else {
-                                    MaterialTheme.colorScheme.onSurfaceVariant
-                                }
-                            )
+                        Icon(
+                            imageVector = Icons.Outlined.DeviceHub,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.tertiary,
+                            modifier = Modifier.size(34.dp)
+                        )
+                        Text(
+                            text = strings.navGateways,
+                            style = MaterialTheme.typography.titleMedium,
+                            textAlign = TextAlign.Center
+                        )
+                        Text(
+                            text = strings.studioGatewaysSubtitle,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center
+                        )
+                        Button(onClick = { openAddGateway() }) {
+                            Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(strings.studioActionAddGateway)
                         }
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            OutlinedButton(onClick = { onOpenGatewayLease(gw) }) {
-                                Text("Bind Loopback")
-                            }
-                            FilledTonalButton(onClick = { onProbeGateway(gw) }) {
-                                Icon(Icons.Outlined.NetworkCheck, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(strings.studioActionProbeGateway)
-                            }
-                            IconButton(onClick = { openEditGateway(gw) }) {
-                                Icon(Icons.Outlined.Edit, contentDescription = "Edit Gateway", modifier = Modifier.size(18.dp))
-                            }
-                            IconButton(onClick = { onDeleteGateway(gw.id) }) {
-                                Icon(
-                                    Icons.Outlined.Delete,
-                                    contentDescription = "Delete Gateway",
-                                    tint = MaterialTheme.colorScheme.error,
-                                    modifier = Modifier.size(18.dp)
+                    }
+                }
+            }
+        } else {
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(gateways, key = { it.id }) { gw ->
+                    val report = healthReports[gw.id]
+                    Surface(
+                        shape = MaterialTheme.shapes.large,
+                        color = MaterialTheme.colorScheme.surfaceContainer,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(gw.name, style = MaterialTheme.typography.titleSmall)
+                                Text(
+                                    text = "${gw.kind.name} • ${gw.host}:${gw.port}" +
+                                        (report?.let { " • ${it.latencyMs} ms (${it.protocolBanner})" }.orEmpty()),
+                                    style = NexusTheme.monospace.keycapShortcut,
+                                    color = if (report?.reachable == true) {
+                                        NexusTheme.extendedColors.statusConnected
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    }
                                 )
+                            }
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                OutlinedButton(onClick = { onOpenGatewayLease(gw) }) {
+                                    Text("Bind Loopback")
+                                }
+                                FilledTonalButton(onClick = { onProbeGateway(gw) }) {
+                                    Icon(Icons.Outlined.NetworkCheck, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(strings.studioActionProbeGateway)
+                                }
+                                IconButton(onClick = { openEditGateway(gw) }) {
+                                    Icon(Icons.Outlined.Edit, contentDescription = "Edit Gateway", modifier = Modifier.size(18.dp))
+                                }
+                                IconButton(onClick = { onDeleteGateway(gw.id) }) {
+                                    Icon(
+                                        Icons.Outlined.Delete,
+                                        contentDescription = "Delete Gateway",
+                                        tint = MaterialTheme.colorScheme.error,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
                             }
                         }
                     }
@@ -2092,6 +2197,7 @@ fun SecureGatewayStudioView(
 /**
  * 4. Automation Command Tasks & Key Sequence Macros Studio (`{WAIT:300}`, `{ENTER}`, Broadcast).
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun AutomationTasksStudioView(
     commandTasks: List<CommandTask>,
@@ -2214,23 +2320,25 @@ fun AutomationTasksStudioView(
         modifier = modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.surfaceContainerLowest)
-            .padding(20.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+            .padding(24.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        Row(
+        Column(
             modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
                 Icon(
                     imageVector = Icons.Outlined.AutoAwesome,
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.secondary,
                     modifier = Modifier.size(26.dp)
                 )
-                Spacer(modifier = Modifier.width(12.dp))
-                Column {
+                Column(modifier = Modifier.weight(1f)) {
                     Text(strings.navTasks, style = MaterialTheme.typography.headlineSmall)
                     Text(
                         text = strings.studioTasksSubtitle,
@@ -2239,96 +2347,144 @@ fun AutomationTasksStudioView(
                     )
                 }
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilledTonalButton(onClick = { showNewMacroModal = true }) {
-                    Icon(Icons.Outlined.Key, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("Add Key Sequence")
-                }
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
                 Button(onClick = { showNewTaskModal = true }) {
                     Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(strings.studioActionAddTask)
                 }
+                FilledTonalButton(onClick = { showNewMacroModal = true }) {
+                    Icon(Icons.Outlined.Key, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Add Key Sequence")
+                }
             }
         }
 
-        HorizontalDivider()
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
 
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(commandTasks, key = { it.id }) { task ->
+        if (commandTasks.isEmpty() && keySequenceTasks.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+                contentAlignment = Alignment.Center
+            ) {
                 Surface(
-                    shape = MaterialTheme.shapes.large,
-                    color = MaterialTheme.colorScheme.surfaceContainer,
-                    modifier = Modifier.fillMaxWidth()
+                    shape = RoundedCornerShape(24.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerLow,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)),
+                    modifier = Modifier.widthIn(max = 460.dp).fillMaxWidth()
                 ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
+                    Column(
+                        modifier = Modifier.padding(28.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(task.name, style = MaterialTheme.typography.titleSmall)
-                            Text(
-                                text = task.commandTemplate + if (task.broadcastToAllSelectedSessions) " • [Broadcast]" else "",
-                                style = NexusTheme.monospace.keycapShortcut,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                            FilledTonalButton(onClick = { onRunCommandTask(task) }) {
-                                Icon(Icons.Outlined.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(strings.studioActionRunTask)
-                            }
-                            IconButton(onClick = { onDeleteCommandTask(task.id) }) {
-                                Icon(
-                                    Icons.Outlined.Delete,
-                                    contentDescription = "Delete Task",
-                                    tint = MaterialTheme.colorScheme.error,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                            }
+                        Icon(
+                            imageVector = Icons.Outlined.AutoAwesome,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.secondary,
+                            modifier = Modifier.size(34.dp)
+                        )
+                        Text(
+                            text = strings.navTasks,
+                            style = MaterialTheme.typography.titleMedium,
+                            textAlign = TextAlign.Center
+                        )
+                        Text(
+                            text = strings.studioTasksSubtitle,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center
+                        )
+                        Button(onClick = { showNewTaskModal = true }) {
+                            Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(strings.studioActionAddTask)
                         }
                     }
                 }
             }
-            items(keySequenceTasks, key = { it.id }) { macro ->
-                Surface(
-                    shape = MaterialTheme.shapes.large,
-                    color = MaterialTheme.colorScheme.surfaceContainer,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
+        } else {
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(commandTasks, key = { it.id }) { task ->
+                    Surface(
+                        shape = MaterialTheme.shapes.large,
+                        color = MaterialTheme.colorScheme.surfaceContainer,
+                        modifier = Modifier.fillMaxWidth()
                     ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(macro.name, style = MaterialTheme.typography.titleSmall)
-                            Text(
-                                text = macro.macroSequence,
-                                style = NexusTheme.monospace.keycapShortcut,
-                                color = MaterialTheme.colorScheme.tertiary
-                            )
-                        }
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                            FilledTonalButton(onClick = { onRunKeySequenceTask(macro) }) {
-                                Icon(Icons.Outlined.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(strings.studioActionRunTask)
-                            }
-                            IconButton(onClick = { onDeleteKeySequenceTask(macro.id) }) {
-                                Icon(
-                                    Icons.Outlined.Delete,
-                                    contentDescription = "Delete Macro",
-                                    tint = MaterialTheme.colorScheme.error,
-                                    modifier = Modifier.size(18.dp)
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(task.name, style = MaterialTheme.typography.titleSmall)
+                                Text(
+                                    text = task.commandTemplate + if (task.broadcastToAllSelectedSessions) " • [Broadcast]" else "",
+                                    style = NexusTheme.monospace.keycapShortcut,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
+                            }
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                FilledTonalButton(onClick = { onRunCommandTask(task) }) {
+                                    Icon(Icons.Outlined.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(strings.studioActionRunTask)
+                                }
+                                IconButton(onClick = { onDeleteCommandTask(task.id) }) {
+                                    Icon(
+                                        Icons.Outlined.Delete,
+                                        contentDescription = "Delete Task",
+                                        tint = MaterialTheme.colorScheme.error,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+                items(keySequenceTasks, key = { it.id }) { macro ->
+                    Surface(
+                        shape = MaterialTheme.shapes.large,
+                        color = MaterialTheme.colorScheme.surfaceContainer,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(macro.name, style = MaterialTheme.typography.titleSmall)
+                                Text(
+                                    text = macro.macroSequence,
+                                    style = NexusTheme.monospace.keycapShortcut,
+                                    color = MaterialTheme.colorScheme.tertiary
+                                )
+                            }
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                FilledTonalButton(onClick = { onRunKeySequenceTask(macro) }) {
+                                    Icon(Icons.Outlined.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(strings.studioActionRunTask)
+                                }
+                                IconButton(onClick = { onDeleteKeySequenceTask(macro.id) }) {
+                                    Icon(
+                                        Icons.Outlined.Delete,
+                                        contentDescription = "Delete Macro",
+                                        tint = MaterialTheme.colorScheme.error,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
                             }
                         }
                     }

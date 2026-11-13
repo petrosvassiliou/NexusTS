@@ -43,6 +43,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.nexusts.app.core.ui.input.LocalNexusShortcutEngine
@@ -87,8 +88,8 @@ fun NexusAdaptiveDesktopScaffold(
     bottomStatusDrawerContent: @Composable () -> Unit,
     floatingOverlayContent: @Composable () -> Unit,
     modifier: Modifier = Modifier,
-    initialSidebarWidth: Dp = 288.dp,
-    initialInspectorWidth: Dp = 320.dp,
+    initialSidebarWidth: Dp = 264.dp,
+    initialInspectorWidth: Dp = 304.dp,
     initialBottomDrawerHeight: Dp = 210.dp
 ) {
     val shortcutEngine = LocalNexusShortcutEngine.current
@@ -140,7 +141,7 @@ fun NexusAdaptiveDesktopScaffold(
                     contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier
                         .fillMaxHeight()
-                        .width(78.dp)
+                        .width(88.dp)
                 ) {
                     Spacer(modifier = Modifier.height(10.dp))
                     destinations.forEach { dest ->
@@ -178,7 +179,9 @@ fun NexusAdaptiveDesktopScaffold(
                                 Text(
                                     text = dest.label,
                                     style = MaterialTheme.typography.labelSmall,
-                                    maxLines = 1
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.padding(horizontal = 2.dp)
                                 )
                             },
                             colors = NavigationRailItemDefaults.colors(
