@@ -1,0 +1,3 @@
+NexusTS v1.1.4 — .rtsz-Import-Fix & modernes Nordic-Sapphire-Design
+• Android-XML-Parser-Absturz ("disallow-doctype-decl") beim Import von .rtsz/.rtsx- & KeePass-XML-Dateien behoben (inkl. XXE-Schutz & Royal TS V3–V7: Guid.Empty, CredentialFromParent, CredentialMode 3/4).
+• Grüne Akzentfarbe durch ein modernes Nordic-Sapphire- & Sky-Slate-Farbschema sowie aktualisiertes App-Symbol ersetzt.

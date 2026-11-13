@@ -1,0 +1,3 @@
+NexusTS v1.1.4 — Διόρθωση .rtsz & θέμα Nordic Sapphire
+• Διορθώθηκε το σφάλμα XML parser Android ("disallow-doctype-decl") στην εισαγωγή .rtsz/.rtsx & KeePass XML με προστασία XXE & συμβατότητα Royal TS V3–V7.
+• Νέα μοντέρνα παλέτα Nordic Sapphire & Sky-Slate (αντί του πράσινου) και ανανεωμένο εικονίδιο.

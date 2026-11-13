@@ -28,7 +28,6 @@ import java.nio.charset.StandardCharsets
 import java.util.UUID
 import java.util.zip.GZIPInputStream
 import java.util.zip.ZipInputStream
-import javax.xml.parsers.DocumentBuilderFactory
 
 enum class DetectedExternalVaultFormat {
     NXTS_ENCRYPTED_BINARY,
@@ -323,14 +322,11 @@ class EnterpriseVaultFormatImporter {
      * credentials, TOTP seeds (`otpauth://` or raw Base32), SSH private keys, and remote hosts.
      */
     fun importKeePassXml(xmlBytes: ByteArray, vaultName: String = "Imported KeePass Vault"): NxtsVaultDocument {
-        val factory = DocumentBuilderFactory.newInstance().apply {
-            isNamespaceAware = false
-            setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)
-            setFeature("http://xml.org/sax/features/external-general-entities", false)
-            setFeature("http://xml.org/sax/features/external-parameter-entities", false)
+        val dom = runCatching {
+            SecureXmlDomParser.parseXmlBytes(xmlBytes)
+        }.getOrElse { ex ->
+            throw IllegalArgumentException("Invalid KeePass 2.x XML document: ${ex.message}", ex)
         }
-        val dom = factory.newDocumentBuilder().parse(ByteArrayInputStream(xmlBytes))
-        dom.documentElement.normalize()
 
         val folders = mutableListOf<VaultFolder>()
         val credentials = mutableListOf<VaultCredential>()

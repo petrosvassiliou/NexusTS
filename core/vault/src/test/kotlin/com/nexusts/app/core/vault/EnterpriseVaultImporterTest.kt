@@ -5,6 +5,7 @@ import com.nexusts.app.core.vault.importer.DetectedExternalVaultFormat
 import com.nexusts.app.core.vault.importer.EncryptedZipExtractor
 import com.nexusts.app.core.vault.importer.EnterpriseVaultFormatImporter
 import com.nexusts.app.core.vault.importer.RtszDocumentImporter
+import com.nexusts.app.core.vault.importer.SecureXmlDomParser
 import com.nexusts.app.core.vault.model.CredentialSourceKind
 import com.nexusts.app.core.vault.model.GatewayTransportKind
 import com.nexusts.app.core.vault.model.InheritableProperties
@@ -26,6 +27,7 @@ import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.charset.StandardCharsets
+import java.util.Base64
 import java.util.zip.CRC32
 import java.util.zip.Deflater
 import java.util.zip.GZIPOutputStream
@@ -35,6 +37,9 @@ import javax.crypto.Mac
 import javax.crypto.SecretKeyFactory
 import javax.crypto.spec.PBEKeySpec
 import javax.crypto.spec.SecretKeySpec
+import javax.xml.parsers.DocumentBuilder
+import javax.xml.parsers.DocumentBuilderFactory
+import javax.xml.parsers.ParserConfigurationException
 
 class EnterpriseVaultImporterTest {
 
@@ -966,5 +971,255 @@ class EnterpriseVaultImporterTest {
         }.array()
         out.write(eocd)
         return out.toByteArray()
+    }
+
+    @Test
+    fun androidLibcoreExpatDocumentBuilderFactoryRejectingXercesFeaturesImportsRtszAndBlocksXxe() {
+        // Reproduces Android ART's org.apache.harmony.xml.parsers.DocumentBuilderFactoryImpl (libcore Expat),
+        // which ONLY supports http://xml.org/sax/features/namespaces and http://xml.org/sax/features/namespace-prefixes,
+        // throwing ParserConfigurationException("http://apache.org/xml/features/disallow-doctype-decl") on Xerces URIs.
+        fun createAndroidLikeDocumentBuilderFactory(): DocumentBuilderFactory {
+            val delegate = DocumentBuilderFactory.newInstance()
+            return object : DocumentBuilderFactory() {
+                override fun newDocumentBuilder(): DocumentBuilder = delegate.newDocumentBuilder()
+
+                override fun setAttribute(name: String, value: Any?) {
+                    throw IllegalArgumentException(name)
+                }
+
+                override fun getAttribute(name: String): Any {
+                    throw IllegalArgumentException(name)
+                }
+
+                override fun setFeature(name: String, value: Boolean) {
+                    if (name != "http://xml.org/sax/features/namespaces" &&
+                        name != "http://xml.org/sax/features/namespace-prefixes"
+                    ) {
+                        throw ParserConfigurationException(name)
+                    }
+                    delegate.setFeature(name, value)
+                }
+
+                override fun getFeature(name: String): Boolean {
+                    if (name != "http://xml.org/sax/features/namespaces" &&
+                        name != "http://xml.org/sax/features/namespace-prefixes"
+                    ) {
+                        throw ParserConfigurationException(name)
+                    }
+                    return delegate.getFeature(name)
+                }
+            }
+        }
+
+        val lsgXml = """
+            <?xml version="1.0" encoding="utf-8"?>
+            <RTSZDocument>
+              <RoyalDocument>
+                <ID>7b6e9a10-4110-4c9a-9f12-101010101010</ID>
+                <Name>LSG</Name>
+              </RoyalDocument>
+              <RoyalFolder>
+                <ID>22222222-3333-4444-5555-666666666666</ID>
+                <ParentID>7b6e9a10-4110-4c9a-9f12-101010101010</ParentID>
+                <Name>LSG Server</Name>
+              </RoyalFolder>
+              <RoyalRDSConnection>
+                <ID>aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee</ID>
+                <ParentID>22222222-3333-4444-5555-666666666666</ParentID>
+                <Name>DC01</Name>
+                <URI>dc01.lsg.local</URI>
+              </RoyalRDSConnection>
+              <RoyalDynamicFolder>
+                <ID>dfdfdfdf-1111-2222-3333-444444444444</ID>
+                <ParentID>7b6e9a10-4110-4c9a-9f12-101010101010</ParentID>
+                <Name>HTML Dynamic Inventory</Name>
+                <Script><![CDATA[<!DOCTYPE html><html><body>RoyalJSON generator</body></html>]]></Script>
+              </RoyalDynamicFolder>
+            </RTSZDocument>
+        """.trimIndent().toByteArray(StandardCharsets.UTF_8)
+
+        val lsgRtszGzip = ByteArrayOutputStream().also { baos ->
+            GZIPOutputStream(baos).use { gz -> gz.write(lsgXml) }
+        }.toByteArray()
+
+        val rtszImporter = RtszDocumentImporter()
+        val importedDoc = rtszImporter.importRtszBytesInternal(
+            rawBytes = lsgRtszGzip,
+            fallbackDocumentName = "LSG",
+            factoryProvider = ::createAndroidLikeDocumentBuilderFactory
+        )
+
+        assertEquals("LSG", importedDoc.name)
+        assertEquals(1, importedDoc.folders.size)
+        assertEquals("LSG Server", importedDoc.folders.single().name)
+        assertEquals(1, importedDoc.connections.size)
+        assertEquals("dc01.lsg.local", importedDoc.connections.single().host)
+        assertEquals(1, importedDoc.dynamicFolders.size)
+        assertTrue(importedDoc.dynamicFolders.single().scriptOrEndpointPayload.contains("<!DOCTYPE html>"))
+
+        // Verify XXE DOCTYPE / ENTITY payloads are strictly blocked even on Android's Expat factory
+        val xxeXml = """
+            <?xml version="1.0" encoding="utf-8"?>
+            <!DOCTYPE rtsz [
+              <!ENTITY xxe SYSTEM "file:///etc/passwd">
+            ]>
+            <RTSZDocument>
+              <RoyalDocument>
+                <ID>doc-xxe</ID>
+                <Name>&xxe;</Name>
+              </RoyalDocument>
+            </RTSZDocument>
+        """.trimIndent().toByteArray(StandardCharsets.UTF_8)
+
+        assertThrows(IllegalArgumentException::class.java) {
+            SecureXmlDomParser.parseXmlBytes(
+                xmlBytes = xxeXml,
+                factoryProvider = ::createAndroidLikeDocumentBuilderFactory
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            rtszImporter.importRtszBytesInternal(
+                rawBytes = xxeXml,
+                fallbackDocumentName = "XXE",
+                factoryProvider = ::createAndroidLikeDocumentBuilderFactory
+            )
+        }
+    }
+
+    @Test
+    fun importOfficialRoyalTsV7GuidEmptyCredentialMode3And4AndBase64KeyAndTemplate() {
+        val sampleOpenSshPem = """
+            -----BEGIN OPENSSH PRIVATE KEY-----
+            b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
+            -----END OPENSSH PRIVATE KEY-----
+        """.trimIndent()
+        val base64EncodedPem = Base64.getEncoder().encodeToString(sampleOpenSshPem.toByteArray(StandardCharsets.UTF_8))
+
+        val v7Xml = """
+            <?xml version="1.0" encoding="utf-8"?>
+            <RTSZDocument>
+              <RoyalDocument>
+                <ID>11111111-1111-1111-1111-111111111111</ID>
+                <Name>LSG Enterprise V7</Name>
+                <CredentialID>00000000-0000-0000-0000-000000000000</CredentialID>
+                <SecureGatewayID>{00000000-0000-0000-0000-000000000000}</SecureGatewayID>
+              </RoyalDocument>
+              <RoyalFolder>
+                <ID>f01de700-0000-4000-8000-000000000001</ID>
+                <ParentID>11111111-1111-1111-1111-111111111111</ParentID>
+                <Name>Tier-0 Domain Controllers</Name>
+                <CredentialMode>3</CredentialMode>
+                <CredentialID>c7ed0000-0000-4000-8000-000000000001</CredentialID>
+              </RoyalFolder>
+              <RoyalRDSConnection>
+                <ID>c0000000-0000-4000-8000-000000000001</ID>
+                <ParentID>f01de700-0000-4000-8000-000000000001</ParentID>
+                <Name>LSG-DC01 (From Parent + Empty GUIDs)</Name>
+                <URI>lsg-dc01.corp.local</URI>
+                <CredentialFromParent>True</CredentialFromParent>
+                <CredentialID>00000000-0000-0000-0000-000000000000</CredentialID>
+                <RDSGatewayID>00000000-0000-0000-0000-000000000000</RDSGatewayID>
+                <RDSGatewayFromParent>True</RDSGatewayFromParent>
+                <PreConnectTaskID>00000000-0000-0000-0000-000000000000</PreConnectTaskID>
+                <PostDisconnectTaskID>{00000000-0000-0000-0000-000000000000}</PostDisconnectTaskID>
+                <ScaleFactor>150</ScaleFactor>
+                <EnableGraphicsPipeline>False</EnableGraphicsPipeline>
+                <GatewayHostName>rdgw.lsg.local</GatewayHostName>
+                <TLSEncryption>False</TLSEncryption>
+              </RoyalRDSConnection>
+              <RoyalRDSConnection>
+                <ID>c0000000-0000-4000-8000-000000000002</ID>
+                <ParentID>f01de700-0000-4000-8000-000000000001</ParentID>
+                <Name>LSG-SQL01 (Credential By Name Mode 4)</Name>
+                <URI>lsg-sql01.corp.local</URI>
+                <CredentialMode>4</CredentialMode>
+                <CredentialName>LSG SQL Service Admin</CredentialName>
+                <CredentialID>00000000-0000-0000-0000-000000000000</CredentialID>
+              </RoyalRDSConnection>
+              <RoyalRDSConnection>
+                <ID>c0000000-0000-4000-8000-000000000003</ID>
+                <ParentID>f01de700-0000-4000-8000-000000000001</ParentID>
+                <Name>LSG-JUMP01 (Prompt Mode 3 Without CredentialID)</Name>
+                <URI>lsg-jump01.corp.local</URI>
+                <CredentialMode>3</CredentialMode>
+                <CredentialID>00000000-0000-0000-0000-000000000000</CredentialID>
+              </RoyalRDSConnection>
+              <RoyalRDSConnection>
+                <ID>7e391a7e-0000-4000-8000-000000000099</ID>
+                <ParentID>11111111-1111-1111-1111-111111111111</ParentID>
+                <Name>Standard LSG Windows 2025 Template</Name>
+                <IsConnectionTemplate>True</IsConnectionTemplate>
+                <DesktopWidth>2560</DesktopWidth>
+                <DesktopHeight>1440</DesktopHeight>
+              </RoyalRDSConnection>
+              <RoyalCredential>
+                <ID>c7ed0000-0000-4000-8000-000000000001</ID>
+                <ParentID>11111111-1111-1111-1111-111111111111</ParentID>
+                <Name>LSG Domain Admin</Name>
+                <UserName>LSG\da_petros</UserName>
+                <Password>Tier0Secret!2026</Password>
+              </RoyalCredential>
+              <RoyalCredential>
+                <ID>c7ed0000-0000-4000-8000-000000000002</ID>
+                <ParentID>11111111-1111-1111-1111-111111111111</ParentID>
+                <Name>LSG SQL Service Admin</Name>
+                <UserName>LSG\svc_sql</UserName>
+                <Password>SqlVault!2026</Password>
+              </RoyalCredential>
+              <RoyalCredential>
+                <ID>c7ed0000-0000-4000-8000-000000000003</ID>
+                <ParentID>00000000-0000-0000-0000-000000000000</ParentID>
+                <Name>LSG Linux Bastion Key</Name>
+                <UserName>ubuntu</UserName>
+                <KeyFileContent>$base64EncodedPem</KeyFileContent>
+              </RoyalCredential>
+            </RTSZDocument>
+        """.trimIndent().toByteArray(StandardCharsets.UTF_8)
+
+        val doc = RtszDocumentImporter().importRtszBytes(v7Xml, "LSG")
+
+        // Root empty GUIDs must NOT produce explicit overrides
+        assertNull(doc.rootInheritable.explicitCredentialId)
+        assertNull(doc.rootInheritable.explicitGatewayId)
+
+        // Folder uses Royal TS CredentialMode=3 + explicit CredentialID -> OVERRIDE_EXPLICIT
+        val folder = doc.folders.single()
+        assertEquals(InheritanceMode.OVERRIDE_EXPLICIT, folder.inheritable.credentialMode)
+        assertEquals("c7ed0000-0000-4000-8000-000000000001", folder.inheritable.explicitCredentialId)
+
+        // Connection 1: CredentialFromParent=True + Guid.Empty -> INHERIT_FROM_PARENT (never "00000000-...")
+        val dc01 = doc.connections.first { it.id == "c0000000-0000-4000-8000-000000000001" }
+        assertEquals(InheritanceMode.INHERIT_FROM_PARENT, dc01.inheritable.credentialMode)
+        assertNull(dc01.inheritable.explicitCredentialId)
+        assertEquals(InheritanceMode.INHERIT_FROM_PARENT, dc01.inheritable.gatewayMode)
+        assertNull(dc01.inheritable.explicitGatewayId)
+        assertNull(dc01.inheritable.preConnectTaskId)
+        assertNull(dc01.inheritable.postDisconnectTaskId)
+        val dc01Rdp = dc01.settings as ProtocolSpecificSettings.Rdp
+        assertEquals(150, dc01Rdp.desktopScaleFactorPercent)
+        assertFalse(dc01Rdp.enableGfxPipeline)
+        assertEquals("rdgw.lsg.local", dc01Rdp.rdGatewayHostname)
+        assertFalse(dc01Rdp.tlsSecurity)
+
+        // Connection 2: CredentialMode=4 + CredentialName (even though RoyalCredential appeared later in XML!)
+        val sql01 = doc.connections.first { it.id == "c0000000-0000-4000-8000-000000000002" }
+        assertEquals(InheritanceMode.OVERRIDE_EXPLICIT, sql01.inheritable.credentialMode)
+        assertEquals("c7ed0000-0000-4000-8000-000000000002", sql01.inheritable.explicitCredentialId)
+
+        // Connection 3: CredentialMode=3 without non-empty CredentialID -> PROMPT_AT_CONNECT
+        val jump01 = doc.connections.first { it.id == "c0000000-0000-4000-8000-000000000003" }
+        assertEquals(InheritanceMode.PROMPT_AT_CONNECT, jump01.inheritable.credentialMode)
+        assertNull(jump01.inheritable.explicitCredentialId)
+
+        // IsConnectionTemplate=True -> imported as ConnectionTemplate, excluded from active connections
+        assertEquals(3, doc.connections.size)
+        assertEquals(1, doc.templates.size)
+        assertEquals("Standard LSG Windows 2025 Template", doc.templates.single().name)
+
+        // Base64 PEM KeyFileContent -> decoded to UTF-8 PEM & classified as SSH_KEY_PAIR with null root parent
+        val sshCred = doc.credentials.first { it.id == "c7ed0000-0000-4000-8000-000000000003" }
+        assertNull(sshCred.parentFolderId)
+        assertEquals(CredentialSourceKind.SSH_KEY_PAIR, sshCred.sourceKind)
+        assertTrue(sshCred.privateKeyPem.contains("-----BEGIN OPENSSH PRIVATE KEY-----"))
     }
 }

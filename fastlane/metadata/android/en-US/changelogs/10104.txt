@@ -1,0 +1,3 @@
+NexusTS v1.1.4 — Android .rtsz Import Fix & Modern Nordic Sapphire Theme
+• Fixed Android runtime XML parser crash ("disallow-doctype-decl") when importing .rtsz/.rtsx & KeePass XML files, with strict XXE protection and full Royal TS V3–V7 schema parity (Guid.Empty, CredentialFromParent, CredentialMode 3/4, Base64 SSH keys).
+• Replaced the green/mint palette with a modern Nordic Sapphire & Arctic Sky-Slate UI theme and updated launcher emblem.

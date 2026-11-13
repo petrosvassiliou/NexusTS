@@ -18,8 +18,8 @@ android {
         applicationId = "com.nexusts.app"
         minSdk = providers.gradleProperty("nexusts.minSdk").get().toInt()
         targetSdk = providers.gradleProperty("nexusts.targetSdk").get().toInt()
-        versionCode = 10103
-        versionName = "1.1.3"
+        versionCode = 10104
+        versionName = "1.1.4"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {

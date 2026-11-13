@@ -532,18 +532,18 @@ fun NexusBrandEmblem(
 ) {
     Surface(
         shape = RoundedCornerShape(cornerRadius),
-        color = Color(0xFF0A182D),
-        border = BorderStroke(1.dp, Color(0xFF2CE5B5).copy(alpha = 0.28f)),
+        color = Color(0xFF0A1630),
+        border = BorderStroke(1.dp, Color(0xFF60A5FA).copy(alpha = 0.24f)),
         modifier = modifier.size(size)
     ) {
         Canvas(modifier = Modifier.size(size)) {
             val w = this.size.width
             val h = this.size.height
 
-            // Subtle ambient sapphire-teal background gradient
+            // Subtle ambient midnight-sapphire background gradient
             drawRect(
                 brush = Brush.linearGradient(
-                    colors = listOf(Color(0xFF0D213F), Color(0xFF071120)),
+                    colors = listOf(Color(0xFF10244A), Color(0xFF081124)),
                     start = Offset.Zero,
                     end = Offset(w, h)
                 )
@@ -555,7 +555,7 @@ fun NexusBrandEmblem(
             val monW = w * 0.66f
             val monH = h * 0.48f
             drawRoundRect(
-                color = Color(0xFFDCEBFF),
+                color = Color(0xFFE2EEFF),
                 topLeft = Offset(monLeft, monTop),
                 size = Size(monW, monH),
                 cornerRadius = CornerRadius(w * 0.09f, w * 0.09f)
@@ -568,13 +568,13 @@ fun NexusBrandEmblem(
             val scrW = monW - pad * 2f
             val scrH = monH - pad * 2f
             drawRoundRect(
-                color = Color(0xFF081426),
+                color = Color(0xFF081328),
                 topLeft = Offset(scrLeft, scrTop),
                 size = Size(scrW, scrH),
                 cornerRadius = CornerRadius(w * 0.05f, w * 0.05f)
             )
 
-            // Left Terminal Chevron `>_`
+            // Left Terminal Chevron `>_` in Electric Sky-Cyan
             val chevPath = Path().apply {
                 moveTo(scrLeft + scrW * 0.14f, scrTop + scrH * 0.30f)
                 lineTo(scrLeft + scrW * 0.34f, scrTop + scrH * 0.54f)
@@ -582,7 +582,7 @@ fun NexusBrandEmblem(
             }
             drawPath(
                 path = chevPath,
-                color = Color(0xFF2CE5B5),
+                color = Color(0xFF38BDF8),
                 style = Stroke(
                     width = (w * 0.065f).coerceAtLeast(1.6f),
                     cap = StrokeCap.Round,
@@ -590,35 +590,35 @@ fun NexusBrandEmblem(
                 )
             )
             drawLine(
-                color = Color(0xFF2CE5B5),
+                color = Color(0xFF38BDF8),
                 start = Offset(scrLeft + scrW * 0.40f, scrTop + scrH * 0.76f),
                 end = Offset(scrLeft + scrW * 0.56f, scrTop + scrH * 0.76f),
                 strokeWidth = (w * 0.06f).coerceAtLeast(1.5f),
                 cap = StrokeCap.Round
             )
 
-            // Right Remote Desktop Pane Card
+            // Right Remote Desktop Pane Card in Royal Sapphire
             drawRoundRect(
-                color = Color(0xFF7AA8FF),
+                color = Color(0xFF3B82F6),
                 topLeft = Offset(scrLeft + scrW * 0.64f, scrTop + scrH * 0.25f),
                 size = Size(scrW * 0.26f, scrH * 0.52f),
                 cornerRadius = CornerRadius(w * 0.035f, w * 0.035f)
             )
 
-            // Stand Neck + Server Hub Base + Active Node Dot
+            // Stand Neck + Server Hub Base + Active Sky-Blue Node Dot
             drawRect(
-                color = Color(0xFF9BBDF2),
+                color = Color(0xFF93C5FD),
                 topLeft = Offset(w * 0.45f, monTop + monH),
                 size = Size(w * 0.10f, h * 0.10f)
             )
             drawRoundRect(
-                color = Color(0xFFDCEBFF),
+                color = Color(0xFFE2EEFF),
                 topLeft = Offset(w * 0.30f, h * 0.75f),
                 size = Size(w * 0.40f, h * 0.075f),
                 cornerRadius = CornerRadius(w * 0.04f, w * 0.04f)
             )
             drawCircle(
-                color = Color(0xFF2CE5B5),
+                color = Color(0xFF38BDF8),
                 radius = (w * 0.048f).coerceAtLeast(1.5f),
                 center = Offset(w * 0.50f, h * 0.788f)
             )

@@ -40,7 +40,7 @@ import javax.crypto.Cipher
 import javax.crypto.Mac
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
-import javax.xml.parsers.DocumentBuilderFactory
+import com.nexusts.app.core.vault.importer.SecureXmlDomParser
 
 data class ResolvedSessionSecret(
     val username: String = "",
@@ -532,12 +532,7 @@ object KeePassKdbx4Reader {
             )
         }
 
-        val factory = DocumentBuilderFactory.newInstance().apply {
-            setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)
-            setFeature("http://xml.org/sax/features/external-general-entities", false)
-            setFeature("http://xml.org/sax/features/external-parameter-entities", false)
-        }
-        val doc = factory.newDocumentBuilder().parse(ByteArrayInputStream(xmlBytes))
+        val doc = SecureXmlDomParser.parseXmlBytes(xmlBytes, normalizeDocument = false)
 
         // Pass 1: Advance ChaCha7539Engine across EVERY Protected="True" <Value> node in exact XML document order
         // (including <History> entries and Recycle Bin groups) so the stream cipher never desynchronizes!

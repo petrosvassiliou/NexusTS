@@ -1,0 +1,3 @@
+NexusTS v1.1.4 — Correctif .rtsz Android & thème Nordic Sapphire
+• Correction du plantage XML Android (« disallow-doctype-decl ») à l'importation .rtsz/.rtsx et KeePass XML, avec protection XXE et support Royal TS V3–V7 (Guid.Empty, CredentialFromParent, CredentialMode 3/4).
+• Remplacement du vert par une palette moderne Nordic Sapphire & Sky-Slate et icône mise à jour.

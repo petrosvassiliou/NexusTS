@@ -57,22 +57,20 @@ class RtszDocumentImporter {
         rawBytes: ByteArray,
         fallbackDocumentName: String = "Imported Royal TS Vault",
         archivePassword: CharArray? = null
+    ): NxtsVaultDocument = importRtszBytesInternal(rawBytes, fallbackDocumentName, archivePassword)
+
+    internal fun importRtszBytesInternal(
+        rawBytes: ByteArray,
+        fallbackDocumentName: String = "Imported Royal TS Vault",
+        archivePassword: CharArray? = null,
+        factoryProvider: () -> DocumentBuilderFactory = { DocumentBuilderFactory.newInstance() }
     ): NxtsVaultDocument {
         val xmlBytes = extractNormalizedUtf8Xml(rawBytes, archivePassword)
-        val factory = DocumentBuilderFactory.newInstance().apply {
-            isNamespaceAware = false
-            // Harden against XXE attacks when importing external .rtsz files
-            setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)
-            setFeature("http://xml.org/sax/features/external-general-entities", false)
-            setFeature("http://xml.org/sax/features/external-parameter-entities", false)
-        }
-
         val dom = runCatching {
-            factory.newDocumentBuilder().parse(ByteArrayInputStream(xmlBytes))
+            SecureXmlDomParser.parseXmlBytes(xmlBytes, normalizeDocument = true, factoryProvider = factoryProvider)
         }.getOrElse { ex ->
             throw IllegalArgumentException("Invalid Royal TS XML document: ${ex.message}", ex)
         }
-        dom.documentElement.normalize()
 
         val rootTag = dom.documentElement.tagName
         if (rootTag.equals("KeePassFile", ignoreCase = true)) {
@@ -106,12 +104,15 @@ class RtszDocumentImporter {
 
         val trashRootIds = mutableSetOf<String>()
         val rawParentById = mutableMapOf<String, String>()
+        val credentialIdByName = mutableMapOf<String, String>()
 
-        // Pass 1: Pre-scan <RoyalDocument>, <RoyalTrash>, and parent links regardless of XML tag ordering
+        // Pass 1: Pre-scan <RoyalDocument>, <RoyalTrash>, <RoyalCredential> names, and parent links regardless of XML tag ordering
         for ((elem, implicitParentId) in collectedElements) {
             val tag = elem.tagName
-            val elemId = elem.childText("ID")
-            val elemParent = elem.childText("ParentID").ifBlank { implicitParentId.orEmpty() }
+            val elemId = elem.childText("ID").nonEmptyRoyalIdOrNull().orEmpty()
+            val elemParent = elem.childText("ParentID").nonEmptyRoyalIdOrNull()
+                ?: implicitParentId?.nonEmptyRoyalIdOrNull()
+                ?: ""
             if (elemId.isNotBlank() && elemParent.isNotBlank()) {
                 rawParentById[elemId] = elemParent
             }
@@ -120,6 +121,14 @@ class RtszDocumentImporter {
                     trashRootIds += elemId
                 }
                 continue
+            }
+            if (tag.equals("RoyalCredential", ignoreCase = true) ||
+                tag.equals("RoyalDynamicCredential", ignoreCase = true)
+            ) {
+                val credName = elem.childText("Name").ifBlank { elem.childText("DisplayName") }.trim()
+                if (elemId.isNotBlank() && credName.isNotBlank()) {
+                    credentialIdByName.putIfAbsent(credName.lowercase(), elemId)
+                }
             }
             if (tag.equals("RoyalDocument", ignoreCase = true)) {
                 if (elemId.isNotBlank()) documentId = elemId
@@ -133,15 +142,31 @@ class RtszDocumentImporter {
                 ) {
                     isRoyalPasswordEncryptedXml = true
                 }
-                if (elem.hasDirectChild("CredentialMode") || elem.hasDirectChild("GatewayMode")) {
+            }
+        }
+
+        // Second mini-pass for <RoyalDocument> rootInheritable once credentialIdByName is populated
+        for ((elem, _) in collectedElements) {
+            if (elem.tagName.equals("RoyalDocument", ignoreCase = true)) {
+                if (elem.hasDirectChild("CredentialMode") ||
+                    elem.hasDirectChild("CredentialID") ||
+                    elem.hasDirectChild("CredentialName") ||
+                    elem.hasDirectChild("GatewayMode")
+                ) {
+                    val docExplicitCredId = elem.childText("CredentialID")
+                        .ifBlank { elem.childText("CredentialId") }
+                        .nonEmptyRoyalIdOrNull()
+                        ?: elem.childText("CredentialName").trim().takeIf { it.isNotEmpty() }
+                            ?.let { credentialIdByName[it.lowercase()] }
                     rootInheritable = parseInheritable(
                         elem = elem,
-                        resolvedCredId = elem.childText("CredentialID").takeIf { it.isNotBlank() },
+                        resolvedCredId = docExplicitCredId,
                         synthesizedInlineCredId = null,
                         defaultCredMode = InheritanceMode.NONE_DIRECT,
                         defaultGwMode = InheritanceMode.NONE_DIRECT
                     )
                 }
+                break
             }
         }
 
@@ -169,10 +194,9 @@ class RtszDocumentImporter {
                 continue
             }
 
-            val id = elem.childText("ID").ifBlank { UUID.randomUUID().toString() }
-            val parentIdRaw = elem.childText("ParentID")
-                .ifBlank { implicitParentId.orEmpty() }
-                .takeIf { it.isNotBlank() }
+            val id = elem.childText("ID").nonEmptyRoyalIdOrNull() ?: UUID.randomUUID().toString()
+            val parentIdRaw = elem.childText("ParentID").nonEmptyRoyalIdOrNull()
+                ?: implicitParentId?.nonEmptyRoyalIdOrNull()
 
             if (isInsideRoyalTrash(id, parentIdRaw)) continue
             if (!seenIds.add("$tag:$id")) continue
@@ -185,14 +209,18 @@ class RtszDocumentImporter {
             val rawEndpoint = resolveRawEndpoint(elem)
             val (parsedHostFromUri, parsedPortFromUri) = extractHostAndOptionalPort(rawEndpoint)
 
-            val isTemplate = elem.childBoolean("IsTemplate", default = false) ||
+            val isTemplate = elem.childBoolean("IsTemplate", "IsConnectionTemplate", default = false) ||
                 tag.equals("RoyalTemplate", ignoreCase = true)
             val isFavorite = elem.childBoolean("Favorite", "IsFavorite", default = false)
             val colorHex = normalizeHexColor(elem.childText("Color"))
             val templateColorHex = normalizeHexColor(elem.childText("TemplateColor")) ?: colorHex
 
             val rawCredMode = elem.childText("CredentialMode").trim()
-            val explicitCredId = elem.childText("CredentialID").takeIf { it.isNotBlank() }
+            val explicitCredId = elem.childText("CredentialID")
+                .ifBlank { elem.childText("CredentialId") }
+                .nonEmptyRoyalIdOrNull()
+                ?: elem.childText("CredentialName").trim().takeIf { it.isNotEmpty() }
+                    ?.let { credentialIdByName[it.lowercase()] }
 
             val isCredentialTag = tag.equals("RoyalCredential", ignoreCase = true) ||
                 tag.equals("RoyalDynamicCredential", ignoreCase = true)
@@ -204,7 +232,9 @@ class RtszDocumentImporter {
             val inlinePassRaw = sanitizeImportedSecret(inlinePassCandidate, isRoyalPasswordEncryptedXml)
             val inlineKeyPem = if (!isCredentialTag) {
                 sanitizeImportedKeyContent(
-                    elem.childText("CredentialKeyFileContent").ifBlank { elem.childText("PrivateKeyContent") },
+                    elem.childText("CredentialKeyFileContent")
+                        .ifBlank { elem.childText("CredentialKeyContent") }
+                        .ifBlank { elem.childText("PrivateKeyContent") },
                     isRoyalPasswordEncryptedXml
                 )
             } else {
@@ -213,7 +243,8 @@ class RtszDocumentImporter {
 
             val synthesizedInlineCredId: String? = if (
                 !isCredentialTag &&
-                (rawCredMode == "1" || (explicitCredId == null && (inlineUserRaw.isNotBlank() || inlinePassRaw.isNotBlank() || inlineKeyPem.isNotBlank()))) &&
+                (rawCredMode == "2" || rawCredMode == "1" || (explicitCredId == null && (inlineUserRaw.isNotBlank() || inlinePassRaw.isNotBlank() || inlineKeyPem.isNotBlank()))) &&
+                explicitCredId == null &&
                 (inlineUserRaw.isNotBlank() || inlinePassRaw.isNotBlank() || inlineKeyPem.isNotBlank())
             ) {
                 val (inlineDomain, inlineUser) = splitDomainAndUsername(inlineUserRaw)
@@ -305,7 +336,9 @@ class RtszDocumentImporter {
 
                 isCredentialTag -> {
                     val keyContent = sanitizeImportedKeyContent(
-                        elem.childText("KeyFileContent").ifBlank { elem.childText("PrivateKeyContent") },
+                        elem.childText("KeyFileContent")
+                            .ifBlank { elem.childText("CredentialKeyContent") }
+                            .ifBlank { elem.childText("PrivateKeyContent") },
                         isRoyalPasswordEncryptedXml
                     )
                     val rawUser = elem.childText("UserName").ifBlank { elem.childText("Username") }
@@ -492,14 +525,14 @@ class RtszDocumentImporter {
 
                     tag.equals("RoyalDocument", ignoreCase = true) -> {
                         out += CollectedRoyalElement(childElem, currentFolderContextId)
-                        val docId = childElem.childText("ID").takeIf { it.isNotBlank() } ?: currentFolderContextId
+                        val docId = childElem.childText("ID").nonEmptyRoyalIdOrNull() ?: currentFolderContextId
                         visitChildren(childElem, docId)
                     }
 
                     tag.equals("RoyalFolder", ignoreCase = true) ||
                         tag.equals("RoyalTrash", ignoreCase = true) -> {
                         out += CollectedRoyalElement(childElem, currentFolderContextId)
-                        val folderId = childElem.childText("ID").takeIf { it.isNotBlank() } ?: currentFolderContextId
+                        val folderId = childElem.childText("ID").nonEmptyRoyalIdOrNull() ?: currentFolderContextId
                         visitChildren(childElem, folderId)
                     }
 
@@ -595,7 +628,14 @@ class RtszDocumentImporter {
     private fun sanitizeImportedKeyContent(rawKey: String, isRoyalEncryptedXml: Boolean): String {
         if (rawKey.isEmpty()) return ""
         if (rawKey.contains("-----BEGIN")) return rawKey
-        if (isRoyalEncryptedXml && looksLikeEncryptedBase64Blob(rawKey)) return ""
+        val trimmed = rawKey.trim()
+        val decodedPem = runCatching {
+            val bytes = java.util.Base64.getMimeDecoder().decode(trimmed)
+            val text = String(bytes, StandardCharsets.UTF_8)
+            text.takeIf { it.contains("-----BEGIN") }
+        }.getOrNull()
+        if (decodedPem != null) return decodedPem
+        if (isRoyalEncryptedXml && looksLikeEncryptedBase64Blob(trimmed)) return ""
         return rawKey
     }
 
@@ -630,26 +670,39 @@ class RtszDocumentImporter {
         isTemplate: Boolean = false
     ): InheritableProperties {
         val rawCredMode = elem.childText("CredentialMode").trim()
+        val credFromParent = elem.childBoolean("CredentialFromParent", default = false)
         val credMode = when {
             synthesizedInlineCredId != null -> InheritanceMode.OVERRIDE_EXPLICIT
+            credFromParent -> InheritanceMode.INHERIT_FROM_PARENT
             rawCredMode == "0" -> InheritanceMode.NONE_DIRECT
-            rawCredMode == "2" -> InheritanceMode.OVERRIDE_EXPLICIT
-            rawCredMode == "3" -> InheritanceMode.PROMPT_AT_CONNECT
-            rawCredMode == "4" || rawCredMode == "1" -> InheritanceMode.INHERIT_FROM_PARENT
+            rawCredMode == "1" -> InheritanceMode.INHERIT_FROM_PARENT
+            rawCredMode == "2" -> if (resolvedCredId != null) InheritanceMode.OVERRIDE_EXPLICIT else defaultCredMode
+            rawCredMode == "3" -> if (resolvedCredId != null) InheritanceMode.OVERRIDE_EXPLICIT else InheritanceMode.PROMPT_AT_CONNECT
+            rawCredMode == "4" -> if (resolvedCredId != null) InheritanceMode.OVERRIDE_EXPLICIT else InheritanceMode.INHERIT_FROM_PARENT
             resolvedCredId != null -> InheritanceMode.OVERRIDE_EXPLICIT
             else -> defaultCredMode
         }
 
-        val gwId = elem.childText("SecureGatewayID")
-            .ifBlank { elem.childText("RDGatewayID") }
-            .ifBlank { elem.childText("ManagementEndpointID") }
-            .takeIf { it.isNotBlank() }
-        val rawGwMode = elem.childText("GatewayMode").ifBlank { elem.childText("SecureGatewayUsageMode") }.trim()
+        val gwId = elem.childText("SecureGatewayID").nonEmptyRoyalIdOrNull()
+            ?: elem.childText("RDSGatewayID").nonEmptyRoyalIdOrNull()
+            ?: elem.childText("RDGatewayID").nonEmptyRoyalIdOrNull()
+            ?: elem.childText("ManagementEndpointID").nonEmptyRoyalIdOrNull()
+        val gwFromParent = elem.childBoolean(
+            "SecureGatewayFromParent",
+            "RDSGatewayFromParent",
+            "ManagementEndpointFromParent",
+            default = false
+        )
+        val rawGwMode = elem.childText("GatewayMode")
+            .ifBlank { elem.childText("SecureGatewayUsageMode") }
+            .ifBlank { elem.childText("RDSGatewayUsageMode") }
+            .trim()
         val gwMode = when {
+            gwFromParent -> InheritanceMode.INHERIT_FROM_PARENT
             rawGwMode == "0" -> InheritanceMode.NONE_DIRECT
             rawGwMode == "2" || (rawGwMode == "1" && gwId != null) -> InheritanceMode.OVERRIDE_EXPLICIT
             rawGwMode == "3" -> InheritanceMode.PROMPT_AT_CONNECT
-            rawGwMode == "4" -> InheritanceMode.INHERIT_FROM_PARENT
+            rawGwMode == "4" || (rawGwMode == "1" && gwId == null) -> InheritanceMode.INHERIT_FROM_PARENT
             gwId != null -> InheritanceMode.OVERRIDE_EXPLICIT
             else -> defaultGwMode
         }
@@ -689,12 +742,12 @@ class RtszDocumentImporter {
             gatewayMode = gwMode,
             explicitGatewayId = if (gwMode == InheritanceMode.OVERRIDE_EXPLICIT) gwId else null,
             environmentBadge = elem.childText("EnvironmentBadge").takeIf { it.isNotBlank() },
-            preConnectTaskId = elem.childText("PreConnectTaskID")
-                .ifBlank { elem.childText("ConnectTaskID") }
-                .takeIf { it.isNotBlank() },
-            postDisconnectTaskId = elem.childText("PostDisconnectTaskID")
-                .ifBlank { elem.childText("DisconnectTaskID") }
-                .takeIf { it.isNotBlank() },
+            preConnectTaskId = elem.childText("PreConnectTaskID").nonEmptyRoyalIdOrNull()
+                ?: elem.childText("PreConnectTaskId").nonEmptyRoyalIdOrNull()
+                ?: elem.childText("ConnectTaskID").nonEmptyRoyalIdOrNull(),
+            postDisconnectTaskId = elem.childText("PostDisconnectTaskID").nonEmptyRoyalIdOrNull()
+                ?: elem.childText("PostDisconnectTaskId").nonEmptyRoyalIdOrNull()
+                ?: elem.childText("DisconnectTaskID").nonEmptyRoyalIdOrNull(),
             displayColorAccentHex = inheritableColor,
             customProperties = customProps,
             requireConnectConfirmation = elem.childBoolean("RequireConnectConfirmation", default = false)
@@ -801,7 +854,10 @@ class RtszDocumentImporter {
                 else ->
                     RdpAudioRedirectionMode.PLAY_ON_THIS_DEVICE
             }
-            val scaleRaw = elem.childText("DesktopScaleFactor").toIntOrNull()?.coerceIn(100, 400) ?: 100
+            val scaleRaw = elem.childText("DesktopScaleFactor")
+                .ifBlank { elem.childText("ScaleFactor") }
+                .toIntOrNull()
+                ?.coerceIn(100, 400) ?: 100
             val deviceScale = elem.childText("DeviceScaleFactor").toIntOrNull()
                 ?: if (scaleRaw >= 175) 180 else if (scaleRaw >= 125) 140 else 100
             val resizeModeRaw = elem.childText("ResizeMode")
@@ -830,10 +886,10 @@ class RtszDocumentImporter {
             ProtocolSpecificSettings.Rdp(
                 port = port,
                 connectToConsoleAdmin = elem.childBoolean("ConnectToAdministerOrConsole", "ConnectToConsole", default = false),
-                hiDpiEnabled = elem.childBoolean("AutoAdjustRetinaDisplay", default = true),
+                hiDpiEnabled = elem.childBoolean("AutoAdjustRetinaDisplay", "AutomaticallyCalculateScaleFactor", "UseRetinaResolution", default = true),
                 desktopScaleFactorPercent = scaleRaw,
                 deviceScaleFactorPercent = deviceScale,
-                enableGfxPipeline = elem.childBoolean("EnableGfxPipeline", default = true),
+                enableGfxPipeline = elem.childBoolean("EnableGfxPipeline", "EnableGraphicsPipeline", default = true),
                 enableH264Avc444 = elem.childBoolean("EnableH264Avc444", default = true),
                 enableRemoteFx = elem.childBoolean("EnableRemoteFx", default = true),
                 resizeBehavior = resizeBehavior,
@@ -849,7 +905,13 @@ class RtszDocumentImporter {
                 } else {
                     audioMode == RdpAudioRedirectionMode.PLAY_ON_THIS_DEVICE
                 },
-                redirectMicrophone = elem.childBoolean("RedirectMicrophone", "RedirectAudioCapture", "RedirectAudioRecording", default = false),
+                redirectMicrophone = elem.childBoolean(
+                    "RedirectMicrophone",
+                    "RedirectAudioCapture",
+                    "RedirectAudioRecording",
+                    "AudioCaptureRedirectionMode",
+                    default = false
+                ),
                 redirectDrives = elem.childBoolean("RedirectDrives", default = false),
                 redirectedDriveSafUris = driveUris,
                 redirectPrinters = elem.childBoolean("RedirectPrinters", default = false),
@@ -863,12 +925,12 @@ class RtszDocumentImporter {
                 enableThemes = elem.childBoolean("AllowThemes", default = true),
                 compressionEnabled = elem.childBoolean("Compression", default = true),
                 remoteAppMode = elem.childBoolean("RemoteAppMode", default = false),
-                remoteAppProgram = elem.childText("RemoteAppProgram"),
+                remoteAppProgram = elem.childText("RemoteAppProgram").ifBlank { elem.childText("StartProgram") },
                 remoteAppArguments = elem.childText("RemoteAppArguments"),
-                rdGatewayHostname = elem.childText("RDGatewayHost"),
+                rdGatewayHostname = elem.childText("RDGatewayHost").ifBlank { elem.childText("GatewayHostName") },
                 rdGatewayPort = elem.childInt("RDGatewayPort") ?: 443,
                 nlaSecurityRequired = elem.childBoolean("NetworkLevelAuthentication", default = true),
-                tlsSecurity = elem.childBoolean("TlsSecurity", default = true),
+                tlsSecurity = elem.childBoolean("TlsSecurity", "TLSEncryption", default = true),
                 restrictedAdminMode = elem.childBoolean("RestrictedAdminMode", default = false),
                 ignoreCertificateWarnings = elem.childBoolean("IgnoreCertificateWarning", "IgnoreCertificate", default = false)
             )
@@ -881,7 +943,7 @@ class RtszDocumentImporter {
                 terminalType = elem.childText("TerminalType")
                     .ifBlank { elem.childText("TerminalName") }
                     .ifBlank { "xterm-256color" },
-                bastionJumpConnectionId = elem.childText("BastionJumpConnectionId").takeIf { it.isNotBlank() },
+                bastionJumpConnectionId = elem.childText("BastionJumpConnectionId").nonEmptyRoyalIdOrNull(),
                 enableAgentForwarding = elem.childBoolean("EnableAgentForwarding", "AllowAgentForwarding", default = false),
                 enableX11Forwarding = elem.childBoolean("EnableX11Forwarding", "UseX11Forwarding", default = false),
                 x11DisplayHost = elem.childText("X11DisplayHost").ifBlank { "127.0.0.1:0" },
@@ -1015,7 +1077,9 @@ class RtszDocumentImporter {
                 portScanRangeStart = elem.childInt("PortScanStart") ?: 1,
                 portScanRangeEnd = elem.childInt("PortScanEnd") ?: 1024,
                 portScanConcurrency = elem.childInt("PortScanConcurrency") ?: 128,
-                wolMacAddress = elem.childText("WolMacAddress").ifBlank { elem.childText("MACAddress") },
+                wolMacAddress = elem.childText("WolMacAddress")
+                    .ifBlank { elem.childText("MACAddress") }
+                    .ifBlank { elem.childText("PhysicalAddress") },
                 wolBroadcastAddress = elem.childText("WolBroadcastIp").ifBlank { "255.255.255.255" },
                 wolUdpPort = elem.childInt("WolUdpPort") ?: 9,
                 wolSecureOnHex = elem.childText("WolSecureOnHex")
@@ -1293,7 +1357,16 @@ class RtszDocumentImporter {
         return default
     }
 
+    private fun String.nonEmptyRoyalIdOrNull(): String? {
+        val trimmed = this.trim()
+        if (trimmed.isEmpty()) return null
+        val unbraced = trimmed.removeSurrounding("{", "}").trim()
+        if (unbraced.isEmpty() || unbraced.equals(EMPTY_DOTNET_GUID, ignoreCase = true)) return null
+        return trimmed
+    }
+
     companion object {
+        private const val EMPTY_DOTNET_GUID = "00000000-0000-0000-0000-000000000000"
         private val UTF16_DECL_REGEX = Regex("""encoding\s*=\s*["']utf-16[^"']*["']""", RegexOption.IGNORE_CASE)
         private val INVALID_CHAR_REF_REGEX = Regex(
             """&#x(?:0*[0-8bcef]|1[0-9a-f]);|&#(?:0*[0-8]|11|12|1[4-9]|2[0-9]|3[01]);""",
