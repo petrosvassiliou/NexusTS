@@ -4,6 +4,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -22,6 +23,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.AutoAwesome
@@ -30,6 +32,7 @@ import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.DeviceHub
 import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.outlined.NetworkCheck
 import androidx.compose.material.icons.outlined.PlayArrow
@@ -37,12 +40,10 @@ import androidx.compose.material.icons.outlined.SystemUpdateAlt
 import androidx.compose.material.icons.outlined.UploadFile
 import androidx.compose.material.icons.outlined.VpnKey
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -50,8 +51,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -63,11 +62,19 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.nexusts.app.core.ui.components.NexusActionChip
+import com.nexusts.app.core.ui.components.NexusChoiceChip
+import com.nexusts.app.core.ui.input.nexusDesktopPointerButtons
+import com.nexusts.app.core.ui.input.nexusHoverTracker
+import com.nexusts.app.core.ui.input.rememberDesktopHoverState
 import com.nexusts.app.core.ui.theme.NexusTheme
 import com.nexusts.app.core.vault.gateway.ActiveTunnelLease
 import com.nexusts.app.core.vault.gateway.GatewayHealthReport
@@ -97,6 +104,7 @@ import java.util.UUID
  *    or creating a new Domain\Username + Password credential inline on the Folder) so child RDP,
  *    SSH, SFTP, VNC, and Cloud connections inherit them automatically via `INHERIT_FROM_PARENT`.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun FolderPropertiesAndCredentialDialog(
     visible: Boolean,
@@ -107,13 +115,16 @@ fun FolderPropertiesAndCredentialDialog(
     strings: WorkspaceLocalizedStrings,
     onDismiss: () -> Unit,
     onSaveFolderAndCredential: (VaultFolder, VaultCredential?) -> Unit,
-    onDeleteFolder: ((String) -> Unit)? = null
+    onDeleteFolder: ((String) -> Unit)? = null,
+    defaultParentFolderId: String? = null
 ) {
     if (!visible) return
 
     val folderId = remember(editingFolder) { editingFolder?.id ?: UUID.randomUUID().toString() }
     var folderName by remember(editingFolder) { mutableStateOf(editingFolder?.name.orEmpty()) }
-    var parentFolderId by remember(editingFolder) { mutableStateOf(editingFolder?.parentFolderId) }
+    var parentFolderId by remember(editingFolder, defaultParentFolderId) {
+        mutableStateOf(editingFolder?.parentFolderId ?: defaultParentFolderId)
+    }
     var parentMenuOpen by remember { mutableStateOf(false) }
 
     // 0 = Create & Save New Folder Credential inline, 1 = Pick Existing Credential, 2 = Inherit Parent, 3 = Prompt
@@ -232,37 +243,30 @@ fun FolderPropertiesAndCredentialDialog(
                     color = MaterialTheme.colorScheme.secondary
                 )
 
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Row(
-                        modifier = Modifier.horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        FilterChip(
-                            selected = credAssignChoice == 2,
-                            onClick = { credAssignChoice = 2 },
-                            label = { Text(strings.credModeInheritFolder, style = MaterialTheme.typography.labelSmall) }
-                        )
-                        FilterChip(
-                            selected = credAssignChoice == 0,
-                            onClick = { credAssignChoice = 0 },
-                            label = { Text(strings.credModeInlineNew, style = MaterialTheme.typography.labelSmall) }
-                        )
-                    }
-                    Row(
-                        modifier = Modifier.horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        FilterChip(
-                            selected = credAssignChoice == 1,
-                            onClick = { credAssignChoice = 1 },
-                            label = { Text(strings.credModeOverrideExplicit, style = MaterialTheme.typography.labelSmall) }
-                        )
-                        FilterChip(
-                            selected = credAssignChoice == 3,
-                            onClick = { credAssignChoice = 3 },
-                            label = { Text(strings.credModePrompt, style = MaterialTheme.typography.labelSmall) }
-                        )
-                    }
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    NexusChoiceChip(
+                        selected = credAssignChoice == 2,
+                        onClick = { credAssignChoice = 2 },
+                        label = strings.credModeInheritFolder
+                    )
+                    NexusChoiceChip(
+                        selected = credAssignChoice == 0,
+                        onClick = { credAssignChoice = 0 },
+                        label = strings.credModeInlineNew
+                    )
+                    NexusChoiceChip(
+                        selected = credAssignChoice == 1,
+                        onClick = { credAssignChoice = 1 },
+                        label = strings.credModeOverrideExplicit
+                    )
+                    NexusChoiceChip(
+                        selected = credAssignChoice == 3,
+                        onClick = { credAssignChoice = 3 },
+                        label = strings.credModePrompt
+                    )
                 }
 
                 when (credAssignChoice) {
@@ -435,6 +439,7 @@ fun FolderPropertiesAndCredentialDialog(
  * 1. Expressive Connection Editor Dialog (`Ctrl/Cmd + N` or Edit Connection) supporting all 23 protocols,
  *    Folder-Level Credential & Gateway Inheritance preview/override, and the full 4-Tab Classic Royal TS RDP Suite.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun NewOrEditConnectionDialog(
     visible: Boolean,
@@ -446,7 +451,9 @@ fun NewOrEditConnectionDialog(
     onDismiss: () -> Unit,
     onSaveConnection: (VaultConnection) -> Unit,
     sshConnections: List<VaultConnection> = emptyList(),
-    gateways: List<SecureGatewayConfig> = emptyList()
+    gateways: List<SecureGatewayConfig> = emptyList(),
+    defaultFolderId: String? = null,
+    defaultProtocol: VaultProtocolType = VaultProtocolType.RDP
 ) {
     if (!visible) return
 
@@ -459,11 +466,11 @@ fun NewOrEditConnectionDialog(
 
     var name by remember(initialConnection) { mutableStateOf(initialConnection?.name.orEmpty()) }
     var host by remember(initialConnection) { mutableStateOf(initialConnection?.host.orEmpty()) }
-    var selectedProto by remember(initialConnection) {
-        mutableStateOf(initialConnection?.protocol ?: VaultProtocolType.RDP)
+    var selectedProto by remember(initialConnection, defaultProtocol) {
+        mutableStateOf(initialConnection?.protocol ?: defaultProtocol)
     }
-    var selectedFolderId by remember(initialConnection, folders) {
-        mutableStateOf(initialConnection?.parentFolderId ?: folders.firstOrNull()?.id)
+    var selectedFolderId by remember(initialConnection, defaultFolderId) {
+        mutableStateOf(initialConnection?.parentFolderId ?: defaultFolderId)
     }
     var credentialMode by remember(initialConnection) {
         mutableStateOf(initialConnection?.inheritable?.credentialMode ?: InheritanceMode.INHERIT_FROM_PARENT)
@@ -487,7 +494,14 @@ fun NewOrEditConnectionDialog(
 
     // VNC & File Transfer ports
     var vncPortText by remember(initialConnection) { mutableStateOf(initialVnc.port.toString()) }
-    var ftPortText by remember(initialConnection) { mutableStateOf(initialFt.port.toString()) }
+    var ftPortText by remember(initialConnection, defaultProtocol) {
+        val defaultFt = when (initialConnection?.protocol ?: defaultProtocol) {
+            VaultProtocolType.FTP -> 21
+            VaultProtocolType.FTPS -> 990
+            else -> initialFt.port
+        }
+        mutableStateOf(defaultFt.toString())
+    }
 
     // USB-C Hardware Serial / UART state
     var serialBaudRate by remember(initialConnection) { mutableIntStateOf(initialSerial.baudRate) }
@@ -503,7 +517,14 @@ fun NewOrEditConnectionDialog(
     var containerFollowLogs by remember(initialConnection) { mutableStateOf(initialContainer.followLogsOnOpen) }
 
     // SSH Port-Forwarding (-L / -R / -D), X11 & Bastion Jump state
-    var sshPortText by remember(initialConnection) { mutableStateOf(initialSsh.port.toString()) }
+    var sshPortText by remember(initialConnection, defaultProtocol) {
+        val defaultSshPort = if ((initialConnection?.protocol ?: defaultProtocol) == VaultProtocolType.TELNET && initialConnection == null) {
+            23
+        } else {
+            initialSsh.port
+        }
+        mutableStateOf(defaultSshPort.toString())
+    }
     var sshAgentForward by remember(initialConnection) { mutableStateOf(initialSsh.enableAgentForwarding) }
     var sshX11Forward by remember(initialConnection) { mutableStateOf(initialSsh.enableX11Forwarding) }
     var sshBastionConnId by remember(initialConnection) { mutableStateOf(initialSsh.bastionJumpConnectionId) }
@@ -682,9 +703,9 @@ fun NewOrEditConnectionDialog(
                 }
 
                 if (selectedProto == VaultProtocolType.RDP) {
-                    Row(
-                        modifier = Modifier.horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         listOf(
                             0 to strings.rdpTabGeneral,
@@ -692,10 +713,10 @@ fun NewOrEditConnectionDialog(
                             2 to strings.rdpTabResources,
                             3 to strings.rdpTabExperienceSecurity
                         ).forEach { (idx, label) ->
-                            FilterChip(
+                            NexusChoiceChip(
                                 selected = activeRdpTab == idx,
                                 onClick = { activeRdpTab = idx },
-                                label = { Text(label, style = MaterialTheme.typography.labelSmall) }
+                                label = label
                             )
                         }
                     }
@@ -708,24 +729,24 @@ fun NewOrEditConnectionDialog(
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.secondary
                     )
-                    Row(
-                        modifier = Modifier.horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        FilterChip(
+                        NexusChoiceChip(
                             selected = credentialMode == InheritanceMode.INHERIT_FROM_PARENT,
                             onClick = { credentialMode = InheritanceMode.INHERIT_FROM_PARENT },
-                            label = { Text(strings.credModeInheritFolder, style = MaterialTheme.typography.labelSmall) }
+                            label = strings.credModeInheritFolder
                         )
-                        FilterChip(
+                        NexusChoiceChip(
                             selected = credentialMode == InheritanceMode.OVERRIDE_EXPLICIT,
                             onClick = { credentialMode = InheritanceMode.OVERRIDE_EXPLICIT },
-                            label = { Text(strings.credModeOverrideExplicit, style = MaterialTheme.typography.labelSmall) }
+                            label = strings.credModeOverrideExplicit
                         )
-                        FilterChip(
+                        NexusChoiceChip(
                             selected = credentialMode == InheritanceMode.PROMPT_AT_CONNECT,
                             onClick = { credentialMode = InheritanceMode.PROMPT_AT_CONNECT },
-                            label = { Text(strings.credModePrompt, style = MaterialTheme.typography.labelSmall) }
+                            label = strings.credModePrompt
                         )
                     }
 
@@ -793,24 +814,24 @@ fun NewOrEditConnectionDialog(
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.secondary
                         )
-                        Row(
-                            modifier = Modifier.horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            FilterChip(
+                            NexusChoiceChip(
                                 selected = gatewayMode == InheritanceMode.INHERIT_FROM_PARENT,
                                 onClick = { gatewayMode = InheritanceMode.INHERIT_FROM_PARENT },
-                                label = { Text(strings.credModeInheritFolder, style = MaterialTheme.typography.labelSmall) }
+                                label = strings.credModeInheritFolder
                             )
-                            FilterChip(
+                            NexusChoiceChip(
                                 selected = gatewayMode == InheritanceMode.OVERRIDE_EXPLICIT,
                                 onClick = { gatewayMode = InheritanceMode.OVERRIDE_EXPLICIT },
-                                label = { Text(strings.credModeOverrideExplicit, style = MaterialTheme.typography.labelSmall) }
+                                label = strings.credModeOverrideExplicit
                             )
-                            FilterChip(
+                            NexusChoiceChip(
                                 selected = gatewayMode == InheritanceMode.NONE_DIRECT,
                                 onClick = { gatewayMode = InheritanceMode.NONE_DIRECT },
-                                label = { Text("Direct", style = MaterialTheme.typography.labelSmall) }
+                                label = "Direct"
                             )
                         }
                         if (gatewayMode == InheritanceMode.OVERRIDE_EXPLICIT) {
@@ -859,33 +880,33 @@ fun NewOrEditConnectionDialog(
                         onCheckedChange = { hiDpiEnabled = it }
                     )
                     if (hiDpiEnabled) {
-                        Row(
-                            modifier = Modifier.horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
                             listOf(100, 125, 150, 175, 200).forEach { scale ->
-                                FilterChip(
+                                NexusChoiceChip(
                                     selected = desktopScalePercent == scale,
                                     onClick = { desktopScalePercent = scale },
-                                    label = { Text("$scale%", style = MaterialTheme.typography.labelSmall) }
+                                    label = "$scale%"
                                 )
                             }
                         }
                     }
 
-                    Row(
-                        modifier = Modifier.horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         listOf(
                             RdpResizeBehavior.DYNAMIC_DISP_DVC to "Dynamic Resize (DISP_DVC)",
                             RdpResizeBehavior.SMART_SCALE_VIEWPORT to "Smart Scale",
                             RdpResizeBehavior.FIXED_SERVER_RESOLUTION to "Fixed Size"
                         ).forEach { (mode, modeLabel) ->
-                            FilterChip(
+                            NexusChoiceChip(
                                 selected = resizeBehavior == mode,
                                 onClick = { resizeBehavior = mode },
-                                label = { Text(modeLabel, style = MaterialTheme.typography.labelSmall) }
+                                label = modeLabel
                             )
                         }
                     }
@@ -909,15 +930,15 @@ fun NewOrEditConnectionDialog(
                         }
                     }
 
-                    Row(
-                        modifier = Modifier.horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         listOf(32, 24, 16).forEach { depth ->
-                            FilterChip(
+                            NexusChoiceChip(
                                 selected = colorDepthBits == depth,
                                 onClick = { colorDepthBits = depth },
-                                label = { Text("$depth-bit Color", style = MaterialTheme.typography.labelSmall) }
+                                label = "$depth-bit Color"
                             )
                         }
                     }
@@ -947,24 +968,24 @@ fun NewOrEditConnectionDialog(
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.secondary
                     )
-                    Row(
-                        modifier = Modifier.horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        FilterChip(
+                        NexusChoiceChip(
                             selected = audioRedirectionMode == RdpAudioRedirectionMode.PLAY_ON_THIS_DEVICE,
                             onClick = { audioRedirectionMode = RdpAudioRedirectionMode.PLAY_ON_THIS_DEVICE },
-                            label = { Text(strings.rdpAudioLocal, style = MaterialTheme.typography.labelSmall) }
+                            label = strings.rdpAudioLocal
                         )
-                        FilterChip(
+                        NexusChoiceChip(
                             selected = audioRedirectionMode == RdpAudioRedirectionMode.PLAY_ON_REMOTE_HOST,
                             onClick = { audioRedirectionMode = RdpAudioRedirectionMode.PLAY_ON_REMOTE_HOST },
-                            label = { Text(strings.rdpAudioRemote, style = MaterialTheme.typography.labelSmall) }
+                            label = strings.rdpAudioRemote
                         )
-                        FilterChip(
+                        NexusChoiceChip(
                             selected = audioRedirectionMode == RdpAudioRedirectionMode.DO_NOT_PLAY,
                             onClick = { audioRedirectionMode = RdpAudioRedirectionMode.DO_NOT_PLAY },
-                            label = { Text(strings.rdpAudioMute, style = MaterialTheme.typography.labelSmall) }
+                            label = strings.rdpAudioMute
                         )
                     }
 
@@ -1161,16 +1182,19 @@ fun NewOrEditConnectionDialog(
                             modifier = Modifier.padding(10.dp),
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
                                 listOf(
                                     PortForwardKind.LOCAL to "-L Local",
                                     PortForwardKind.REMOTE to "-R Remote",
                                     PortForwardKind.DYNAMIC_SOCKS5 to "-D SOCKS5"
                                 ).forEach { (kind, label) ->
-                                    FilterChip(
+                                    NexusChoiceChip(
                                         selected = newTunnelKind == kind,
                                         onClick = { newTunnelKind = kind },
-                                        label = { Text(label) }
+                                        label = label
                                     )
                                 }
                             }
@@ -1247,34 +1271,34 @@ fun NewOrEditConnectionDialog(
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             Text("Baud Rate", style = MaterialTheme.typography.labelMedium)
-                            Row(
-                                modifier = Modifier.horizontalScroll(rememberScrollState()),
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
                                 listOf(9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600).forEach { baud ->
-                                    FilterChip(
+                                    NexusChoiceChip(
                                         selected = serialBaudRate == baud,
                                         onClick = { serialBaudRate = baud },
-                                        label = { Text("$baud", style = MaterialTheme.typography.labelSmall) }
+                                        label = "$baud"
                                     )
                                 }
                             }
-                            Row(
-                                modifier = Modifier.horizontalScroll(rememberScrollState()),
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
                                 listOf("NONE", "EVEN", "ODD").forEach { p ->
-                                    FilterChip(
+                                    NexusChoiceChip(
                                         selected = serialParity == p,
                                         onClick = { serialParity = p },
-                                        label = { Text("Parity: $p", style = MaterialTheme.typography.labelSmall) }
+                                        label = "Parity: $p"
                                     )
                                 }
                                 listOf("NONE", "RTS_CTS", "XON_XOFF").forEach { fc ->
-                                    FilterChip(
+                                    NexusChoiceChip(
                                         selected = serialFlowControl == fc,
                                         onClick = { serialFlowControl = fc },
-                                        label = { Text("Flow: $fc", style = MaterialTheme.typography.labelSmall) }
+                                        label = "Flow: $fc"
                                     )
                                 }
                             }
@@ -1327,12 +1351,15 @@ fun NewOrEditConnectionDialog(
                                 singleLine = true,
                                 modifier = Modifier.fillMaxWidth()
                             )
-                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
                                 listOf("/bin/sh", "/bin/bash", "/bin/ash").forEach { sh ->
-                                    FilterChip(
+                                    NexusChoiceChip(
                                         selected = containerShell == sh,
                                         onClick = { containerShell = sh },
-                                        label = { Text(sh, style = MaterialTheme.typography.labelSmall) }
+                                        label = sh
                                     )
                                 }
                             }
@@ -1504,11 +1531,26 @@ private fun RdpOptionSwitchRow(
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit
 ) {
+    val hover = rememberDesktopHoverState()
+    val interactionSource = remember { MutableInteractionSource() }
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable { onCheckedChange(!checked) }
-            .padding(vertical = 2.dp),
+            .clip(RoundedCornerShape(10.dp))
+            .background(
+                if (hover.value.isHovered) {
+                    MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.55f)
+                } else {
+                    Color.Transparent
+                }
+            )
+            .nexusHoverTracker(hover, PointerIcon.Hand)
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null,
+                onClick = { onCheckedChange(!checked) }
+            )
+            .padding(horizontal = 6.dp, vertical = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
@@ -1537,6 +1579,7 @@ fun CredentialVaultStudioView(
     onGenerateEd25519Key: () -> Unit,
     onCreateCredential: (VaultCredential) -> Unit,
     onUpdateCredential: (VaultCredential) -> Unit = {},
+    onDuplicateCredential: (VaultCredential) -> Unit = {},
     onDeleteCredential: (String) -> Unit = {},
     onRequestImportVaultFile: () -> Unit = {},
     modifier: Modifier = Modifier
@@ -1550,6 +1593,7 @@ fun CredentialVaultStudioView(
     var credSecret by remember { mutableStateOf("") }
     var credTotpSecret by remember { mutableStateOf("") }
     var credKind by remember { mutableStateOf(CredentialSourceKind.VAULT_INTERNAL) }
+    var bgMenuOpen by remember { mutableStateOf(false) }
 
     fun openForCreate() {
         editingCredential = null
@@ -1582,9 +1626,9 @@ fun CredentialVaultStudioView(
                     modifier = Modifier.verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Row(
-                        modifier = Modifier.horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         listOf(
                             CredentialSourceKind.VAULT_INTERNAL,
@@ -1593,10 +1637,10 @@ fun CredentialVaultStudioView(
                             CredentialSourceKind.KEEPASS_KDBX,
                             CredentialSourceKind.HARDWARE_FIDO2_PASSKEY
                         ).forEach { kind ->
-                            FilterChip(
+                            NexusChoiceChip(
                                 selected = credKind == kind,
                                 onClick = { credKind = kind },
-                                label = { Text(kind.name.substringBefore('_'), style = MaterialTheme.typography.labelSmall) }
+                                label = kind.name.substringBefore('_')
                             )
                         }
                     }
@@ -1680,178 +1724,276 @@ fun CredentialVaultStudioView(
         )
     }
 
-    Column(
+    Box(
         modifier = modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.surfaceContainerLowest)
-            .padding(24.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+            .nexusDesktopPointerButtons(onSecondaryClick = { bgMenuOpen = true })
     ) {
         Column(
-            modifier = Modifier.fillMaxWidth(),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(24.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            Row(
+            Column(
                 modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Icon(
-                    imageVector = Icons.Outlined.Key,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(26.dp)
-                )
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(strings.navCredentials, style = MaterialTheme.typography.headlineSmall)
-                    Text(
-                        text = strings.studioCredentialsSubtitle,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Button(onClick = { openForCreate() }) {
-                    Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(strings.studioActionAddCredential)
-                }
-                FilledTonalButton(onClick = onGenerateEd25519Key) {
-                    Icon(Icons.Outlined.VpnKey, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(strings.inspectorGenerateSshKey)
-                }
-                OutlinedButton(onClick = onRequestImportVaultFile) {
-                    Icon(Icons.Outlined.UploadFile, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(strings.studioActionImportPasswords)
-                }
-            }
-        }
-
-        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
-
-        if (credentials.isEmpty()) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f),
-                contentAlignment = Alignment.Center
-            ) {
-                Surface(
-                    shape = RoundedCornerShape(24.dp),
-                    color = MaterialTheme.colorScheme.surfaceContainerLow,
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)),
-                    modifier = Modifier.widthIn(max = 460.dp).fillMaxWidth()
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    Column(
-                        modifier = Modifier.padding(28.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Outlined.Key,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(34.dp)
-                        )
-                        Text(
-                            text = strings.navCredentials,
-                            style = MaterialTheme.typography.titleMedium,
-                            textAlign = TextAlign.Center
-                        )
+                    Icon(
+                        imageVector = Icons.Outlined.Key,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(26.dp)
+                    )
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(strings.navCredentials, style = MaterialTheme.typography.headlineSmall)
                         Text(
                             text = strings.studioCredentialsSubtitle,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            textAlign = TextAlign.Center
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
-                        Button(onClick = { openForCreate() }) {
-                            Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(strings.studioActionAddCredential)
+                    }
+                }
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Button(onClick = { openForCreate() }) {
+                        Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(strings.studioActionAddCredential)
+                    }
+                    FilledTonalButton(onClick = onGenerateEd25519Key) {
+                        Icon(Icons.Outlined.VpnKey, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(strings.inspectorGenerateSshKey)
+                    }
+                    OutlinedButton(onClick = onRequestImportVaultFile) {
+                        Icon(Icons.Outlined.UploadFile, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(strings.studioActionImportPasswords)
+                    }
+                }
+            }
+
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
+
+            if (credentials.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(24.dp),
+                        color = MaterialTheme.colorScheme.surfaceContainerLow,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)),
+                        modifier = Modifier.widthIn(max = 460.dp).fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(28.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.Key,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(34.dp)
+                            )
+                            Text(
+                                text = strings.navCredentials,
+                                style = MaterialTheme.typography.titleMedium,
+                                textAlign = TextAlign.Center
+                            )
+                            Text(
+                                text = strings.studioCredentialsSubtitle,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.Center
+                            )
+                            Button(onClick = { openForCreate() }) {
+                                Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(strings.studioActionAddCredential)
+                            }
                         }
                     }
                 }
-            }
-        } else {
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(credentials, key = { it.id }) { cred ->
-                    val userDisplay = if (cred.domain.isNotBlank()) {
-                        "${cred.domain}\\${cred.username.ifBlank { "-" }}"
-                    } else {
-                        cred.username.ifBlank { "-" }
-                    }
-                    Surface(
-                        shape = MaterialTheme.shapes.large,
-                        color = MaterialTheme.colorScheme.surfaceContainer,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 16.dp, vertical = 12.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
+            } else {
+                LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(credentials, key = { it.id }) { cred ->
+                        val userDisplay = if (cred.domain.isNotBlank()) {
+                            "${cred.domain}\\${cred.username.ifBlank { "-" }}"
+                        } else {
+                            cred.username.ifBlank { "-" }
+                        }
+                        val cardHover = rememberDesktopHoverState()
+                        var credMenuOpen by remember { mutableStateOf(false) }
+
+                        Box(modifier = Modifier.fillMaxWidth()) {
+                            Surface(
+                                shape = MaterialTheme.shapes.large,
+                                color = if (cardHover.value.isHovered) {
+                                    MaterialTheme.colorScheme.surfaceContainerHigh
+                                } else {
+                                    MaterialTheme.colorScheme.surfaceContainer
+                                },
+                                border = BorderStroke(
+                                    1.dp,
+                                    if (cardHover.value.isHovered) {
+                                        MaterialTheme.colorScheme.primary.copy(alpha = 0.38f)
+                                    } else {
+                                        Color.Transparent
+                                    }
+                                ),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .nexusHoverTracker(cardHover, PointerIcon.Default)
+                                    .nexusDesktopPointerButtons(onSecondaryClick = { credMenuOpen = true })
                             ) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(cred.name, style = MaterialTheme.typography.titleSmall)
-                                    Text(
-                                        text = "${cred.sourceKind.name} • $userDisplay" +
-                                            if (cred.keyFingerprintSha256.isNotBlank()) " • ${cred.keyFingerprintSha256}" else "",
-                                        style = NexusTheme.monospace.keycapShortcut,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    if (cred.username.isNotBlank()) {
-                                        AssistChip(
-                                            onClick = { clipboard.setText(AnnotatedString(cred.username)) },
-                                            label = { Text("User", style = MaterialTheme.typography.labelSmall) },
-                                            leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null, modifier = Modifier.size(13.dp)) }
-                                        )
-                                        Spacer(modifier = Modifier.width(4.dp))
-                                    }
-                                    if (cred.secretPassword.isNotBlank()) {
-                                        AssistChip(
-                                            onClick = { clipboard.setText(AnnotatedString(cred.secretPassword)) },
-                                            label = { Text("Secret", style = MaterialTheme.typography.labelSmall) },
-                                            leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null, modifier = Modifier.size(13.dp)) }
-                                        )
-                                        Spacer(modifier = Modifier.width(4.dp))
-                                    }
-                                    if (cred.publicKeyOpenSsh.isNotBlank()) {
-                                        IconButton(
-                                            onClick = { clipboard.setText(AnnotatedString(cred.publicKeyOpenSsh)) }
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(cred.name, style = MaterialTheme.typography.titleSmall)
+                                            Text(
+                                                text = "${cred.sourceKind.name} • $userDisplay" +
+                                                    if (cred.keyFingerprintSha256.isNotBlank()) " • ${cred.keyFingerprintSha256}" else "",
+                                                style = NexusTheme.monospace.keycapShortcut,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
                                         ) {
-                                            Icon(Icons.Outlined.ContentCopy, contentDescription = "Copy SSH Public Key", modifier = Modifier.size(18.dp))
+                                            if (cred.username.isNotBlank()) {
+                                                NexusActionChip(
+                                                    onClick = { clipboard.setText(AnnotatedString(cred.username)) },
+                                                    label = "User",
+                                                    leadingIcon = Icons.Outlined.ContentCopy
+                                                )
+                                            }
+                                            if (cred.secretPassword.isNotBlank()) {
+                                                NexusActionChip(
+                                                    onClick = { clipboard.setText(AnnotatedString(cred.secretPassword)) },
+                                                    label = "Secret",
+                                                    leadingIcon = Icons.Outlined.ContentCopy
+                                                )
+                                            }
+                                            if (cred.publicKeyOpenSsh.isNotBlank()) {
+                                                IconButton(
+                                                    onClick = { clipboard.setText(AnnotatedString(cred.publicKeyOpenSsh)) }
+                                                ) {
+                                                    Icon(Icons.Outlined.ContentCopy, contentDescription = "Copy SSH Public Key", modifier = Modifier.size(18.dp))
+                                                }
+                                            }
+                                            IconButton(onClick = { openForEdit(cred) }) {
+                                                Icon(Icons.Outlined.Edit, contentDescription = "Edit Credential", modifier = Modifier.size(18.dp))
+                                            }
+                                            IconButton(onClick = { onDeleteCredential(cred.id) }) {
+                                                Icon(
+                                                    Icons.Outlined.Delete,
+                                                    contentDescription = "Delete Credential",
+                                                    tint = MaterialTheme.colorScheme.error,
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                            }
                                         }
                                     }
-                                    IconButton(onClick = { openForEdit(cred) }) {
-                                        Icon(Icons.Outlined.Edit, contentDescription = "Edit Credential", modifier = Modifier.size(18.dp))
-                                    }
-                                    IconButton(onClick = { onDeleteCredential(cred.id) }) {
-                                        Icon(
-                                            Icons.Outlined.Delete,
-                                            contentDescription = "Delete Credential",
-                                            tint = MaterialTheme.colorScheme.error,
-                                            modifier = Modifier.size(18.dp)
+                                    if (cred.totpSecretBase32.isNotBlank()) {
+                                        LiveTotpAuthenticatorCard(
+                                            totpSecretBase32 = cred.totpSecretBase32,
+                                            title = strings.inspectorTotpCode
                                         )
                                     }
                                 }
                             }
-                            if (cred.totpSecretBase32.isNotBlank()) {
-                                LiveTotpAuthenticatorCard(
-                                    totpSecretBase32 = cred.totpSecretBase32,
-                                    title = strings.inspectorTotpCode
+
+                            DropdownMenu(
+                                expanded = credMenuOpen,
+                                onDismissRequest = { credMenuOpen = false }
+                            ) {
+                                if (cred.username.isNotBlank()) {
+                                    DropdownMenuItem(
+                                        text = { Text("Copy Username") },
+                                        leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                                        onClick = {
+                                            credMenuOpen = false
+                                            clipboard.setText(AnnotatedString(cred.username))
+                                        }
+                                    )
+                                }
+                                if (cred.secretPassword.isNotBlank()) {
+                                    DropdownMenuItem(
+                                        text = { Text("Copy Password / Secret") },
+                                        leadingIcon = { Icon(Icons.Outlined.VpnKey, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                                        onClick = {
+                                            credMenuOpen = false
+                                            clipboard.setText(AnnotatedString(cred.secretPassword))
+                                        }
+                                    )
+                                }
+                                if (cred.publicKeyOpenSsh.isNotBlank()) {
+                                    DropdownMenuItem(
+                                        text = { Text("Copy SSH Public Key") },
+                                        leadingIcon = { Icon(Icons.Outlined.Key, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                                        onClick = {
+                                            credMenuOpen = false
+                                            clipboard.setText(AnnotatedString(cred.publicKeyOpenSsh))
+                                        }
+                                    )
+                                }
+                                if (cred.username.isNotBlank() || cred.secretPassword.isNotBlank() || cred.publicKeyOpenSsh.isNotBlank()) {
+                                    HorizontalDivider()
+                                }
+                                DropdownMenuItem(
+                                    text = { Text("Edit Credential") },
+                                    leadingIcon = { Icon(Icons.Outlined.Edit, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                                    onClick = {
+                                        credMenuOpen = false
+                                        openForEdit(cred)
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Duplicate Credential") },
+                                    leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                                    onClick = {
+                                        credMenuOpen = false
+                                        onDuplicateCredential(cred)
+                                    }
+                                )
+                                HorizontalDivider()
+                                DropdownMenuItem(
+                                    text = { Text("Delete Credential", color = MaterialTheme.colorScheme.error) },
+                                    leadingIcon = {
+                                        Icon(
+                                            Icons.Outlined.Delete,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.error,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    },
+                                    onClick = {
+                                        credMenuOpen = false
+                                        onDeleteCredential(cred.id)
+                                    }
                                 )
                             }
                         }
@@ -1859,12 +2001,43 @@ fun CredentialVaultStudioView(
                 }
             }
         }
+
+        DropdownMenu(
+            expanded = bgMenuOpen,
+            onDismissRequest = { bgMenuOpen = false }
+        ) {
+            DropdownMenuItem(
+                text = { Text(strings.studioActionAddCredential) },
+                leadingIcon = { Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                onClick = {
+                    bgMenuOpen = false
+                    openForCreate()
+                }
+            )
+            DropdownMenuItem(
+                text = { Text(strings.inspectorGenerateSshKey) },
+                leadingIcon = { Icon(Icons.Outlined.VpnKey, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                onClick = {
+                    bgMenuOpen = false
+                    onGenerateEd25519Key()
+                }
+            )
+            DropdownMenuItem(
+                text = { Text(strings.studioActionImportPasswords) },
+                leadingIcon = { Icon(Icons.Outlined.UploadFile, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                onClick = {
+                    bgMenuOpen = false
+                    onRequestImportVaultFile()
+                }
+            )
+        }
     }
 }
 
 /**
  * 3. Secure Gateways & Proxies Studio (NexusTS Secure Gateway, SSH Bastion, SOCKS5, HTTP CONNECT).
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun SecureGatewayStudioView(
     gateways: List<SecureGatewayConfig>,
@@ -1880,6 +2053,7 @@ fun SecureGatewayStudioView(
     onCloseGatewayLease: (String) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
+    val clipboard = LocalClipboardManager.current
     var showGwModal by remember { mutableStateOf(false) }
     var editingGw by remember { mutableStateOf<SecureGatewayConfig?>(null) }
     var gwName by remember { mutableStateOf("") }
@@ -1888,6 +2062,7 @@ fun SecureGatewayStudioView(
     var gwKind by remember { mutableStateOf(GatewayTransportKind.SOCKS5_PROXY) }
     var gwCredentialId by remember { mutableStateOf<String?>(null) }
     var gwCredMenuOpen by remember { mutableStateOf(false) }
+    var bgMenuOpen by remember { mutableStateOf(false) }
 
     fun openAddGateway() {
         editingGw = null
@@ -1915,12 +2090,12 @@ fun SecureGatewayStudioView(
             title = { Text(if (editingGw != null) strings.dialogActionSave else strings.studioActionAddGateway) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Row(
-                        modifier = Modifier.horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         GatewayTransportKind.entries.forEach { kind ->
-                            FilterChip(
+                            NexusChoiceChip(
                                 selected = gwKind == kind,
                                 onClick = {
                                     gwKind = kind
@@ -1931,7 +2106,7 @@ fun SecureGatewayStudioView(
                                         GatewayTransportKind.HTTP_CONNECT_PROXY -> "8080"
                                     }
                                 },
-                                label = { Text(kind.name.substringBefore('_'), style = MaterialTheme.typography.labelSmall) }
+                                label = kind.name.substringBefore('_')
                             )
                         }
                     }
@@ -2023,166 +2198,107 @@ fun SecureGatewayStudioView(
         )
     }
 
-    Column(
+    Box(
         modifier = modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.surfaceContainerLowest)
-            .padding(24.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+            .nexusDesktopPointerButtons(onSecondaryClick = { bgMenuOpen = true })
     ) {
         Column(
-            modifier = Modifier.fillMaxWidth(),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(24.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            Row(
+            Column(
                 modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Icon(
-                    imageVector = Icons.Outlined.DeviceHub,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.tertiary,
-                    modifier = Modifier.size(26.dp)
-                )
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(strings.navGateways, style = MaterialTheme.typography.headlineSmall)
-                    Text(
-                        text = strings.studioGatewaysSubtitle,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = { openAddGateway() }) {
-                    Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(strings.studioActionAddGateway)
-                }
-            }
-        }
-
-        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
-
-        if (activeLeases.isNotEmpty()) {
-            Surface(
-                shape = MaterialTheme.shapes.large,
-                color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.45f),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text("Active Loopback Relay Leases (${activeLeases.size})", style = MaterialTheme.typography.labelLarge)
-                    activeLeases.forEach { lease ->
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text(
-                                text = "${lease.localBindHost}:${lease.localBindPort} -> ${lease.remoteTargetHost}:${lease.remoteTargetPort} (${lease.gatewayKind.name})",
-                                style = NexusTheme.monospace.keycapShortcut,
-                                color = NexusTheme.extendedColors.statusConnected
-                            )
-                            TextButton(onClick = { onCloseGatewayLease(lease.leaseId) }) {
-                                Text("Close Lease")
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        if (gateways.isEmpty()) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f),
-                contentAlignment = Alignment.Center
-            ) {
-                Surface(
-                    shape = RoundedCornerShape(24.dp),
-                    color = MaterialTheme.colorScheme.surfaceContainerLow,
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)),
-                    modifier = Modifier.widthIn(max = 460.dp).fillMaxWidth()
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    Column(
-                        modifier = Modifier.padding(28.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Outlined.DeviceHub,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.tertiary,
-                            modifier = Modifier.size(34.dp)
-                        )
-                        Text(
-                            text = strings.navGateways,
-                            style = MaterialTheme.typography.titleMedium,
-                            textAlign = TextAlign.Center
-                        )
+                    Icon(
+                        imageVector = Icons.Outlined.DeviceHub,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.tertiary,
+                        modifier = Modifier.size(26.dp)
+                    )
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(strings.navGateways, style = MaterialTheme.typography.headlineSmall)
                         Text(
                             text = strings.studioGatewaysSubtitle,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            textAlign = TextAlign.Center
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
-                        Button(onClick = { openAddGateway() }) {
-                            Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(strings.studioActionAddGateway)
-                        }
+                    }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = { openAddGateway() }) {
+                        Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(strings.studioActionAddGateway)
                     }
                 }
             }
-        } else {
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(gateways, key = { it.id }) { gw ->
-                    val report = healthReports[gw.id]
-                    Surface(
-                        shape = MaterialTheme.shapes.large,
-                        color = MaterialTheme.colorScheme.surfaceContainer,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 16.dp, vertical = 12.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(gw.name, style = MaterialTheme.typography.titleSmall)
-                                Text(
-                                    text = "${gw.kind.name} • ${gw.host}:${gw.port}" +
-                                        (report?.let { " • ${it.latencyMs} ms (${it.protocolBanner})" }.orEmpty()),
-                                    style = NexusTheme.monospace.keycapShortcut,
-                                    color = if (report?.reachable == true) {
-                                        NexusTheme.extendedColors.statusConnected
-                                    } else {
-                                        MaterialTheme.colorScheme.onSurfaceVariant
+
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
+
+            if (activeLeases.isNotEmpty()) {
+                Surface(
+                    shape = MaterialTheme.shapes.large,
+                    color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.45f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text("Active Loopback Relay Leases (${activeLeases.size})", style = MaterialTheme.typography.labelLarge)
+                        activeLeases.forEach { lease ->
+                            var leaseMenuOpen by remember { mutableStateOf(false) }
+                            val localEndpoint = "${lease.localBindHost}:${lease.localBindPort}"
+                            Box(modifier = Modifier.fillMaxWidth()) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .nexusDesktopPointerButtons(onSecondaryClick = { leaseMenuOpen = true }),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(
+                                        text = "$localEndpoint -> ${lease.remoteTargetHost}:${lease.remoteTargetPort} (${lease.gatewayKind.name})",
+                                        style = NexusTheme.monospace.keycapShortcut,
+                                        color = NexusTheme.extendedColors.statusConnected
+                                    )
+                                    TextButton(onClick = { onCloseGatewayLease(lease.leaseId) }) {
+                                        Text("Close Lease")
                                     }
-                                )
-                            }
-                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                OutlinedButton(onClick = { onOpenGatewayLease(gw) }) {
-                                    Text("Bind Loopback")
                                 }
-                                FilledTonalButton(onClick = { onProbeGateway(gw) }) {
-                                    Icon(Icons.Outlined.NetworkCheck, contentDescription = null, modifier = Modifier.size(16.dp))
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text(strings.studioActionProbeGateway)
-                                }
-                                IconButton(onClick = { openEditGateway(gw) }) {
-                                    Icon(Icons.Outlined.Edit, contentDescription = "Edit Gateway", modifier = Modifier.size(18.dp))
-                                }
-                                IconButton(onClick = { onDeleteGateway(gw.id) }) {
-                                    Icon(
-                                        Icons.Outlined.Delete,
-                                        contentDescription = "Delete Gateway",
-                                        tint = MaterialTheme.colorScheme.error,
-                                        modifier = Modifier.size(18.dp)
+                                DropdownMenu(
+                                    expanded = leaseMenuOpen,
+                                    onDismissRequest = { leaseMenuOpen = false }
+                                ) {
+                                    DropdownMenuItem(
+                                        text = { Text("Copy Local Relay Address") },
+                                        leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                                        onClick = {
+                                            leaseMenuOpen = false
+                                            clipboard.setText(AnnotatedString(localEndpoint))
+                                        }
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("Close Lease", color = MaterialTheme.colorScheme.error) },
+                                        leadingIcon = {
+                                            Icon(
+                                                Icons.Outlined.Delete,
+                                                contentDescription = null,
+                                                tint = MaterialTheme.colorScheme.error,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                        },
+                                        onClick = {
+                                            leaseMenuOpen = false
+                                            onCloseGatewayLease(lease.leaseId)
+                                        }
                                     )
                                 }
                             }
@@ -2190,6 +2306,193 @@ fun SecureGatewayStudioView(
                     }
                 }
             }
+
+            if (gateways.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(24.dp),
+                        color = MaterialTheme.colorScheme.surfaceContainerLow,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)),
+                        modifier = Modifier.widthIn(max = 460.dp).fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(28.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.DeviceHub,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.tertiary,
+                                modifier = Modifier.size(34.dp)
+                            )
+                            Text(
+                                text = strings.navGateways,
+                                style = MaterialTheme.typography.titleMedium,
+                                textAlign = TextAlign.Center
+                            )
+                            Text(
+                                text = strings.studioGatewaysSubtitle,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.Center
+                            )
+                            Button(onClick = { openAddGateway() }) {
+                                Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(strings.studioActionAddGateway)
+                            }
+                        }
+                    }
+                }
+            } else {
+                LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(gateways, key = { it.id }) { gw ->
+                        val report = healthReports[gw.id]
+                        val cardHover = rememberDesktopHoverState()
+                        var gwMenuOpen by remember { mutableStateOf(false) }
+
+                        Box(modifier = Modifier.fillMaxWidth()) {
+                            Surface(
+                                shape = MaterialTheme.shapes.large,
+                                color = if (cardHover.value.isHovered) {
+                                    MaterialTheme.colorScheme.surfaceContainerHigh
+                                } else {
+                                    MaterialTheme.colorScheme.surfaceContainer
+                                },
+                                border = BorderStroke(
+                                    1.dp,
+                                    if (cardHover.value.isHovered) {
+                                        MaterialTheme.colorScheme.tertiary.copy(alpha = 0.40f)
+                                    } else {
+                                        Color.Transparent
+                                    }
+                                ),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .nexusHoverTracker(cardHover, PointerIcon.Default)
+                                    .nexusDesktopPointerButtons(onSecondaryClick = { gwMenuOpen = true })
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(gw.name, style = MaterialTheme.typography.titleSmall)
+                                        Text(
+                                            text = "${gw.kind.name} • ${gw.host}:${gw.port}" +
+                                                (report?.let { " • ${it.latencyMs} ms (${it.protocolBanner})" }.orEmpty()),
+                                            style = NexusTheme.monospace.keycapShortcut,
+                                            color = if (report?.reachable == true) {
+                                                NexusTheme.extendedColors.statusConnected
+                                            } else {
+                                                MaterialTheme.colorScheme.onSurfaceVariant
+                                            }
+                                        )
+                                    }
+                                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        OutlinedButton(onClick = { onOpenGatewayLease(gw) }) {
+                                            Text("Bind Loopback")
+                                        }
+                                        FilledTonalButton(onClick = { onProbeGateway(gw) }) {
+                                            Icon(Icons.Outlined.NetworkCheck, contentDescription = null, modifier = Modifier.size(16.dp))
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text(strings.studioActionProbeGateway)
+                                        }
+                                        IconButton(onClick = { openEditGateway(gw) }) {
+                                            Icon(Icons.Outlined.Edit, contentDescription = "Edit Gateway", modifier = Modifier.size(18.dp))
+                                        }
+                                        IconButton(onClick = { onDeleteGateway(gw.id) }) {
+                                            Icon(
+                                                Icons.Outlined.Delete,
+                                                contentDescription = "Delete Gateway",
+                                                tint = MaterialTheme.colorScheme.error,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+
+                            DropdownMenu(
+                                expanded = gwMenuOpen,
+                                onDismissRequest = { gwMenuOpen = false }
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text(strings.studioActionProbeGateway) },
+                                    leadingIcon = { Icon(Icons.Outlined.NetworkCheck, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                                    onClick = {
+                                        gwMenuOpen = false
+                                        onProbeGateway(gw)
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Bind Loopback Relay") },
+                                    leadingIcon = { Icon(Icons.Outlined.DeviceHub, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                                    onClick = {
+                                        gwMenuOpen = false
+                                        onOpenGatewayLease(gw)
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Copy Endpoint") },
+                                    leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                                    onClick = {
+                                        gwMenuOpen = false
+                                        clipboard.setText(AnnotatedString("${gw.host}:${gw.port}"))
+                                    }
+                                )
+                                HorizontalDivider()
+                                DropdownMenuItem(
+                                    text = { Text("Edit Gateway") },
+                                    leadingIcon = { Icon(Icons.Outlined.Edit, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                                    onClick = {
+                                        gwMenuOpen = false
+                                        openEditGateway(gw)
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Delete Gateway", color = MaterialTheme.colorScheme.error) },
+                                    leadingIcon = {
+                                        Icon(
+                                            Icons.Outlined.Delete,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.error,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    },
+                                    onClick = {
+                                        gwMenuOpen = false
+                                        onDeleteGateway(gw.id)
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        DropdownMenu(
+            expanded = bgMenuOpen,
+            onDismissRequest = { bgMenuOpen = false }
+        ) {
+            DropdownMenuItem(
+                text = { Text(strings.studioActionAddGateway) },
+                leadingIcon = { Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                onClick = {
+                    bgMenuOpen = false
+                    openAddGateway()
+                }
+            )
         }
     }
 }
@@ -2206,24 +2509,60 @@ fun AutomationTasksStudioView(
     onRunCommandTask: (CommandTask) -> Unit,
     onRunKeySequenceTask: (KeySequenceTask) -> Unit,
     onAddCommandTask: (CommandTask) -> Unit,
+    onUpdateCommandTask: (CommandTask) -> Unit = {},
     onAddKeySequenceTask: (KeySequenceTask) -> Unit = {},
+    onUpdateKeySequenceTask: (KeySequenceTask) -> Unit = {},
     onDeleteCommandTask: (String) -> Unit = {},
     onDeleteKeySequenceTask: (String) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
-    var showNewTaskModal by remember { mutableStateOf(false) }
+    val clipboard = LocalClipboardManager.current
+    var showTaskModal by remember { mutableStateOf(false) }
+    var editingTask by remember { mutableStateOf<CommandTask?>(null) }
     var taskName by remember { mutableStateOf("") }
     var taskCmd by remember { mutableStateOf("") }
     var taskBroadcast by remember { mutableStateOf(false) }
 
-    var showNewMacroModal by remember { mutableStateOf(false) }
+    var showMacroModal by remember { mutableStateOf(false) }
+    var editingMacro by remember { mutableStateOf<KeySequenceTask?>(null) }
     var macroName by remember { mutableStateOf("") }
     var macroSequence by remember { mutableStateOf("\$EffectiveUsername\${TAB}\$EffectivePassword\${ENTER}") }
+    var bgMenuOpen by remember { mutableStateOf(false) }
 
-    if (showNewTaskModal) {
+    fun openAddTask() {
+        editingTask = null
+        taskName = ""
+        taskCmd = ""
+        taskBroadcast = false
+        showTaskModal = true
+    }
+
+    fun openEditTask(task: CommandTask) {
+        editingTask = task
+        taskName = task.name
+        taskCmd = task.commandTemplate
+        taskBroadcast = task.broadcastToAllSelectedSessions
+        showTaskModal = true
+    }
+
+    fun openAddMacro() {
+        editingMacro = null
+        macroName = ""
+        macroSequence = "\$EffectiveUsername\${TAB}\$EffectivePassword\${ENTER}"
+        showMacroModal = true
+    }
+
+    fun openEditMacro(macro: KeySequenceTask) {
+        editingMacro = macro
+        macroName = macro.name
+        macroSequence = macro.macroSequence
+        showMacroModal = true
+    }
+
+    if (showTaskModal) {
         AlertDialog(
-            onDismissRequest = { showNewTaskModal = false },
-            title = { Text(strings.studioActionAddTask) },
+            onDismissRequest = { showTaskModal = false },
+            title = { Text(if (editingTask != null) "Edit Command Task" else strings.studioActionAddTask) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(
@@ -2250,32 +2589,40 @@ fun AutomationTasksStudioView(
                 Button(
                     enabled = taskName.isNotBlank() && taskCmd.isNotBlank(),
                     onClick = {
-                        onAddCommandTask(
-                            CommandTask(
-                                name = taskName.trim(),
-                                commandTemplate = taskCmd.trim(),
-                                broadcastToAllSelectedSessions = taskBroadcast
+                        val existing = editingTask
+                        if (existing != null) {
+                            onUpdateCommandTask(
+                                existing.copy(
+                                    name = taskName.trim(),
+                                    commandTemplate = taskCmd.trim(),
+                                    broadcastToAllSelectedSessions = taskBroadcast
+                                )
                             )
-                        )
-                        taskName = ""
-                        taskCmd = ""
-                        taskBroadcast = false
-                        showNewTaskModal = false
+                        } else {
+                            onAddCommandTask(
+                                CommandTask(
+                                    name = taskName.trim(),
+                                    commandTemplate = taskCmd.trim(),
+                                    broadcastToAllSelectedSessions = taskBroadcast
+                                )
+                            )
+                        }
+                        showTaskModal = false
                     }
                 ) {
                     Text(strings.dialogActionSave)
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showNewTaskModal = false }) { Text(strings.dialogActionCancel) }
+                TextButton(onClick = { showTaskModal = false }) { Text(strings.dialogActionCancel) }
             }
         )
     }
 
-    if (showNewMacroModal) {
+    if (showMacroModal) {
         AlertDialog(
-            onDismissRequest = { showNewMacroModal = false },
-            title = { Text("Add Key Sequence Macro") },
+            onDismissRequest = { showMacroModal = false },
+            title = { Text(if (editingMacro != null) "Edit Key Sequence Macro" else "Add Key Sequence Macro") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(
@@ -2297,207 +2644,383 @@ fun AutomationTasksStudioView(
                 Button(
                     enabled = macroName.isNotBlank() && macroSequence.isNotBlank(),
                     onClick = {
-                        onAddKeySequenceTask(
-                            KeySequenceTask(
-                                name = macroName.trim(),
-                                macroSequence = macroSequence
+                        val existing = editingMacro
+                        if (existing != null) {
+                            onUpdateKeySequenceTask(
+                                existing.copy(
+                                    name = macroName.trim(),
+                                    macroSequence = macroSequence
+                                )
                             )
-                        )
-                        macroName = ""
-                        showNewMacroModal = false
+                        } else {
+                            onAddKeySequenceTask(
+                                KeySequenceTask(
+                                    name = macroName.trim(),
+                                    macroSequence = macroSequence
+                                )
+                            )
+                        }
+                        showMacroModal = false
                     }
                 ) {
                     Text(strings.dialogActionSave)
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showNewMacroModal = false }) { Text(strings.dialogActionCancel) }
+                TextButton(onClick = { showMacroModal = false }) { Text(strings.dialogActionCancel) }
             }
         )
     }
 
-    Column(
+    Box(
         modifier = modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.surfaceContainerLowest)
-            .padding(24.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+            .nexusDesktopPointerButtons(onSecondaryClick = { bgMenuOpen = true })
     ) {
         Column(
-            modifier = Modifier.fillMaxWidth(),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(24.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            Row(
+            Column(
                 modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Icon(
-                    imageVector = Icons.Outlined.AutoAwesome,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.secondary,
-                    modifier = Modifier.size(26.dp)
-                )
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(strings.navTasks, style = MaterialTheme.typography.headlineSmall)
-                    Text(
-                        text = strings.studioTasksSubtitle,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.AutoAwesome,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.secondary,
+                        modifier = Modifier.size(26.dp)
                     )
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(strings.navTasks, style = MaterialTheme.typography.headlineSmall)
+                        Text(
+                            text = strings.studioTasksSubtitle,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Button(onClick = { openAddTask() }) {
+                        Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(strings.studioActionAddTask)
+                    }
+                    FilledTonalButton(onClick = { openAddMacro() }) {
+                        Icon(Icons.Outlined.Key, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Add Key Sequence")
+                    }
                 }
             }
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Button(onClick = { showNewTaskModal = true }) {
-                    Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(strings.studioActionAddTask)
+
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
+
+            if (commandTasks.isEmpty() && keySequenceTasks.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(24.dp),
+                        color = MaterialTheme.colorScheme.surfaceContainerLow,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)),
+                        modifier = Modifier.widthIn(max = 460.dp).fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(28.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.AutoAwesome,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.secondary,
+                                modifier = Modifier.size(34.dp)
+                            )
+                            Text(
+                                text = strings.navTasks,
+                                style = MaterialTheme.typography.titleMedium,
+                                textAlign = TextAlign.Center
+                            )
+                            Text(
+                                text = strings.studioTasksSubtitle,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.Center
+                            )
+                            Button(onClick = { openAddTask() }) {
+                                Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(strings.studioActionAddTask)
+                            }
+                        }
+                    }
                 }
-                FilledTonalButton(onClick = { showNewMacroModal = true }) {
-                    Icon(Icons.Outlined.Key, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("Add Key Sequence")
+            } else {
+                LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(commandTasks, key = { it.id }) { task ->
+                        val cardHover = rememberDesktopHoverState()
+                        var taskMenuOpen by remember { mutableStateOf(false) }
+
+                        Box(modifier = Modifier.fillMaxWidth()) {
+                            Surface(
+                                shape = MaterialTheme.shapes.large,
+                                color = if (cardHover.value.isHovered) {
+                                    MaterialTheme.colorScheme.surfaceContainerHigh
+                                } else {
+                                    MaterialTheme.colorScheme.surfaceContainer
+                                },
+                                border = BorderStroke(
+                                    1.dp,
+                                    if (cardHover.value.isHovered) {
+                                        MaterialTheme.colorScheme.secondary.copy(alpha = 0.40f)
+                                    } else {
+                                        Color.Transparent
+                                    }
+                                ),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .nexusHoverTracker(cardHover, PointerIcon.Default)
+                                    .nexusDesktopPointerButtons(onSecondaryClick = { taskMenuOpen = true })
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(task.name, style = MaterialTheme.typography.titleSmall)
+                                        Text(
+                                            text = task.commandTemplate + if (task.broadcastToAllSelectedSessions) " • [Broadcast]" else "",
+                                            style = NexusTheme.monospace.keycapShortcut,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                        FilledTonalButton(onClick = { onRunCommandTask(task) }) {
+                                            Icon(Icons.Outlined.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text(strings.studioActionRunTask)
+                                        }
+                                        IconButton(onClick = { openEditTask(task) }) {
+                                            Icon(Icons.Outlined.Edit, contentDescription = "Edit Task", modifier = Modifier.size(18.dp))
+                                        }
+                                        IconButton(onClick = { onDeleteCommandTask(task.id) }) {
+                                            Icon(
+                                                Icons.Outlined.Delete,
+                                                contentDescription = "Delete Task",
+                                                tint = MaterialTheme.colorScheme.error,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+
+                            DropdownMenu(
+                                expanded = taskMenuOpen,
+                                onDismissRequest = { taskMenuOpen = false }
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text(strings.studioActionRunTask) },
+                                    leadingIcon = { Icon(Icons.Outlined.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                                    onClick = {
+                                        taskMenuOpen = false
+                                        onRunCommandTask(task)
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Edit Command Task") },
+                                    leadingIcon = { Icon(Icons.Outlined.Edit, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                                    onClick = {
+                                        taskMenuOpen = false
+                                        openEditTask(task)
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Copy Command") },
+                                    leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                                    onClick = {
+                                        taskMenuOpen = false
+                                        clipboard.setText(AnnotatedString(task.commandTemplate))
+                                    }
+                                )
+                                HorizontalDivider()
+                                DropdownMenuItem(
+                                    text = { Text("Delete Task", color = MaterialTheme.colorScheme.error) },
+                                    leadingIcon = {
+                                        Icon(
+                                            Icons.Outlined.Delete,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.error,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    },
+                                    onClick = {
+                                        taskMenuOpen = false
+                                        onDeleteCommandTask(task.id)
+                                    }
+                                )
+                            }
+                        }
+                    }
+                    items(keySequenceTasks, key = { it.id }) { macro ->
+                        val cardHover = rememberDesktopHoverState()
+                        var macroMenuOpen by remember { mutableStateOf(false) }
+
+                        Box(modifier = Modifier.fillMaxWidth()) {
+                            Surface(
+                                shape = MaterialTheme.shapes.large,
+                                color = if (cardHover.value.isHovered) {
+                                    MaterialTheme.colorScheme.surfaceContainerHigh
+                                } else {
+                                    MaterialTheme.colorScheme.surfaceContainer
+                                },
+                                border = BorderStroke(
+                                    1.dp,
+                                    if (cardHover.value.isHovered) {
+                                        MaterialTheme.colorScheme.tertiary.copy(alpha = 0.40f)
+                                    } else {
+                                        Color.Transparent
+                                    }
+                                ),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .nexusHoverTracker(cardHover, PointerIcon.Default)
+                                    .nexusDesktopPointerButtons(onSecondaryClick = { macroMenuOpen = true })
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(macro.name, style = MaterialTheme.typography.titleSmall)
+                                        Text(
+                                            text = macro.macroSequence,
+                                            style = NexusTheme.monospace.keycapShortcut,
+                                            color = MaterialTheme.colorScheme.tertiary
+                                        )
+                                    }
+                                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                        FilledTonalButton(onClick = { onRunKeySequenceTask(macro) }) {
+                                            Icon(Icons.Outlined.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text(strings.studioActionRunTask)
+                                        }
+                                        IconButton(onClick = { openEditMacro(macro) }) {
+                                            Icon(Icons.Outlined.Edit, contentDescription = "Edit Macro", modifier = Modifier.size(18.dp))
+                                        }
+                                        IconButton(onClick = { onDeleteKeySequenceTask(macro.id) }) {
+                                            Icon(
+                                                Icons.Outlined.Delete,
+                                                contentDescription = "Delete Macro",
+                                                tint = MaterialTheme.colorScheme.error,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+
+                            DropdownMenu(
+                                expanded = macroMenuOpen,
+                                onDismissRequest = { macroMenuOpen = false }
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text(strings.studioActionRunTask) },
+                                    leadingIcon = { Icon(Icons.Outlined.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                                    onClick = {
+                                        macroMenuOpen = false
+                                        onRunKeySequenceTask(macro)
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Edit Macro") },
+                                    leadingIcon = { Icon(Icons.Outlined.Edit, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                                    onClick = {
+                                        macroMenuOpen = false
+                                        openEditMacro(macro)
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Copy Macro") },
+                                    leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                                    onClick = {
+                                        macroMenuOpen = false
+                                        clipboard.setText(AnnotatedString(macro.macroSequence))
+                                    }
+                                )
+                                HorizontalDivider()
+                                DropdownMenuItem(
+                                    text = { Text("Delete Macro", color = MaterialTheme.colorScheme.error) },
+                                    leadingIcon = {
+                                        Icon(
+                                            Icons.Outlined.Delete,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.error,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    },
+                                    onClick = {
+                                        macroMenuOpen = false
+                                        onDeleteKeySequenceTask(macro.id)
+                                    }
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
 
-        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
-
-        if (commandTasks.isEmpty() && keySequenceTasks.isEmpty()) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f),
-                contentAlignment = Alignment.Center
-            ) {
-                Surface(
-                    shape = RoundedCornerShape(24.dp),
-                    color = MaterialTheme.colorScheme.surfaceContainerLow,
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)),
-                    modifier = Modifier.widthIn(max = 460.dp).fillMaxWidth()
-                ) {
-                    Column(
-                        modifier = Modifier.padding(28.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Outlined.AutoAwesome,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.secondary,
-                            modifier = Modifier.size(34.dp)
-                        )
-                        Text(
-                            text = strings.navTasks,
-                            style = MaterialTheme.typography.titleMedium,
-                            textAlign = TextAlign.Center
-                        )
-                        Text(
-                            text = strings.studioTasksSubtitle,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            textAlign = TextAlign.Center
-                        )
-                        Button(onClick = { showNewTaskModal = true }) {
-                            Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(strings.studioActionAddTask)
-                        }
-                    }
+        DropdownMenu(
+            expanded = bgMenuOpen,
+            onDismissRequest = { bgMenuOpen = false }
+        ) {
+            DropdownMenuItem(
+                text = { Text(strings.studioActionAddTask) },
+                leadingIcon = { Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                onClick = {
+                    bgMenuOpen = false
+                    openAddTask()
                 }
-            }
-        } else {
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(commandTasks, key = { it.id }) { task ->
-                    Surface(
-                        shape = MaterialTheme.shapes.large,
-                        color = MaterialTheme.colorScheme.surfaceContainer,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 16.dp, vertical = 12.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(task.name, style = MaterialTheme.typography.titleSmall)
-                                Text(
-                                    text = task.commandTemplate + if (task.broadcastToAllSelectedSessions) " • [Broadcast]" else "",
-                                    style = NexusTheme.monospace.keycapShortcut,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                FilledTonalButton(onClick = { onRunCommandTask(task) }) {
-                                    Icon(Icons.Outlined.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text(strings.studioActionRunTask)
-                                }
-                                IconButton(onClick = { onDeleteCommandTask(task.id) }) {
-                                    Icon(
-                                        Icons.Outlined.Delete,
-                                        contentDescription = "Delete Task",
-                                        tint = MaterialTheme.colorScheme.error,
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                }
-                            }
-                        }
-                    }
+            )
+            DropdownMenuItem(
+                text = { Text("Add Key Sequence") },
+                leadingIcon = { Icon(Icons.Outlined.Key, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                onClick = {
+                    bgMenuOpen = false
+                    openAddMacro()
                 }
-                items(keySequenceTasks, key = { it.id }) { macro ->
-                    Surface(
-                        shape = MaterialTheme.shapes.large,
-                        color = MaterialTheme.colorScheme.surfaceContainer,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 16.dp, vertical = 12.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(macro.name, style = MaterialTheme.typography.titleSmall)
-                                Text(
-                                    text = macro.macroSequence,
-                                    style = NexusTheme.monospace.keycapShortcut,
-                                    color = MaterialTheme.colorScheme.tertiary
-                                )
-                            }
-                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                FilledTonalButton(onClick = { onRunKeySequenceTask(macro) }) {
-                                    Icon(Icons.Outlined.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text(strings.studioActionRunTask)
-                                }
-                                IconButton(onClick = { onDeleteKeySequenceTask(macro.id) }) {
-                                    Icon(
-                                        Icons.Outlined.Delete,
-                                        contentDescription = "Delete Macro",
-                                        tint = MaterialTheme.colorScheme.error,
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            )
         }
     }
 }
 
 /**
  * 5. Dual-Engine Live Google Drive Sync (Direct Persistent SAF + Drive REST API v3 OAuth 2.0),
- *    3-Way Vector Clock Conflict Merge, & Play-Protect-Safe GitHub Releases Update Studio (`v1.1.1`).
+ *    3-Way Vector Clock Conflict Merge, & Play-Protect-Safe GitHub Releases Update Studio (`v1.1.3`).
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun DriveSyncAndConflictStudioView(
     vaultDocument: NxtsVaultDocument,
@@ -2750,16 +3273,19 @@ fun DriveSyncAndConflictStudioView(
                     style = MaterialTheme.typography.titleSmall,
                     color = MaterialTheme.colorScheme.primary
                 )
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    FilterChip(
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    NexusChoiceChip(
                         selected = !useSharedTeamDrive,
                         onClick = { onSelectSyncZone(false) },
-                        label = { Text(strings.syncZoneAppData) }
+                        label = strings.syncZoneAppData
                     )
-                    FilterChip(
+                    NexusChoiceChip(
                         selected = useSharedTeamDrive,
                         onClick = { onSelectSyncZone(true) },
-                        label = { Text(strings.syncZoneTeamDrive) }
+                        label = strings.syncZoneTeamDrive
                     )
                 }
                 Row(
@@ -2781,12 +3307,13 @@ fun DriveSyncAndConflictStudioView(
                         },
                         modifier = Modifier.weight(1f)
                     )
-                    AssistChip(
+                    Spacer(modifier = Modifier.width(8.dp))
+                    NexusActionChip(
                         onClick = {
                             clipboard.setText(AnnotatedString("A6:AF:15:A9:BF:0B:FE:38:D4:66:46:3E:3E:72:A6:5B:4F:9C:4D:F6"))
                         },
-                        label = { Text("Copy SHA-1") },
-                        leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null, modifier = Modifier.size(14.dp)) }
+                        label = "Copy SHA-1",
+                        leadingIcon = Icons.Outlined.ContentCopy
                     )
                 }
                 Row(
@@ -2884,5 +3411,3 @@ fun DriveSyncAndConflictStudioView(
         }
     }
 }
-
-

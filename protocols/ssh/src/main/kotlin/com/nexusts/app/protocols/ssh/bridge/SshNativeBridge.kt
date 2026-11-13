@@ -900,28 +900,48 @@ class SshTerminalSessionController(
         }
     }
 
+    private fun readExactBytes(input: java.io.InputStream, length: Int): ByteArray {
+        if (length <= 0) return ByteArray(0)
+        val buffer = ByteArray(length)
+        var offset = 0
+        while (offset < length) {
+            val read = input.read(buffer, offset, length - offset)
+            if (read <= 0) return buffer.copyOf(offset)
+            offset += read
+        }
+        return buffer
+    }
+
     private fun handleSocks5HandshakeAndRelay(client: Socket) {
         val input = client.getInputStream()
         val output = client.getOutputStream()
         val ver = input.read()
         if (ver != 0x05) return
         val nMethods = input.read()
-        if (nMethods > 0) input.readNBytes(nMethods)
+        if (nMethods > 0) readExactBytes(input, nMethods)
         // Respond NO AUTH REQUIRED (0x05, 0x00)
         output.write(byteArrayOf(0x05, 0x00))
         output.flush()
 
-        val header = input.readNBytes(4)
+        val header = readExactBytes(input, 4)
         if (header.size < 4 || header[1].toInt() != 0x01) return
         val targetHost = when (header[3].toInt()) {
-            0x01 -> input.readNBytes(4).joinToString(".") { (it.toInt() and 0xFF).toString() }
+            0x01 -> {
+                val ipv4 = readExactBytes(input, 4)
+                if (ipv4.size < 4) return
+                ipv4.joinToString(".") { (it.toInt() and 0xFF).toString() }
+            }
             0x03 -> {
                 val len = input.read()
-                String(input.readNBytes(len), Charsets.US_ASCII)
+                if (len <= 0) return
+                val domainBytes = readExactBytes(input, len)
+                if (domainBytes.size < len) return
+                String(domainBytes, Charsets.US_ASCII)
             }
             else -> return
         }
-        val portBytes = input.readNBytes(2)
+        val portBytes = readExactBytes(input, 2)
+        if (portBytes.size < 2) return
         val targetPort = ((portBytes[0].toInt() and 0xFF) shl 8) or (portBytes[1].toInt() and 0xFF)
 
         Socket(targetHost, targetPort).use { upstream ->

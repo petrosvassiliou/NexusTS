@@ -5,6 +5,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -32,25 +33,29 @@ import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Bookmarks
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.CreateNewFolder
 import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.DesktopWindows
 import androidx.compose.material.icons.outlined.DynamicFeed
+import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Key
+import androidx.compose.material.icons.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.RadioButtonUnchecked
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Shield
+import androidx.compose.material.icons.outlined.Splitscreen
 import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material.icons.outlined.UploadFile
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -74,6 +79,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -82,8 +88,13 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.nexusts.app.core.ui.components.ExpressiveMetricCard
+import com.nexusts.app.core.ui.components.NexusActionChip
 import com.nexusts.app.core.ui.components.NexusBrandEmblem
+import com.nexusts.app.core.ui.components.NexusChoiceChip
 import com.nexusts.app.core.ui.components.parseHexColorOrNull
+import com.nexusts.app.core.ui.input.nexusDesktopPointerButtons
+import com.nexusts.app.core.ui.input.nexusHoverTracker
+import com.nexusts.app.core.ui.input.rememberDesktopHoverState
 import com.nexusts.app.core.ui.theme.MorphContainerState
 import com.nexusts.app.core.ui.theme.NexusTheme
 import com.nexusts.app.core.ui.theme.rememberMorphingContainerShape
@@ -141,20 +152,32 @@ fun RoyalColorSwatchSelector(
             ROYAL_EXPRESSIVE_SWATCHES.forEach { (hex, name) ->
                 val isSelected = selectedHex?.equals(hex, ignoreCase = true) ?: (hex == null)
                 val swatchColor = parseHexColorOrNull(hex) ?: MaterialTheme.colorScheme.outline
+                val hover = rememberDesktopHoverState()
+                val interactionSource = remember { MutableInteractionSource() }
+                val isHovered = hover.value.isHovered
                 Surface(
                     shape = RoundedCornerShape(99.dp),
-                    color = if (isSelected) {
-                        swatchColor.copy(alpha = 0.20f)
-                    } else {
-                        MaterialTheme.colorScheme.surfaceContainerHigh
+                    color = when {
+                        isSelected -> swatchColor.copy(alpha = if (isHovered) 0.28f else 0.20f)
+                        isHovered -> MaterialTheme.colorScheme.surfaceContainerHighest
+                        else -> MaterialTheme.colorScheme.surfaceContainerHigh
                     },
                     border = BorderStroke(
                         width = if (isSelected) 1.5.dp else 1.dp,
-                        color = if (isSelected) swatchColor else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
+                        color = when {
+                            isSelected -> swatchColor
+                            isHovered -> swatchColor.copy(alpha = 0.65f)
+                            else -> MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
+                        }
                     ),
                     modifier = Modifier
+                        .nexusHoverTracker(hover, PointerIcon.Hand)
                         .clip(RoundedCornerShape(99.dp))
-                        .clickable { onSelectHex(hex) }
+                        .clickable(
+                            interactionSource = interactionSource,
+                            indication = null,
+                            onClick = { onSelectHex(hex) }
+                        )
                 ) {
                     Row(
                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
@@ -305,9 +328,27 @@ fun ExpressiveVaultOverviewDashboard(
     onToggleTodo: (String) -> Unit,
     onDeleteTodo: (String) -> Unit = {},
     onImportVault: (() -> Unit)? = null,
+    onNewFolder: () -> Unit = {},
+    onNewRdpInFolder: (String) -> Unit = {},
+    onNewSshInFolder: (String) -> Unit = {},
+    onNewSubfolder: (String) -> Unit = {},
+    onEditFolder: (VaultFolder) -> Unit = {},
+    onDuplicateFolder: (VaultFolder) -> Unit = {},
+    onDeleteFolder: (String) -> Unit = {},
+    onLaunchConnectionInSplitRight: (VaultConnection) -> Unit = {},
+    onLaunchConnectionInSplitDown: (VaultConnection) -> Unit = {},
+    onLaunchConnectionDetached: (VaultConnection) -> Unit = {},
+    onEditConnection: (VaultConnection) -> Unit = {},
+    onDuplicateConnection: (VaultConnection) -> Unit = {},
+    onToggleFavorite: (String) -> Unit = {},
+    onDeleteConnection: (String) -> Unit = {},
+    onLaunchLocalShell: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
+    val clipboard = LocalClipboardManager.current
     var newTodoTitle by remember { mutableStateOf("") }
+    var overviewBgMenuOpen by remember { mutableStateOf(false) }
+
     val activeFolders = remember(vaultDocument.folders, vaultDocument.tombstonedObjectIds) {
         vaultDocument.folders.filterNot { it.id in vaultDocument.tombstonedObjectIds }
     }
@@ -331,6 +372,7 @@ fun ExpressiveVaultOverviewDashboard(
         Box(
             modifier = modifier
                 .fillMaxSize()
+                .nexusDesktopPointerButtons(onSecondaryClick = { overviewBgMenuOpen = true })
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 28.dp, vertical = 24.dp),
             contentAlignment = Alignment.Center
@@ -394,6 +436,11 @@ fun ExpressiveVaultOverviewDashboard(
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(strings.quickConnectButton)
                         }
+                        OutlinedButton(onClick = onNewFolder) {
+                            Icon(Icons.Outlined.CreateNewFolder, contentDescription = null, modifier = Modifier.size(17.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(strings.actionNewFolder)
+                        }
                         if (onImportVault != null) {
                             OutlinedButton(onClick = onImportVault) {
                                 Icon(Icons.Outlined.UploadFile, contentDescription = null, modifier = Modifier.size(17.dp))
@@ -429,12 +476,65 @@ fun ExpressiveVaultOverviewDashboard(
                     }
                 }
             }
+
+            DropdownMenu(
+                expanded = overviewBgMenuOpen,
+                onDismissRequest = { overviewBgMenuOpen = false }
+            ) {
+                DropdownMenuItem(
+                    text = { Text(strings.actionNewConnection) },
+                    leadingIcon = { Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                    onClick = {
+                        overviewBgMenuOpen = false
+                        onNewConnection()
+                    }
+                )
+                DropdownMenuItem(
+                    text = { Text(strings.actionNewFolder) },
+                    leadingIcon = { Icon(Icons.Outlined.CreateNewFolder, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                    onClick = {
+                        overviewBgMenuOpen = false
+                        onNewFolder()
+                    }
+                )
+                DropdownMenuItem(
+                    text = { Text("${strings.quickConnectButton} (Ctrl+K)") },
+                    leadingIcon = { Icon(Icons.Outlined.Search, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                    onClick = {
+                        overviewBgMenuOpen = false
+                        onOpenQuickConnect()
+                    }
+                )
+                DropdownMenuItem(
+                    text = { Text("Local Terminal") },
+                    leadingIcon = { Icon(Icons.Outlined.Terminal, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                    onClick = {
+                        overviewBgMenuOpen = false
+                        onLaunchLocalShell()
+                    }
+                )
+                if (onImportVault != null) {
+                    HorizontalDivider()
+                    DropdownMenuItem(
+                        text = { Text(strings.actionImportRtsz) },
+                        leadingIcon = { Icon(Icons.Outlined.UploadFile, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                        onClick = {
+                            overviewBgMenuOpen = false
+                            onImportVault()
+                        }
+                    )
+                }
+            }
         }
         return
     }
 
     // Populated Vault Overview — responsive layout that never squishes titles or metrics at any width
-    BoxWithConstraints(modifier = modifier.fillMaxSize()) {
+    BoxWithConstraints(
+        modifier = modifier
+            .fillMaxSize()
+            .nexusDesktopPointerButtons(onSecondaryClick = { overviewBgMenuOpen = true })
+    ) {
         val isWide = maxWidth >= 680.dp
 
         Column(
@@ -498,6 +598,11 @@ fun ExpressiveVaultOverviewDashboard(
                             Icon(Icons.Outlined.Search, contentDescription = null, modifier = Modifier.size(17.dp))
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(strings.quickConnectButton)
+                        }
+                        OutlinedButton(onClick = onNewFolder) {
+                            Icon(Icons.Outlined.CreateNewFolder, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(strings.actionNewFolder)
                         }
                         if (onImportVault != null) {
                             OutlinedButton(onClick = onImportVault) {
@@ -627,50 +732,164 @@ fun ExpressiveVaultOverviewDashboard(
                         favorites.forEach { fav ->
                             val accent = parseHexColorOrNull(fav.inheritable.displayColorAccentHex)
                                 ?: MaterialTheme.colorScheme.primary
-                            Surface(
-                                shape = RoundedCornerShape(20.dp),
-                                color = MaterialTheme.colorScheme.surfaceContainer,
-                                border = BorderStroke(1.dp, accent.copy(alpha = 0.35f)),
-                                modifier = Modifier
-                                    .width(250.dp)
-                                    .clip(RoundedCornerShape(20.dp))
-                                    .clickable { onLaunchConnection(fav) }
-                            ) {
-                                Column(
-                                    modifier = Modifier.padding(14.dp),
-                                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                                ) {
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.SpaceBetween
-                                    ) {
-                                        Text(
-                                            text = fav.protocol.name,
-                                            style = NexusTheme.monospace.keycapShortcut,
-                                            color = accent
+                            val favHover = rememberDesktopHoverState()
+                            val favInteraction = remember { MutableInteractionSource() }
+                            var favMenuOpen by remember(fav.id) { mutableStateOf(false) }
+
+                            Box {
+                                Surface(
+                                    shape = RoundedCornerShape(20.dp),
+                                    color = if (favHover.value.isHovered) {
+                                        MaterialTheme.colorScheme.surfaceContainerHigh
+                                    } else {
+                                        MaterialTheme.colorScheme.surfaceContainer
+                                    },
+                                    border = BorderStroke(
+                                        1.dp,
+                                        accent.copy(alpha = if (favHover.value.isHovered) 0.65f else 0.35f)
+                                    ),
+                                    modifier = Modifier
+                                        .width(250.dp)
+                                        .nexusHoverTracker(favHover, PointerIcon.Hand)
+                                        .nexusDesktopPointerButtons(onSecondaryClick = { favMenuOpen = true })
+                                        .clip(RoundedCornerShape(20.dp))
+                                        .clickable(
+                                            interactionSource = favInteraction,
+                                            indication = null,
+                                            onClick = { onLaunchConnection(fav) }
                                         )
-                                        TextButton(onClick = { onConnectWithOptions(fav) }) {
+                                ) {
+                                    Column(
+                                        modifier = Modifier.padding(14.dp),
+                                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.SpaceBetween
+                                        ) {
                                             Text(
-                                                text = strings.actionConnectWithOptions,
-                                                style = MaterialTheme.typography.labelSmall,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
+                                                text = fav.protocol.name,
+                                                style = NexusTheme.monospace.keycapShortcut,
+                                                color = accent
                                             )
+                                            TextButton(onClick = { onConnectWithOptions(fav) }) {
+                                                Text(
+                                                    text = strings.actionConnectWithOptions,
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                            }
                                         }
+                                        Text(
+                                            text = fav.name,
+                                            style = MaterialTheme.typography.titleSmall,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Text(
+                                            text = fav.host,
+                                            style = NexusTheme.monospace.keycapShortcut,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
                                     }
-                                    Text(
-                                        text = fav.name,
-                                        style = MaterialTheme.typography.titleSmall,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
+                                }
+
+                                DropdownMenu(
+                                    expanded = favMenuOpen,
+                                    onDismissRequest = { favMenuOpen = false }
+                                ) {
+                                    DropdownMenuItem(
+                                        text = { Text("Connect") },
+                                        leadingIcon = { Icon(Icons.Outlined.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                                        onClick = {
+                                            favMenuOpen = false
+                                            onLaunchConnection(fav)
+                                        }
                                     )
-                                    Text(
-                                        text = fav.host,
-                                        style = NexusTheme.monospace.keycapShortcut,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
+                                    DropdownMenuItem(
+                                        text = { Text(strings.actionConnectWithOptions) },
+                                        leadingIcon = { Icon(Icons.Outlined.Key, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                                        onClick = {
+                                            favMenuOpen = false
+                                            onConnectWithOptions(fav)
+                                        }
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text(strings.splitRight) },
+                                        leadingIcon = { Icon(Icons.Outlined.Splitscreen, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                                        onClick = {
+                                            favMenuOpen = false
+                                            onLaunchConnectionInSplitRight(fav)
+                                        }
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text(strings.splitDown) },
+                                        leadingIcon = { Icon(Icons.Outlined.Splitscreen, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                                        onClick = {
+                                            favMenuOpen = false
+                                            onLaunchConnectionInSplitDown(fav)
+                                        }
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text(strings.detachNewWindow) },
+                                        leadingIcon = { Icon(Icons.Outlined.OpenInNew, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                                        onClick = {
+                                            favMenuOpen = false
+                                            onLaunchConnectionDetached(fav)
+                                        }
+                                    )
+                                    HorizontalDivider()
+                                    DropdownMenuItem(
+                                        text = { Text("Copy Host (${fav.host})") },
+                                        leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                                        onClick = {
+                                            favMenuOpen = false
+                                            clipboard.setText(AnnotatedString(fav.host))
+                                        }
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text(strings.actionEditConnection) },
+                                        leadingIcon = { Icon(Icons.Outlined.Edit, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                                        onClick = {
+                                            favMenuOpen = false
+                                            onEditConnection(fav)
+                                        }
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("Duplicate") },
+                                        leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                                        onClick = {
+                                            favMenuOpen = false
+                                            onDuplicateConnection(fav)
+                                        }
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("Remove from Favorites") },
+                                        leadingIcon = { Icon(Icons.Outlined.Star, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                                        onClick = {
+                                            favMenuOpen = false
+                                            onToggleFavorite(fav.id)
+                                        }
+                                    )
+                                    HorizontalDivider()
+                                    DropdownMenuItem(
+                                        text = { Text("Delete", color = MaterialTheme.colorScheme.error) },
+                                        leadingIcon = {
+                                            Icon(
+                                                Icons.Outlined.Delete,
+                                                contentDescription = null,
+                                                tint = MaterialTheme.colorScheme.error,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                        },
+                                        onClick = {
+                                            favMenuOpen = false
+                                            onDeleteConnection(fav.id)
+                                        }
                                     )
                                 }
                             }
@@ -692,61 +911,193 @@ fun ExpressiveVaultOverviewDashboard(
                             modifier = Modifier.padding(16.dp),
                             verticalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
-                            Text(strings.vaultSectionFolders, style = MaterialTheme.typography.titleMedium)
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(strings.vaultSectionFolders, style = MaterialTheme.typography.titleMedium)
+                                IconButton(
+                                    onClick = onNewFolder,
+                                    modifier = Modifier.size(30.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Outlined.CreateNewFolder,
+                                        contentDescription = strings.actionNewFolder,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                            }
                             activeFolders.forEach { folder ->
                                 val childCount = activeConnections.count { it.parentFolderId == folder.id }
                                 val folderAccent = parseHexColorOrNull(folder.inheritable.displayColorAccentHex)
                                     ?: MaterialTheme.colorScheme.primary
-                                Surface(
-                                    shape = RoundedCornerShape(14.dp),
-                                    color = MaterialTheme.colorScheme.surfaceContainer,
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Row(
+                                val folderHover = rememberDesktopHoverState()
+                                val folderInteraction = remember { MutableInteractionSource() }
+                                var folderMenuOpen by remember(folder.id) { mutableStateOf(false) }
+
+                                Box(modifier = Modifier.fillMaxWidth()) {
+                                    Surface(
+                                        shape = RoundedCornerShape(14.dp),
+                                        color = if (folderHover.value.isHovered) {
+                                            MaterialTheme.colorScheme.surfaceContainerHigh
+                                        } else {
+                                            MaterialTheme.colorScheme.surfaceContainer
+                                        },
+                                        border = BorderStroke(
+                                            1.dp,
+                                            if (folderHover.value.isHovered) {
+                                                folderAccent.copy(alpha = 0.45f)
+                                            } else {
+                                                Color.Transparent
+                                            }
+                                        ),
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .padding(horizontal = 12.dp, vertical = 10.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.SpaceBetween
+                                            .nexusHoverTracker(folderHover, PointerIcon.Hand)
+                                            .nexusDesktopPointerButtons(onSecondaryClick = { folderMenuOpen = true })
+                                            .clip(RoundedCornerShape(14.dp))
+                                            .clickable(
+                                                interactionSource = folderInteraction,
+                                                indication = null,
+                                                onClick = { onEditFolder(folder) }
+                                            )
                                     ) {
                                         Row(
-                                            modifier = Modifier.weight(1f),
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(horizontal = 12.dp, vertical = 10.dp),
                                             verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                            horizontalArrangement = Arrangement.SpaceBetween
                                         ) {
-                                            Icon(
-                                                imageVector = Icons.Outlined.Folder,
-                                                contentDescription = null,
-                                                tint = folderAccent,
-                                                modifier = Modifier.size(18.dp)
-                                            )
-                                            Column(modifier = Modifier.weight(1f)) {
-                                                Text(
-                                                    text = folder.name,
-                                                    style = MaterialTheme.typography.titleSmall,
-                                                    maxLines = 1,
-                                                    overflow = TextOverflow.Ellipsis
+                                            Row(
+                                                modifier = Modifier.weight(1f),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Outlined.Folder,
+                                                    contentDescription = null,
+                                                    tint = folderAccent,
+                                                    modifier = Modifier.size(18.dp)
                                                 )
-                                                Text(
-                                                    text = "$childCount",
-                                                    style = NexusTheme.monospace.keycapShortcut,
-                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                )
+                                                Column(modifier = Modifier.weight(1f)) {
+                                                    Text(
+                                                        text = folder.name,
+                                                        style = MaterialTheme.typography.titleSmall,
+                                                        maxLines = 1,
+                                                        overflow = TextOverflow.Ellipsis
+                                                    )
+                                                    Text(
+                                                        text = "$childCount",
+                                                        style = NexusTheme.monospace.keycapShortcut,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                    )
+                                                }
+                                            }
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                            ) {
+                                                FilledTonalIconButton(
+                                                    onClick = { onNewRdpInFolder(folder.id) },
+                                                    modifier = Modifier.size(30.dp)
+                                                ) {
+                                                    Icon(
+                                                        imageVector = Icons.Outlined.Add,
+                                                        contentDescription = "New RDP Connection in ${folder.name}",
+                                                        modifier = Modifier.size(16.dp)
+                                                    )
+                                                }
+                                                FilledTonalButton(
+                                                    enabled = childCount > 0,
+                                                    onClick = { onConnectAllInFolder(folder.id) }
+                                                ) {
+                                                    Icon(Icons.Outlined.PlayArrow, contentDescription = null, modifier = Modifier.size(15.dp))
+                                                    Spacer(modifier = Modifier.width(4.dp))
+                                                    Text(
+                                                        text = strings.actionConnectAllFolder,
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        maxLines = 1
+                                                    )
+                                                }
                                             }
                                         }
-                                        Spacer(modifier = Modifier.width(8.dp))
-                                        FilledTonalButton(
-                                            enabled = childCount > 0,
-                                            onClick = { onConnectAllInFolder(folder.id) }
-                                        ) {
-                                            Icon(Icons.Outlined.PlayArrow, contentDescription = null, modifier = Modifier.size(15.dp))
-                                            Spacer(modifier = Modifier.width(4.dp))
-                                            Text(
-                                                text = strings.actionConnectAllFolder,
-                                                style = MaterialTheme.typography.labelSmall,
-                                                maxLines = 1
+                                    }
+
+                                    DropdownMenu(
+                                        expanded = folderMenuOpen,
+                                        onDismissRequest = { folderMenuOpen = false }
+                                    ) {
+                                        DropdownMenuItem(
+                                            text = { Text("+ New RDP Connection") },
+                                            leadingIcon = { Icon(Icons.Outlined.DesktopWindows, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                                            onClick = {
+                                                folderMenuOpen = false
+                                                onNewRdpInFolder(folder.id)
+                                            }
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("+ New SSH Connection") },
+                                            leadingIcon = { Icon(Icons.Outlined.Terminal, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                                            onClick = {
+                                                folderMenuOpen = false
+                                                onNewSshInFolder(folder.id)
+                                            }
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("+ New Subfolder") },
+                                            leadingIcon = { Icon(Icons.Outlined.CreateNewFolder, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                                            onClick = {
+                                                folderMenuOpen = false
+                                                onNewSubfolder(folder.id)
+                                            }
+                                        )
+                                        if (childCount > 0) {
+                                            DropdownMenuItem(
+                                                text = { Text(strings.actionConnectAllFolder) },
+                                                leadingIcon = { Icon(Icons.Outlined.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                                                onClick = {
+                                                    folderMenuOpen = false
+                                                    onConnectAllInFolder(folder.id)
+                                                }
                                             )
                                         }
+                                        HorizontalDivider()
+                                        DropdownMenuItem(
+                                            text = { Text(strings.actionEditFolderCredentials) },
+                                            leadingIcon = { Icon(Icons.Outlined.Key, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                                            onClick = {
+                                                folderMenuOpen = false
+                                                onEditFolder(folder)
+                                            }
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("Duplicate Folder") },
+                                            leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                                            onClick = {
+                                                folderMenuOpen = false
+                                                onDuplicateFolder(folder)
+                                            }
+                                        )
+                                        HorizontalDivider()
+                                        DropdownMenuItem(
+                                            text = { Text("Delete Folder", color = MaterialTheme.colorScheme.error) },
+                                            leadingIcon = {
+                                                Icon(
+                                                    Icons.Outlined.Delete,
+                                                    contentDescription = null,
+                                                    tint = MaterialTheme.colorScheme.error,
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                            },
+                                            onClick = {
+                                                folderMenuOpen = false
+                                                onDeleteFolder(folder.id)
+                                            }
+                                        )
                                     }
                                 }
                             }
@@ -789,53 +1140,110 @@ fun ExpressiveVaultOverviewDashboard(
                                 }
                             }
                             activeTodos.forEach { todo ->
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clip(RoundedCornerShape(10.dp))
-                                        .clickable { onToggleTodo(todo.id) }
-                                        .padding(horizontal = 6.dp, vertical = 4.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.SpaceBetween
-                                ) {
+                                val todoHover = rememberDesktopHoverState()
+                                val todoInteraction = remember { MutableInteractionSource() }
+                                var todoMenuOpen by remember(todo.id) { mutableStateOf(false) }
+
+                                Box(modifier = Modifier.fillMaxWidth()) {
                                     Row(
-                                        modifier = Modifier.weight(1f),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .nexusHoverTracker(todoHover, PointerIcon.Hand)
+                                            .nexusDesktopPointerButtons(onSecondaryClick = { todoMenuOpen = true })
+                                            .clip(RoundedCornerShape(10.dp))
+                                            .background(
+                                                if (todoHover.value.isHovered) {
+                                                    MaterialTheme.colorScheme.surfaceContainerHigh
+                                                } else {
+                                                    Color.Transparent
+                                                }
+                                            )
+                                            .clickable(
+                                                interactionSource = todoInteraction,
+                                                indication = null,
+                                                onClick = { onToggleTodo(todo.id) }
+                                            )
+                                            .padding(horizontal = 6.dp, vertical = 4.dp),
                                         verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        horizontalArrangement = Arrangement.SpaceBetween
                                     ) {
-                                        Icon(
-                                            imageVector = if (todo.completed) Icons.Outlined.CheckCircle else Icons.Outlined.RadioButtonUnchecked,
-                                            contentDescription = null,
-                                            tint = if (todo.completed) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurfaceVariant,
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                        Text(
-                                            text = todo.title,
-                                            style = MaterialTheme.typography.bodyMedium,
-                                            textDecoration = if (todo.completed) TextDecoration.LineThrough else TextDecoration.None,
-                                            color = if (todo.completed) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis,
-                                            modifier = Modifier.weight(1f)
-                                        )
-                                    }
-                                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                        Text(
-                                            text = todo.priority,
-                                            style = NexusTheme.monospace.keycapShortcut,
-                                            color = if (todo.priority == "HIGH") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                        IconButton(
-                                            onClick = { onDeleteTodo(todo.id) },
-                                            modifier = Modifier.size(24.dp)
+                                        Row(
+                                            modifier = Modifier.weight(1f),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                                         ) {
                                             Icon(
-                                                Icons.Outlined.Delete,
-                                                contentDescription = "Delete To-Do",
-                                                tint = MaterialTheme.colorScheme.error,
-                                                modifier = Modifier.size(14.dp)
+                                                imageVector = if (todo.completed) Icons.Outlined.CheckCircle else Icons.Outlined.RadioButtonUnchecked,
+                                                contentDescription = null,
+                                                tint = if (todo.completed) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                            Text(
+                                                text = todo.title,
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                textDecoration = if (todo.completed) TextDecoration.LineThrough else TextDecoration.None,
+                                                color = if (todo.completed) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                                modifier = Modifier.weight(1f)
                                             )
                                         }
+                                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                            Text(
+                                                text = todo.priority,
+                                                style = NexusTheme.monospace.keycapShortcut,
+                                                color = if (todo.priority == "HIGH") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                            IconButton(
+                                                onClick = { onDeleteTodo(todo.id) },
+                                                modifier = Modifier.size(24.dp)
+                                            ) {
+                                                Icon(
+                                                    Icons.Outlined.Delete,
+                                                    contentDescription = "Delete To-Do",
+                                                    tint = MaterialTheme.colorScheme.error,
+                                                    modifier = Modifier.size(14.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+
+                                    DropdownMenu(
+                                        expanded = todoMenuOpen,
+                                        onDismissRequest = { todoMenuOpen = false }
+                                    ) {
+                                        DropdownMenuItem(
+                                            text = { Text(if (todo.completed) "Mark Incomplete" else "Mark Complete") },
+                                            leadingIcon = { Icon(Icons.Outlined.CheckCircle, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                                            onClick = {
+                                                todoMenuOpen = false
+                                                onToggleTodo(todo.id)
+                                            }
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("Copy Task Title") },
+                                            leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                                            onClick = {
+                                                todoMenuOpen = false
+                                                clipboard.setText(AnnotatedString(todo.title))
+                                            }
+                                        )
+                                        HorizontalDivider()
+                                        DropdownMenuItem(
+                                            text = { Text("Delete", color = MaterialTheme.colorScheme.error) },
+                                            leadingIcon = {
+                                                Icon(
+                                                    Icons.Outlined.Delete,
+                                                    contentDescription = null,
+                                                    tint = MaterialTheme.colorScheme.error,
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                            },
+                                            onClick = {
+                                                todoMenuOpen = false
+                                                onDeleteTodo(todo.id)
+                                            }
+                                        )
                                     }
                                 }
                             }
@@ -863,6 +1271,63 @@ fun ExpressiveVaultOverviewDashboard(
                 }
             }
         }
+
+        DropdownMenu(
+            expanded = overviewBgMenuOpen,
+            onDismissRequest = { overviewBgMenuOpen = false }
+        ) {
+            DropdownMenuItem(
+                text = { Text(strings.actionNewConnection) },
+                leadingIcon = { Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                onClick = {
+                    overviewBgMenuOpen = false
+                    onNewConnection()
+                }
+            )
+            DropdownMenuItem(
+                text = { Text(strings.actionNewFolder) },
+                leadingIcon = { Icon(Icons.Outlined.CreateNewFolder, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                onClick = {
+                    overviewBgMenuOpen = false
+                    onNewFolder()
+                }
+            )
+            DropdownMenuItem(
+                text = { Text("${strings.quickConnectButton} (Ctrl+K)") },
+                leadingIcon = { Icon(Icons.Outlined.Search, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                onClick = {
+                    overviewBgMenuOpen = false
+                    onOpenQuickConnect()
+                }
+            )
+            DropdownMenuItem(
+                text = { Text("Local Terminal") },
+                leadingIcon = { Icon(Icons.Outlined.Terminal, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                onClick = {
+                    overviewBgMenuOpen = false
+                    onLaunchLocalShell()
+                }
+            )
+            DropdownMenuItem(
+                text = { Text(strings.navTemplates) },
+                leadingIcon = { Icon(Icons.Outlined.Bookmarks, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                onClick = {
+                    overviewBgMenuOpen = false
+                    onOpenTemplates()
+                }
+            )
+            if (onImportVault != null) {
+                HorizontalDivider()
+                DropdownMenuItem(
+                    text = { Text(strings.actionImportRtsz) },
+                    leadingIcon = { Icon(Icons.Outlined.UploadFile, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                    onClick = {
+                        overviewBgMenuOpen = false
+                        onImportVault()
+                    }
+                )
+            }
+        }
     }
 }
 
@@ -877,188 +1342,297 @@ fun ConnectionTemplatesStudioView(
     onCreateConnectionFromTemplate: (ConnectionTemplate) -> Unit,
     onOpenNewTemplateDialog: () -> Unit,
     onDeleteTemplate: (String) -> Unit = {},
+    onSaveTemplate: (ConnectionTemplate) -> Unit = {},
+    onDuplicateTemplate: (ConnectionTemplate) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
-    Column(
+    var editingTemplate by remember { mutableStateOf<ConnectionTemplate?>(null) }
+    var bgMenuOpen by remember { mutableStateOf(false) }
+
+    Box(
         modifier = modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.surfaceContainerLowest)
-            .padding(24.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+            .nexusDesktopPointerButtons(onSecondaryClick = { bgMenuOpen = true })
     ) {
         Column(
-            modifier = Modifier.fillMaxWidth(),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(24.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            Row(
+            Column(
                 modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Icon(
-                    imageVector = Icons.Outlined.Bookmarks,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.tertiary,
-                    modifier = Modifier.size(26.dp)
-                )
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(strings.navTemplates, style = MaterialTheme.typography.headlineSmall)
-                    Text(
-                        text = strings.studioTemplatesSubtitle,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Button(onClick = onOpenNewTemplateDialog) {
-                    Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(strings.actionNewTemplate)
-                }
-            }
-        }
-
-        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
-
-        if (templates.isEmpty()) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f),
-                contentAlignment = Alignment.Center
-            ) {
-                Surface(
-                    shape = RoundedCornerShape(24.dp),
-                    color = MaterialTheme.colorScheme.surfaceContainerLow,
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)),
-                    modifier = Modifier.widthIn(max = 440.dp).fillMaxWidth()
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    Column(
-                        modifier = Modifier.padding(28.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Outlined.Bookmarks,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.tertiary,
-                            modifier = Modifier.size(34.dp)
-                        )
-                        Text(
-                            text = strings.navTemplates,
-                            style = MaterialTheme.typography.titleMedium,
-                            textAlign = TextAlign.Center
-                        )
+                    Icon(
+                        imageVector = Icons.Outlined.Bookmarks,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.tertiary,
+                        modifier = Modifier.size(26.dp)
+                    )
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(strings.navTemplates, style = MaterialTheme.typography.headlineSmall)
                         Text(
                             text = strings.studioTemplatesSubtitle,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            textAlign = TextAlign.Center
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
-                        Button(onClick = onOpenNewTemplateDialog) {
-                            Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(strings.actionNewTemplate)
-                        }
+                    }
+                }
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Button(onClick = onOpenNewTemplateDialog) {
+                        Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(strings.actionNewTemplate)
                     }
                 }
             }
-        } else {
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                items(templates, key = { it.id }) { tpl ->
-                    val accent = parseHexColorOrNull(tpl.colorAccentHex) ?: MaterialTheme.colorScheme.tertiary
+
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
+
+            if (templates.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    contentAlignment = Alignment.Center
+                ) {
                     Surface(
-                        shape = RoundedCornerShape(20.dp),
-                        color = MaterialTheme.colorScheme.surfaceContainer,
-                        border = BorderStroke(1.dp, accent.copy(alpha = 0.35f)),
-                        modifier = Modifier.fillMaxWidth()
+                        shape = RoundedCornerShape(24.dp),
+                        color = MaterialTheme.colorScheme.surfaceContainerLow,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)),
+                        modifier = Modifier.widthIn(max = 440.dp).fillMaxWidth()
                     ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(16.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
+                        Column(
+                            modifier = Modifier.padding(28.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
-                            Column(
-                                modifier = Modifier.weight(1f),
-                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            Icon(
+                                imageVector = Icons.Outlined.Bookmarks,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.tertiary,
+                                modifier = Modifier.size(34.dp)
+                            )
+                            Text(
+                                text = strings.navTemplates,
+                                style = MaterialTheme.typography.titleMedium,
+                                textAlign = TextAlign.Center
+                            )
+                            Text(
+                                text = strings.studioTemplatesSubtitle,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.Center
+                            )
+                            Button(onClick = onOpenNewTemplateDialog) {
+                                Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(strings.actionNewTemplate)
+                            }
+                        }
+                    }
+                }
+            } else {
+                LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    items(templates, key = { it.id }) { tpl ->
+                        val accent = parseHexColorOrNull(tpl.colorAccentHex) ?: MaterialTheme.colorScheme.tertiary
+                        val tplHover = rememberDesktopHoverState()
+                        var tplMenuOpen by remember(tpl.id) { mutableStateOf(false) }
+
+                        Box(modifier = Modifier.fillMaxWidth()) {
+                            Surface(
+                                shape = RoundedCornerShape(20.dp),
+                                color = if (tplHover.value.isHovered) {
+                                    MaterialTheme.colorScheme.surfaceContainerHigh
+                                } else {
+                                    MaterialTheme.colorScheme.surfaceContainer
+                                },
+                                border = BorderStroke(
+                                    1.dp,
+                                    accent.copy(alpha = if (tplHover.value.isHovered) 0.55f else 0.35f)
+                                ),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .nexusHoverTracker(tplHover, PointerIcon.Hand)
+                                    .nexusDesktopPointerButtons(onSecondaryClick = { tplMenuOpen = true })
                             ) {
                                 Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(16.dp),
                                     verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    horizontalArrangement = Arrangement.SpaceBetween
                                 ) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(10.dp)
-                                            .clip(CircleShape)
-                                            .background(accent)
-                                    )
-                                    Text(tpl.name, style = MaterialTheme.typography.titleMedium)
-                                    Text(
-                                        text = tpl.protocol.name,
-                                        style = NexusTheme.monospace.keycapShortcut,
-                                        color = accent
-                                    )
-                                }
-                                if (tpl.description.isNotBlank()) {
-                                    Text(
-                                        text = tpl.description,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
+                                    Column(
+                                        modifier = Modifier.weight(1f),
+                                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(10.dp)
+                                                    .clip(CircleShape)
+                                                    .background(accent)
+                                            )
+                                            Text(tpl.name, style = MaterialTheme.typography.titleMedium)
+                                            Text(
+                                                text = tpl.protocol.name,
+                                                style = NexusTheme.monospace.keycapShortcut,
+                                                color = accent
+                                            )
+                                        }
+                                        if (tpl.description.isNotBlank()) {
+                                            Text(
+                                                text = tpl.description,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                    }
+                                    Spacer(modifier = Modifier.width(12.dp))
+                                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                        FilledTonalButton(onClick = { onCreateConnectionFromTemplate(tpl) }) {
+                                            Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text(strings.actionNewConnection)
+                                        }
+                                        IconButton(onClick = { editingTemplate = tpl }) {
+                                            Icon(
+                                                Icons.Outlined.Edit,
+                                                contentDescription = "Edit Template",
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                        }
+                                        IconButton(onClick = { onDeleteTemplate(tpl.id) }) {
+                                            Icon(
+                                                Icons.Outlined.Delete,
+                                                contentDescription = "Delete Template",
+                                                tint = MaterialTheme.colorScheme.error,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                        }
+                                    }
                                 }
                             }
-                            Spacer(modifier = Modifier.width(12.dp))
-                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                FilledTonalButton(onClick = { onCreateConnectionFromTemplate(tpl) }) {
-                                    Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text(strings.actionNewConnection)
-                                }
-                                IconButton(onClick = { onDeleteTemplate(tpl.id) }) {
-                                    Icon(
-                                        Icons.Outlined.Delete,
-                                        contentDescription = "Delete Template",
-                                        tint = MaterialTheme.colorScheme.error,
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                }
+
+                            DropdownMenu(
+                                expanded = tplMenuOpen,
+                                onDismissRequest = { tplMenuOpen = false }
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text(strings.actionNewConnection) },
+                                    leadingIcon = { Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                                    onClick = {
+                                        tplMenuOpen = false
+                                        onCreateConnectionFromTemplate(tpl)
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Edit Template") },
+                                    leadingIcon = { Icon(Icons.Outlined.Edit, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                                    onClick = {
+                                        tplMenuOpen = false
+                                        editingTemplate = tpl
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Duplicate Template") },
+                                    leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                                    onClick = {
+                                        tplMenuOpen = false
+                                        onDuplicateTemplate(tpl)
+                                    }
+                                )
+                                HorizontalDivider()
+                                DropdownMenuItem(
+                                    text = { Text("Delete Template", color = MaterialTheme.colorScheme.error) },
+                                    leadingIcon = {
+                                        Icon(
+                                            Icons.Outlined.Delete,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.error,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    },
+                                    onClick = {
+                                        tplMenuOpen = false
+                                        onDeleteTemplate(tpl.id)
+                                    }
+                                )
                             }
                         }
                     }
                 }
             }
         }
+
+        DropdownMenu(
+            expanded = bgMenuOpen,
+            onDismissRequest = { bgMenuOpen = false }
+        ) {
+            DropdownMenuItem(
+                text = { Text(strings.actionNewTemplate) },
+                leadingIcon = { Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                onClick = {
+                    bgMenuOpen = false
+                    onOpenNewTemplateDialog()
+                }
+            )
+        }
+    }
+
+    if (editingTemplate != null) {
+        NewTemplateDialog(
+            visible = true,
+            editingTemplate = editingTemplate,
+            strings = strings,
+            onDismiss = { editingTemplate = null },
+            onSaveTemplate = { updated ->
+                onSaveTemplate(updated)
+                editingTemplate = null
+            }
+        )
     }
 }
 
 /**
- * Dialog to create a new reusable Royal TS [ConnectionTemplate].
+ * Dialog to create or edit a reusable Royal TS [ConnectionTemplate].
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun NewTemplateDialog(
     visible: Boolean,
+    editingTemplate: ConnectionTemplate? = null,
     strings: WorkspaceLocalizedStrings,
     onDismiss: () -> Unit,
     onSaveTemplate: (ConnectionTemplate) -> Unit
 ) {
     if (!visible) return
-    var name by remember { mutableStateOf("") }
-    var description by remember { mutableStateOf("") }
-    var protocol by remember { mutableStateOf(VaultProtocolType.RDP) }
-    var colorHex by remember { mutableStateOf<String?>("#5B9BFF") }
-    var rdpAdminConsole by remember { mutableStateOf(true) }
-    var rdpScalePercent by remember { mutableIntStateOf(150) }
+    val existingRdp = editingTemplate?.settings as? ProtocolSpecificSettings.Rdp
+    var name by remember(editingTemplate) { mutableStateOf(editingTemplate?.name.orEmpty()) }
+    var description by remember(editingTemplate) { mutableStateOf(editingTemplate?.description.orEmpty()) }
+    var protocol by remember(editingTemplate) { mutableStateOf(editingTemplate?.protocol ?: VaultProtocolType.RDP) }
+    var colorHex by remember(editingTemplate) { mutableStateOf<String?>(editingTemplate?.colorAccentHex ?: "#5B9BFF") }
+    var rdpAdminConsole by remember(editingTemplate) { mutableStateOf(existingRdp?.connectToConsoleAdmin ?: true) }
+    var rdpScalePercent by remember(editingTemplate) { mutableIntStateOf(existingRdp?.desktopScaleFactorPercent ?: 150) }
     var protoMenuOpen by remember { mutableStateOf(false) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(strings.actionNewTemplate) },
+        title = { Text(if (editingTemplate != null) "Edit Template" else strings.actionNewTemplate) },
         text = {
             Column(
                 modifier = Modifier.verticalScroll(rememberScrollState()),
@@ -1114,12 +1688,15 @@ fun NewTemplateDialog(
                         Text(strings.rdpOptConnectConsole, style = MaterialTheme.typography.bodySmall)
                         Switch(checked = rdpAdminConsole, onCheckedChange = { rdpAdminConsole = it })
                     }
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
                         listOf(100, 125, 150, 175, 200).forEach { pct ->
-                            FilterChip(
+                            NexusChoiceChip(
                                 selected = rdpScalePercent == pct,
                                 onClick = { rdpScalePercent = pct },
-                                label = { Text("$pct%", style = MaterialTheme.typography.labelSmall) }
+                                label = "$pct%"
                             )
                         }
                     }
@@ -1155,11 +1732,13 @@ fun NewTemplateDialog(
                     }
                     onSaveTemplate(
                         ConnectionTemplate(
+                            id = editingTemplate?.id ?: java.util.UUID.randomUUID().toString(),
                             name = name.trim(),
                             description = description.trim(),
                             protocol = protocol,
                             colorAccentHex = colorHex,
-                            inheritable = InheritableProperties(displayColorAccentHex = colorHex),
+                            inheritable = (editingTemplate?.inheritable ?: InheritableProperties())
+                                .copy(displayColorAccentHex = colorHex),
                             settings = settings
                         )
                     )
@@ -1179,6 +1758,7 @@ fun NewTemplateDialog(
  * Allows overriding Credentials (Vault or Ad-Hoc Domain\User\Password), RDP `/admin` Console,
  * Connection Template, and Target Window Placement without modifying the saved connection.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun ConnectWithOptionsDialog(
     targetConnection: VaultConnection?,
@@ -1227,24 +1807,24 @@ fun ConnectWithOptionsDialog(
                     color = MaterialTheme.colorScheme.secondary
                 )
 
-                Row(
-                    modifier = Modifier.horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    FilterChip(
+                    NexusChoiceChip(
                         selected = credChoice == 0,
                         onClick = { credChoice = 0 },
-                        label = { Text(strings.credModeInheritFolder, style = MaterialTheme.typography.labelSmall) }
+                        label = strings.credModeInheritFolder
                     )
-                    FilterChip(
+                    NexusChoiceChip(
                         selected = credChoice == 1,
                         onClick = { credChoice = 1 },
-                        label = { Text(strings.credModeOverrideExplicit, style = MaterialTheme.typography.labelSmall) }
+                        label = strings.credModeOverrideExplicit
                     )
-                    FilterChip(
+                    NexusChoiceChip(
                         selected = credChoice == 2,
                         onClick = { credChoice = 2 },
-                        label = { Text("Ad-Hoc Login", style = MaterialTheme.typography.labelSmall) }
+                        label = "Ad-Hoc Login"
                     )
                 }
 
@@ -1343,24 +1923,24 @@ fun ConnectWithOptionsDialog(
 
                 HorizontalDivider()
 
-                Row(
-                    modifier = Modifier.horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    FilterChip(
+                    NexusChoiceChip(
                         selected = placement == QuickLaunchPlacement.ACTIVE_PANE_TAB,
                         onClick = { placement = QuickLaunchPlacement.ACTIVE_PANE_TAB },
-                        label = { Text("Tab", style = MaterialTheme.typography.labelSmall) }
+                        label = "Tab"
                     )
-                    FilterChip(
+                    NexusChoiceChip(
                         selected = placement == QuickLaunchPlacement.SPLIT_RIGHT_PANE,
                         onClick = { placement = QuickLaunchPlacement.SPLIT_RIGHT_PANE },
-                        label = { Text(strings.splitRight, style = MaterialTheme.typography.labelSmall) }
+                        label = strings.splitRight
                     )
-                    FilterChip(
+                    NexusChoiceChip(
                         selected = placement == QuickLaunchPlacement.DETACHED_NEW_WINDOW,
                         onClick = { placement = QuickLaunchPlacement.DETACHED_NEW_WINDOW },
-                        label = { Text(strings.detachNewWindow, style = MaterialTheme.typography.labelSmall) }
+                        label = strings.detachNewWindow
                     )
                 }
             }
@@ -1393,6 +1973,7 @@ fun ConnectWithOptionsDialog(
 /**
  * Interactive Creator for Royal TS [SmartFolder] Dynamic Rules.
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun NewSmartFolderDialog(
     visible: Boolean,
@@ -1422,12 +2003,15 @@ fun NewSmartFolderDialog(
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
                     listOf("" to "Any OS", "Windows" to "Windows", "Linux" to "Linux").forEach { (value, label) ->
-                        FilterChip(
+                        NexusChoiceChip(
                             selected = osFilter == value,
                             onClick = { osFilter = value },
-                            label = { Text(label, style = MaterialTheme.typography.labelSmall) }
+                            label = label
                         )
                     }
                 }
@@ -1608,6 +2192,7 @@ fun InspectorExtendedRoyalCards(
     onDeleteCustomProperty: (String) -> Unit = {},
     onDeleteTodo: (String) -> Unit = {}
 ) {
+    val clipboard = LocalClipboardManager.current
     val conn = profile.connection
     var notesDraft by remember(conn.id, conn.notes) { mutableStateOf(conn.notes) }
     var newPropKey by remember(conn.id) { mutableStateOf("") }
@@ -1643,37 +2228,86 @@ fun InspectorExtendedRoyalCards(
             } else {
                 profile.effectiveCustomProperties.values.forEach { prop ->
                     val isOwnedByConn = prop.key.lowercase() in ownedPropKeys
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text(
-                            text = "\$CustomProperty.${prop.key}\$",
-                            style = NexusTheme.monospace.keycapShortcut,
-                            color = MaterialTheme.colorScheme.secondary,
-                            modifier = Modifier.weight(1f),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    var propMenuOpen by remember(prop.key) { mutableStateOf(false) }
+                    val tokenStr = "\$CustomProperty.${prop.key}\$"
+
+                    Box(modifier = Modifier.fillMaxWidth()) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .nexusDesktopPointerButtons(onSecondaryClick = { propMenuOpen = true }),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
                             Text(
-                                text = if (prop.isProtected) "••••••••" else prop.value,
+                                text = tokenStr,
                                 style = NexusTheme.monospace.keycapShortcut,
-                                color = MaterialTheme.colorScheme.onSurface
+                                color = MaterialTheme.colorScheme.secondary,
+                                modifier = Modifier.weight(1f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
-                            if (isOwnedByConn) {
-                                IconButton(
-                                    onClick = { onDeleteCustomProperty(prop.key) },
-                                    modifier = Modifier.size(22.dp)
-                                ) {
-                                    Icon(
-                                        Icons.Outlined.Delete,
-                                        contentDescription = "Delete Custom Property",
-                                        tint = MaterialTheme.colorScheme.error,
-                                        modifier = Modifier.size(13.dp)
-                                    )
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text(
+                                    text = if (prop.isProtected) "••••••••" else prop.value,
+                                    style = NexusTheme.monospace.keycapShortcut,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                if (isOwnedByConn) {
+                                    IconButton(
+                                        onClick = { onDeleteCustomProperty(prop.key) },
+                                        modifier = Modifier.size(22.dp)
+                                    ) {
+                                        Icon(
+                                            Icons.Outlined.Delete,
+                                            contentDescription = "Delete Custom Property",
+                                            tint = MaterialTheme.colorScheme.error,
+                                            modifier = Modifier.size(13.dp)
+                                        )
+                                    }
                                 }
+                            }
+                        }
+
+                        DropdownMenu(
+                            expanded = propMenuOpen,
+                            onDismissRequest = { propMenuOpen = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Copy Token ($tokenStr)") },
+                                leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                                onClick = {
+                                    propMenuOpen = false
+                                    clipboard.setText(AnnotatedString(tokenStr))
+                                }
+                            )
+                            if (!prop.isProtected) {
+                                DropdownMenuItem(
+                                    text = { Text("Copy Value") },
+                                    leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                                    onClick = {
+                                        propMenuOpen = false
+                                        clipboard.setText(AnnotatedString(prop.value))
+                                    }
+                                )
+                            }
+                            if (isOwnedByConn) {
+                                HorizontalDivider()
+                                DropdownMenuItem(
+                                    text = { Text("Delete Property", color = MaterialTheme.colorScheme.error) },
+                                    leadingIcon = {
+                                        Icon(
+                                            Icons.Outlined.Delete,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.error,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    },
+                                    onClick = {
+                                        propMenuOpen = false
+                                        onDeleteCustomProperty(prop.key)
+                                    }
+                                )
                             }
                         }
                     }
@@ -1732,7 +2366,7 @@ fun InspectorExtendedRoyalCards(
                 modifier = Modifier.fillMaxWidth()
             )
             if (notesDraft != conn.notes) {
-                AssistChip(
+                NexusActionChip(
                     onClick = {
                         onSaveNotesAndCustomProps(
                             notesDraft,
@@ -1740,7 +2374,8 @@ fun InspectorExtendedRoyalCards(
                             conn.inheritable.displayColorAccentHex
                         )
                     },
-                    label = { Text(strings.dialogActionSave, style = MaterialTheme.typography.labelSmall) }
+                    label = strings.dialogActionSave,
+                    leadingIcon = Icons.Outlined.CheckCircle
                 )
             }
         }
@@ -1756,38 +2391,86 @@ fun InspectorExtendedRoyalCards(
         Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(strings.inspectorTodoItems, style = MaterialTheme.typography.labelMedium)
             scopedTodos.forEach { todo ->
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { onToggleTodo(todo.id) },
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
+                val todoInteraction = remember { MutableInteractionSource() }
+                var todoMenuOpen by remember(todo.id) { mutableStateOf(false) }
+
+                Box(modifier = Modifier.fillMaxWidth()) {
                     Row(
-                        modifier = Modifier.weight(1f),
-                        verticalAlignment = Alignment.CenterVertically
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .nexusDesktopPointerButtons(onSecondaryClick = { todoMenuOpen = true })
+                            .clickable(
+                                interactionSource = todoInteraction,
+                                indication = null,
+                                onClick = { onToggleTodo(todo.id) }
+                            ),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Checkbox(
-                            checked = todo.completed,
-                            onCheckedChange = { onToggleTodo(todo.id) }
-                        )
-                        Text(
-                            text = todo.title,
-                            style = MaterialTheme.typography.bodySmall,
-                            textDecoration = if (todo.completed) TextDecoration.LineThrough else TextDecoration.None,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
+                        Row(
+                            modifier = Modifier.weight(1f),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Checkbox(
+                                checked = todo.completed,
+                                onCheckedChange = { onToggleTodo(todo.id) }
+                            )
+                            Text(
+                                text = todo.title,
+                                style = MaterialTheme.typography.bodySmall,
+                                textDecoration = if (todo.completed) TextDecoration.LineThrough else TextDecoration.None,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        IconButton(
+                            onClick = { onDeleteTodo(todo.id) },
+                            modifier = Modifier.size(22.dp)
+                        ) {
+                            Icon(
+                                Icons.Outlined.Delete,
+                                contentDescription = "Delete To-Do",
+                                tint = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.size(13.dp)
+                            )
+                        }
                     }
-                    IconButton(
-                        onClick = { onDeleteTodo(todo.id) },
-                        modifier = Modifier.size(22.dp)
+
+                    DropdownMenu(
+                        expanded = todoMenuOpen,
+                        onDismissRequest = { todoMenuOpen = false }
                     ) {
-                        Icon(
-                            Icons.Outlined.Delete,
-                            contentDescription = "Delete To-Do",
-                            tint = MaterialTheme.colorScheme.error,
-                            modifier = Modifier.size(13.dp)
+                        DropdownMenuItem(
+                            text = { Text(if (todo.completed) "Mark Incomplete" else "Mark Complete") },
+                            leadingIcon = { Icon(Icons.Outlined.CheckCircle, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                            onClick = {
+                                todoMenuOpen = false
+                                onToggleTodo(todo.id)
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Copy Task Title") },
+                            leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                            onClick = {
+                                todoMenuOpen = false
+                                clipboard.setText(AnnotatedString(todo.title))
+                            }
+                        )
+                        HorizontalDivider()
+                        DropdownMenuItem(
+                            text = { Text("Delete", color = MaterialTheme.colorScheme.error) },
+                            leadingIcon = {
+                                Icon(
+                                    Icons.Outlined.Delete,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.error,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            },
+                            onClick = {
+                                todoMenuOpen = false
+                                onDeleteTodo(todo.id)
+                            }
                         )
                     }
                 }
@@ -1818,4 +2501,5 @@ fun InspectorExtendedRoyalCards(
         }
     }
 }
+
 

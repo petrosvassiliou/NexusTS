@@ -3,6 +3,7 @@ package com.nexusts.app.feature.workspace
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -26,18 +27,22 @@ import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Bookmarks
+import androidx.compose.material.icons.outlined.ClearAll
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.CloudSync
 import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.CreateNewFolder
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.DeviceHub
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.DynamicFeed
 import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.ExpandLess
 import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.History
+import androidx.compose.material.icons.outlined.HorizontalSplit
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.outlined.Keyboard
@@ -57,8 +62,8 @@ import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material.icons.outlined.UploadFile
 import androidx.compose.material.icons.outlined.VerticalSplit
 import androidx.compose.material.icons.outlined.ViewSidebar
+import androidx.compose.material.icons.outlined.VpnKey
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -69,10 +74,13 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -83,16 +91,23 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.nexusts.app.core.ui.components.ExpressiveMorphingIconButton
 import com.nexusts.app.core.ui.components.ExpressiveSplitActionButton
+import com.nexusts.app.core.ui.components.NexusActionChip
 import com.nexusts.app.core.ui.components.NexusBrandEmblem
 import com.nexusts.app.core.ui.components.parseHexColorOrNull
+import com.nexusts.app.core.ui.input.LocalNexusShortcutEngine
 import com.nexusts.app.core.ui.input.NexusShortcutAction
 import com.nexusts.app.core.ui.input.nexusDesktopPointerButtons
+import com.nexusts.app.core.ui.input.nexusHoverTracker
+import com.nexusts.app.core.ui.input.rememberDesktopHoverState
 import com.nexusts.app.core.ui.theme.NexusTheme
 import com.nexusts.app.core.ui.workspace.ExternalDisplayDescriptor
 import com.nexusts.app.core.ui.workspace.NexusAdaptiveDesktopScaffold
@@ -106,6 +121,7 @@ import com.nexusts.app.core.ui.workspace.WorkspaceSessionTab
 import com.nexusts.app.core.ui.workspace.protocolAccentColor
 import com.nexusts.app.core.ui.workspace.protocolIcon
 import com.nexusts.app.core.vault.exporter.VaultExportFormat
+import com.nexusts.app.core.vault.importer.DetectedExternalVaultFormat
 import com.nexusts.app.core.vault.inheritance.EffectiveConnectionProfile
 import com.nexusts.app.core.vault.model.CustomPropertyEntry
 import com.nexusts.app.core.vault.model.DynamicFolder
@@ -176,9 +192,16 @@ fun NexusWorkspaceScreen(
     val uiState by viewModel.uiState.collectAsState()
     val rootPane by viewModel.tilingController.rootNode.collectAsState()
     val focusedPaneId by viewModel.tilingController.focusedPaneId.collectAsState()
+    val snackbarHostState = remember { SnackbarHostState() }
 
     LaunchedEffect(viewModel) {
         viewModel.observePendingReDockTabs()
+    }
+
+    LaunchedEffect(uiState.userSnackbarMessage) {
+        val msg = uiState.userSnackbarMessage ?: return@LaunchedEffect
+        snackbarHostState.showSnackbar(msg)
+        viewModel.consumeUserSnackbar()
     }
 
     // Full-Screen Zero-Knowledge Vault Lock Shield:
@@ -231,357 +254,427 @@ fun NexusWorkspaceScreen(
 
     val isDriveLinked = uiState.driveLinkedSafLabel.isNotBlank() || uiState.driveSignedInEmail.isNotBlank()
 
-    NexusAdaptiveDesktopScaffold(
-        destinations = destinations,
-        selectedDestinationId = uiState.activeRailId,
-        onSelectDestination = viewModel::selectRailDestination,
-        isSidebarVisible = uiState.isSidebarVisible,
-        isInspectorVisible = uiState.isInspectorVisible,
-        isBottomDrawerVisible = uiState.isBottomDrawerVisible,
-        remoteKeyCaptureActive = uiState.remoteKeyCaptureEnabled,
-        onShortcutTriggered = { action ->
-            viewModel.handleShortcut(
-                action = action,
-                onOpenVaultPicker = onRequestImportFilePicker,
-                onSyncDriveNow = onRequestGoogleDriveSync
-            ) { tab -> onDetachTabToNativeWindow(tab, null) }
-        },
-        onForwardRawKeyToActiveSession = viewModel::forwardRawKeyToFocusedSession,
-        topWindowBar = {
-            DesktopTopWindowChrome(
-                vaultName = uiState.vaultDocument.name,
-                vaultRevision = uiState.vaultDocument.revision,
-                isDriveLinked = isDriveLinked,
-                isSidebarVisible = uiState.isSidebarVisible,
-                isInspectorVisible = uiState.isInspectorVisible,
-                isBottomDrawerVisible = uiState.isBottomDrawerVisible,
-                isVaultLocked = uiState.isVaultLocked,
-                remoteKeyCaptureEnabled = uiState.remoteKeyCaptureEnabled,
-                hasActiveSessions = activeSessionCount > 0,
-                broadcastEnabled = uiState.broadcastModeEnabled,
-                flexibleUpdateDownloaded = flexibleUpdateDownloaded,
-                strings = strings,
-                onToggleSidebar = {
-                    viewModel.handleShortcut(NexusShortcutAction.TOGGLE_SIDEBAR_TREE) {}
-                },
-                onToggleInspector = {
-                    viewModel.handleShortcut(NexusShortcutAction.TOGGLE_PROPERTY_INSPECTOR) {}
-                },
-                onToggleBottomDrawer = {
-                    viewModel.handleShortcut(NexusShortcutAction.TOGGLE_BOTTOM_LOG_DRAWER) {}
-                },
-                onOpenQuickConnect = {
-                    viewModel.handleShortcut(NexusShortcutAction.QUICK_CONNECT_PALETTE) {}
-                },
-                onNewConnection = viewModel::openNewConnectionDialog,
-                onNewFolder = viewModel::openNewFolderDialog,
-                onNewSmartFolder = viewModel::openNewSmartFolderDialog,
-                onNewDynamicFolder = viewModel::openNewDynamicFolderDialog,
-                onNewTemplate = viewModel::openNewTemplateDialog,
-                onNewLocalShell = viewModel::launchLocalShellTab,
-                onImportRtsz = onRequestImportFilePicker,
-                onExportVault = onRequestExportVault,
-                onSyncGoogleDrive = onRequestGoogleDriveSync,
-                onToggleRemoteKeyCapture = viewModel::toggleRemoteKeyCapture,
-                onToggleBroadcast = viewModel::toggleGlobalBroadcast,
-                onLockVault = viewModel::openLockVaultDialog,
-                onCompleteFlexibleUpdate = onCompleteFlexibleUpdate
-            )
-        },
-        sidebarTreeContent = {
-            VaultHierarchySidebarTree(
-                uiState = uiState,
-                strings = strings,
-                onFilterQueryChanged = viewModel::updateSidebarFilterQuery,
-                smartFolderConnectionsProvider = viewModel::evaluateSmartFolderConnections,
-                onToggleSmartFolder = viewModel::toggleSmartFolderSelection,
-                onNewSmartFolder = viewModel::openNewSmartFolderDialog,
-                onDeleteSmartFolder = viewModel::deleteSmartFolderFromVault,
-                onNewDynamicFolder = viewModel::openNewDynamicFolderDialog,
-                onToggleDynamicFolder = viewModel::toggleDynamicFolder,
-                onReloadDynamicFolder = viewModel::reloadDynamicFolder,
-                onDeleteDynamicFolder = viewModel::deleteDynamicFolderFromVault,
-                onNewFolder = viewModel::openNewFolderDialog,
-                onNewConnection = viewModel::openNewConnectionDialog,
-                onEditFolder = viewModel::openEditFolderDialog,
-                onDeleteFolder = viewModel::deleteFolder,
-                onConnectAllInFolder = { folderId ->
-                    viewModel.connectAllInFolder(folderId) { tab ->
-                        onDetachTabToNativeWindow(tab, null)
-                    }
-                },
-                onSelectConnection = { id ->
-                    viewModel.selectConnectionInTree(id)
-                    viewModel.selectRailDestination("connections")
-                },
-                onEditConnection = viewModel::openEditConnectionDialog,
-                onConnectWithOptions = viewModel::openConnectWithOptions,
-                onToggleFavorite = viewModel::toggleFavoriteConnection,
-                onDuplicateConnection = viewModel::duplicateConnection,
-                onDeleteConnection = viewModel::deleteConnection,
-                onLaunchConnection = { conn, placement ->
-                    viewModel.selectRailDestination("connections")
-                    viewModel.launchConnection(conn, placement) { detachedTab ->
-                        onDetachTabToNativeWindow(detachedTab, null)
-                    }
-                }
-            )
-        },
-        mainWorkspaceContent = {
-            when (uiState.activeRailId) {
-                "templates" -> ConnectionTemplatesStudioView(
-                    templates = uiState.vaultDocument.templates,
+    CompositionLocalProvider(LocalNexusShortcutEngine provides viewModel.shortcutEngine) {
+        NexusAdaptiveDesktopScaffold(
+            destinations = destinations,
+            selectedDestinationId = uiState.activeRailId,
+            onSelectDestination = viewModel::selectRailDestination,
+            isSidebarVisible = uiState.isSidebarVisible,
+            isInspectorVisible = uiState.isInspectorVisible,
+            isBottomDrawerVisible = uiState.isBottomDrawerVisible,
+            remoteKeyCaptureActive = uiState.remoteKeyCaptureEnabled,
+            onShortcutTriggered = { action ->
+                viewModel.handleShortcut(
+                    action = action,
+                    onOpenVaultPicker = onRequestImportFilePicker,
+                    onSyncDriveNow = onRequestGoogleDriveSync
+                ) { tab -> onDetachTabToNativeWindow(tab, null) }
+            },
+            onForwardRawKeyToActiveSession = viewModel::forwardRawKeyToFocusedSession,
+            topWindowBar = {
+                DesktopTopWindowChrome(
+                    vaultName = uiState.vaultDocument.name,
+                    vaultRevision = uiState.vaultDocument.revision,
+                    isDriveLinked = isDriveLinked,
+                    isSidebarVisible = uiState.isSidebarVisible,
+                    isInspectorVisible = uiState.isInspectorVisible,
+                    isBottomDrawerVisible = uiState.isBottomDrawerVisible,
+                    isVaultLocked = uiState.isVaultLocked,
+                    remoteKeyCaptureEnabled = uiState.remoteKeyCaptureEnabled,
+                    hasActiveSessions = activeSessionCount > 0,
+                    broadcastEnabled = uiState.broadcastModeEnabled,
+                    flexibleUpdateDownloaded = flexibleUpdateDownloaded,
                     strings = strings,
-                    onCreateConnectionFromTemplate = viewModel::createConnectionFromTemplate,
-                    onOpenNewTemplateDialog = viewModel::openNewTemplateDialog,
-                    onDeleteTemplate = viewModel::deleteTemplateFromVault
-                )
-
-                "credentials" -> CredentialVaultStudioView(
-                    credentials = uiState.vaultDocument.credentials,
-                    strings = strings,
-                    onGenerateEd25519Key = viewModel::generateAndStoreSshKeyPair,
-                    onCreateCredential = viewModel::addCredentialToVault,
-                    onUpdateCredential = viewModel::updateCredentialInVault,
-                    onDeleteCredential = viewModel::deleteCredentialFromVault,
-                    onRequestImportVaultFile = onRequestImportFilePicker
-                )
-
-                "gateways" -> SecureGatewayStudioView(
-                    gateways = uiState.vaultDocument.gateways,
-                    healthReports = uiState.gatewayHealthReports,
-                    strings = strings,
-                    onProbeGateway = viewModel::probeGatewayLatency,
-                    onAddGateway = viewModel::addGatewayToVault,
-                    activeLeases = uiState.activeGatewayLeases,
-                    credentials = uiState.vaultDocument.credentials,
-                    onUpdateGateway = viewModel::updateGatewayInVault,
-                    onDeleteGateway = viewModel::deleteGatewayFromVault,
-                    onOpenGatewayLease = { gw -> viewModel.openGatewayLoopbackLease(gw) },
-                    onCloseGatewayLease = viewModel::closeGatewayLease
-                )
-
-                "tasks" -> AutomationTasksStudioView(
-                    commandTasks = uiState.vaultDocument.commandTasks,
-                    keySequenceTasks = uiState.vaultDocument.keySequenceTasks,
-                    strings = strings,
-                    onRunCommandTask = viewModel::executeCommandTask,
-                    onRunKeySequenceTask = viewModel::executeKeySequenceTask,
-                    onAddCommandTask = viewModel::addCommandTaskToVault,
-                    onAddKeySequenceTask = viewModel::addKeySequenceTaskToVault,
-                    onDeleteCommandTask = viewModel::deleteCommandTask,
-                    onDeleteKeySequenceTask = viewModel::deleteKeySequenceTask
-                )
-
-                "sync" -> DriveSyncAndConflictStudioView(
-                    vaultDocument = uiState.vaultDocument,
-                    useSharedTeamDrive = uiState.useSharedTeamDriveZone,
-                    strings = strings,
-                    onSelectSyncZone = viewModel::setDriveSyncZone,
-                    onTriggerDeltaSync = onRequestGoogleDriveSync,
-                    initialOAuthWebClientId = initialOAuthWebClientId,
-                    initialSharedFolderId = initialSharedDriveFolderId,
-                    onSaveOAuthConfig = onSaveOAuthConfig,
-                    driveSignedInEmail = uiState.driveSignedInEmail,
-                    driveLinkedSafLabel = uiState.driveLinkedSafLabel,
-                    driveSyncStatusBanner = uiState.driveSyncStatusBanner,
-                    driveIsSyncing = uiState.driveIsSyncing,
-                    driveAutoSyncOnSave = uiState.driveAutoSyncOnSave,
-                    onToggleAutoSyncOnSave = onToggleAutoSyncOnSave,
-                    rememberVaultPassphrase = uiState.driveRememberVaultPassphrase,
-                    onSaveVaultSyncPassphrase = onSaveVaultSyncPassphrase,
-                    onClearVaultSyncPassphrase = onClearVaultSyncPassphrase,
-                    onCreateLiveSafDriveVault = onCreateLiveSafDriveVault,
-                    onLinkExistingSafDriveVault = onLinkExistingSafDriveVault,
-                    onUnlinkSafDriveVault = onUnlinkSafDriveVault,
-                    onAuthorizeAndSyncOAuthDrive = onAuthorizeAndSyncOAuthDrive,
-                    onSignOutOAuthDrive = onSignOutOAuthDrive,
-                    githubReleaseBanner = uiState.githubLatestReleaseBanner,
-                    githubReleaseUrl = uiState.githubLatestReleaseUrl,
-                    onCheckGitHubReleases = onCheckGitHubReleases,
-                    onOpenGitHubReleaseUrl = onOpenGitHubReleaseUrl
-                )
-
-                else -> SplitPaneWorkspaceContainer(
-                    node = rootPane,
-                    focusedPaneId = focusedPaneId,
-                    connectedDisplays = connectedDisplays,
-                    labels = splitLabels,
-                    onFocusPane = viewModel.tilingController::focusPane,
-                    onSelectTab = viewModel.tilingController::selectTab,
-                    onCloseTab = viewModel::closeSessionTab,
-                    onSplitPane = { paneId, orientation ->
-                        viewModel.tilingController.splitPane(paneId, orientation)
+                    onToggleSidebar = {
+                        viewModel.handleShortcut(NexusShortcutAction.TOGGLE_SIDEBAR_TREE) {}
                     },
-                    onResizeSplit = viewModel.tilingController::updateSplitRatio,
-                    onDetachTabToWindow = { tab, displayId ->
-                        viewModel.transferTabToDetachedWindow(tab.tabId)?.let { extracted ->
-                            onDetachTabToNativeWindow(extracted, displayId)
+                    onToggleInspector = {
+                        viewModel.handleShortcut(NexusShortcutAction.TOGGLE_PROPERTY_INSPECTOR) {}
+                    },
+                    onToggleBottomDrawer = {
+                        viewModel.handleShortcut(NexusShortcutAction.TOGGLE_BOTTOM_LOG_DRAWER) {}
+                    },
+                    onOpenQuickConnect = {
+                        viewModel.handleShortcut(NexusShortcutAction.QUICK_CONNECT_PALETTE) {}
+                    },
+                    onNewConnection = viewModel::openNewConnectionDialog,
+                    onNewFolder = viewModel::openNewFolderDialog,
+                    onNewSmartFolder = viewModel::openNewSmartFolderDialog,
+                    onNewDynamicFolder = viewModel::openNewDynamicFolderDialog,
+                    onNewTemplate = viewModel::openNewTemplateDialog,
+                    onNewLocalShell = viewModel::launchLocalShellTab,
+                    onImportRtsz = onRequestImportFilePicker,
+                    onExportVault = onRequestExportVault,
+                    onSyncGoogleDrive = onRequestGoogleDriveSync,
+                    onToggleRemoteKeyCapture = viewModel::toggleRemoteKeyCapture,
+                    onToggleBroadcast = viewModel::toggleGlobalBroadcast,
+                    onLockVault = viewModel::openLockVaultDialog,
+                    onCompleteFlexibleUpdate = onCompleteFlexibleUpdate
+                )
+            },
+            sidebarTreeContent = {
+                VaultHierarchySidebarTree(
+                    uiState = uiState,
+                    strings = strings,
+                    onFilterQueryChanged = viewModel::updateSidebarFilterQuery,
+                    smartFolderConnectionsProvider = viewModel::evaluateSmartFolderConnections,
+                    onToggleSmartFolder = viewModel::toggleSmartFolderSelection,
+                    onNewSmartFolder = viewModel::openNewSmartFolderDialog,
+                    onDeleteSmartFolder = viewModel::deleteSmartFolderFromVault,
+                    onNewDynamicFolder = viewModel::openNewDynamicFolderDialog,
+                    onToggleDynamicFolder = viewModel::toggleDynamicFolder,
+                    onReloadDynamicFolder = viewModel::reloadDynamicFolder,
+                    onDeleteDynamicFolder = viewModel::deleteDynamicFolderFromVault,
+                    onNewFolder = viewModel::openNewFolderDialog,
+                    onNewConnection = viewModel::openNewConnectionDialog,
+                    onNewRdpInFolder = { folderId ->
+                        viewModel.openNewConnectionInFolder(folderId, VaultProtocolType.RDP)
+                    },
+                    onNewSshInFolder = { folderId ->
+                        viewModel.openNewConnectionInFolder(folderId, VaultProtocolType.SSH)
+                    },
+                    onNewSubfolder = viewModel::openNewSubfolder,
+                    onEditFolder = viewModel::openEditFolderDialog,
+                    onDuplicateFolder = viewModel::duplicateFolder,
+                    onDeleteFolder = viewModel::deleteFolder,
+                    onConnectAllInFolder = { folderId ->
+                        viewModel.connectAllInFolder(folderId) { tab ->
+                            onDetachTabToNativeWindow(tab, null)
                         }
                     },
-                    onToggleTabBroadcast = { tab ->
-                        viewModel.tilingController.updateTab(tab.tabId) {
-                            it.copy(broadcastEnabled = !it.broadcastEnabled)
+                    onSelectConnection = { id ->
+                        viewModel.selectConnectionInTree(id)
+                        viewModel.selectRailDestination("connections")
+                    },
+                    onEditConnection = viewModel::openEditConnectionDialog,
+                    onConnectWithOptions = viewModel::openConnectWithOptions,
+                    onToggleFavorite = viewModel::toggleFavoriteConnection,
+                    onDuplicateConnection = viewModel::duplicateConnection,
+                    onDeleteConnection = viewModel::deleteConnection,
+                    onLaunchConnection = { conn, placement ->
+                        viewModel.selectRailDestination("connections")
+                        viewModel.launchConnection(conn, placement) { detachedTab ->
+                            onDetachTabToNativeWindow(detachedTab, null)
                         }
                     },
-                    onReconnectTab = viewModel::reconnectSessionTab,
-                    onCloseEmptyPane = viewModel.tilingController::closeEmptyPane,
-                    emptyStateContent = {
-                        ExpressiveVaultOverviewDashboard(
-                            vaultDocument = uiState.vaultDocument,
-                            activeSessionCount = activeSessionCount,
-                            strings = strings,
-                            onOpenQuickConnect = {
-                                viewModel.handleShortcut(NexusShortcutAction.QUICK_CONNECT_PALETTE) {}
-                            },
-                            onNewConnection = viewModel::openNewConnectionDialog,
-                            onOpenTemplates = { viewModel.selectRailDestination("templates") },
-                            onLaunchConnection = { conn ->
-                                viewModel.launchConnection(conn, QuickLaunchPlacement.ACTIVE_PANE_TAB)
-                            },
-                            onConnectWithOptions = viewModel::openConnectWithOptions,
-                            onConnectAllInFolder = { folderId ->
-                                viewModel.connectAllInFolder(folderId) { tab ->
-                                    onDetachTabToNativeWindow(tab, null)
-                                }
-                            },
-                            onAddTodo = { title -> viewModel.addTodoItem(title, targetObjectId = null) },
-                            onToggleTodo = viewModel::toggleTodoItem,
-                            onDeleteTodo = viewModel::deleteTodoItem,
-                            onImportVault = onRequestImportFilePicker
-                        )
+                    onLaunchConnectionInSplitDown = { conn ->
+                        viewModel.selectRailDestination("connections")
+                        viewModel.launchConnectionInSplitDown(conn)
                     },
-                    sessionRenderer = { tab, isFocused ->
-                        ActiveProtocolSessionDispatcher(
-                            tab = tab,
-                            isFocused = isFocused,
-                            viewModel = viewModel,
-                            strings = strings
-                        )
+                    onLaunchLocalShell = viewModel::launchLocalShellTab,
+                    onImportVault = onRequestImportFilePicker
+                )
+            },
+            mainWorkspaceContent = {
+                when (uiState.activeRailId) {
+                    "templates" -> ConnectionTemplatesStudioView(
+                        templates = uiState.vaultDocument.templates,
+                        strings = strings,
+                        onCreateConnectionFromTemplate = viewModel::createConnectionFromTemplate,
+                        onOpenNewTemplateDialog = viewModel::openNewTemplateDialog,
+                        onDeleteTemplate = viewModel::deleteTemplateFromVault,
+                        onSaveTemplate = viewModel::saveTemplateToVault,
+                        onDuplicateTemplate = viewModel::duplicateTemplate
+                    )
+
+                    "credentials" -> CredentialVaultStudioView(
+                        credentials = uiState.vaultDocument.credentials,
+                        strings = strings,
+                        onGenerateEd25519Key = viewModel::generateAndStoreSshKeyPair,
+                        onCreateCredential = viewModel::addCredentialToVault,
+                        onUpdateCredential = viewModel::updateCredentialInVault,
+                        onDuplicateCredential = viewModel::duplicateCredential,
+                        onDeleteCredential = viewModel::deleteCredentialFromVault,
+                        onRequestImportVaultFile = onRequestImportFilePicker
+                    )
+
+                    "gateways" -> SecureGatewayStudioView(
+                        gateways = uiState.vaultDocument.gateways,
+                        healthReports = uiState.gatewayHealthReports,
+                        strings = strings,
+                        onProbeGateway = viewModel::probeGatewayLatency,
+                        onAddGateway = viewModel::addGatewayToVault,
+                        activeLeases = uiState.activeGatewayLeases,
+                        credentials = uiState.vaultDocument.credentials,
+                        onUpdateGateway = viewModel::updateGatewayInVault,
+                        onDeleteGateway = viewModel::deleteGatewayFromVault,
+                        onOpenGatewayLease = { gw -> viewModel.openGatewayLoopbackLease(gw) },
+                        onCloseGatewayLease = viewModel::closeGatewayLease
+                    )
+
+                    "tasks" -> AutomationTasksStudioView(
+                        commandTasks = uiState.vaultDocument.commandTasks,
+                        keySequenceTasks = uiState.vaultDocument.keySequenceTasks,
+                        strings = strings,
+                        onRunCommandTask = viewModel::executeCommandTask,
+                        onRunKeySequenceTask = viewModel::executeKeySequenceTask,
+                        onAddCommandTask = viewModel::addCommandTaskToVault,
+                        onUpdateCommandTask = viewModel::updateCommandTaskInVault,
+                        onAddKeySequenceTask = viewModel::addKeySequenceTaskToVault,
+                        onUpdateKeySequenceTask = viewModel::updateKeySequenceTaskInVault,
+                        onDeleteCommandTask = viewModel::deleteCommandTask,
+                        onDeleteKeySequenceTask = viewModel::deleteKeySequenceTask
+                    )
+
+                    "sync" -> DriveSyncAndConflictStudioView(
+                        vaultDocument = uiState.vaultDocument,
+                        useSharedTeamDrive = uiState.useSharedTeamDriveZone,
+                        strings = strings,
+                        onSelectSyncZone = viewModel::setDriveSyncZone,
+                        onTriggerDeltaSync = onRequestGoogleDriveSync,
+                        initialOAuthWebClientId = initialOAuthWebClientId,
+                        initialSharedFolderId = initialSharedDriveFolderId,
+                        onSaveOAuthConfig = onSaveOAuthConfig,
+                        driveSignedInEmail = uiState.driveSignedInEmail,
+                        driveLinkedSafLabel = uiState.driveLinkedSafLabel,
+                        driveSyncStatusBanner = uiState.driveSyncStatusBanner,
+                        driveIsSyncing = uiState.driveIsSyncing,
+                        driveAutoSyncOnSave = uiState.driveAutoSyncOnSave,
+                        onToggleAutoSyncOnSave = onToggleAutoSyncOnSave,
+                        rememberVaultPassphrase = uiState.driveRememberVaultPassphrase,
+                        onSaveVaultSyncPassphrase = onSaveVaultSyncPassphrase,
+                        onClearVaultSyncPassphrase = onClearVaultSyncPassphrase,
+                        onCreateLiveSafDriveVault = onCreateLiveSafDriveVault,
+                        onLinkExistingSafDriveVault = onLinkExistingSafDriveVault,
+                        onUnlinkSafDriveVault = onUnlinkSafDriveVault,
+                        onAuthorizeAndSyncOAuthDrive = onAuthorizeAndSyncOAuthDrive,
+                        onSignOutOAuthDrive = onSignOutOAuthDrive,
+                        githubReleaseBanner = uiState.githubLatestReleaseBanner,
+                        githubReleaseUrl = uiState.githubLatestReleaseUrl,
+                        onCheckGitHubReleases = onCheckGitHubReleases,
+                        onOpenGitHubReleaseUrl = onOpenGitHubReleaseUrl
+                    )
+
+                    else -> SplitPaneWorkspaceContainer(
+                        node = rootPane,
+                        focusedPaneId = focusedPaneId,
+                        connectedDisplays = connectedDisplays,
+                        labels = splitLabels,
+                        onFocusPane = viewModel.tilingController::focusPane,
+                        onSelectTab = viewModel.tilingController::selectTab,
+                        onCloseTab = viewModel::closeSessionTab,
+                        onSplitPane = { paneId, orientation ->
+                            viewModel.tilingController.splitPane(paneId, orientation)
+                        },
+                        onResizeSplit = viewModel.tilingController::updateSplitRatio,
+                        onDetachTabToWindow = { tab, displayId ->
+                            viewModel.transferTabToDetachedWindow(tab.tabId)?.let { extracted ->
+                                onDetachTabToNativeWindow(extracted, displayId)
+                            }
+                        },
+                        onToggleTabBroadcast = { tab ->
+                            viewModel.tilingController.updateTab(tab.tabId) {
+                                it.copy(broadcastEnabled = !it.broadcastEnabled)
+                            }
+                        },
+                        onReconnectTab = viewModel::reconnectSessionTab,
+                        onCloseEmptyPane = viewModel.tilingController::closeEmptyPane,
+                        emptyStateContent = {
+                            ExpressiveVaultOverviewDashboard(
+                                vaultDocument = uiState.vaultDocument,
+                                activeSessionCount = activeSessionCount,
+                                strings = strings,
+                                onOpenQuickConnect = {
+                                    viewModel.handleShortcut(NexusShortcutAction.QUICK_CONNECT_PALETTE) {}
+                                },
+                                onNewConnection = viewModel::openNewConnectionDialog,
+                                onOpenTemplates = { viewModel.selectRailDestination("templates") },
+                                onLaunchConnection = { conn ->
+                                    viewModel.launchConnection(conn, QuickLaunchPlacement.ACTIVE_PANE_TAB)
+                                },
+                                onConnectWithOptions = viewModel::openConnectWithOptions,
+                                onConnectAllInFolder = { folderId ->
+                                    viewModel.connectAllInFolder(folderId) { tab ->
+                                        onDetachTabToNativeWindow(tab, null)
+                                    }
+                                },
+                                onAddTodo = { title -> viewModel.addTodoItem(title, targetObjectId = null) },
+                                onToggleTodo = viewModel::toggleTodoItem,
+                                onDeleteTodo = viewModel::deleteTodoItem,
+                                onImportVault = onRequestImportFilePicker,
+                                onNewFolder = viewModel::openNewFolderDialog,
+                                onNewRdpInFolder = { folderId ->
+                                    viewModel.openNewConnectionInFolder(folderId, VaultProtocolType.RDP)
+                                },
+                                onNewSshInFolder = { folderId ->
+                                    viewModel.openNewConnectionInFolder(folderId, VaultProtocolType.SSH)
+                                },
+                                onNewSubfolder = viewModel::openNewSubfolder,
+                                onEditFolder = viewModel::openEditFolderDialog,
+                                onDuplicateFolder = viewModel::duplicateFolder,
+                                onDeleteFolder = viewModel::deleteFolder,
+                                onLaunchConnectionInSplitRight = { conn ->
+                                    viewModel.launchConnection(conn, QuickLaunchPlacement.SPLIT_RIGHT_PANE)
+                                },
+                                onLaunchConnectionInSplitDown = viewModel::launchConnectionInSplitDown,
+                                onLaunchConnectionDetached = { conn ->
+                                    viewModel.launchConnection(conn, QuickLaunchPlacement.DETACHED_NEW_WINDOW) { tab ->
+                                        onDetachTabToNativeWindow(tab, null)
+                                    }
+                                },
+                                onEditConnection = viewModel::openEditConnectionDialog,
+                                onDuplicateConnection = viewModel::duplicateConnection,
+                                onToggleFavorite = viewModel::toggleFavoriteConnection,
+                                onDeleteConnection = viewModel::deleteConnection,
+                                onLaunchLocalShell = viewModel::launchLocalShellTab
+                            )
+                        },
+                        sessionRenderer = { tab, isFocused ->
+                            ActiveProtocolSessionDispatcher(
+                                tab = tab,
+                                isFocused = isFocused,
+                                viewModel = viewModel,
+                                strings = strings
+                            )
+                        }
+                    )
+                }
+            },
+            propertyInspectorContent = {
+                val activeProfile = viewModel.effectiveProfileForSelected()
+                val parentFolder = activeProfile?.connection?.parentFolderId?.let { folderId ->
+                    uiState.vaultDocument.folders.firstOrNull { it.id == folderId }
+                }
+                ContextualPropertyInspectorPane(
+                    profile = activeProfile,
+                    parentFolder = parentFolder,
+                    todoItems = uiState.vaultDocument.todoItems.filterNot { it.id in uiState.vaultDocument.tombstonedObjectIds },
+                    strings = strings,
+                    onEditConnection = viewModel::openEditConnectionDialog,
+                    onConnectWithOptions = viewModel::openConnectWithOptions,
+                    onEditParentFolderCredentials = viewModel::openEditFolderDialog,
+                    onSaveNotesAndCustomProps = { connId, notes, props, accent ->
+                        viewModel.updateConnectionNotesAndCustomProps(connId, notes, props, accent)
+                    },
+                    onDeleteCustomProperty = viewModel::deleteCustomProperty,
+                    onAddTodo = { connId, title -> viewModel.addTodoItem(title, targetObjectId = connId) },
+                    onToggleTodo = viewModel::toggleTodoItem,
+                    onDeleteTodo = viewModel::deleteTodoItem,
+                    onGenerateSshKey = viewModel::generateAndStoreSshKeyPair
+                )
+            },
+            bottomStatusDrawerContent = {
+                BottomTelemetryAndBroadcastDrawer(
+                    logs = uiState.auditLogs,
+                    strings = strings,
+                    onBroadcastCommand = viewModel::sendBroadcastCommandLine,
+                    onClearLogs = viewModel::clearAuditLogs
+                )
+            },
+            floatingOverlayContent = {
+                QuickConnectCommandPalette(
+                    visible = uiState.isQuickConnectVisible,
+                    vaultCandidates = remember(uiState.vaultDocument, uiState.hydratedDynamicConnections) {
+                        viewModel.buildQuickConnectCandidates()
+                    },
+                    placeholderText = strings.quickConnectPlaceholder,
+                    footerHintText = strings.quickConnectFooterHint,
+                    onDismiss = viewModel::dismissQuickConnect,
+                    onLaunchCandidate = { candidate, placement ->
+                        viewModel.selectRailDestination("connections")
+                        viewModel.launchQuickCandidate(candidate, placement) { tab ->
+                            onDetachTabToNativeWindow(tab, null)
+                        }
                     }
                 )
-            }
-        },
-        propertyInspectorContent = {
-            val activeProfile = viewModel.effectiveProfileForSelected()
-            val parentFolder = activeProfile?.connection?.parentFolderId?.let { folderId ->
-                uiState.vaultDocument.folders.firstOrNull { it.id == folderId }
-            }
-            ContextualPropertyInspectorPane(
-                profile = activeProfile,
-                parentFolder = parentFolder,
-                todoItems = uiState.vaultDocument.todoItems.filterNot { it.id in uiState.vaultDocument.tombstonedObjectIds },
-                strings = strings,
-                onEditConnection = viewModel::openEditConnectionDialog,
-                onConnectWithOptions = viewModel::openConnectWithOptions,
-                onEditParentFolderCredentials = viewModel::openEditFolderDialog,
-                onSaveNotesAndCustomProps = { connId, notes, props, accent ->
-                    viewModel.updateConnectionNotesAndCustomProps(connId, notes, props, accent)
-                },
-                onDeleteCustomProperty = viewModel::deleteCustomProperty,
-                onAddTodo = { connId, title -> viewModel.addTodoItem(title, targetObjectId = connId) },
-                onToggleTodo = viewModel::toggleTodoItem,
-                onDeleteTodo = viewModel::deleteTodoItem,
-                onGenerateSshKey = viewModel::generateAndStoreSshKeyPair
-            )
-        },
-        bottomStatusDrawerContent = {
-            BottomTelemetryAndBroadcastDrawer(
-                logs = uiState.auditLogs,
-                strings = strings,
-                onBroadcastCommand = viewModel::sendBroadcastCommandLine
-            )
-        },
-        floatingOverlayContent = {
-            QuickConnectCommandPalette(
-                visible = uiState.isQuickConnectVisible,
-                vaultCandidates = remember(uiState.vaultDocument, uiState.hydratedDynamicConnections) {
-                    viewModel.buildQuickConnectCandidates()
-                },
-                placeholderText = strings.quickConnectPlaceholder,
-                footerHintText = strings.quickConnectFooterHint,
-                onDismiss = {
-                    viewModel.handleShortcut(NexusShortcutAction.QUICK_CONNECT_PALETTE) {}
-                },
-                onLaunchCandidate = { candidate, placement ->
-                    viewModel.selectRailDestination("connections")
-                    viewModel.launchQuickCandidate(candidate, placement) { tab ->
-                        onDetachTabToNativeWindow(tab, null)
+                NewOrEditConnectionDialog(
+                    visible = uiState.isNewConnectionDialogVisible,
+                    initialConnection = uiState.editingConnection,
+                    folders = uiState.vaultDocument.folders.filterNot { it.id in uiState.vaultDocument.tombstonedObjectIds },
+                    credentials = uiState.vaultDocument.credentials.filterNot { it.id in uiState.vaultDocument.tombstonedObjectIds },
+                    gateways = uiState.vaultDocument.gateways.filterNot { it.id in uiState.vaultDocument.tombstonedObjectIds },
+                    resolveFolderPreview = viewModel::resolveFolderInheritedPreview,
+                    strings = strings,
+                    onDismiss = viewModel::dismissNewConnectionDialog,
+                    onSaveConnection = viewModel::saveConnectionToVault,
+                    sshConnections = remember(uiState.vaultDocument.connections, uiState.vaultDocument.tombstonedObjectIds) {
+                        uiState.vaultDocument.connections.filter {
+                            it.protocol == VaultProtocolType.SSH && it.id !in uiState.vaultDocument.tombstonedObjectIds
+                        }
+                    },
+                    defaultFolderId = uiState.newConnectionDefaultFolderId,
+                    defaultProtocol = uiState.newConnectionDefaultProtocol
+                )
+                val folderChildCount = uiState.editingFolder?.let { f ->
+                    uiState.vaultDocument.connections.count {
+                        it.parentFolderId == f.id && it.id !in uiState.vaultDocument.tombstonedObjectIds
                     }
-                }
-            )
-            NewOrEditConnectionDialog(
-                visible = uiState.isNewConnectionDialogVisible,
-                initialConnection = uiState.editingConnection,
-                folders = uiState.vaultDocument.folders.filterNot { it.id in uiState.vaultDocument.tombstonedObjectIds },
-                credentials = uiState.vaultDocument.credentials.filterNot { it.id in uiState.vaultDocument.tombstonedObjectIds },
-                gateways = uiState.vaultDocument.gateways.filterNot { it.id in uiState.vaultDocument.tombstonedObjectIds },
-                resolveFolderPreview = viewModel::resolveFolderInheritedPreview,
-                strings = strings,
-                onDismiss = viewModel::dismissNewConnectionDialog,
-                onSaveConnection = viewModel::saveConnectionToVault,
-                sshConnections = remember(uiState.vaultDocument.connections, uiState.vaultDocument.tombstonedObjectIds) {
-                    uiState.vaultDocument.connections.filter {
-                        it.protocol == VaultProtocolType.SSH && it.id !in uiState.vaultDocument.tombstonedObjectIds
+                } ?: 0
+                FolderPropertiesAndCredentialDialog(
+                    visible = uiState.isFolderDialogVisible,
+                    editingFolder = uiState.editingFolder,
+                    allFolders = uiState.vaultDocument.folders.filterNot { it.id in uiState.vaultDocument.tombstonedObjectIds },
+                    credentials = uiState.vaultDocument.credentials.filterNot { it.id in uiState.vaultDocument.tombstonedObjectIds },
+                    childConnectionCount = folderChildCount,
+                    strings = strings,
+                    onDismiss = viewModel::dismissFolderDialog,
+                    onSaveFolderAndCredential = viewModel::saveFolderAndCredentialToVault,
+                    onDeleteFolder = viewModel::deleteFolder,
+                    defaultParentFolderId = uiState.newFolderDefaultParentId
+                )
+                ConnectWithOptionsDialog(
+                    targetConnection = uiState.connectWithOptionsTarget,
+                    credentials = uiState.vaultDocument.credentials.filterNot { it.id in uiState.vaultDocument.tombstonedObjectIds },
+                    templates = uiState.vaultDocument.templates.filterNot { it.id in uiState.vaultDocument.tombstonedObjectIds },
+                    strings = strings,
+                    onDismiss = viewModel::dismissConnectWithOptions,
+                    onConnectWithOverride = { conn, override, placement ->
+                        viewModel.launchConnectionWithOptions(conn, override, placement) { tab ->
+                            onDetachTabToNativeWindow(tab, null)
+                        }
                     }
+                )
+                NewSmartFolderDialog(
+                    visible = uiState.isNewSmartFolderDialogVisible,
+                    strings = strings,
+                    onDismiss = viewModel::dismissNewSmartFolderDialog,
+                    onSaveSmartFolder = viewModel::saveSmartFolderToVault
+                )
+                NewDynamicFolderDialog(
+                    visible = uiState.isNewDynamicFolderDialogVisible,
+                    folders = uiState.vaultDocument.folders.filterNot { it.id in uiState.vaultDocument.tombstonedObjectIds },
+                    strings = strings,
+                    onDismiss = viewModel::dismissNewDynamicFolderDialog,
+                    onSaveDynamicFolder = viewModel::saveDynamicFolderToVault
+                )
+                NewTemplateDialog(
+                    visible = uiState.isNewTemplateDialogVisible,
+                    strings = strings,
+                    onDismiss = viewModel::dismissNewTemplateDialog,
+                    onSaveTemplate = viewModel::saveTemplateToVault
+                )
+                LockVaultPassphraseDialog(
+                    visible = uiState.isLockVaultDialogVisible,
+                    strings = strings,
+                    onDismiss = viewModel::dismissLockVaultDialog,
+                    onConfirmLock = { pass -> viewModel.lockVaultWithPassphrase(pass.toCharArray()) }
+                )
+                EncryptedImportPassphraseDialog(
+                    pendingFileName = uiState.pendingEncryptedImportFileName,
+                    pendingFormat = uiState.pendingEncryptedImportFormat,
+                    errorMessage = uiState.pendingEncryptedImportError,
+                    strings = strings,
+                    onDismiss = viewModel::dismissEncryptedImportDialog,
+                    onSubmitPassphrase = { pass -> viewModel.submitEncryptedImportPassword(pass.toCharArray()) }
+                )
+                ImportErrorAlertDialog(
+                    errorMessage = uiState.importErrorDialogMessage,
+                    strings = strings,
+                    onDismiss = viewModel::dismissImportErrorDialog
+                )
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.BottomCenter
+                ) {
+                    SnackbarHost(
+                        hostState = snackbarHostState,
+                        modifier = Modifier.padding(16.dp)
+                    )
                 }
-            )
-            val folderChildCount = uiState.editingFolder?.let { f ->
-                uiState.vaultDocument.connections.count {
-                    it.parentFolderId == f.id && it.id !in uiState.vaultDocument.tombstonedObjectIds
-                }
-            } ?: 0
-            FolderPropertiesAndCredentialDialog(
-                visible = uiState.isFolderDialogVisible,
-                editingFolder = uiState.editingFolder,
-                allFolders = uiState.vaultDocument.folders.filterNot { it.id in uiState.vaultDocument.tombstonedObjectIds },
-                credentials = uiState.vaultDocument.credentials.filterNot { it.id in uiState.vaultDocument.tombstonedObjectIds },
-                childConnectionCount = folderChildCount,
-                strings = strings,
-                onDismiss = viewModel::dismissFolderDialog,
-                onSaveFolderAndCredential = viewModel::saveFolderAndCredentialToVault,
-                onDeleteFolder = viewModel::deleteFolder
-            )
-            ConnectWithOptionsDialog(
-                targetConnection = uiState.connectWithOptionsTarget,
-                credentials = uiState.vaultDocument.credentials.filterNot { it.id in uiState.vaultDocument.tombstonedObjectIds },
-                templates = uiState.vaultDocument.templates.filterNot { it.id in uiState.vaultDocument.tombstonedObjectIds },
-                strings = strings,
-                onDismiss = viewModel::dismissConnectWithOptions,
-                onConnectWithOverride = { conn, override, placement ->
-                    viewModel.launchConnectionWithOptions(conn, override, placement) { tab ->
-                        onDetachTabToNativeWindow(tab, null)
-                    }
-                }
-            )
-            NewSmartFolderDialog(
-                visible = uiState.isNewSmartFolderDialogVisible,
-                strings = strings,
-                onDismiss = viewModel::dismissNewSmartFolderDialog,
-                onSaveSmartFolder = viewModel::saveSmartFolderToVault
-            )
-            NewDynamicFolderDialog(
-                visible = uiState.isNewDynamicFolderDialogVisible,
-                folders = uiState.vaultDocument.folders.filterNot { it.id in uiState.vaultDocument.tombstonedObjectIds },
-                strings = strings,
-                onDismiss = viewModel::dismissNewDynamicFolderDialog,
-                onSaveDynamicFolder = viewModel::saveDynamicFolderToVault
-            )
-            NewTemplateDialog(
-                visible = uiState.isNewTemplateDialogVisible,
-                strings = strings,
-                onDismiss = viewModel::dismissNewTemplateDialog,
-                onSaveTemplate = viewModel::saveTemplateToVault
-            )
-            LockVaultPassphraseDialog(
-                visible = uiState.isLockVaultDialogVisible,
-                strings = strings,
-                onDismiss = viewModel::dismissLockVaultDialog,
-                onConfirmLock = { pass -> viewModel.lockVaultWithPassphrase(pass.toCharArray()) }
-            )
-        },
-        modifier = modifier
-    )
+            },
+            modifier = modifier
+        )
+    }
 }
 
 @Composable
@@ -812,18 +905,37 @@ private fun DesktopTopWindowChrome(
                 }
             }
 
-            // Center Expressive Quick-Connect Command Bar Trigger (`Ctrl/Cmd + K`) — flexible width
+            // Center Expressive Quick-Connect Command Bar Trigger (`Ctrl + K`) — flexible width, zero-artifact hover
+            val quickConnectHover = rememberDesktopHoverState()
+            val quickConnectInteraction = remember { MutableInteractionSource() }
+            val isQuickConnectHovered = quickConnectHover.value.isHovered
             Surface(
                 modifier = Modifier
                     .weight(1f, fill = false)
                     .widthIn(min = 180.dp, max = 330.dp)
                     .padding(horizontal = 12.dp)
                     .height(38.dp)
+                    .nexusHoverTracker(quickConnectHover, PointerIcon.Hand)
                     .clip(RoundedCornerShape(99.dp))
-                    .clickable(onClick = onOpenQuickConnect),
+                    .clickable(
+                        interactionSource = quickConnectInteraction,
+                        indication = null,
+                        onClick = onOpenQuickConnect
+                    ),
                 shape = RoundedCornerShape(99.dp),
-                color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
+                color = if (isQuickConnectHovered) {
+                    MaterialTheme.colorScheme.surfaceContainerHighest
+                } else {
+                    MaterialTheme.colorScheme.surfaceContainerHigh
+                },
+                border = BorderStroke(
+                    1.dp,
+                    if (isQuickConnectHovered) {
+                        MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
+                    } else {
+                        MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
+                    }
+                )
             ) {
                 Row(
                     modifier = Modifier.padding(horizontal = 14.dp),
@@ -838,13 +950,21 @@ private fun DesktopTopWindowChrome(
                             imageVector = Icons.Outlined.Search,
                             contentDescription = null,
                             modifier = Modifier.size(16.dp),
-                            tint = MaterialTheme.colorScheme.secondary
+                            tint = if (isQuickConnectHovered) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.secondary
+                            }
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
                             text = strings.quickConnectButton,
                             style = MaterialTheme.typography.labelLarge,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = if (isQuickConnectHovered) {
+                                MaterialTheme.colorScheme.onSurface
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
@@ -855,7 +975,7 @@ private fun DesktopTopWindowChrome(
                         color = MaterialTheme.colorScheme.surfaceContainerLowest
                     ) {
                         Text(
-                            text = "⌘K",
+                            text = "Ctrl+K",
                             style = NexusTheme.monospace.keycapShortcut,
                             color = MaterialTheme.colorScheme.secondary,
                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
@@ -976,17 +1096,10 @@ private fun DesktopTopWindowChrome(
                 }
 
                 if (isDriveLinked) {
-                    AssistChip(
+                    NexusActionChip(
                         onClick = onSyncGoogleDrive,
-                        label = {
-                            Text(
-                                text = String.format(strings.syncStatusSyncedFormat, vaultRevision),
-                                style = MaterialTheme.typography.labelSmall
-                            )
-                        },
-                        leadingIcon = {
-                            Icon(Icons.Outlined.CloudSync, contentDescription = null, modifier = Modifier.size(15.dp))
-                        }
+                        label = String.format(strings.syncStatusSyncedFormat, vaultRevision),
+                        leadingIcon = Icons.Outlined.CloudSync
                     )
                 }
 
@@ -1084,7 +1197,11 @@ private fun VaultHierarchySidebarTree(
     onDeleteDynamicFolder: (String) -> Unit,
     onNewFolder: () -> Unit,
     onNewConnection: () -> Unit = {},
+    onNewRdpInFolder: (String) -> Unit = {},
+    onNewSshInFolder: (String) -> Unit = {},
+    onNewSubfolder: (String) -> Unit = {},
     onEditFolder: (VaultFolder) -> Unit,
+    onDuplicateFolder: (VaultFolder) -> Unit = {},
     onDeleteFolder: (String) -> Unit,
     onConnectAllInFolder: (String) -> Unit,
     onSelectConnection: (String) -> Unit,
@@ -1093,10 +1210,14 @@ private fun VaultHierarchySidebarTree(
     onToggleFavorite: (String) -> Unit,
     onDuplicateConnection: (VaultConnection) -> Unit,
     onDeleteConnection: (String) -> Unit,
-    onLaunchConnection: (VaultConnection, QuickLaunchPlacement) -> Unit
+    onLaunchConnection: (VaultConnection, QuickLaunchPlacement) -> Unit,
+    onLaunchConnectionInSplitDown: (VaultConnection) -> Unit = {},
+    onLaunchLocalShell: () -> Unit = {},
+    onImportVault: () -> Unit = {}
 ) {
     val doc = uiState.vaultDocument
     val query = uiState.sidebarFilterQuery.trim().lowercase()
+    var sidebarBgMenuOpen by remember { mutableStateOf(false) }
 
     fun matchesFilter(conn: VaultConnection): Boolean {
         if (conn.id in doc.tombstonedObjectIds) return false
@@ -1197,383 +1318,65 @@ private fun VaultHierarchySidebarTree(
         activeSmartFolders.isNotEmpty() ||
         activeDynamicFolders.isNotEmpty()
 
-    Column(
+    Box(
         modifier = Modifier
             .fillMaxSize()
-            .padding(10.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
+            .nexusDesktopPointerButtons(onSecondaryClick = { sidebarBgMenuOpen = true })
     ) {
-        // Instant Sidebar Filter Bar
-        OutlinedTextField(
-            value = uiState.sidebarFilterQuery,
-            onValueChange = onFilterQueryChanged,
-            placeholder = { Text(strings.sidebarFilterPlaceholder, style = MaterialTheme.typography.bodySmall) },
-            leadingIcon = {
-                Icon(Icons.Outlined.Search, contentDescription = null, modifier = Modifier.size(16.dp))
-            },
-            trailingIcon = {
-                if (uiState.sidebarFilterQuery.isNotEmpty()) {
-                    IconButton(onClick = { onFilterQueryChanged("") }, modifier = Modifier.size(24.dp)) {
-                        Icon(Icons.Outlined.Close, contentDescription = null, modifier = Modifier.size(14.dp))
-                    }
-                }
-            },
-            singleLine = true,
-            shape = RoundedCornerShape(99.dp),
-            modifier = Modifier.fillMaxWidth()
-        )
-
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            verticalArrangement = Arrangement.spacedBy(4.dp)
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(10.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            // 1. Pinned Favorites Section
-            if (favorites.isNotEmpty()) {
-                item(key = "header-favorites") {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Outlined.Star,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.tertiary,
-                            modifier = Modifier.size(14.dp)
-                        )
-                        Text(
-                            text = strings.vaultSectionFavorites,
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.tertiary
-                        )
-                    }
-                }
-                items(favorites, key = { "fav-${it.id}" }) { conn ->
-                    ConnectionTreeRow(
-                        connection = conn,
-                        isSelected = conn.id == uiState.selectedConnectionId,
-                        strings = strings,
-                        onSelect = { onSelectConnection(conn.id) },
-                        onEdit = { onEditConnection(conn) },
-                        onConnectWithOptions = { onConnectWithOptions(conn) },
-                        onToggleFavorite = { onToggleFavorite(conn.id) },
-                        onDuplicate = { onDuplicateConnection(conn) },
-                        onDelete = { onDeleteConnection(conn.id) },
-                        onLaunch = { placement -> onLaunchConnection(conn, placement) }
-                    )
-                }
-            }
-
-            // 2. Recent Sessions Section (shown when not filtering)
-            if (query.isEmpty() && recentConnections.isNotEmpty()) {
-                item(key = "header-recents") {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Outlined.History,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.secondary,
-                            modifier = Modifier.size(14.dp)
-                        )
-                        Text(
-                            text = strings.vaultSectionRecents,
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.secondary
-                        )
-                    }
-                }
-                items(recentConnections.take(6), key = { "recent-${it.id}" }) { conn ->
-                    ConnectionTreeRow(
-                        connection = conn,
-                        isSelected = conn.id == uiState.selectedConnectionId,
-                        strings = strings,
-                        onSelect = { onSelectConnection(conn.id) },
-                        onEdit = { onEditConnection(conn) },
-                        onConnectWithOptions = { onConnectWithOptions(conn) },
-                        onToggleFavorite = { onToggleFavorite(conn.id) },
-                        onDuplicate = { onDuplicateConnection(conn) },
-                        onDelete = { onDeleteConnection(conn.id) },
-                        onLaunch = { placement -> onLaunchConnection(conn, placement) }
-                    )
-                }
-            }
-
-            // 3. Smart Folders Section (shown when populated)
-            if (activeSmartFolders.isNotEmpty()) {
-                item(key = "header-smart-folders") {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 6.dp, vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text(
-                            text = strings.vaultSectionSmartFolders,
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.secondary
-                        )
-                        IconButton(onClick = onNewSmartFolder, modifier = Modifier.size(24.dp)) {
-                            Icon(
-                                imageVector = Icons.Outlined.Add,
-                                contentDescription = strings.actionNewSmartFolder,
-                                modifier = Modifier.size(15.dp),
-                                tint = MaterialTheme.colorScheme.secondary
-                            )
+            // Instant Sidebar Filter Bar
+            OutlinedTextField(
+                value = uiState.sidebarFilterQuery,
+                onValueChange = onFilterQueryChanged,
+                placeholder = { Text(strings.sidebarFilterPlaceholder, style = MaterialTheme.typography.bodySmall) },
+                leadingIcon = {
+                    Icon(Icons.Outlined.Search, contentDescription = null, modifier = Modifier.size(16.dp))
+                },
+                trailingIcon = {
+                    if (uiState.sidebarFilterQuery.isNotEmpty()) {
+                        IconButton(onClick = { onFilterQueryChanged("") }, modifier = Modifier.size(24.dp)) {
+                            Icon(Icons.Outlined.Close, contentDescription = null, modifier = Modifier.size(14.dp))
                         }
                     }
-                }
-                activeSmartFolders.forEach { smart ->
-                    val matchedConnections = smartFolderConnectionsProvider(smart).filter(::matchesFilter)
-                    val isExpanded = uiState.selectedSmartFolderId == smart.id
-                    item(key = "smart-${smart.id}") {
+                },
+                singleLine = true,
+                shape = RoundedCornerShape(99.dp),
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                // 1. Pinned Favorites Section
+                if (favorites.isNotEmpty()) {
+                    item(key = "header-favorites") {
                         Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(MaterialTheme.shapes.small)
-                                .background(
-                                    if (isExpanded) MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.45f)
-                                    else Color.Transparent
-                                )
-                                .clickable { onToggleSmartFolder(smart.id) }
-                                .padding(horizontal = 8.dp, vertical = 6.dp),
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            Row(
-                                modifier = Modifier.weight(1f),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Outlined.AutoAwesome,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(16.dp),
-                                    tint = MaterialTheme.colorScheme.tertiary
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(
-                                    text = smart.name,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(
-                                    text = matchedConnections.size.toString(),
-                                    style = NexusTheme.monospace.keycapShortcut,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                                Spacer(modifier = Modifier.width(4.dp))
-                                IconButton(
-                                    onClick = { onDeleteSmartFolder(smart.id) },
-                                    modifier = Modifier.size(22.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Outlined.Delete,
-                                        contentDescription = strings.actionDeleteItem,
-                                        modifier = Modifier.size(13.dp),
-                                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                            }
-                        }
-                    }
-                    if (isExpanded) {
-                        items(matchedConnections, key = { "smart-${smart.id}-${it.id}" }) { conn ->
-                            ConnectionTreeRow(
-                                connection = conn,
-                                isSelected = conn.id == uiState.selectedConnectionId,
-                                strings = strings,
-                                onSelect = { onSelectConnection(conn.id) },
-                                onEdit = { onEditConnection(conn) },
-                                onConnectWithOptions = { onConnectWithOptions(conn) },
-                                onToggleFavorite = { onToggleFavorite(conn.id) },
-                                onDuplicate = { onDuplicateConnection(conn) },
-                                onDelete = { onDeleteConnection(conn.id) },
-                                onLaunch = { placement -> onLaunchConnection(conn, placement) }
-                            )
-                        }
-                    }
-                }
-            }
-
-            // 4. Dynamic Folders Section (shown when populated)
-            if (activeDynamicFolders.isNotEmpty()) {
-                item(key = "header-dynamic-folders") {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 6.dp, vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text(
-                            text = strings.vaultSectionDynamicFolders,
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.secondary
-                        )
-                        IconButton(onClick = onNewDynamicFolder, modifier = Modifier.size(24.dp)) {
                             Icon(
-                                imageVector = Icons.Outlined.Add,
-                                contentDescription = strings.vaultSectionDynamicFolders,
-                                modifier = Modifier.size(15.dp),
-                                tint = MaterialTheme.colorScheme.secondary
+                                imageVector = Icons.Outlined.Star,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.tertiary,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Text(
+                                text = strings.vaultSectionFavorites,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.tertiary
                             )
                         }
                     }
-                }
-                activeDynamicFolders.forEach { dyn ->
-                    val hydrated = uiState.hydratedDynamicConnections[dyn.id].orEmpty().filter(::matchesFilter)
-                    val isExpanded = uiState.selectedDynamicFolderId == dyn.id
-                    item(key = "dyn-${dyn.id}") {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(MaterialTheme.shapes.small)
-                                .background(
-                                    if (isExpanded) MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.45f)
-                                    else Color.Transparent
-                                )
-                                .clickable { onToggleDynamicFolder(dyn) }
-                                .padding(horizontal = 8.dp, vertical = 5.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Row(
-                                modifier = Modifier.weight(1f),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Outlined.DynamicFeed,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(16.dp),
-                                    tint = MaterialTheme.colorScheme.secondary
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(
-                                    text = dyn.name,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                IconButton(
-                                    onClick = { onReloadDynamicFolder(dyn) },
-                                    modifier = Modifier.size(24.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Outlined.Refresh,
-                                        contentDescription = strings.actionReloadDynamicFolder,
-                                        modifier = Modifier.size(14.dp),
-                                        tint = MaterialTheme.colorScheme.secondary
-                                    )
-                                }
-                                IconButton(
-                                    onClick = { onDeleteDynamicFolder(dyn.id) },
-                                    modifier = Modifier.size(22.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Outlined.Delete,
-                                        contentDescription = strings.actionDeleteItem,
-                                        modifier = Modifier.size(13.dp),
-                                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                            }
-                        }
-                    }
-                    if (isExpanded) {
-                        items(hydrated, key = { "dyn-${dyn.id}-${it.id}" }) { conn ->
-                            ConnectionTreeRow(
-                                connection = conn,
-                                isSelected = conn.id == uiState.selectedConnectionId,
-                                strings = strings,
-                                onSelect = { onSelectConnection(conn.id) },
-                                onEdit = { onEditConnection(conn) },
-                                onConnectWithOptions = { onConnectWithOptions(conn) },
-                                onToggleFavorite = { onToggleFavorite(conn.id) },
-                                onDuplicate = { onDuplicateConnection(conn) },
-                                onDelete = { onDeleteConnection(conn.id) },
-                                onLaunch = { placement -> onLaunchConnection(conn, placement) }
-                            )
-                        }
-                    }
-                }
-            }
-
-            // 5. Hierarchical Nested Folders & Connections Section
-            item(key = "header-folders") {
-                if (hasUpperSections) {
-                    Spacer(modifier = Modifier.height(6.dp))
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-                    Spacer(modifier = Modifier.height(6.dp))
-                }
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 6.dp, vertical = 2.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Text(
-                        text = strings.vaultSectionFolders,
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.secondary
-                    )
-                    IconButton(
-                        onClick = onNewFolder,
-                        modifier = Modifier.size(26.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Outlined.Add,
-                            contentDescription = strings.actionNewFolder,
-                            modifier = Modifier.size(16.dp),
-                            tint = MaterialTheme.colorScheme.secondary
-                        )
-                    }
-                }
-            }
-
-            flattenedFolders.forEach { entry ->
-                val folder = entry.folder
-                val explicitFolderCred = if (folder.inheritable.credentialMode == InheritanceMode.OVERRIDE_EXPLICIT) {
-                    doc.credentials.firstOrNull {
-                        it.id == folder.inheritable.explicitCredentialId && it.id !in doc.tombstonedObjectIds
-                    }
-                } else {
-                    null
-                }
-                item(key = "folder-${folder.id}") {
-                    FolderTreeRow(
-                        folder = folder,
-                        depth = entry.depth,
-                        isExpanded = entry.isExpanded,
-                        hasExpandableChildren = entry.hasChildFolders || entry.directConnections.isNotEmpty(),
-                        explicitFolderCredentialName = explicitFolderCred?.name,
-                        childCount = entry.subtreeConnectionCount,
-                        strings = strings,
-                        onToggleExpand = {
-                            collapsedFolderIds = if (folder.id in collapsedFolderIds) {
-                                collapsedFolderIds - folder.id
-                            } else {
-                                collapsedFolderIds + folder.id
-                            }
-                        },
-                        onEditFolder = { onEditFolder(folder) },
-                        onDeleteFolder = { onDeleteFolder(folder.id) },
-                        onConnectAllInFolder = { onConnectAllInFolder(folder.id) }
-                    )
-                }
-                if (entry.isExpanded) {
-                    items(entry.directConnections, key = { "fconn-${folder.id}-${it.id}" }) { conn ->
+                    items(favorites, key = { "fav-${it.id}" }) { conn ->
                         ConnectionTreeRow(
                             connection = conn,
-                            indentLevel = entry.depth + 1,
                             isSelected = conn.id == uiState.selectedConnectionId,
                             strings = strings,
                             onSelect = { onSelectConnection(conn.id) },
@@ -1582,65 +1385,628 @@ private fun VaultHierarchySidebarTree(
                             onToggleFavorite = { onToggleFavorite(conn.id) },
                             onDuplicate = { onDuplicateConnection(conn) },
                             onDelete = { onDeleteConnection(conn.id) },
-                            onLaunch = { placement -> onLaunchConnection(conn, placement) }
+                            onLaunch = { placement -> onLaunchConnection(conn, placement) },
+                            onLaunchSplitDown = { onLaunchConnectionInSplitDown(conn) }
                         )
                     }
                 }
-            }
 
-            items(rootConnections, key = { "root-${it.id}" }) { conn ->
-                ConnectionTreeRow(
-                    connection = conn,
-                    indentLevel = 0,
-                    isSelected = conn.id == uiState.selectedConnectionId,
-                    strings = strings,
-                    onSelect = { onSelectConnection(conn.id) },
-                    onEdit = { onEditConnection(conn) },
-                    onConnectWithOptions = { onConnectWithOptions(conn) },
-                    onToggleFavorite = { onToggleFavorite(conn.id) },
-                    onDuplicate = { onDuplicateConnection(conn) },
-                    onDelete = { onDeleteConnection(conn.id) },
-                    onLaunch = { placement -> onLaunchConnection(conn, placement) }
-                )
-            }
-
-            if (flattenedFolders.isEmpty() && rootConnections.isEmpty()) {
-                item(key = "empty-sidebar-hint") {
-                    Surface(
-                        shape = MaterialTheme.shapes.medium,
-                        color = MaterialTheme.colorScheme.surfaceContainerLow,
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(top = 8.dp, start = 4.dp, end = 4.dp)
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(14.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                // 2. Recent Sessions Section (shown when not filtering)
+                if (query.isEmpty() && recentConnections.isNotEmpty()) {
+                    item(key = "header-recents") {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
                             Icon(
-                                imageVector = Icons.Outlined.DeviceHub,
+                                imageVector = Icons.Outlined.History,
                                 contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.8f),
-                                modifier = Modifier.size(22.dp)
+                                tint = MaterialTheme.colorScheme.secondary,
+                                modifier = Modifier.size(14.dp)
                             )
-                            FilledTonalButton(
-                                onClick = onNewConnection,
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(
-                                    text = strings.actionNewConnection,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
+                            Text(
+                                text = strings.vaultSectionRecents,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.secondary
+                            )
+                        }
+                    }
+                    items(recentConnections.take(6), key = { "recent-${it.id}" }) { conn ->
+                        ConnectionTreeRow(
+                            connection = conn,
+                            isSelected = conn.id == uiState.selectedConnectionId,
+                            strings = strings,
+                            onSelect = { onSelectConnection(conn.id) },
+                            onEdit = { onEditConnection(conn) },
+                            onConnectWithOptions = { onConnectWithOptions(conn) },
+                            onToggleFavorite = { onToggleFavorite(conn.id) },
+                            onDuplicate = { onDuplicateConnection(conn) },
+                            onDelete = { onDeleteConnection(conn.id) },
+                            onLaunch = { placement -> onLaunchConnection(conn, placement) },
+                            onLaunchSplitDown = { onLaunchConnectionInSplitDown(conn) }
+                        )
+                    }
+                }
+
+                // 3. Smart Folders Section (shown when populated)
+                if (activeSmartFolders.isNotEmpty()) {
+                    item(key = "header-smart-folders") {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 6.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = strings.vaultSectionSmartFolders,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.secondary
+                            )
+                            IconButton(onClick = onNewSmartFolder, modifier = Modifier.size(24.dp)) {
+                                Icon(
+                                    imageVector = Icons.Outlined.Add,
+                                    contentDescription = strings.actionNewSmartFolder,
+                                    modifier = Modifier.size(15.dp),
+                                    tint = MaterialTheme.colorScheme.secondary
+                                )
+                            }
+                        }
+                    }
+                    activeSmartFolders.forEach { smart ->
+                        val matchedConnections = smartFolderConnectionsProvider(smart).filter(::matchesFilter)
+                        val isExpanded = uiState.selectedSmartFolderId == smart.id
+                        item(key = "smart-${smart.id}") {
+                            SmartFolderTreeRow(
+                                smartFolder = smart,
+                                matchedCount = matchedConnections.size,
+                                isExpanded = isExpanded,
+                                strings = strings,
+                                onToggle = { onToggleSmartFolder(smart.id) },
+                                onConnectAll = {
+                                    matchedConnections.forEach { conn ->
+                                        onLaunchConnection(conn, QuickLaunchPlacement.ACTIVE_PANE_TAB)
+                                    }
+                                },
+                                onNewSmartFolder = onNewSmartFolder,
+                                onDelete = { onDeleteSmartFolder(smart.id) }
+                            )
+                        }
+                        if (isExpanded) {
+                            items(matchedConnections, key = { "smart-${smart.id}-${it.id}" }) { conn ->
+                                ConnectionTreeRow(
+                                    connection = conn,
+                                    isSelected = conn.id == uiState.selectedConnectionId,
+                                    strings = strings,
+                                    onSelect = { onSelectConnection(conn.id) },
+                                    onEdit = { onEditConnection(conn) },
+                                    onConnectWithOptions = { onConnectWithOptions(conn) },
+                                    onToggleFavorite = { onToggleFavorite(conn.id) },
+                                    onDuplicate = { onDuplicateConnection(conn) },
+                                    onDelete = { onDeleteConnection(conn.id) },
+                                    onLaunch = { placement -> onLaunchConnection(conn, placement) },
+                                    onLaunchSplitDown = { onLaunchConnectionInSplitDown(conn) }
                                 )
                             }
                         }
                     }
                 }
+
+                // 4. Dynamic Folders Section (shown when populated)
+                if (activeDynamicFolders.isNotEmpty()) {
+                    item(key = "header-dynamic-folders") {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 6.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = strings.vaultSectionDynamicFolders,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.secondary
+                            )
+                            IconButton(onClick = onNewDynamicFolder, modifier = Modifier.size(24.dp)) {
+                                Icon(
+                                    imageVector = Icons.Outlined.Add,
+                                    contentDescription = strings.vaultSectionDynamicFolders,
+                                    modifier = Modifier.size(15.dp),
+                                    tint = MaterialTheme.colorScheme.secondary
+                                )
+                            }
+                        }
+                    }
+                    activeDynamicFolders.forEach { dyn ->
+                        val hydrated = uiState.hydratedDynamicConnections[dyn.id].orEmpty().filter(::matchesFilter)
+                        val isExpanded = uiState.selectedDynamicFolderId == dyn.id
+                        item(key = "dyn-${dyn.id}") {
+                            DynamicFolderTreeRow(
+                                dynamicFolder = dyn,
+                                isExpanded = isExpanded,
+                                strings = strings,
+                                onToggle = { onToggleDynamicFolder(dyn) },
+                                onReload = { onReloadDynamicFolder(dyn) },
+                                onNewDynamicFolder = onNewDynamicFolder,
+                                onDelete = { onDeleteDynamicFolder(dyn.id) }
+                            )
+                        }
+                        if (isExpanded) {
+                            items(hydrated, key = { "dyn-${dyn.id}-${it.id}" }) { conn ->
+                                ConnectionTreeRow(
+                                    connection = conn,
+                                    isSelected = conn.id == uiState.selectedConnectionId,
+                                    strings = strings,
+                                    onSelect = { onSelectConnection(conn.id) },
+                                    onEdit = { onEditConnection(conn) },
+                                    onConnectWithOptions = { onConnectWithOptions(conn) },
+                                    onToggleFavorite = { onToggleFavorite(conn.id) },
+                                    onDuplicate = { onDuplicateConnection(conn) },
+                                    onDelete = { onDeleteConnection(conn.id) },
+                                    onLaunch = { placement -> onLaunchConnection(conn, placement) },
+                                    onLaunchSplitDown = { onLaunchConnectionInSplitDown(conn) }
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // 5. Hierarchical Nested Folders & Connections Section
+                item(key = "header-folders") {
+                    if (hasUpperSections) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                        Spacer(modifier = Modifier.height(6.dp))
+                    }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 6.dp, vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = strings.vaultSectionFolders,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.secondary
+                        )
+                        IconButton(
+                            onClick = onNewFolder,
+                            modifier = Modifier.size(26.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.Add,
+                                contentDescription = strings.actionNewFolder,
+                                modifier = Modifier.size(16.dp),
+                                tint = MaterialTheme.colorScheme.secondary
+                            )
+                        }
+                    }
+                }
+
+                flattenedFolders.forEach { entry ->
+                    val folder = entry.folder
+                    val explicitFolderCred = if (folder.inheritable.credentialMode == InheritanceMode.OVERRIDE_EXPLICIT) {
+                        doc.credentials.firstOrNull {
+                            it.id == folder.inheritable.explicitCredentialId && it.id !in doc.tombstonedObjectIds
+                        }
+                    } else {
+                        null
+                    }
+                    item(key = "folder-${folder.id}") {
+                        FolderTreeRow(
+                            folder = folder,
+                            depth = entry.depth,
+                            isExpanded = entry.isExpanded,
+                            hasExpandableChildren = entry.hasChildFolders || entry.directConnections.isNotEmpty(),
+                            explicitFolderCredentialName = explicitFolderCred?.name,
+                            childCount = entry.subtreeConnectionCount,
+                            strings = strings,
+                            onToggleExpand = {
+                                collapsedFolderIds = if (folder.id in collapsedFolderIds) {
+                                    collapsedFolderIds - folder.id
+                                } else {
+                                    collapsedFolderIds + folder.id
+                                }
+                            },
+                            onNewRdpInFolder = { onNewRdpInFolder(folder.id) },
+                            onNewSshInFolder = { onNewSshInFolder(folder.id) },
+                            onNewSubfolder = { onNewSubfolder(folder.id) },
+                            onEditFolder = { onEditFolder(folder) },
+                            onDuplicateFolder = { onDuplicateFolder(folder) },
+                            onDeleteFolder = { onDeleteFolder(folder.id) },
+                            onConnectAllInFolder = { onConnectAllInFolder(folder.id) }
+                        )
+                    }
+                    if (entry.isExpanded) {
+                        items(entry.directConnections, key = { "fconn-${folder.id}-${it.id}" }) { conn ->
+                            ConnectionTreeRow(
+                                connection = conn,
+                                indentLevel = entry.depth + 1,
+                                isSelected = conn.id == uiState.selectedConnectionId,
+                                strings = strings,
+                                onSelect = { onSelectConnection(conn.id) },
+                                onEdit = { onEditConnection(conn) },
+                                onConnectWithOptions = { onConnectWithOptions(conn) },
+                                onToggleFavorite = { onToggleFavorite(conn.id) },
+                                onDuplicate = { onDuplicateConnection(conn) },
+                                onDelete = { onDeleteConnection(conn.id) },
+                                onLaunch = { placement -> onLaunchConnection(conn, placement) },
+                                onLaunchSplitDown = { onLaunchConnectionInSplitDown(conn) }
+                            )
+                        }
+                    }
+                }
+
+                items(rootConnections, key = { "root-${it.id}" }) { conn ->
+                    ConnectionTreeRow(
+                        connection = conn,
+                        indentLevel = 0,
+                        isSelected = conn.id == uiState.selectedConnectionId,
+                        strings = strings,
+                        onSelect = { onSelectConnection(conn.id) },
+                        onEdit = { onEditConnection(conn) },
+                        onConnectWithOptions = { onConnectWithOptions(conn) },
+                        onToggleFavorite = { onToggleFavorite(conn.id) },
+                        onDuplicate = { onDuplicateConnection(conn) },
+                        onDelete = { onDeleteConnection(conn.id) },
+                        onLaunch = { placement -> onLaunchConnection(conn, placement) },
+                        onLaunchSplitDown = { onLaunchConnectionInSplitDown(conn) }
+                    )
+                }
+
+                if (flattenedFolders.isEmpty() && rootConnections.isEmpty()) {
+                    item(key = "empty-sidebar-hint") {
+                        Surface(
+                            shape = MaterialTheme.shapes.medium,
+                            color = MaterialTheme.colorScheme.surfaceContainerLow,
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 8.dp, start = 4.dp, end = 4.dp)
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(14.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Outlined.DeviceHub,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.8f),
+                                    modifier = Modifier.size(22.dp)
+                                )
+                                FilledTonalButton(
+                                    onClick = onNewConnection,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = strings.actionNewConnection,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
             }
+        }
+
+        DropdownMenu(
+            expanded = sidebarBgMenuOpen,
+            onDismissRequest = { sidebarBgMenuOpen = false }
+        ) {
+            DropdownMenuItem(
+                text = { Text(strings.actionNewConnection) },
+                leadingIcon = { Icon(Icons.Outlined.Add, contentDescription = null) },
+                onClick = {
+                    sidebarBgMenuOpen = false
+                    onNewConnection()
+                }
+            )
+            DropdownMenuItem(
+                text = { Text(strings.actionNewFolder) },
+                leadingIcon = { Icon(Icons.Outlined.CreateNewFolder, contentDescription = null) },
+                onClick = {
+                    sidebarBgMenuOpen = false
+                    onNewFolder()
+                }
+            )
+            DropdownMenuItem(
+                text = { Text(strings.actionNewSmartFolder) },
+                leadingIcon = { Icon(Icons.Outlined.AutoAwesome, contentDescription = null) },
+                onClick = {
+                    sidebarBgMenuOpen = false
+                    onNewSmartFolder()
+                }
+            )
+            DropdownMenuItem(
+                text = { Text(strings.vaultSectionDynamicFolders) },
+                leadingIcon = { Icon(Icons.Outlined.DynamicFeed, contentDescription = null) },
+                onClick = {
+                    sidebarBgMenuOpen = false
+                    onNewDynamicFolder()
+                }
+            )
+            HorizontalDivider()
+            DropdownMenuItem(
+                text = { Text("Local Terminal") },
+                leadingIcon = { Icon(Icons.Outlined.Terminal, contentDescription = null) },
+                onClick = {
+                    sidebarBgMenuOpen = false
+                    onLaunchLocalShell()
+                }
+            )
+            DropdownMenuItem(
+                text = { Text(strings.actionImportRtsz) },
+                leadingIcon = { Icon(Icons.Outlined.UploadFile, contentDescription = null) },
+                onClick = {
+                    sidebarBgMenuOpen = false
+                    onImportVault()
+                }
+            )
+        }
+    }
+}
+
+@Composable
+private fun SmartFolderTreeRow(
+    smartFolder: SmartFolder,
+    matchedCount: Int,
+    isExpanded: Boolean,
+    strings: WorkspaceLocalizedStrings,
+    onToggle: () -> Unit,
+    onConnectAll: () -> Unit,
+    onNewSmartFolder: () -> Unit,
+    onDelete: () -> Unit
+) {
+    var menuOpen by remember { mutableStateOf(false) }
+    val hover = rememberDesktopHoverState()
+    val interactionSource = remember { MutableInteractionSource() }
+    val isHovered = hover.value.isHovered
+
+    Box {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .nexusHoverTracker(hover, PointerIcon.Hand)
+                .clip(MaterialTheme.shapes.small)
+                .background(
+                    when {
+                        isExpanded -> MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.45f)
+                        isHovered -> MaterialTheme.colorScheme.surfaceContainerHigh
+                        else -> Color.Transparent
+                    }
+                )
+                .nexusDesktopPointerButtons(onSecondaryClick = { menuOpen = true })
+                .clickable(
+                    interactionSource = interactionSource,
+                    indication = null,
+                    onClick = onToggle
+                )
+                .padding(horizontal = 8.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(
+                modifier = Modifier.weight(1f),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.AutoAwesome,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp),
+                    tint = MaterialTheme.colorScheme.tertiary
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = smartFolder.name,
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = matchedCount.toString(),
+                    style = NexusTheme.monospace.keycapShortcut,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.width(4.dp))
+                IconButton(
+                    onClick = onDelete,
+                    modifier = Modifier.size(22.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.Delete,
+                        contentDescription = strings.actionDeleteItem,
+                        modifier = Modifier.size(13.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+
+        DropdownMenu(
+            expanded = menuOpen,
+            onDismissRequest = { menuOpen = false }
+        ) {
+            DropdownMenuItem(
+                text = { Text(if (isExpanded) "Collapse Smart Folder" else "Expand Smart Folder") },
+                leadingIcon = {
+                    Icon(
+                        if (isExpanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                        contentDescription = null
+                    )
+                },
+                onClick = {
+                    menuOpen = false
+                    onToggle()
+                }
+            )
+            if (matchedCount > 0) {
+                DropdownMenuItem(
+                    text = { Text(strings.actionConnectAllFolder) },
+                    leadingIcon = { Icon(Icons.Outlined.PlayArrow, contentDescription = null) },
+                    onClick = {
+                        menuOpen = false
+                        onConnectAll()
+                    }
+                )
+            }
+            DropdownMenuItem(
+                text = { Text(strings.actionNewSmartFolder) },
+                leadingIcon = { Icon(Icons.Outlined.Add, contentDescription = null) },
+                onClick = {
+                    menuOpen = false
+                    onNewSmartFolder()
+                }
+            )
+            HorizontalDivider()
+            DropdownMenuItem(
+                text = { Text(strings.actionDeleteItem, color = MaterialTheme.colorScheme.error) },
+                leadingIcon = {
+                    Icon(Icons.Outlined.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error)
+                },
+                onClick = {
+                    menuOpen = false
+                    onDelete()
+                }
+            )
+        }
+    }
+}
+
+@Composable
+private fun DynamicFolderTreeRow(
+    dynamicFolder: DynamicFolder,
+    isExpanded: Boolean,
+    strings: WorkspaceLocalizedStrings,
+    onToggle: () -> Unit,
+    onReload: () -> Unit,
+    onNewDynamicFolder: () -> Unit,
+    onDelete: () -> Unit
+) {
+    var menuOpen by remember { mutableStateOf(false) }
+    val hover = rememberDesktopHoverState()
+    val interactionSource = remember { MutableInteractionSource() }
+    val isHovered = hover.value.isHovered
+
+    Box {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .nexusHoverTracker(hover, PointerIcon.Hand)
+                .clip(MaterialTheme.shapes.small)
+                .background(
+                    when {
+                        isExpanded -> MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.45f)
+                        isHovered -> MaterialTheme.colorScheme.surfaceContainerHigh
+                        else -> Color.Transparent
+                    }
+                )
+                .nexusDesktopPointerButtons(onSecondaryClick = { menuOpen = true })
+                .clickable(
+                    interactionSource = interactionSource,
+                    indication = null,
+                    onClick = onToggle
+                )
+                .padding(horizontal = 8.dp, vertical = 5.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(
+                modifier = Modifier.weight(1f),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.DynamicFeed,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp),
+                    tint = MaterialTheme.colorScheme.secondary
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = dynamicFolder.name,
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(
+                    onClick = onReload,
+                    modifier = Modifier.size(24.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.Refresh,
+                        contentDescription = strings.actionReloadDynamicFolder,
+                        modifier = Modifier.size(14.dp),
+                        tint = MaterialTheme.colorScheme.secondary
+                    )
+                }
+                IconButton(
+                    onClick = onDelete,
+                    modifier = Modifier.size(22.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.Delete,
+                        contentDescription = strings.actionDeleteItem,
+                        modifier = Modifier.size(13.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+
+        DropdownMenu(
+            expanded = menuOpen,
+            onDismissRequest = { menuOpen = false }
+        ) {
+            DropdownMenuItem(
+                text = { Text(if (isExpanded) "Collapse Dynamic Folder" else "Expand Dynamic Folder") },
+                leadingIcon = {
+                    Icon(
+                        if (isExpanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                        contentDescription = null
+                    )
+                },
+                onClick = {
+                    menuOpen = false
+                    onToggle()
+                }
+            )
+            DropdownMenuItem(
+                text = { Text(strings.actionReloadDynamicFolder) },
+                leadingIcon = { Icon(Icons.Outlined.Refresh, contentDescription = null) },
+                onClick = {
+                    menuOpen = false
+                    onReload()
+                }
+            )
+            DropdownMenuItem(
+                text = { Text(strings.vaultSectionDynamicFolders) },
+                leadingIcon = { Icon(Icons.Outlined.Add, contentDescription = null) },
+                onClick = {
+                    menuOpen = false
+                    onNewDynamicFolder()
+                }
+            )
+            HorizontalDivider()
+            DropdownMenuItem(
+                text = { Text(strings.actionDeleteItem, color = MaterialTheme.colorScheme.error) },
+                leadingIcon = {
+                    Icon(Icons.Outlined.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error)
+                },
+                onClick = {
+                    menuOpen = false
+                    onDelete()
+                }
+            )
         }
     }
 }
@@ -1655,11 +2021,18 @@ private fun FolderTreeRow(
     childCount: Int,
     strings: WorkspaceLocalizedStrings,
     onToggleExpand: () -> Unit,
+    onNewRdpInFolder: () -> Unit,
+    onNewSshInFolder: () -> Unit,
+    onNewSubfolder: () -> Unit,
     onEditFolder: () -> Unit,
+    onDuplicateFolder: () -> Unit,
     onDeleteFolder: () -> Unit,
     onConnectAllInFolder: () -> Unit
 ) {
     var folderMenuOpen by remember { mutableStateOf(false) }
+    val hover = rememberDesktopHoverState()
+    val interactionSource = remember { MutableInteractionSource() }
+    val isHovered = hover.value.isHovered
     val folderAccent = parseHexColorOrNull(folder.inheritable.displayColorAccentHex)
         ?: MaterialTheme.colorScheme.primary
 
@@ -1668,9 +2041,24 @@ private fun FolderTreeRow(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(start = (depth * 14).dp)
+                .nexusHoverTracker(hover, PointerIcon.Hand)
                 .clip(MaterialTheme.shapes.small)
+                .background(
+                    if (isHovered) MaterialTheme.colorScheme.surfaceContainerHigh
+                    else Color.Transparent
+                )
                 .nexusDesktopPointerButtons(onSecondaryClick = { folderMenuOpen = true })
-                .clickable(onClick = onEditFolder)
+                .clickable(
+                    interactionSource = interactionSource,
+                    indication = null,
+                    onClick = {
+                        if (hasExpandableChildren) {
+                            onToggleExpand()
+                        } else {
+                            onEditFolder()
+                        }
+                    }
+                )
                 .padding(horizontal = 6.dp, vertical = 5.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
@@ -1719,6 +2107,18 @@ private fun FolderTreeRow(
                 }
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
+                // Direct `+` icon button to immediately create an RDP connection inside this folder
+                IconButton(
+                    onClick = onNewRdpInFolder,
+                    modifier = Modifier.size(24.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.Add,
+                        contentDescription = "New RDP Connection in ${folder.name}",
+                        modifier = Modifier.size(16.dp),
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                }
                 if (childCount > 0) {
                     IconButton(
                         onClick = onConnectAllInFolder,
@@ -1754,6 +2154,31 @@ private fun FolderTreeRow(
             expanded = folderMenuOpen,
             onDismissRequest = { folderMenuOpen = false }
         ) {
+            DropdownMenuItem(
+                text = { Text("New RDP Connection") },
+                leadingIcon = { Icon(Icons.Outlined.Add, contentDescription = null) },
+                onClick = {
+                    folderMenuOpen = false
+                    onNewRdpInFolder()
+                }
+            )
+            DropdownMenuItem(
+                text = { Text("New SSH Connection") },
+                leadingIcon = { Icon(Icons.Outlined.Terminal, contentDescription = null) },
+                onClick = {
+                    folderMenuOpen = false
+                    onNewSshInFolder()
+                }
+            )
+            DropdownMenuItem(
+                text = { Text("New Subfolder") },
+                leadingIcon = { Icon(Icons.Outlined.CreateNewFolder, contentDescription = null) },
+                onClick = {
+                    folderMenuOpen = false
+                    onNewSubfolder()
+                }
+            )
+            HorizontalDivider()
             if (childCount > 0) {
                 DropdownMenuItem(
                     text = { Text(strings.actionConnectAllFolder) },
@@ -1770,6 +2195,14 @@ private fun FolderTreeRow(
                 onClick = {
                     folderMenuOpen = false
                     onEditFolder()
+                }
+            )
+            DropdownMenuItem(
+                text = { Text("Duplicate Folder") },
+                leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null) },
+                onClick = {
+                    folderMenuOpen = false
+                    onDuplicateFolder()
                 }
             )
             HorizontalDivider()
@@ -1799,9 +2232,14 @@ private fun ConnectionTreeRow(
     onDuplicate: () -> Unit,
     onDelete: () -> Unit,
     onLaunch: (QuickLaunchPlacement) -> Unit,
+    onLaunchSplitDown: () -> Unit = {},
     indentLevel: Int = 1
 ) {
+    val clipboard = LocalClipboardManager.current
     var contextMenuOpen by remember { mutableStateOf(false) }
+    val hover = rememberDesktopHoverState()
+    val interactionSource = remember { MutableInteractionSource() }
+    val isHovered = hover.value.isHovered
     val uiProto = NexusWorkspaceViewModel.mapProtocolToUiKind(connection.protocol)
     val customAccent = parseHexColorOrNull(connection.inheritable.displayColorAccentHex)
     val effectiveIconTint = customAccent ?: protocolAccentColor(uiProto)
@@ -1811,13 +2249,20 @@ private fun ConnectionTreeRow(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(start = (indentLevel * 14).dp)
+                .nexusHoverTracker(hover, PointerIcon.Hand)
                 .clip(MaterialTheme.shapes.medium)
                 .background(
-                    if (isSelected) MaterialTheme.colorScheme.secondaryContainer
-                    else Color.Transparent
+                    when {
+                        isSelected -> MaterialTheme.colorScheme.secondaryContainer
+                        isHovered -> MaterialTheme.colorScheme.surfaceContainerHigh
+                        else -> Color.Transparent
+                    }
                 )
                 .nexusDesktopPointerButtons(onSecondaryClick = { contextMenuOpen = true })
-                .clickable {
+                .clickable(
+                    interactionSource = interactionSource,
+                    indication = null
+                ) {
                     onSelect()
                     onLaunch(QuickLaunchPlacement.ACTIVE_PANE_TAB)
                 }
@@ -1888,11 +2333,54 @@ private fun ConnectionTreeRow(
             onDismissRequest = { contextMenuOpen = false }
         ) {
             DropdownMenuItem(
+                text = { Text("Connect") },
+                leadingIcon = { Icon(Icons.Outlined.PlayArrow, contentDescription = null) },
+                onClick = {
+                    contextMenuOpen = false
+                    onSelect()
+                    onLaunch(QuickLaunchPlacement.ACTIVE_PANE_TAB)
+                }
+            )
+            DropdownMenuItem(
                 text = { Text(strings.actionConnectWithOptions) },
                 leadingIcon = { Icon(Icons.Outlined.Tune, contentDescription = null) },
                 onClick = {
                     contextMenuOpen = false
                     onConnectWithOptions()
+                }
+            )
+            HorizontalDivider()
+            DropdownMenuItem(
+                text = { Text(strings.splitRight) },
+                leadingIcon = { Icon(Icons.Outlined.VerticalSplit, contentDescription = null) },
+                onClick = {
+                    contextMenuOpen = false
+                    onLaunch(QuickLaunchPlacement.SPLIT_RIGHT_PANE)
+                }
+            )
+            DropdownMenuItem(
+                text = { Text(strings.splitDown) },
+                leadingIcon = { Icon(Icons.Outlined.HorizontalSplit, contentDescription = null) },
+                onClick = {
+                    contextMenuOpen = false
+                    onLaunchSplitDown()
+                }
+            )
+            DropdownMenuItem(
+                text = { Text(strings.detachNewWindow) },
+                leadingIcon = { Icon(Icons.AutoMirrored.Outlined.OpenInNew, contentDescription = null) },
+                onClick = {
+                    contextMenuOpen = false
+                    onLaunch(QuickLaunchPlacement.DETACHED_NEW_WINDOW)
+                }
+            )
+            HorizontalDivider()
+            DropdownMenuItem(
+                text = { Text("Copy Host") },
+                leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null) },
+                onClick = {
+                    contextMenuOpen = false
+                    clipboard.setText(AnnotatedString(connection.host))
                 }
             )
             DropdownMenuItem(
@@ -1922,23 +2410,6 @@ private fun ConnectionTreeRow(
                 onClick = {
                     contextMenuOpen = false
                     onToggleFavorite()
-                }
-            )
-            HorizontalDivider()
-            DropdownMenuItem(
-                text = { Text(strings.splitRight) },
-                leadingIcon = { Icon(Icons.Outlined.VerticalSplit, contentDescription = null) },
-                onClick = {
-                    contextMenuOpen = false
-                    onLaunch(QuickLaunchPlacement.SPLIT_RIGHT_PANE)
-                }
-            )
-            DropdownMenuItem(
-                text = { Text(strings.detachNewWindow) },
-                leadingIcon = { Icon(Icons.AutoMirrored.Outlined.OpenInNew, contentDescription = null) },
-                onClick = {
-                    contextMenuOpen = false
-                    onLaunch(QuickLaunchPlacement.DETACHED_NEW_WINDOW)
                 }
             )
             HorizontalDivider()
@@ -2377,8 +2848,10 @@ fun FullScreenVaultUnlockShield(
 private fun BottomTelemetryAndBroadcastDrawer(
     logs: List<String>,
     strings: WorkspaceLocalizedStrings,
-    onBroadcastCommand: (String) -> Unit
+    onBroadcastCommand: (String) -> Unit,
+    onClearLogs: () -> Unit = {}
 ) {
+    val clipboard = LocalClipboardManager.current
     var cmd by remember { mutableStateOf("") }
     Column(
         modifier = Modifier
@@ -2399,6 +2872,7 @@ private fun BottomTelemetryAndBroadcastDrawer(
                 modifier = Modifier.weight(1f)
             )
             Button(
+                enabled = cmd.isNotBlank(),
                 onClick = {
                     onBroadcastCommand(cmd)
                     cmd = ""
@@ -2406,16 +2880,199 @@ private fun BottomTelemetryAndBroadcastDrawer(
             ) {
                 Text(strings.drawerSendBroadcast)
             }
+            OutlinedButton(
+                enabled = logs.isNotEmpty(),
+                onClick = { clipboard.setText(AnnotatedString(logs.joinToString("\n"))) }
+            ) {
+                Icon(Icons.Outlined.ContentCopy, contentDescription = null, modifier = Modifier.size(14.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("Copy All")
+            }
+            TextButton(
+                enabled = logs.isNotEmpty(),
+                onClick = onClearLogs
+            ) {
+                Icon(Icons.Outlined.ClearAll, contentDescription = null, modifier = Modifier.size(15.dp))
+                Spacer(modifier = Modifier.width(4.dp))
+                Text("Clear")
+            }
         }
 
         LazyColumn(modifier = Modifier.fillMaxSize()) {
             items(logs) { line ->
-                Text(
-                    text = line,
-                    style = NexusTheme.monospace.logEntry,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                var logMenuOpen by remember { mutableStateOf(false) }
+                val hover = rememberDesktopHoverState()
+                Box {
+                    Text(
+                        text = line,
+                        style = NexusTheme.monospace.logEntry,
+                        color = if (hover.value.isHovered) {
+                            MaterialTheme.colorScheme.onSurface
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .nexusHoverTracker(hover, PointerIcon.Hand)
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(
+                                if (hover.value.isHovered) {
+                                    MaterialTheme.colorScheme.surfaceContainerHigh
+                                } else {
+                                    Color.Transparent
+                                }
+                            )
+                            .nexusDesktopPointerButtons(onSecondaryClick = { logMenuOpen = true })
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                    )
+                    DropdownMenu(
+                        expanded = logMenuOpen,
+                        onDismissRequest = { logMenuOpen = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Copy Log Entry") },
+                            leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null) },
+                            onClick = {
+                                logMenuOpen = false
+                                clipboard.setText(AnnotatedString(line))
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Copy All Logs") },
+                            leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null) },
+                            onClick = {
+                                logMenuOpen = false
+                                clipboard.setText(AnnotatedString(logs.joinToString("\n")))
+                            }
+                        )
+                        HorizontalDivider()
+                        DropdownMenuItem(
+                            text = { Text("Clear Audit Log", color = MaterialTheme.colorScheme.error) },
+                            leadingIcon = {
+                                Icon(Icons.Outlined.ClearAll, contentDescription = null, tint = MaterialTheme.colorScheme.error)
+                            },
+                            onClick = {
+                                logMenuOpen = false
+                                onClearLogs()
+                            }
+                        )
+                    }
+                }
             }
         }
     }
 }
+
+@Composable
+private fun EncryptedImportPassphraseDialog(
+    pendingFileName: String?,
+    pendingFormat: DetectedExternalVaultFormat?,
+    errorMessage: String?,
+    strings: WorkspaceLocalizedStrings,
+    onDismiss: () -> Unit,
+    onSubmitPassphrase: (String) -> Unit
+) {
+    if (pendingFileName == null) return
+    var passphrase by remember(pendingFileName) { mutableStateOf("") }
+
+    val formatLabel = when (pendingFormat) {
+        DetectedExternalVaultFormat.ROYAL_TS_ENCRYPTED_ARCHIVE -> "Password-Protected Royal TS Archive (.rtsz)"
+        DetectedExternalVaultFormat.NXTS_ENCRYPTED_BINARY -> "Encrypted NexusTS Vault (.nxts)"
+        DetectedExternalVaultFormat.KEEPASS_KDBX_BINARY -> "Encrypted KeePass Database (.kdbx)"
+        else -> "Encrypted Vault Archive"
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = {
+            Icon(
+                imageVector = Icons.Outlined.VpnKey,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary
+            )
+        },
+        title = { Text("Unlock Encrypted Import") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    text = "$formatLabel: $pendingFileName",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (!errorMessage.isNullOrBlank()) {
+                    Surface(
+                        shape = MaterialTheme.shapes.small,
+                        color = MaterialTheme.colorScheme.errorContainer,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = errorMessage,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            modifier = Modifier.padding(10.dp)
+                        )
+                    }
+                }
+                OutlinedTextField(
+                    value = passphrase,
+                    onValueChange = { passphrase = it },
+                    label = { Text(strings.vaultPassphraseLabel) },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                enabled = passphrase.isNotEmpty(),
+                onClick = {
+                    val entered = passphrase
+                    passphrase = ""
+                    onSubmitPassphrase(entered)
+                }
+            ) {
+                Text(strings.actionUnlockVault)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(strings.dialogActionCancel)
+            }
+        }
+    )
+}
+
+@Composable
+private fun ImportErrorAlertDialog(
+    errorMessage: String?,
+    strings: WorkspaceLocalizedStrings,
+    onDismiss: () -> Unit
+) {
+    if (errorMessage.isNullOrBlank()) return
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = {
+            Icon(
+                imageVector = Icons.Outlined.ErrorOutline,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.error
+            )
+        },
+        title = { Text("Import Failed") },
+        text = {
+            Text(
+                text = errorMessage,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        },
+        confirmButton = {
+            Button(onClick = onDismiss) {
+                Text(strings.dialogActionCancel)
+            }
+        }
+    )
+}
+

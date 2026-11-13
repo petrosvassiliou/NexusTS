@@ -13,3 +13,5 @@ native/rust/target/
 .signing/
 native/third_party/freerdp3/
 .freerdp-ndk-work/
+**/.kotlin/
+gradle/wrapper/gradle-wrapper.jar

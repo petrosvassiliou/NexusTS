@@ -37,11 +37,11 @@ import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Podcasts
 import androidx.compose.material.icons.outlined.Stop
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
+import com.nexusts.app.core.ui.components.NexusActionChip
+import com.nexusts.app.core.ui.components.NexusChoiceChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -296,22 +296,14 @@ fun SshTerminalSessionView(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    AssistChip(
+                    NexusActionChip(
                         onClick = { showImeInputBar = !showImeInputBar },
-                        label = { Text("⌨ Input", style = MaterialTheme.typography.labelSmall) },
-                        leadingIcon = {
-                            Icon(
-                                imageVector = Icons.Outlined.Keyboard,
-                                contentDescription = null,
-                                modifier = Modifier.size(13.dp)
-                            )
-                        },
-                        shape = RoundedCornerShape(99.dp),
-                        modifier = Modifier.height(26.dp)
+                        label = "⌨ Input",
+                        leadingIcon = Icons.Outlined.Keyboard
                     )
 
                     // Asciicast v2 (.cast) Record / Stop Toggle Chip
-                    AssistChip(
+                    NexusActionChip(
                         onClick = {
                             if (isRecording) {
                                 val castText = controller.stopRecordingCast()
@@ -320,64 +312,28 @@ fun SshTerminalSessionView(
                                 controller.startRecordingCast()
                             }
                         },
-                        label = {
-                            Text(
-                                text = if (isRecording) "REC ($recordedFrames)" else "REC .cast",
-                                style = MaterialTheme.typography.labelSmall
-                            )
-                        },
-                        leadingIcon = {
-                            Icon(
-                                imageVector = if (isRecording) Icons.Outlined.Stop else Icons.Outlined.FiberManualRecord,
-                                contentDescription = null,
-                                tint = if (isRecording) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.secondary,
-                                modifier = Modifier.size(13.dp)
-                            )
-                        },
-                        shape = RoundedCornerShape(99.dp),
-                        modifier = Modifier.height(26.dp)
+                        label = if (isRecording) "REC ($recordedFrames)" else "REC .cast",
+                        leadingIcon = if (isRecording) Icons.Outlined.Stop else Icons.Outlined.FiberManualRecord,
+                        leadingIconTint = if (isRecording) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.secondary
                     )
 
                     if (!lastCastPayload.isNullOrBlank() && !isRecording) {
-                        AssistChip(
+                        NexusActionChip(
                             onClick = { replayModalVisible = true },
-                            label = {
-                                Text("Replay .cast", style = MaterialTheme.typography.labelSmall)
-                            },
-                            leadingIcon = {
-                                Icon(
-                                    imageVector = Icons.Outlined.PlayArrow,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(14.dp)
-                                )
-                            },
-                            shape = RoundedCornerShape(99.dp),
-                            modifier = Modifier.height(26.dp)
+                            label = "Replay .cast",
+                            leadingIcon = Icons.Outlined.PlayArrow
                         )
                     }
 
-                    AssistChip(
+                    NexusActionChip(
                         onClick = {
                             clipboard.getText()?.text?.let {
                                 scrollOffsetLines = 0
                                 controller.pasteClipboardText(it)
                             }
                         },
-                        label = {
-                            Text(
-                                text = pasteActionLabel,
-                                style = MaterialTheme.typography.labelSmall
-                            )
-                        },
-                        leadingIcon = {
-                            Icon(
-                                imageVector = Icons.Outlined.ContentPaste,
-                                contentDescription = null,
-                                modifier = Modifier.size(13.dp)
-                            )
-                        },
-                        shape = RoundedCornerShape(99.dp),
-                        modifier = Modifier.height(26.dp)
+                        label = pasteActionLabel,
+                        leadingIcon = Icons.Outlined.ContentPaste
                     )
                 }
             }
@@ -531,17 +487,19 @@ fun SshTerminalSessionView(
             ) {
                 TerminalSpecialKeyButton("ESC") { dispatchTerminalBytes("\u001b".toByteArray()) }
                 TerminalSpecialKeyButton("TAB") { dispatchTerminalBytes("\t".toByteArray()) }
-                FilterChip(
+                NexusChoiceChip(
                     selected = stickyCtrl,
                     onClick = { stickyCtrl = !stickyCtrl },
-                    label = { Text("CTRL", style = NexusTheme.monospace.keycapShortcut) },
-                    modifier = Modifier.height(28.dp)
+                    label = "CTRL",
+                    monospace = true,
+                    showCheckmarkWhenSelected = false
                 )
-                FilterChip(
+                NexusChoiceChip(
                     selected = stickyAlt,
                     onClick = { stickyAlt = !stickyAlt },
-                    label = { Text("ALT", style = NexusTheme.monospace.keycapShortcut) },
-                    modifier = Modifier.height(28.dp)
+                    label = "ALT",
+                    monospace = true,
+                    showCheckmarkWhenSelected = false
                 )
                 TerminalSpecialKeyButton("↑") { dispatchTerminalBytes("\u001b[A".toByteArray()) }
                 TerminalSpecialKeyButton("↓") { dispatchTerminalBytes("\u001b[B".toByteArray()) }
@@ -782,10 +740,11 @@ private fun AsciicastPlaybackDialog(
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         listOf(1f to "1x", 2f to "2x", 4f to "4x").forEach { (spd, lbl) ->
-                            FilterChip(
+                            NexusChoiceChip(
                                 selected = speedMultiplier == spd,
                                 onClick = { speedMultiplier = spd },
-                                label = { Text(lbl, style = MaterialTheme.typography.labelSmall) }
+                                label = lbl,
+                                showCheckmarkWhenSelected = false
                             )
                         }
                     }

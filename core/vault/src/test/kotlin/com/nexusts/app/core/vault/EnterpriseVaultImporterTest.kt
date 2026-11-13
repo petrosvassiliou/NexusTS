@@ -2,9 +2,11 @@ package com.nexusts.app.core.vault
 
 import com.nexusts.app.core.vault.exporter.VaultDocumentExporter
 import com.nexusts.app.core.vault.importer.DetectedExternalVaultFormat
+import com.nexusts.app.core.vault.importer.EncryptedZipExtractor
 import com.nexusts.app.core.vault.importer.EnterpriseVaultFormatImporter
 import com.nexusts.app.core.vault.importer.RtszDocumentImporter
 import com.nexusts.app.core.vault.model.CredentialSourceKind
+import com.nexusts.app.core.vault.model.GatewayTransportKind
 import com.nexusts.app.core.vault.model.InheritableProperties
 import com.nexusts.app.core.vault.model.InheritanceMode
 import com.nexusts.app.core.vault.model.NxtsVaultDocument
@@ -14,15 +16,25 @@ import com.nexusts.app.core.vault.model.VaultCredential
 import com.nexusts.app.core.vault.model.VaultFolder
 import com.nexusts.app.core.vault.model.VaultProtocolType
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.ByteArrayOutputStream
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.nio.charset.StandardCharsets
+import java.util.zip.CRC32
+import java.util.zip.Deflater
+import java.util.zip.GZIPOutputStream
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
+import javax.crypto.Mac
+import javax.crypto.SecretKeyFactory
+import javax.crypto.spec.PBEKeySpec
+import javax.crypto.spec.SecretKeySpec
 
 class EnterpriseVaultImporterTest {
 
@@ -476,5 +488,483 @@ class EnterpriseVaultImporterTest {
         assertEquals(InheritanceMode.PROMPT_AT_CONNECT, rtSsh.inheritable.credentialMode)
         assertEquals("#FF5252", rtSsh.inheritable.displayColorAccentHex)
         assertEquals(2222, (rtSsh.settings as ProtocolSpecificSettings.Ssh).port)
+    }
+
+    @Test
+    fun detectAndImportGzippedRoyalTsRtszWithNestedFoldersTerminalWebAndTrashExclusion() {
+        val royalXml = """
+            <?xml version="1.0" encoding="utf-8"?>
+            <RTSZDocument>
+              <RoyalDocument>
+                <ID>doc-corp-root</ID>
+                <Name>Corporate Infrastructure V7</Name>
+                <Modified>42</Modified>
+                <Objects>
+                  <RoyalFolder>
+                    <ID>fld-win</ID>
+                    <Name>Windows Fleet</Name>
+                    <Objects>
+                      <RoyalFolder>
+                        <ID>fld-win-dc</ID>
+                        <Name>Tier-0 Domain Controllers</Name>
+                        <Objects>
+                          <RoyalRDSConnection>
+                            <ID>conn-dc01</ID>
+                            <Name>CORP-DC01</Name>
+                            <URI>dc01.corp.internal</URI>
+                            <RDPPort>3389</RDPPort>
+                            <CredentialID>cred-dom-admin</CredentialID>
+                            <CredentialMode>2</CredentialMode>
+                          </RoyalRDSConnection>
+                        </Objects>
+                      </RoyalFolder>
+                    </Objects>
+                  </RoyalFolder>
+                  <RoyalFolder>
+                    <ID>fld-ops</ID>
+                    <Name>Linux &amp; Consoles</Name>
+                    <Objects>
+                      <RoyalSSHConnection>
+                        <ID>conn-ssh-core</ID>
+                        <Name>Core Linux Bastion</Name>
+                        <ComputerName>10.20.30.40</ComputerName>
+                        <Port>2222</Port>
+                      </RoyalSSHConnection>
+                      <RoyalTerminalConnection>
+                        <ID>conn-tsx-serial</ID>
+                        <Name>Rack PDU Serial</Name>
+                        <IsSerialPort>True</IsSerialPort>
+                        <SerialPort>/dev/ttyUSB1</SerialPort>
+                        <BaudRate>115200</BaudRate>
+                      </RoyalTerminalConnection>
+                      <RoyalTerminalConnection>
+                        <ID>conn-tsx-ssh</ID>
+                        <Name>macOS TSX Jumpbox</Name>
+                        <ConnectionType>SSH;22</ConnectionType>
+                        <URI>tsx-jump.corp.internal</URI>
+                      </RoyalTerminalConnection>
+                      <RoyalWebConnection>
+                        <ID>conn-web-grafana</ID>
+                        <Name>Grafana Observability</Name>
+                        <URI>https://grafana.corp.internal:8443/d/main</URI>
+                      </RoyalWebConnection>
+                    </Objects>
+                  </RoyalFolder>
+                  <RoyalCredential>
+                    <ID>cred-dom-admin</ID>
+                    <Name>Corp Domain Admin</Name>
+                    <UserName>CORP\Administrator</UserName>
+                    <Password>R0yalSecret!2026</Password>
+                  </RoyalCredential>
+                  <RoyalRDSGateway>
+                    <ID>gw-rdp-edge</ID>
+                    <Name>RD Gateway Zurich</Name>
+                    <URI>rdgw.zrh.corp.internal</URI>
+                    <Port>443</Port>
+                  </RoyalRDSGateway>
+                  <RoyalTrash>
+                    <ID>trash-bin-id</ID>
+                    <Name>Trash</Name>
+                    <Objects>
+                      <RoyalRDSConnection>
+                        <ID>conn-deleted-nested</ID>
+                        <Name>Deleted Legacy Server</Name>
+                        <URI>legacy-dead.corp.internal</URI>
+                      </RoyalRDSConnection>
+                    </Objects>
+                  </RoyalTrash>
+                </Objects>
+              </RoyalDocument>
+              <RoyalSSHConnection>
+                <ID>conn-deleted-flat</ID>
+                <ParentID>trash-bin-id</ParentID>
+                <Name>Deleted Flat SSH</Name>
+                <URI>10.0.99.99</URI>
+              </RoyalSSHConnection>
+            </RTSZDocument>
+        """.trimIndent().toByteArray(StandardCharsets.UTF_8)
+
+        val gzippedRtsz = ByteArrayOutputStream().also { baos ->
+            GZIPOutputStream(baos).use { gos -> gos.write(royalXml) }
+        }.toByteArray()
+
+        assertEquals(0x1F.toByte(), gzippedRtsz[0])
+        assertEquals(0x8B.toByte(), gzippedRtsz[1])
+
+        val detected = importer.detectFormat("corporate.rtsz", gzippedRtsz)
+        assertEquals(DetectedExternalVaultFormat.ROYAL_TS_RTSZ_OR_RTSX, detected)
+
+        val doc = importer.importExternalFormat(detected, gzippedRtsz, "corporate.rtsz")
+        assertEquals("Corporate Infrastructure V7", doc.name)
+        assertEquals(3, doc.folders.size)
+        val winFolder = doc.folders.first { it.id == "fld-win" }
+        val dcFolder = doc.folders.first { it.id == "fld-win-dc" }
+        assertNull(winFolder.parentFolderId)
+        assertEquals("fld-win", dcFolder.parentFolderId)
+
+        // Verify <RoyalTrash> exclusions (both nested and flat ParentID)
+        assertFalse(doc.connections.any { it.id == "conn-deleted-nested" })
+        assertFalse(doc.connections.any { it.id == "conn-deleted-flat" })
+        assertEquals(5, doc.connections.size)
+
+        val rdp = doc.connections.first { it.id == "conn-dc01" }
+        assertEquals(VaultProtocolType.RDP, rdp.protocol)
+        assertEquals("dc01.corp.internal", rdp.host)
+        assertEquals("fld-win-dc", rdp.parentFolderId)
+        assertEquals("cred-dom-admin", rdp.inheritable.explicitCredentialId)
+
+        val sshCore = doc.connections.first { it.id == "conn-ssh-core" }
+        assertEquals(VaultProtocolType.SSH, sshCore.protocol)
+        assertEquals("10.20.30.40", sshCore.host)
+        assertEquals(2222, (sshCore.settings as ProtocolSpecificSettings.Ssh).port)
+
+        val tsxSerial = doc.connections.first { it.id == "conn-tsx-serial" }
+        assertEquals(VaultProtocolType.SERIAL, tsxSerial.protocol)
+        assertEquals(115_200, (tsxSerial.settings as ProtocolSpecificSettings.SerialUart).baudRate)
+
+        val tsxSsh = doc.connections.first { it.id == "conn-tsx-ssh" }
+        assertEquals(VaultProtocolType.SSH, tsxSsh.protocol)
+        assertEquals("tsx-jump.corp.internal", tsxSsh.host)
+
+        val web = doc.connections.first { it.id == "conn-web-grafana" }
+        assertEquals(VaultProtocolType.WEB_PAGE, web.protocol)
+        assertEquals("https://grafana.corp.internal:8443/d/main", (web.settings as ProtocolSpecificSettings.WebPage).url)
+
+        val cred = doc.credentials.first { it.id == "cred-dom-admin" }
+        assertEquals("CORP", cred.domain)
+        assertEquals("Administrator", cred.username)
+        assertEquals("R0yalSecret!2026", cred.secretPassword)
+
+        val gw = doc.gateways.first { it.id == "gw-rdp-edge" }
+        assertEquals(GatewayTransportKind.HTTP_CONNECT_PROXY, gw.kind)
+        assertEquals("rdgw.zrh.corp.internal", gw.host)
+    }
+
+    @Test
+    fun importUtf16LeRoyalTsXmlWithDotNetControlCharactersAndRoyalJson() {
+        val rawControlChar = '\u0008'
+        val utf16XmlString = """
+            <?xml version="1.0" encoding="utf-16"?>
+            <RTSZDocument>
+              <RoyalDocument>
+                <ID>doc-utf16</ID>
+                <Name>UTF16 Windows Export</Name>
+              </RoyalDocument>
+              <RoyalRDSConnection>
+                <ID>conn-utf16-rdp</ID>
+                <ParentID>doc-utf16</ParentID>
+                <Name>WinServer&#x1B;ANSI-Note</Name>
+                <ComputerName>win2025.corp.internal</ComputerName>
+                <Notes>Contains raw backspace:${rawControlChar}end</Notes>
+              </RoyalRDSConnection>
+            </RTSZDocument>
+        """.trimIndent()
+
+        val utf16LeWithBom = ByteArrayOutputStream().also { baos ->
+            baos.write(byteArrayOf(0xFF.toByte(), 0xFE.toByte()))
+            baos.write(utf16XmlString.toByteArray(StandardCharsets.UTF_16LE))
+        }.toByteArray()
+
+        val detectedUtf16 = importer.detectFormat("windows_export.rtsx", utf16LeWithBom)
+        assertEquals(DetectedExternalVaultFormat.ROYAL_TS_RTSZ_OR_RTSX, detectedUtf16)
+
+        val utf16Doc = importer.importExternalFormat(detectedUtf16, utf16LeWithBom, "windows_export.rtsx")
+        assertEquals("UTF16 Windows Export", utf16Doc.name)
+        assertEquals(1, utf16Doc.connections.size)
+        assertEquals("win2025.corp.internal", utf16Doc.connections.single().host)
+
+        // RoyalJSON (.rjson) detection & import
+        val rjsonBytes = """
+            {
+              "Name": "Dynamic RoyalJSON Inventory",
+              "Objects": [
+                {
+                  "Type": "Folder",
+                  "ID": "rj-folder-1",
+                  "Name": "Hybrid Cloud",
+                  "Objects": [
+                    {
+                      "Type": "RemoteDesktopConnection",
+                      "ID": "rj-rdp-1",
+                      "Name": "SQL Primary Node",
+                      "ComputerName": "10.80.1.25",
+                      "Port": 3390,
+                      "Username": "CORP\\sqladmin",
+                      "Password": "SqlPass!2026"
+                    }
+                  ]
+                }
+              ]
+            }
+        """.trimIndent().toByteArray(StandardCharsets.UTF_8)
+
+        val detectedRjson = importer.detectFormat("dynamic.rjson", rjsonBytes)
+        assertEquals(DetectedExternalVaultFormat.ROYAL_JSON, detectedRjson)
+
+        val rjsonDoc = importer.importExternalFormat(detectedRjson, rjsonBytes, "dynamic.rjson")
+        assertEquals(1, rjsonDoc.folders.size)
+        assertEquals("Hybrid Cloud", rjsonDoc.folders.single().name)
+        val rjsonConn = rjsonDoc.connections.single()
+        assertEquals(VaultProtocolType.RDP, rjsonConn.protocol)
+        assertEquals("10.80.1.25", rjsonConn.host)
+        assertEquals(3390, (rjsonConn.settings as ProtocolSpecificSettings.Rdp).port)
+        assertEquals(1, rjsonDoc.credentials.size)
+        assertEquals("CORP", rjsonDoc.credentials.single().domain)
+        assertEquals("sqladmin", rjsonDoc.credentials.single().username)
+
+        // Random binary bytes must NEVER be misclassified as CSV even with a .csv extension
+        val randomBinary = byteArrayOf(
+            0xDE.toByte(), 0xAD.toByte(), 0xBE.toByte(), 0xEF.toByte(),
+            0x00, 0x11, 0x02, 0x03
+        )
+        assertEquals(DetectedExternalVaultFormat.UNKNOWN, importer.detectFormat("corrupt.csv", randomBinary))
+        assertEquals(DetectedExternalVaultFormat.UNKNOWN, importer.detectFormat("unknown.bin", randomBinary))
+    }
+
+    @Test
+    fun decryptWinZipAes256AndZipCryptoProtectedRtszArchives() {
+        val sampleRtsx = """
+            <?xml version="1.0" encoding="utf-8"?>
+            <RTSZDocument>
+              <RoyalDocument>
+                <ID>doc-locked</ID>
+                <Name>Lockdown Production Vault</Name>
+              </RoyalDocument>
+              <RoyalRDSConnection>
+                <ID>conn-locked-rdp</ID>
+                <ParentID>doc-locked</ParentID>
+                <Name>PAM Jump Host</Name>
+                <URI>pam.corp.internal</URI>
+              </RoyalRDSConnection>
+            </RTSZDocument>
+        """.trimIndent().toByteArray(StandardCharsets.UTF_8)
+
+        val password = "LockdownPassword!2026".toCharArray()
+        val aesZip = buildWinZipAes256Zip("document.rtsx", sampleRtsx, password)
+
+        assertTrue(EncryptedZipExtractor.isEncryptedZip(aesZip))
+        assertEquals(
+            DetectedExternalVaultFormat.ROYAL_TS_ENCRYPTED_ARCHIVE,
+            importer.detectFormat("locked_aes.rtsz", aesZip)
+        )
+
+        assertThrows(IllegalArgumentException::class.java) {
+            importer.importExternalFormat(
+                DetectedExternalVaultFormat.ROYAL_TS_ENCRYPTED_ARCHIVE,
+                aesZip,
+                "locked_aes.rtsz",
+                "WrongPassword".toCharArray()
+            )
+        }
+
+        val unlockedAesDoc = importer.importExternalFormat(
+            DetectedExternalVaultFormat.ROYAL_TS_ENCRYPTED_ARCHIVE,
+            aesZip,
+            "locked_aes.rtsz",
+            password.copyOf()
+        )
+        assertEquals("Lockdown Production Vault", unlockedAesDoc.name)
+        assertEquals("pam.corp.internal", unlockedAesDoc.connections.single().host)
+
+        // Also verify Traditional PKWARE ZipCrypto .rtsz decryption
+        val zipCryptoBytes = buildZipCryptoStoreZip("document.rtsx", sampleRtsx, password)
+        assertTrue(EncryptedZipExtractor.isEncryptedZip(zipCryptoBytes))
+        assertEquals(
+            DetectedExternalVaultFormat.ROYAL_TS_ENCRYPTED_ARCHIVE,
+            importer.detectFormat("locked_zipcrypto.rtsz", zipCryptoBytes)
+        )
+        assertThrows(IllegalArgumentException::class.java) {
+            importer.importExternalFormat(
+                DetectedExternalVaultFormat.ROYAL_TS_ENCRYPTED_ARCHIVE,
+                zipCryptoBytes,
+                "locked_zipcrypto.rtsz",
+                "BadPass".toCharArray()
+            )
+        }
+        val unlockedZipCryptoDoc = importer.importExternalFormat(
+            DetectedExternalVaultFormat.ROYAL_TS_ENCRYPTED_ARCHIVE,
+            zipCryptoBytes,
+            "locked_zipcrypto.rtsz",
+            password.copyOf()
+        )
+        assertEquals("Lockdown Production Vault", unlockedZipCryptoDoc.name)
+        assertEquals("pam.corp.internal", unlockedZipCryptoDoc.connections.single().host)
+    }
+
+    private fun buildWinZipAes256Zip(entryName: String, plainBytes: ByteArray, password: CharArray): ByteArray {
+        val deflater = Deflater(Deflater.DEFAULT_COMPRESSION, true)
+        val deflated = try {
+            deflater.setInput(plainBytes)
+            deflater.finish()
+            val out = ByteArrayOutputStream()
+            val buf = ByteArray(4096)
+            while (!deflater.finished()) {
+                val n = deflater.deflate(buf)
+                if (n > 0) out.write(buf, 0, n) else break
+            }
+            out.toByteArray()
+        } finally {
+            deflater.end()
+        }
+
+        val salt = ByteArray(16) { idx -> (0xA0 + idx).toByte() }
+        val derivedBits = (32 * 2 + 2) * 8
+        val derived = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA1")
+            .generateSecret(PBEKeySpec(password, salt, 1000, derivedBits))
+            .encoded
+        val aesKey = derived.copyOfRange(0, 32)
+        val hmacKey = derived.copyOfRange(32, 64)
+        val verifier = derived.copyOfRange(64, 66)
+
+        val ciphertext = EncryptedZipExtractor.aesCtrLittleEndianCrypt(aesKey, deflated)
+        val mac = Mac.getInstance("HmacSHA1").apply {
+            init(SecretKeySpec(hmacKey, "HmacSHA1"))
+        }
+        val authCode10 = mac.doFinal(ciphertext).copyOfRange(0, 10)
+
+        val encryptedPayload = ByteArrayOutputStream().apply {
+            write(salt)
+            write(verifier)
+            write(ciphertext)
+            write(authCode10)
+        }.toByteArray()
+
+        val aesExtra = ByteBuffer.allocate(11).order(ByteOrder.LITTLE_ENDIAN).apply {
+            putShort(0x9901.toShort())
+            putShort(7.toShort())
+            putShort(2.toShort()) // AE-2
+            put('A'.code.toByte())
+            put('E'.code.toByte())
+            put(3.toByte()) // AES-256
+            putShort(8.toShort()) // Deflate
+        }.array()
+
+        return assembleSingleEntryZip(
+            entryName = entryName,
+            gpFlags = 0x0001,
+            method = 99,
+            crc32 = 0L,
+            uncompressedSize = plainBytes.size,
+            extra = aesExtra,
+            payload = encryptedPayload
+        )
+    }
+
+    private fun buildZipCryptoStoreZip(entryName: String, plainBytes: ByteArray, password: CharArray): ByteArray {
+        val crc = CRC32().apply { update(plainBytes) }.value
+        val keys = intArrayOf(0x12345678, 0x23456789, 0x34567890)
+        fun crc32Byte(c0: Int, b: Int): Int {
+            var c = c0 xor (b and 0xFF)
+            repeat(8) {
+                c = if ((c and 1) != 0) (c ushr 1) xor 0xEDB88320.toInt() else (c ushr 1)
+            }
+            return c
+        }
+        fun updateKeys(byteVal: Int) {
+            keys[0] = crc32Byte(keys[0], byteVal)
+            keys[1] = (keys[1] + (keys[0] and 0xFF)) * 134775813 + 1
+            keys[2] = crc32Byte(keys[2], keys[1] ushr 24)
+        }
+        fun streamByte(): Int {
+            val temp = (keys[2] or 2) and 0xFFFF
+            return ((temp * (temp xor 1)) ushr 8) and 0xFF
+        }
+        for (ch in password) updateKeys(ch.code and 0xFF)
+
+        val headerPlain = ByteArray(12) { idx ->
+            if (idx == 11) ((crc ushr 24) and 0xFFL).toByte() else (0x11 + idx).toByte()
+        }
+        val encryptedOut = ByteArray(12 + plainBytes.size)
+        for (i in 0 until 12) {
+            val p = headerPlain[i].toInt() and 0xFF
+            val c = p xor streamByte()
+            updateKeys(p)
+            encryptedOut[i] = c.toByte()
+        }
+        for (i in plainBytes.indices) {
+            val p = plainBytes[i].toInt() and 0xFF
+            val c = p xor streamByte()
+            updateKeys(p)
+            encryptedOut[12 + i] = c.toByte()
+        }
+
+        return assembleSingleEntryZip(
+            entryName = entryName,
+            gpFlags = 0x0001,
+            method = 0,
+            crc32 = crc,
+            uncompressedSize = plainBytes.size,
+            extra = ByteArray(0),
+            payload = encryptedOut
+        )
+    }
+
+    private fun assembleSingleEntryZip(
+        entryName: String,
+        gpFlags: Int,
+        method: Int,
+        crc32: Long,
+        uncompressedSize: Int,
+        extra: ByteArray,
+        payload: ByteArray
+    ): ByteArray {
+        val nameBytes = entryName.toByteArray(StandardCharsets.UTF_8)
+        val out = ByteArrayOutputStream()
+
+        val locHeader = ByteBuffer.allocate(30).order(ByteOrder.LITTLE_ENDIAN).apply {
+            putInt(0x04034B50)
+            putShort(51.toShort())
+            putShort(gpFlags.toShort())
+            putShort(method.toShort())
+            putShort(0x4A21.toShort())
+            putShort(0x5421.toShort())
+            putInt(crc32.toInt())
+            putInt(payload.size)
+            putInt(uncompressedSize)
+            putShort(nameBytes.size.toShort())
+            putShort(extra.size.toShort())
+        }.array()
+        out.write(locHeader)
+        out.write(nameBytes)
+        out.write(extra)
+        out.write(payload)
+
+        val cdOffset = out.size()
+        val cenHeader = ByteBuffer.allocate(46).order(ByteOrder.LITTLE_ENDIAN).apply {
+            putInt(0x02014B50)
+            putShort(51.toShort())
+            putShort(51.toShort())
+            putShort(gpFlags.toShort())
+            putShort(method.toShort())
+            putShort(0x4A21.toShort())
+            putShort(0x5421.toShort())
+            putInt(crc32.toInt())
+            putInt(payload.size)
+            putInt(uncompressedSize)
+            putShort(nameBytes.size.toShort())
+            putShort(extra.size.toShort())
+            putShort(0.toShort())
+            putShort(0.toShort())
+            putShort(0.toShort())
+            putInt(0)
+            putInt(0) // localHeaderOffset = 0
+        }.array()
+        out.write(cenHeader)
+        out.write(nameBytes)
+        out.write(extra)
+        val cdSize = out.size() - cdOffset
+
+        val eocd = ByteBuffer.allocate(22).order(ByteOrder.LITTLE_ENDIAN).apply {
+            putInt(0x06054B50)
+            putShort(0.toShort())
+            putShort(0.toShort())
+            putShort(1.toShort())
+            putShort(1.toShort())
+            putInt(cdSize)
+            putInt(cdOffset)
+            putShort(0.toShort())
+        }.array()
+        out.write(eocd)
+        return out.toByteArray()
     }
 }

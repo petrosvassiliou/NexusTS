@@ -81,6 +81,7 @@ data class SplitWorkspaceLabels(
     val detachToDisplayPrefix: String,
     val toggleBroadcastLabel: String,
     val reconnectTabLabel: String = "Reconnect",
+    val closeOtherTabsLabel: String = "Close Other Tabs",
     val closeTabLabel: String,
     val emptyWorkspaceTitle: String,
     val emptyWorkspaceSubtitle: String
@@ -314,7 +315,6 @@ private fun LeafSessionPane(
     modifier: Modifier = Modifier
 ) {
     val extendedColors = NexusTheme.extendedColors
-    val motion = NexusTheme.motion
     val borderColor by animateColorAsState(
         targetValue = if (isFocused) {
             extendedColors.activePaneFocusRing.copy(alpha = 0.72f)
@@ -369,6 +369,15 @@ private fun LeafSessionPane(
                             labels = labels,
                             onSelect = { onSelectTab(tab.tabId) },
                             onClose = { onCloseTab(tab.tabId) },
+                            onCloseOtherTabs = if (leaf.tabs.size > 1) {
+                                {
+                                    leaf.tabs
+                                        .filter { it.tabId != tab.tabId }
+                                        .forEach { other -> onCloseTab(other.tabId) }
+                                }
+                            } else {
+                                null
+                            },
                             onSplitRight = {
                                 onSelectTab(tab.tabId)
                                 onSplit(SplitOrientation.HORIZONTAL)
@@ -508,6 +517,7 @@ private fun ExpressiveSessionTabChip(
     labels: SplitWorkspaceLabels,
     onSelect: () -> Unit,
     onClose: () -> Unit,
+    onCloseOtherTabs: (() -> Unit)? = null,
     onSplitRight: () -> Unit,
     onSplitDown: () -> Unit,
     onDetachToWindow: (Int?) -> Unit,
@@ -543,7 +553,11 @@ private fun ExpressiveSessionTabChip(
                     onTertiaryMiddleClick = { onClose() }
                 )
                 .clip(tabShape)
-                .clickable(onClick = onSelect),
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = onSelect
+                ),
             shape = tabShape,
             color = bgColor,
             border = if (isSelected) {
@@ -684,6 +698,16 @@ private fun ExpressiveSessionTabChip(
                 )
             }
             HorizontalDivider()
+            if (onCloseOtherTabs != null) {
+                DropdownMenuItem(
+                    text = { Text(labels.closeOtherTabsLabel) },
+                    leadingIcon = { Icon(Icons.Outlined.Close, contentDescription = null) },
+                    onClick = {
+                        contextMenuOpen = false
+                        onCloseOtherTabs()
+                    }
+                )
+            }
             DropdownMenuItem(
                 text = { Text(labels.closeTabLabel) },
                 leadingIcon = { Icon(Icons.Outlined.Close, contentDescription = null) },

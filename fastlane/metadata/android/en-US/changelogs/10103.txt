@@ -1,0 +1,6 @@
+NexusTS 1.1.3 — Royal TS Import, Ctrl+K, Hover Fix & Context Menus:
+• Fixed Royal TS (.rtsz/.rtsx/.rjson) import: GZIP, ZIP, AES/ZipCrypto Lockdown, UTF-16 & safe vault merge.
+• Fixed global Ctrl+K & Escape shortcuts immediately on startup.
+• Eliminated gray rectangular mouse hover highlights with crisp pill chips.
+• Added inline + button on folders to directly create RDP connections inside.
+• Added right-click context menus across folders, connections, tabs & studios.

@@ -1,0 +1,6 @@
+NexusTS 1.1.3 — Import Royal TS, Ctrl+K, Hover & Menu contestuali:
+• Importazione Royal TS (.rtsz/.rtsx/.rjson) corretta: GZIP, ZIP, AES Lockdown, UTF-16 e unione sicura.
+• Scorciatoie globali Ctrl+K ed Esc funzionanti subito all'avvio.
+• Rimossa la linea grigia al passaggio del mouse con nuovi chip fluidi.
+• Pulsante + diretto su ogni cartella per creare subito connessioni RDP.
+• Menu contestuali con clic destro su cartelle, connessioni, schede e studio.

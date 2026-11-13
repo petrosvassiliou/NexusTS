@@ -357,7 +357,8 @@ fun QuickConnectCommandPalette(
 
     LaunchedEffect(visible) {
         if (visible) {
-            focusRequester.requestFocus()
+            androidx.compose.runtime.withFrameNanos { }
+            runCatching { focusRequester.requestFocus() }
         }
     }
 
@@ -455,7 +456,12 @@ fun QuickConnectCommandPalette(
                         trailingIcon = {
                             Surface(
                                 shape = RoundedCornerShape(8.dp),
-                                color = MaterialTheme.colorScheme.surfaceContainerHighest
+                                color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                                modifier = Modifier.clickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null,
+                                    onClick = onDismiss
+                                )
                             ) {
                                 Text(
                                     text = "ESC",
@@ -490,6 +496,7 @@ fun QuickConnectCommandPalette(
                     ) {
                         itemsIndexed(filtered, key = { _, item -> item.id }) { index, candidate ->
                             val isSelected = index == selectedIndex
+                            val rowInteraction = remember { MutableInteractionSource() }
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -501,7 +508,10 @@ fun QuickConnectCommandPalette(
                                             MaterialTheme.colorScheme.surfaceContainerHigh
                                         }
                                     )
-                                    .clickable {
+                                    .clickable(
+                                        interactionSource = rowInteraction,
+                                        indication = null
+                                    ) {
                                         val placement = when {
                                             altHeld -> QuickLaunchPlacement.DETACHED_NEW_WINDOW
                                             shiftHeld -> QuickLaunchPlacement.SPLIT_RIGHT_PANE

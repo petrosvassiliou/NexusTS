@@ -1,0 +1,6 @@
+NexusTS 1.1.3 — Import Royal TS, Ctrl+K, Survol & Menus contextuels :
+• Import Royal TS (.rtsz/.rtsx/.rjson) complet : GZIP, ZIP, AES Lockdown, UTF-16 et fusion sûre.
+• Raccourcis globaux Ctrl+K et Échap actifs dès le démarrage.
+• Suppression du contour gris au survol souris grâce aux nouveaux chips.
+• Bouton + sur chaque dossier pour créer directement une connexion RDP.
+• Menus contextuels au clic droit sur dossiers, connexions, onglets et studios.

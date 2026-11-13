@@ -33,13 +33,13 @@ import androidx.compose.material.icons.automirrored.outlined.Send
 import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Usb
-import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
+import com.nexusts.app.core.ui.components.NexusActionChip
+import com.nexusts.app.core.ui.components.NexusChoiceChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -317,24 +317,26 @@ class UsbSerialPortDriver(
         }
     }
 
-    suspend fun sendBreakSignal(durationMs: Int = 250) = withContext(Dispatchers.IO) {
-        val conn = connection ?: return@withContext
-        when (activeVendorId) {
-            VENDOR_FTDI -> {
-                val baseWord = ftdiDataControlWord and 0x3FFF
-                conn.controlTransfer(0x40, FTDI_SIO_SET_DATA, baseWord or 0x4000, 0, null, 0, 500)
-                delay(durationMs.toLong())
-                conn.controlTransfer(0x40, FTDI_SIO_SET_DATA, baseWord, 0, null, 0, 500)
-            }
-            VENDOR_QINHENG_CH340 -> {
-                conn.controlTransfer(0x40, CH340_REQ_WRITE_REG, 0x1805, 0x0000, null, 0, 500)
-                delay(durationMs.toLong())
-                conn.controlTransfer(0x40, CH340_REQ_WRITE_REG, 0x1805, 0x0041, null, 0, 500)
-            }
-            else -> {
-                // USB CDC-ACM SEND_BREAK (0x23)
-                conn.controlTransfer(0x21, 0x23, durationMs.coerceIn(1, 5000), 0, null, 0, 500)
-                delay(durationMs.toLong())
+    suspend fun sendBreakSignal(durationMs: Int = 250) {
+        val conn = connection ?: return
+        withContext(Dispatchers.IO) {
+            when (activeVendorId) {
+                VENDOR_FTDI -> {
+                    val baseWord = ftdiDataControlWord and 0x3FFF
+                    conn.controlTransfer(0x40, FTDI_SIO_SET_DATA, baseWord or 0x4000, 0, null, 0, 500)
+                    delay(durationMs.toLong())
+                    conn.controlTransfer(0x40, FTDI_SIO_SET_DATA, baseWord, 0, null, 0, 500)
+                }
+                VENDOR_QINHENG_CH340 -> {
+                    conn.controlTransfer(0x40, CH340_REQ_WRITE_REG, 0x1805, 0x0000, null, 0, 500)
+                    delay(durationMs.toLong())
+                    conn.controlTransfer(0x40, CH340_REQ_WRITE_REG, 0x1805, 0x0041, null, 0, 500)
+                }
+                else -> {
+                    // USB CDC-ACM SEND_BREAK (0x23)
+                    conn.controlTransfer(0x21, 0x23, durationMs.coerceIn(1, 5000), 0, null, 0, 500)
+                    delay(durationMs.toLong())
+                }
             }
         }
     }
@@ -645,7 +647,7 @@ fun UsbSerialConsoleView(
                     }
                 }
 
-                FilterChip(
+                NexusChoiceChip(
                     selected = dtrEnabled,
                     onClick = {
                         val nextDtr = !dtrEnabled
@@ -660,10 +662,11 @@ fun UsbSerialConsoleView(
                             )
                         }
                     },
-                    label = { Text("DTR", style = MaterialTheme.typography.labelSmall) }
+                    label = "DTR",
+                    showCheckmarkWhenSelected = false
                 )
 
-                FilterChip(
+                NexusChoiceChip(
                     selected = rtsEnabled,
                     onClick = {
                         val currentDtr = dtrEnabled
@@ -678,7 +681,8 @@ fun UsbSerialConsoleView(
                             )
                         }
                     },
-                    label = { Text("RTS", style = MaterialTheme.typography.labelSmall) }
+                    label = "RTS",
+                    showCheckmarkWhenSelected = false
                 )
 
                 FilledTonalButton(
@@ -696,10 +700,10 @@ fun UsbSerialConsoleView(
                     Text("Send BREAK", style = MaterialTheme.typography.labelSmall)
                 }
 
-                AssistChip(
+                NexusActionChip(
                     onClick = connectFirstAdapter,
-                    leadingIcon = { Icon(Icons.Outlined.Refresh, contentDescription = null, modifier = Modifier.size(15.dp)) },
-                    label = { Text("Scan USB (${adapters.size})", style = MaterialTheme.typography.labelSmall) }
+                    leadingIcon = Icons.Outlined.Refresh,
+                    label = "Scan USB (${adapters.size})"
                 )
 
                 Text(

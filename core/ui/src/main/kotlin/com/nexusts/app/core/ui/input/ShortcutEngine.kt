@@ -4,14 +4,8 @@ import android.view.KeyEvent as AndroidKeyEvent
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.staticCompositionLocalOf
-import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEvent
 import androidx.compose.ui.input.key.KeyEventType
-import androidx.compose.ui.input.key.isAltPressed
-import androidx.compose.ui.input.key.isCtrlPressed
-import androidx.compose.ui.input.key.isMetaPressed
-import androidx.compose.ui.input.key.isShiftPressed
-import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.type
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -63,19 +57,42 @@ data class KeyChord(
     val meta: Boolean = false,
     val primaryOrMeta: Boolean = false
 ) {
-    fun matches(event: KeyEvent): Boolean {
-        val nativeCode = event.nativeKeyEvent.keyCode
-        if (nativeCode != androidKeyCode) return false
+    fun matches(event: KeyEvent): Boolean = matchesAndroidKeyEvent(event.nativeKeyEvent)
 
-        val hasPrimary = event.isCtrlPressed || event.isMetaPressed
+    fun matchesAndroidKeyEvent(native: AndroidKeyEvent): Boolean {
+        val codeMatches = when (androidKeyCode) {
+            AndroidKeyEvent.KEYCODE_EQUALS ->
+                native.keyCode == AndroidKeyEvent.KEYCODE_EQUALS ||
+                    native.keyCode == AndroidKeyEvent.KEYCODE_PLUS ||
+                    native.keyCode == AndroidKeyEvent.KEYCODE_NUMPAD_ADD
+            AndroidKeyEvent.KEYCODE_MINUS ->
+                native.keyCode == AndroidKeyEvent.KEYCODE_MINUS ||
+                    native.keyCode == AndroidKeyEvent.KEYCODE_NUMPAD_SUBTRACT
+            AndroidKeyEvent.KEYCODE_0 ->
+                native.keyCode == AndroidKeyEvent.KEYCODE_0 ||
+                    native.keyCode == AndroidKeyEvent.KEYCODE_NUMPAD_0
+            else -> native.keyCode == androidKeyCode
+        }
+        if (!codeMatches) return false
+
+        val isCtrl = native.isCtrlPressed
+        val isMeta = native.isMetaPressed
+        val isAlt = native.isAltPressed
+        val isShift = native.isShiftPressed
+
+        // Allow Shift on QWERTZ/ISO keyboards when producing '+' (e.g. Ctrl+Shift+Equals / KEYCODE_PLUS)
+        val ignoreShiftForPlus = androidKeyCode == AndroidKeyEvent.KEYCODE_EQUALS && !shift &&
+            (native.keyCode == AndroidKeyEvent.KEYCODE_PLUS || native.keyCode == AndroidKeyEvent.KEYCODE_EQUALS)
+
+        val hasPrimary = isCtrl || isMeta
         if (primaryOrMeta) {
             if (!hasPrimary) return false
         } else {
-            if (ctrl != event.isCtrlPressed) return false
-            if (meta != event.isMetaPressed) return false
+            if (ctrl != isCtrl) return false
+            if (meta != isMeta) return false
         }
-        if (alt != event.isAltPressed) return false
-        if (shift != event.isShiftPressed) return false
+        if (alt != isAlt) return false
+        if (!ignoreShiftForPlus && shift != isShift) return false
         return true
     }
 
@@ -110,7 +127,7 @@ data class KeyChord(
             AndroidKeyEvent.KEYCODE_TAB -> "Tab"
             AndroidKeyEvent.KEYCODE_BACKSLASH -> "\\"
             AndroidKeyEvent.KEYCODE_MINUS -> "-"
-            AndroidKeyEvent.KEYCODE_EQUALS -> "+"
+            AndroidKeyEvent.KEYCODE_EQUALS, AndroidKeyEvent.KEYCODE_PLUS -> "+"
             AndroidKeyEvent.KEYCODE_0 -> "0"
             AndroidKeyEvent.KEYCODE_MOVE_HOME -> "Home"
             AndroidKeyEvent.KEYCODE_LEFT_BRACKET -> "["
@@ -130,7 +147,7 @@ data class ShortcutBinding(
 
 /**
  * Production Keyboard Shortcut Registry & Dispatcher with customizable keymaps,
- * conflict validation, and remote-capture escape handling.
+ * conflict validation, Activity-level global dispatch, and remote-capture escape handling.
  */
 @Stable
 class NexusShortcutEngine(
@@ -141,6 +158,10 @@ class NexusShortcutEngine(
 
     private val _triggeredActions = MutableSharedFlow<NexusShortcutAction>(extraBufferCapacity = 32)
     val triggeredActions: SharedFlow<NexusShortcutAction> = _triggeredActions.asSharedFlow()
+
+    private var lastHandledDownTime: Long = -1L
+    private var lastHandledEventTime: Long = -1L
+    private var lastHandledKeyCode: Int = -1
 
     fun bindingFor(action: NexusShortcutAction): ShortcutBinding? = _bindings.value[action]
 
@@ -173,9 +194,7 @@ class NexusShortcutEngine(
     }
 
     /**
-     * Evaluates a hardware [KeyEvent]. When [remoteCaptureActive] is true (e.g., full keyboard passthrough
-     * inside an RDP or SSH session), only bindings marked `bypassesRemoteCapture` (like Ctrl+Alt+Home or Ctrl+Cmd+K)
-     * are intercepted by the host NexusTS shell; all other combinations pass straight to the remote OS.
+     * Evaluates a Compose [KeyEvent]. Delegates to [dispatchAndroidKeyEvent] with hardware event deduplication.
      */
     fun dispatchKeyEvent(
         event: KeyEvent,
@@ -183,21 +202,71 @@ class NexusShortcutEngine(
         onAction: ((NexusShortcutAction) -> Boolean)? = null
     ): Boolean {
         if (event.type != KeyEventType.KeyDown) return false
+        return dispatchAndroidKeyEvent(
+            native = event.nativeKeyEvent,
+            remoteCaptureActive = remoteCaptureActive,
+            onAction = onAction
+        )
+    }
+
+    /**
+     * Evaluates a native Android [AndroidKeyEvent] directly (usable from `Activity.dispatchKeyEvent`
+     * even when zero Compose focus target holds focus, as well as from Compose `onPreviewKeyEvent`).
+     */
+    fun dispatchAndroidKeyEvent(
+        native: AndroidKeyEvent,
+        remoteCaptureActive: Boolean,
+        onAction: ((NexusShortcutAction) -> Boolean)? = null
+    ): Boolean {
+        if (native.action != AndroidKeyEvent.ACTION_DOWN) return false
+        // Prevent accidental key-repeat toggling when holding a shortcut chord like Ctrl+K
+        if (native.repeatCount > 0) return false
+
         // Ignore bare modifier presses
-        if (event.key == Key.CtrlLeft || event.key == Key.CtrlRight ||
-            event.key == Key.ShiftLeft || event.key == Key.ShiftRight ||
-            event.key == Key.AltLeft || event.key == Key.AltRight ||
-            event.key == Key.MetaLeft || event.key == Key.MetaRight
-        ) {
-            return false
+        when (native.keyCode) {
+            AndroidKeyEvent.KEYCODE_CTRL_LEFT,
+            AndroidKeyEvent.KEYCODE_CTRL_RIGHT,
+            AndroidKeyEvent.KEYCODE_SHIFT_LEFT,
+            AndroidKeyEvent.KEYCODE_SHIFT_RIGHT,
+            AndroidKeyEvent.KEYCODE_ALT_LEFT,
+            AndroidKeyEvent.KEYCODE_ALT_RIGHT,
+            AndroidKeyEvent.KEYCODE_META_LEFT,
+            AndroidKeyEvent.KEYCODE_META_RIGHT -> return false
         }
 
-        val match = _bindings.value.values.firstOrNull { binding ->
-            (!remoteCaptureActive || binding.bypassesRemoteCapture) && binding.chord.matches(event)
-        } ?: return false
+        // Deduplicate if both Activity.dispatchKeyEvent and Compose onPreviewKeyEvent inspect the same event
+        if (native.eventTime > 0L &&
+            native.downTime == lastHandledDownTime &&
+            native.eventTime == lastHandledEventTime &&
+            native.keyCode == lastHandledKeyCode
+        ) {
+            return true
+        }
 
-        val handledInline = onAction?.invoke(match.action) ?: false
-        _triggeredActions.tryEmit(match.action)
+        val matchedAction: NexusShortcutAction = _bindings.value.values.firstOrNull { binding ->
+            (!remoteCaptureActive || binding.bypassesRemoteCapture) && binding.chord.matchesAndroidKeyEvent(native)
+        }?.action ?: run {
+            // Secondary universal desktop tab-switching chords: Ctrl+Tab and Ctrl+Shift+Tab
+            if (!remoteCaptureActive &&
+                native.keyCode == AndroidKeyEvent.KEYCODE_TAB &&
+                native.isCtrlPressed &&
+                !native.isAltPressed &&
+                !native.isMetaPressed
+            ) {
+                if (native.isShiftPressed) NexusShortcutAction.PREVIOUS_TAB else NexusShortcutAction.NEXT_TAB
+            } else {
+                return false
+            }
+        }
+
+        if (native.eventTime > 0L) {
+            lastHandledDownTime = native.downTime
+            lastHandledEventTime = native.eventTime
+            lastHandledKeyCode = native.keyCode
+        }
+
+        val handledInline = onAction?.invoke(matchedAction) ?: false
+        _triggeredActions.tryEmit(matchedAction)
         return handledInline || true
     }
 

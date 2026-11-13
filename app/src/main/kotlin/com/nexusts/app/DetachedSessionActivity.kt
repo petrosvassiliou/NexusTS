@@ -1,6 +1,7 @@
 package com.nexusts.app
 
 import android.os.Bundle
+import android.view.KeyEvent
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
@@ -25,6 +26,8 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -60,6 +63,9 @@ class DetachedSessionActivity : AppCompatActivity() {
     private val viewModel: NexusWorkspaceViewModel by viewModels()
     private var detachedTab: WorkspaceSessionTab? = null
     private var reDockedToWorkspace: Boolean = false
+    private var detachedKeyCaptureEnabled: Boolean = false
+    private var onReleaseDetachedCapture: (() -> Unit)? = null
+    private val consumedShortcutKeyCodes = mutableSetOf<Int>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
@@ -81,7 +87,6 @@ class DetachedSessionActivity : AppCompatActivity() {
         setContent {
             val strings = rememberLocalizedWorkspaceStrings()
             val uiState by viewModel.uiState.collectAsState()
-            val shortcutEngine = LocalNexusShortcutEngine.current
             var keyCaptureEnabled by remember(parsedTab.protocol) {
                 mutableStateOf(
                     parsedTab.protocol == SessionProtocolKind.RDP ||
@@ -90,105 +95,112 @@ class DetachedSessionActivity : AppCompatActivity() {
                 )
             }
 
-            NexusTSTheme {
-                if (uiState.isVaultLocked) {
-                    FullScreenVaultUnlockShield(
-                        vaultTitle = uiState.pendingImportFileName ?: uiState.vaultDocument.name,
-                        unlockError = uiState.vaultUnlockError,
-                        hasPreImportBackup = uiState.hasPreImportBackup,
-                        strings = strings,
-                        onUnlock = { pass -> viewModel.unlockVaultWithPassphrase(pass.toCharArray()) },
-                        onCancelPendingImport = viewModel::cancelPendingVaultImport,
-                        onOpenVaultPicker = {}
-                    )
-                } else {
-                    Surface(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .nexusRemoteKeyPassthrough(
-                                captureEnabled = keyCaptureEnabled,
-                                shortcutEngine = shortcutEngine,
-                                onHostShortcut = { action ->
-                                    when (action) {
-                                        NexusShortcutAction.RELEASE_REMOTE_KEY_CAPTURE -> keyCaptureEnabled = false
-                                        NexusShortcutAction.CLOSE_ACTIVE_TAB -> finish()
-                                        else -> Unit
-                                    }
-                                },
-                                onForwardToRemote = { packet ->
-                                    forwardDetachedHardwareKey(parsedTab, packet)
-                                }
-                            ),
-                        color = MaterialTheme.colorScheme.background
-                    ) {
-                        Column(modifier = Modifier.fillMaxSize()) {
-                            Surface(
-                                color = MaterialTheme.colorScheme.surfaceContainer,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(48.dp)
-                            ) {
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxSize()
-                                        .padding(horizontal = 14.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Text(
-                                        text = parsedTab.title,
-                                        style = MaterialTheme.typography.titleSmall
-                                    )
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Text(
-                                        text = "• ${parsedTab.subtitleHost} (${parsedTab.protocol.name})",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        modifier = Modifier.weight(1f)
-                                    )
+            SideEffect {
+                detachedKeyCaptureEnabled = keyCaptureEnabled
+                onReleaseDetachedCapture = { keyCaptureEnabled = false }
+            }
 
-                                    ExpressiveMorphingIconButton(
-                                        icon = Icons.Outlined.Keyboard,
-                                        contentDescription = "Remote Key Capture",
-                                        isActive = keyCaptureEnabled,
-                                        onClick = { keyCaptureEnabled = !keyCaptureEnabled }
-                                    )
-
-                                    Spacer(modifier = Modifier.width(6.dp))
-
-                                    FilledTonalButton(
-                                        onClick = {
-                                            viewModel.sessionStore.enqueueReDockTab(parsedTab)
-                                            reDockedToWorkspace = true
-                                            finish()
+            CompositionLocalProvider(LocalNexusShortcutEngine provides viewModel.shortcutEngine) {
+                NexusTSTheme {
+                    if (uiState.isVaultLocked) {
+                        FullScreenVaultUnlockShield(
+                            vaultTitle = uiState.pendingImportFileName ?: uiState.vaultDocument.name,
+                            unlockError = uiState.vaultUnlockError,
+                            hasPreImportBackup = uiState.hasPreImportBackup,
+                            strings = strings,
+                            onUnlock = { pass -> viewModel.unlockVaultWithPassphrase(pass.toCharArray()) },
+                            onCancelPendingImport = viewModel::cancelPendingVaultImport,
+                            onOpenVaultPicker = {}
+                        )
+                    } else {
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .nexusRemoteKeyPassthrough(
+                                    captureEnabled = keyCaptureEnabled,
+                                    shortcutEngine = viewModel.shortcutEngine,
+                                    onHostShortcut = { action ->
+                                        when (action) {
+                                            NexusShortcutAction.RELEASE_REMOTE_KEY_CAPTURE -> keyCaptureEnabled = false
+                                            NexusShortcutAction.CLOSE_ACTIVE_TAB -> finish()
+                                            else -> Unit
                                         }
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Outlined.VerticalSplit,
-                                            contentDescription = null,
-                                            modifier = Modifier.size(15.dp)
-                                        )
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text("Re-Dock", style = MaterialTheme.typography.labelMedium)
+                                    },
+                                    onForwardToRemote = { packet ->
+                                        forwardDetachedHardwareKey(parsedTab, packet)
                                     }
-
-                                    Spacer(modifier = Modifier.width(4.dp))
-
-                                    IconButton(onClick = { finish() }) {
-                                        Icon(
-                                            imageVector = Icons.Outlined.Close,
-                                            contentDescription = strings.closeTab
+                                ),
+                            color = MaterialTheme.colorScheme.background
+                        ) {
+                            Column(modifier = Modifier.fillMaxSize()) {
+                                Surface(
+                                    color = MaterialTheme.colorScheme.surfaceContainer,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(48.dp)
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .padding(horizontal = 14.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = parsedTab.title,
+                                            style = MaterialTheme.typography.titleSmall
                                         )
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text(
+                                            text = "• ${parsedTab.subtitleHost} (${parsedTab.protocol.name})",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.weight(1f)
+                                        )
+
+                                        ExpressiveMorphingIconButton(
+                                            icon = Icons.Outlined.Keyboard,
+                                            contentDescription = "Remote Key Capture",
+                                            isActive = keyCaptureEnabled,
+                                            onClick = { keyCaptureEnabled = !keyCaptureEnabled }
+                                        )
+
+                                        Spacer(modifier = Modifier.width(6.dp))
+
+                                        FilledTonalButton(
+                                            onClick = {
+                                                viewModel.sessionStore.enqueueReDockTab(parsedTab)
+                                                reDockedToWorkspace = true
+                                                finish()
+                                            }
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Outlined.VerticalSplit,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(15.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text("Re-Dock", style = MaterialTheme.typography.labelMedium)
+                                        }
+
+                                        Spacer(modifier = Modifier.width(4.dp))
+
+                                        IconButton(onClick = { finish() }) {
+                                            Icon(
+                                                imageVector = Icons.Outlined.Close,
+                                                contentDescription = strings.closeTab
+                                            )
+                                        }
                                     }
                                 }
-                            }
 
-                            Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                                ActiveProtocolSessionDispatcher(
-                                    tab = parsedTab,
-                                    isFocused = true,
-                                    viewModel = viewModel,
-                                    strings = strings
-                                )
+                                Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                                    ActiveProtocolSessionDispatcher(
+                                        tab = parsedTab,
+                                        isFocused = true,
+                                        viewModel = viewModel,
+                                        strings = strings
+                                    )
+                                }
                             }
                         }
                     }
@@ -197,7 +209,37 @@ class DetachedSessionActivity : AppCompatActivity() {
         }
     }
 
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (event.action == KeyEvent.ACTION_UP && consumedShortcutKeyCodes.remove(event.keyCode)) {
+            return true
+        }
+        if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0 && !viewModel.uiState.value.isVaultLocked) {
+            val handled = viewModel.shortcutEngine.dispatchAndroidKeyEvent(
+                native = event,
+                remoteCaptureActive = detachedKeyCaptureEnabled
+            ) { action ->
+                when (action) {
+                    NexusShortcutAction.RELEASE_REMOTE_KEY_CAPTURE -> {
+                        onReleaseDetachedCapture?.invoke()
+                        true
+                    }
+                    NexusShortcutAction.CLOSE_ACTIVE_TAB -> {
+                        finish()
+                        true
+                    }
+                    else -> false
+                }
+            }
+            if (handled) {
+                consumedShortcutKeyCodes.add(event.keyCode)
+                return true
+            }
+        }
+        return super.dispatchKeyEvent(event)
+    }
+
     override fun onDestroy() {
+        onReleaseDetachedCapture = null
         if (isFinishing && !reDockedToWorkspace) {
             detachedTab?.let { tab ->
                 viewModel.closeDetachedTabResources(tab.tabId)
@@ -208,7 +250,7 @@ class DetachedSessionActivity : AppCompatActivity() {
 
     private fun forwardDetachedHardwareKey(tab: WorkspaceSessionTab, packet: RawHardwareKeyPacket): Boolean {
         return when (tab.protocol) {
-            SessionProtocolKind.RDP ->
+            SessionProtocolKind.RDP, SessionProtocolKind.WINDOWS_TS ->
                 viewModel.sessionStore.rdpSessions[tab.tabId]?.sendHardwareKey(packet) ?: false
 
             SessionProtocolKind.SSH, SessionProtocolKind.TELNET -> {

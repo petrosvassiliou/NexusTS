@@ -24,11 +24,11 @@ import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Terminal
-import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
+import com.nexusts.app.core.ui.components.NexusActionChip
+import com.nexusts.app.core.ui.components.NexusChoiceChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -482,17 +482,17 @@ fun KubernetesAndContainerTerminalView(
                         1 to "Live Logs (${logLines.size})",
                         2 to "Workloads (${workloads.size})"
                     ).forEach { (idx, label) ->
-                        FilterChip(
+                        NexusChoiceChip(
                             selected = activePaneTab == idx,
                             onClick = { activePaneTab = idx },
-                            label = { Text(label, style = MaterialTheme.typography.labelSmall) }
+                            label = label
                         )
                     }
 
-                    AssistChip(
+                    NexusActionChip(
                         onClick = fetchLiveClusterTelemetry,
-                        leadingIcon = { Icon(Icons.Outlined.Refresh, contentDescription = null, modifier = Modifier.size(15.dp)) },
-                        label = { Text("Sync API", style = MaterialTheme.typography.labelSmall) }
+                        leadingIcon = Icons.Outlined.Refresh,
+                        label = "Sync API"
                     )
                 }
 
@@ -520,9 +520,10 @@ fun KubernetesAndContainerTerminalView(
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     listOf("ps aux", "env | sort", "df -h", "netstat -tlpn").forEach { snippet ->
-                        AssistChip(
+                        NexusActionChip(
                             onClick = { runWorkloadExecCommand(snippet) },
-                            label = { Text(snippet, style = NexusTheme.monospace.keycapShortcut) }
+                            label = snippet,
+                            monospace = true
                         )
                     }
                 }

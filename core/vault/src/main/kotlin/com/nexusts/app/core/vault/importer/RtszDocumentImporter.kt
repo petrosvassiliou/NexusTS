@@ -27,20 +27,38 @@ import com.nexusts.app.core.vault.model.VaultTodoItem
 import org.w3c.dom.Element
 import org.w3c.dom.Node
 import java.io.ByteArrayInputStream
+import java.nio.charset.Charset
+import java.nio.charset.StandardCharsets
 import java.util.UUID
+import java.util.zip.GZIPInputStream
 import java.util.zip.ZipInputStream
 import javax.xml.parsers.DocumentBuilderFactory
 
 /**
- * Full Royal TS (macOS / Windows) `.rtsz` and `.rtsx` Compatibility Importer.
- * Supports both ZIP-packaged `.rtsz` archives and raw XML `.rtsx` documents,
- * preserving folder hierarchies, property inheritance, credentials, gateways, smart folders,
- * templates across all protocol types, to-do items, and tasks with 100% lossless fidelity.
+ * Full Royal TS (Windows V2–V7) and Royal TSX (macOS V1–V6) `.rtsz` and `.rtsx` Compatibility Importer.
+ *
+ * Supports all real-world Royal TS / Royal TSX container & XML formats:
+ * - GZIP-compressed `.rtsz` streams (`0x1F 0x8B`),
+ * - ZIP-packaged `.rtsz` archives (`0x50 0x4B 0x03 0x04`), including WinZip AES & ZipCrypto Lockdown archives,
+ * - Raw `.rtsx` / `.rtsz` XML in UTF-8, UTF-8 BOM, UTF-16LE, and UTF-16BE,
+ * - Both flat `<RTSZDocument>` `<ParentID>` object tables and nested `<Objects>` / `<RoyalFolder>` trees,
+ * - Automatic `<RoyalTrash>` deleted-object exclusion,
+ * - Full macOS Royal TSX (`<RoyalTerminalConnection>`, `<RoyalWebConnection>`) and Windows Royal TS tag parity.
  */
 class RtszDocumentImporter {
 
-    fun importRtszBytes(rawBytes: ByteArray, fallbackDocumentName: String = "Imported Royal TS Vault"): NxtsVaultDocument {
-        val xmlBytes = extractXmlFromZipOrRaw(rawBytes)
+    private data class CollectedRoyalElement(
+        val element: Element,
+        val implicitParentId: String?
+    )
+
+    @JvmOverloads
+    fun importRtszBytes(
+        rawBytes: ByteArray,
+        fallbackDocumentName: String = "Imported Royal TS Vault",
+        archivePassword: CharArray? = null
+    ): NxtsVaultDocument {
+        val xmlBytes = extractNormalizedUtf8Xml(rawBytes, archivePassword)
         val factory = DocumentBuilderFactory.newInstance().apply {
             isNamespaceAware = false
             // Harden against XXE attacks when importing external .rtsz files
@@ -63,6 +81,8 @@ class RtszDocumentImporter {
             )
         }
 
+        val collectedElements = collectRoyalElements(dom.documentElement)
+
         val folders = mutableListOf<VaultFolder>()
         val smartFolders = mutableListOf<SmartFolder>()
         val connections = mutableListOf<VaultConnection>()
@@ -75,28 +95,44 @@ class RtszDocumentImporter {
         val todoItems = mutableListOf<VaultTodoItem>()
 
         var documentId = UUID.randomUUID().toString()
-        var docName = fallbackDocumentName
+        var docName = fallbackDocumentName.ifBlank { "Imported Royal TS Vault" }
         var docDescription = "Imported from Royal TS (.rtsz)"
         var docRevision = 1L
+        var isRoyalPasswordEncryptedXml = false
         var rootInheritable = InheritableProperties(
             credentialMode = InheritanceMode.NONE_DIRECT,
             gatewayMode = InheritanceMode.NONE_DIRECT
         )
 
-        val allElements = dom.documentElement.childNodes
-        // Pass 1: Pre-scan <RoyalDocument> so documentId and docName are resolved regardless of XML tag ordering
-        for (i in 0 until allElements.length) {
-            val node = allElements.item(i)
-            if (node.nodeType != Node.ELEMENT_NODE) continue
-            val elem = node as Element
-            if (elem.tagName == "RoyalDocument") {
-                val parsedDocId = elem.childText("ID")
-                if (parsedDocId.isNotBlank()) documentId = parsedDocId
+        val trashRootIds = mutableSetOf<String>()
+        val rawParentById = mutableMapOf<String, String>()
+
+        // Pass 1: Pre-scan <RoyalDocument>, <RoyalTrash>, and parent links regardless of XML tag ordering
+        for ((elem, implicitParentId) in collectedElements) {
+            val tag = elem.tagName
+            val elemId = elem.childText("ID")
+            val elemParent = elem.childText("ParentID").ifBlank { implicitParentId.orEmpty() }
+            if (elemId.isNotBlank() && elemParent.isNotBlank()) {
+                rawParentById[elemId] = elemParent
+            }
+            if (tag.equals("RoyalTrash", ignoreCase = true)) {
+                if (elemId.isNotBlank()) {
+                    trashRootIds += elemId
+                }
+                continue
+            }
+            if (tag.equals("RoyalDocument", ignoreCase = true)) {
+                if (elemId.isNotBlank()) documentId = elemId
                 val parsedDocName = elem.childText("Name")
                 if (parsedDocName.isNotBlank()) docName = parsedDocName
                 val parsedDesc = elem.childText("Description").ifBlank { elem.childText("Notes") }
                 if (parsedDesc.isNotBlank()) docDescription = parsedDesc
                 elem.childText("Modified").toLongOrNull()?.let { docRevision = it }
+                if (elem.childBoolean("Encrypted", "IsEncrypted", default = false) ||
+                    elem.childText("PasswordHash").isNotBlank()
+                ) {
+                    isRoyalPasswordEncryptedXml = true
+                }
                 if (elem.hasDirectChild("CredentialMode") || elem.hasDirectChild("GatewayMode")) {
                     rootInheritable = parseInheritable(
                         elem = elem,
@@ -106,39 +142,77 @@ class RtszDocumentImporter {
                         defaultGwMode = InheritanceMode.NONE_DIRECT
                     )
                 }
-                break
             }
         }
 
+        fun isInsideRoyalTrash(objectId: String, directParentId: String?): Boolean {
+            if (trashRootIds.isEmpty()) return false
+            if (objectId in trashRootIds) return true
+            val visited = mutableSetOf<String>()
+            var cur = directParentId
+            while (!cur.isNullOrBlank() && visited.add(cur)) {
+                if (cur in trashRootIds) return true
+                cur = rawParentById[cur]
+            }
+            return false
+        }
+
+        val seenIds = mutableSetOf<String>()
+
         // Pass 2: Materialize folders, smart folders, connections, templates, credentials, gateways, to-dos, and tasks
-        for (i in 0 until allElements.length) {
-            val node = allElements.item(i)
-            if (node.nodeType != Node.ELEMENT_NODE) continue
-            val elem = node as Element
+        for ((elem, implicitParentId) in collectedElements) {
             val tag = elem.tagName
-            if (tag == "RoyalDocument") continue
+            if (tag.equals("RoyalDocument", ignoreCase = true) ||
+                tag.equals("RoyalTrash", ignoreCase = true) ||
+                tag.equals("RoyalApplicationSetting", ignoreCase = true)
+            ) {
+                continue
+            }
 
             val id = elem.childText("ID").ifBlank { UUID.randomUUID().toString() }
-            val parentIdRaw = elem.childText("ParentID").takeIf { it.isNotBlank() }
-            val name = elem.childText("Name").ifBlank { elem.childText("Title").ifBlank { tag } }
-            val uri = elem.childText("URI")
-            val isTemplate = elem.childBoolean("IsTemplate", default = false) || tag == "RoyalTemplate"
+            val parentIdRaw = elem.childText("ParentID")
+                .ifBlank { implicitParentId.orEmpty() }
+                .takeIf { it.isNotBlank() }
+
+            if (isInsideRoyalTrash(id, parentIdRaw)) continue
+            if (!seenIds.add("$tag:$id")) continue
+
+            val name = elem.childText("Name")
+                .ifBlank { elem.childText("DisplayName") }
+                .ifBlank { elem.childText("Title") }
+                .ifBlank { resolveRawEndpoint(elem).ifBlank { tag.removePrefix("Royal") } }
+
+            val rawEndpoint = resolveRawEndpoint(elem)
+            val (parsedHostFromUri, parsedPortFromUri) = extractHostAndOptionalPort(rawEndpoint)
+
+            val isTemplate = elem.childBoolean("IsTemplate", default = false) ||
+                tag.equals("RoyalTemplate", ignoreCase = true)
             val isFavorite = elem.childBoolean("Favorite", "IsFavorite", default = false)
-            val colorHex = elem.childText("Color").takeIf { it.startsWith("#") && (it.length == 7 || it.length == 9) }
-            val templateColorHex = elem.childText("TemplateColor").takeIf { it.startsWith("#") && (it.length == 7 || it.length == 9) }
-                ?: colorHex
+            val colorHex = normalizeHexColor(elem.childText("Color"))
+            val templateColorHex = normalizeHexColor(elem.childText("TemplateColor")) ?: colorHex
 
             val rawCredMode = elem.childText("CredentialMode").trim()
             val explicitCredId = elem.childText("CredentialID").takeIf { it.isNotBlank() }
 
+            val isCredentialTag = tag.equals("RoyalCredential", ignoreCase = true) ||
+                tag.equals("RoyalDynamicCredential", ignoreCase = true)
+
             val inlineUserRaw = elem.childText("CredentialUsername")
-                .ifBlank { if (tag != "RoyalCredential") elem.childText("UserName") else "" }
-            val inlinePassRaw = elem.childText("CredentialPassword")
-                .ifBlank { if (tag != "RoyalCredential") elem.childText("Password") else "" }
-            val inlineKeyPem = if (tag != "RoyalCredential") elem.childText("CredentialKeyFileContent") else ""
+                .ifBlank { if (!isCredentialTag) elem.childText("UserName").ifBlank { elem.childText("Username") } else "" }
+            val inlinePassCandidate = elem.childText("CredentialPassword")
+                .ifBlank { if (!isCredentialTag) elem.childText("Password") else "" }
+            val inlinePassRaw = sanitizeImportedSecret(inlinePassCandidate, isRoyalPasswordEncryptedXml)
+            val inlineKeyPem = if (!isCredentialTag) {
+                sanitizeImportedKeyContent(
+                    elem.childText("CredentialKeyFileContent").ifBlank { elem.childText("PrivateKeyContent") },
+                    isRoyalPasswordEncryptedXml
+                )
+            } else {
+                ""
+            }
 
             val synthesizedInlineCredId: String? = if (
-                tag != "RoyalCredential" &&
+                !isCredentialTag &&
                 (rawCredMode == "1" || (explicitCredId == null && (inlineUserRaw.isNotBlank() || inlinePassRaw.isNotBlank() || inlineKeyPem.isNotBlank()))) &&
                 (inlineUserRaw.isNotBlank() || inlinePassRaw.isNotBlank() || inlineKeyPem.isNotBlank())
             ) {
@@ -146,7 +220,11 @@ class RtszDocumentImporter {
                 val synId = "inline-cred-$id"
                 credentials += VaultCredential(
                     id = synId,
-                    parentFolderId = if (tag == "RoyalFolder") id else parentIdRaw?.takeIf { it != documentId },
+                    parentFolderId = if (tag.equals("RoyalFolder", ignoreCase = true)) {
+                        id
+                    } else {
+                        parentIdRaw?.takeIf { it != documentId }
+                    },
                     name = "$name (Saved Credential)",
                     sourceKind = if (inlineKeyPem.isNotBlank()) {
                         CredentialSourceKind.SSH_KEY_PAIR
@@ -173,32 +251,27 @@ class RtszDocumentImporter {
                 isTemplate = isTemplate
             )
 
-            when (tag) {
-                "RoyalFolder" -> {
+            when {
+                tag.equals("RoyalFolder", ignoreCase = true) -> {
                     if (id != documentId) {
-                        val folderTags = elem.childText("Tags")
-                            .split(';')
-                            .map { it.trim() }
-                            .filter { it.isNotEmpty() }
+                        val folderTags = parseTagsList(elem.childText("Tags"))
                         folders += VaultFolder(
                             id = id,
                             parentFolderId = parentIdRaw?.takeIf { it != documentId },
                             name = name,
-                            description = elem.childText("Notes"),
+                            description = elem.childText("Notes").ifBlank { elem.childText("Description") },
                             tags = folderTags,
                             inheritable = inheritable,
-                            sortOrder = elem.childText("SortOrder").toIntOrNull() ?: 0
+                            sortOrder = elem.childText("SortOrder").ifBlank { elem.childText("PositionNr") }.toIntOrNull() ?: 0
                         )
                     }
                 }
 
-                "NexusSmartFolder", "RoyalSmartFolder" -> {
-                    val includeTags = elem.childText("IncludeTags")
-                        .split(';')
-                        .map { it.trim() }
-                        .filter { it.isNotEmpty() }
+                tag.equals("NexusSmartFolder", ignoreCase = true) ||
+                    tag.equals("RoyalSmartFolder", ignoreCase = true) -> {
+                    val includeTags = parseTagsList(elem.childText("IncludeTags").ifBlank { elem.childText("Tags") })
                     val includeProtocols = elem.childText("IncludeProtocols")
-                        .split(';')
+                        .split(';', ',')
                         .mapNotNull { raw ->
                             val trimmed = raw.trim()
                             VaultProtocolType.entries.firstOrNull { it.name.equals(trimmed, ignoreCase = true) }
@@ -210,73 +283,37 @@ class RtszDocumentImporter {
                             includeTags = includeTags,
                             includeProtocols = includeProtocols,
                             osFamilyFilter = elem.childText("OSFamilyFilter").takeIf { it.isNotBlank() },
-                            hostPatternRegex = elem.childText("HostPatternRegex").takeIf { it.isNotBlank() },
+                            hostPatternRegex = elem.childText("HostPatternRegex")
+                                .ifBlank { elem.childText("SearchPattern") }
+                                .takeIf { it.isNotBlank() },
                             environmentFilter = elem.childText("EnvironmentFilter").takeIf { it.isNotBlank() }
                         )
                     )
                 }
 
-                "RoyalToDo", "RoyalToDoItem" -> {
+                tag.equals("RoyalToDo", ignoreCase = true) ||
+                    tag.equals("RoyalToDoItem", ignoreCase = true) -> {
                     todoItems += VaultTodoItem(
                         id = id,
                         targetObjectId = parentIdRaw?.takeIf { it != documentId },
                         title = name,
-                        completed = elem.childBoolean("Completed", "IsCompleted", default = false),
+                        completed = elem.childBoolean("Completed", "IsCompleted", "Done", default = false),
                         priority = elem.childText("Priority").ifBlank { "NORMAL" },
                         dueIsoDate = elem.childText("DueDate")
                     )
                 }
 
-                "RoyalRDSConnection",
-                "RoyalTemplate",
-                "RoyalSSHConnection",
-                "RoyalFileTransferConnection",
-                "RoyalVNCConnection",
-                "RoyalWebPageConnection",
-                "RoyalVMwareConnection",
-                "RoyalHyperVConnection",
-                "RoyalConnection" -> {
-                    val proto = resolveProtocolForConnectionElement(elem, tag)
-                    val settings = parseProtocolSettings(elem, proto, uri)
-                    if (isTemplate) {
-                        val description = elem.childText("Description").ifBlank { elem.childText("Notes") }
-                        templates += ConnectionTemplate(
-                            id = id,
-                            name = name,
-                            description = description,
-                            protocol = proto,
-                            colorAccentHex = templateColorHex,
-                            inheritable = inheritable,
-                            settings = settings
-                        )
-                    } else {
-                        val connTags = elem.childText("Tags")
-                            .split(';')
-                            .map { it.trim() }
-                            .filter { it.isNotEmpty() }
-                        val osFamily = elem.childText("OSFamily").ifBlank { defaultOsForProtocol(proto) }
-                        connections += VaultConnection(
-                            id = id,
-                            parentFolderId = parentIdRaw?.takeIf { it != documentId },
-                            name = name,
-                            host = uri,
-                            protocol = proto,
-                            osFamily = osFamily,
-                            tags = connTags,
-                            notes = elem.childText("Notes"),
-                            favorite = isFavorite,
-                            inheritable = inheritable,
-                            settings = settings
-                        )
-                    }
-                }
-
-                "RoyalCredential" -> {
-                    val keyContent = elem.childText("KeyFileContent")
-                    val rawUser = elem.childText("UserName")
+                isCredentialTag -> {
+                    val keyContent = sanitizeImportedKeyContent(
+                        elem.childText("KeyFileContent").ifBlank { elem.childText("PrivateKeyContent") },
+                        isRoyalPasswordEncryptedXml
+                    )
+                    val rawUser = elem.childText("UserName").ifBlank { elem.childText("Username") }
                     val explicitDomain = elem.childText("Domain")
-                    val totpSecret = elem.childText("OneTimePasswordSecret")
-                        .ifBlank { elem.childText("TOTPSecret") }
+                    val totpSecret = sanitizeImportedSecret(
+                        elem.childText("OneTimePasswordSecret").ifBlank { elem.childText("TOTPSecret") },
+                        isRoyalPasswordEncryptedXml
+                    )
                     val (parsedDomain, parsedUser) = splitDomainAndUsername(rawUser)
                     val explicitKind = elem.childText("SourceKind").let { raw ->
                         CredentialSourceKind.entries.firstOrNull { it.name.equals(raw, ignoreCase = true) }
@@ -293,57 +330,72 @@ class RtszDocumentImporter {
                         sourceKind = resolvedKind,
                         username = parsedUser,
                         domain = explicitDomain.ifBlank { parsedDomain },
-                        secretPassword = elem.childText("Password"),
+                        secretPassword = sanitizeImportedSecret(elem.childText("Password"), isRoyalPasswordEncryptedXml),
                         privateKeyPem = keyContent,
                         publicKeyOpenSsh = elem.childText("PublicKeyOpenSsh"),
                         keyFingerprintSha256 = elem.childText("KeyFingerprintSha256"),
-                        keyPassphrase = elem.childText("KeyPassphrase"),
+                        keyPassphrase = sanitizeImportedSecret(elem.childText("KeyPassphrase"), isRoyalPasswordEncryptedXml),
                         externalReferenceUri = elem.childText("ExternalReferenceUri"),
                         fido2CredentialIdBase64 = elem.childText("Fido2CredentialIdBase64"),
                         totpSecretBase32 = totpSecret
                     )
                 }
 
-                "RoyalSecureGateway", "RoyalSSHGateway" -> {
+                tag.equals("RoyalSecureGateway", ignoreCase = true) ||
+                    tag.equals("RoyalSSHGateway", ignoreCase = true) ||
+                    tag.equals("RoyalRDSGateway", ignoreCase = true) ||
+                    tag.equals("RoyalManagementEndpoint", ignoreCase = true) -> {
                     val explicitGwKind = elem.childText("NexusGatewayKind").let { raw ->
                         GatewayTransportKind.entries.firstOrNull { it.name.equals(raw, ignoreCase = true) }
                     }
-                    val gwKind = explicitGwKind ?: if (tag == "RoyalSSHGateway") {
-                        GatewayTransportKind.SSH_TUNNEL_BASTION
-                    } else {
-                        GatewayTransportKind.NEXUSTS_SECURE_GATEWAY
+                    val gwKind = explicitGwKind ?: when {
+                        tag.equals("RoyalSSHGateway", ignoreCase = true) ->
+                            GatewayTransportKind.SSH_TUNNEL_BASTION
+                        tag.equals("RoyalRDSGateway", ignoreCase = true) ->
+                            GatewayTransportKind.HTTP_CONNECT_PROXY
+                        else ->
+                            GatewayTransportKind.NEXUSTS_SECURE_GATEWAY
                     }
+                    val defaultGwPort = when {
+                        tag.equals("RoyalSSHGateway", ignoreCase = true) -> 22
+                        else -> 443
+                    }
+                    val gwPort = elem.childInt("Port", "SSHPort", "RDGatewayPort", "RoyalServerPort")
+                        ?: parsedPortFromUri
+                        ?: defaultGwPort
                     gateways += SecureGatewayConfig(
                         id = id,
                         name = name,
                         kind = gwKind,
-                        host = uri,
-                        port = elem.childText("Port").toIntOrNull() ?: 22,
+                        host = parsedHostFromUri.ifBlank { rawEndpoint },
+                        port = gwPort,
                         credentialId = resolvedCredId,
                         verifyTlsCertificate = elem.childBoolean("VerifyTlsCertificate", default = true)
                     )
                 }
 
-                "RoyalCommandTask" -> {
+                tag.equals("RoyalCommandTask", ignoreCase = true) -> {
                     commandTasks += CommandTask(
                         id = id,
                         name = name,
-                        commandTemplate = elem.childText("Command"),
+                        commandTemplate = elem.childText("Command").ifBlank { elem.childText("CommandLine") },
                         broadcastToAllSelectedSessions = elem.childBoolean("BroadcastToAll", default = false),
                         appendNewline = elem.childBoolean("AppendNewline", default = true)
                     )
                 }
 
-                "RoyalKeySequenceTask" -> {
+                tag.equals("RoyalKeySequenceTask", ignoreCase = true) -> {
                     keyTasks += KeySequenceTask(
                         id = id,
                         name = name,
                         macroSequence = elem.childText("KeySequence"),
-                        keystrokeDelayMs = elem.childText("KeystrokeDelayMs").toIntOrNull() ?: 25
+                        keystrokeDelayMs = elem.childText("KeystrokeDelayMs")
+                            .ifBlank { elem.childText("KeyStrokeDelay") }
+                            .toIntOrNull() ?: 25
                     )
                 }
 
-                "RoyalDynamicFolder" -> {
+                tag.equals("RoyalDynamicFolder", ignoreCase = true) -> {
                     val parsedInterp = elem.childText("Interpreter").let { raw ->
                         DynamicScriptInterpreter.entries.firstOrNull { it.name.equals(raw, ignoreCase = true) }
                     } ?: DynamicScriptInterpreter.SHELL_SH
@@ -352,10 +404,47 @@ class RtszDocumentImporter {
                         parentFolderId = parentIdRaw?.takeIf { it != documentId },
                         name = name,
                         interpreter = parsedInterp,
-                        scriptOrEndpointPayload = elem.childText("Script"),
+                        scriptOrEndpointPayload = elem.childText("Script").ifBlank { elem.childText("DynamicFolderScript") },
                         refreshIntervalMinutes = elem.childText("RefreshIntervalMinutes").toIntOrNull() ?: 30,
                         inheritable = inheritable
                     )
+                }
+
+                isRoyalConnectionOrTemplateTag(tag) -> {
+                    val proto = resolveProtocolForConnectionElement(elem, tag, rawEndpoint)
+                    val effectiveHost = when (proto) {
+                        VaultProtocolType.WEB_PAGE -> rawEndpoint.ifBlank { parsedHostFromUri }
+                        else -> parsedHostFromUri.ifBlank { rawEndpoint }
+                    }
+                    val settings = parseProtocolSettings(elem, proto, rawEndpoint, parsedPortFromUri)
+                    if (isTemplate) {
+                        val description = elem.childText("Description").ifBlank { elem.childText("Notes") }
+                        templates += ConnectionTemplate(
+                            id = id,
+                            name = name,
+                            description = description,
+                            protocol = proto,
+                            colorAccentHex = templateColorHex,
+                            inheritable = inheritable,
+                            settings = settings
+                        )
+                    } else {
+                        val connTags = parseTagsList(elem.childText("Tags"))
+                        val osFamily = elem.childText("OSFamily").ifBlank { defaultOsForProtocol(proto) }
+                        connections += VaultConnection(
+                            id = id,
+                            parentFolderId = parentIdRaw?.takeIf { it != documentId },
+                            name = name,
+                            host = effectiveHost.ifBlank { name },
+                            protocol = proto,
+                            osFamily = osFamily,
+                            tags = connTags,
+                            notes = elem.childText("Notes").ifBlank { elem.childText("Description") },
+                            favorite = isFavorite,
+                            inheritable = inheritable,
+                            settings = settings
+                        )
+                    }
                 }
             }
         }
@@ -379,6 +468,159 @@ class RtszDocumentImporter {
         )
     }
 
+    private fun collectRoyalElements(root: Element): List<CollectedRoyalElement> {
+        val out = mutableListOf<CollectedRoyalElement>()
+
+        if (root.tagName.equals("RoyalDocument", ignoreCase = true)) {
+            out += CollectedRoyalElement(root, null)
+        }
+
+        fun visitChildren(parentElement: Element, currentFolderContextId: String?) {
+            val nodes = parentElement.childNodes
+            for (i in 0 until nodes.length) {
+                val child = nodes.item(i)
+                if (child.nodeType != Node.ELEMENT_NODE) continue
+                val childElem = child as Element
+                val tag = childElem.tagName
+
+                when {
+                    tag.equals("Objects", ignoreCase = true) ||
+                        tag.equals("RoyalStore", ignoreCase = true) ||
+                        tag.equals("RTSZDocument", ignoreCase = true) -> {
+                        visitChildren(childElem, currentFolderContextId)
+                    }
+
+                    tag.equals("RoyalDocument", ignoreCase = true) -> {
+                        out += CollectedRoyalElement(childElem, currentFolderContextId)
+                        val docId = childElem.childText("ID").takeIf { it.isNotBlank() } ?: currentFolderContextId
+                        visitChildren(childElem, docId)
+                    }
+
+                    tag.equals("RoyalFolder", ignoreCase = true) ||
+                        tag.equals("RoyalTrash", ignoreCase = true) -> {
+                        out += CollectedRoyalElement(childElem, currentFolderContextId)
+                        val folderId = childElem.childText("ID").takeIf { it.isNotBlank() } ?: currentFolderContextId
+                        visitChildren(childElem, folderId)
+                    }
+
+                    tag.startsWith("Royal", ignoreCase = true) ||
+                        tag.startsWith("Nexus", ignoreCase = true) -> {
+                        out += CollectedRoyalElement(childElem, currentFolderContextId)
+                    }
+                }
+            }
+        }
+
+        visitChildren(root, null)
+        return out
+    }
+
+    private fun isRoyalConnectionOrTemplateTag(tag: String): Boolean {
+        if (tag.equals("RoyalTemplate", ignoreCase = true)) return true
+        return tag.startsWith("Royal", ignoreCase = true) &&
+            tag.endsWith("Connection", ignoreCase = true)
+    }
+
+    private fun resolveRawEndpoint(elem: Element): String {
+        val candidates = listOf(
+            "URI",
+            "ComputerName",
+            "Host",
+            "HostName",
+            "Server",
+            "Address",
+            "IPAddress",
+            "WebPageUrl",
+            "URL",
+            "RDGatewayHost"
+        )
+        for (key in candidates) {
+            val value = elem.childText(key)
+            if (value.isNotBlank()) return value.trim()
+        }
+        return ""
+    }
+
+    private fun extractHostAndOptionalPort(rawEndpoint: String): Pair<String, Int?> {
+        val trimmed = rawEndpoint.trim()
+        if (trimmed.isEmpty()) return "" to null
+
+        var withoutScheme = trimmed
+        val schemeIdx = withoutScheme.indexOf("://")
+        val hasHttpScheme = trimmed.startsWith("http://", ignoreCase = true) ||
+            trimmed.startsWith("https://", ignoreCase = true)
+        if (schemeIdx > 0 && !hasHttpScheme) {
+            withoutScheme = withoutScheme.substring(schemeIdx + 3)
+            val atIdx = withoutScheme.lastIndexOf('@')
+            if (atIdx >= 0 && atIdx < withoutScheme.lastIndex) {
+                withoutScheme = withoutScheme.substring(atIdx + 1)
+            }
+            withoutScheme = withoutScheme.substringBefore('/')
+        } else if (hasHttpScheme) {
+            return trimmed to null
+        }
+
+        // Bracketed IPv6 `[2001:db8::1]:3389`
+        if (withoutScheme.startsWith("[")) {
+            val closeIdx = withoutScheme.indexOf(']')
+            if (closeIdx > 1) {
+                val ipv6 = withoutScheme.substring(1, closeIdx)
+                val rem = withoutScheme.substring(closeIdx + 1)
+                val port = if (rem.startsWith(":")) rem.drop(1).toIntOrNull()?.takeIf { it in 1..65535 } else null
+                return ipv6 to port
+            }
+        }
+
+        val firstColon = withoutScheme.indexOf(':')
+        val lastColon = withoutScheme.lastIndexOf(':')
+        if (firstColon > 0 && firstColon == lastColon && lastColon < withoutScheme.lastIndex) {
+            val maybePort = withoutScheme.substring(lastColon + 1).toIntOrNull()
+            if (maybePort != null && maybePort in 1..65535) {
+                return withoutScheme.substring(0, lastColon) to maybePort
+            }
+        }
+        return withoutScheme to null
+    }
+
+    private fun sanitizeImportedSecret(rawSecret: String, isRoyalEncryptedXml: Boolean): String {
+        if (rawSecret.isEmpty()) return ""
+        // When Royal TS `<Encrypted>True</Encrypted>` is enabled on the XML document, Royal TS encrypts
+        // sensitive XML tags as Base64 AES ciphertexts that cannot be sent literally to SSH/RDP servers.
+        if (isRoyalEncryptedXml && looksLikeEncryptedBase64Blob(rawSecret)) {
+            return ""
+        }
+        return rawSecret
+    }
+
+    private fun sanitizeImportedKeyContent(rawKey: String, isRoyalEncryptedXml: Boolean): String {
+        if (rawKey.isEmpty()) return ""
+        if (rawKey.contains("-----BEGIN")) return rawKey
+        if (isRoyalEncryptedXml && looksLikeEncryptedBase64Blob(rawKey)) return ""
+        return rawKey
+    }
+
+    private fun looksLikeEncryptedBase64Blob(value: String): Boolean {
+        val trimmed = value.trim()
+        if (trimmed.length < 24 || trimmed.length % 4 != 0) return false
+        return trimmed.all { it.isLetterOrDigit() || it == '+' || it == '/' || it == '=' }
+    }
+
+    private fun parseTagsList(raw: String): List<String> {
+        if (raw.isBlank()) return emptyList()
+        return raw.split(';', ',')
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+    }
+
+    private fun normalizeHexColor(raw: String): String? {
+        val trimmed = raw.trim()
+        if (trimmed.isEmpty()) return null
+        val prefixed = if (trimmed.startsWith("#")) trimmed else "#$trimmed"
+        return prefixed.takeIf {
+            (it.length == 7 || it.length == 9) && it.drop(1).all { ch -> ch.digitToIntOrNull(16) != null }
+        }
+    }
+
     private fun parseInheritable(
         elem: Element,
         resolvedCredId: String?,
@@ -398,11 +640,14 @@ class RtszDocumentImporter {
             else -> defaultCredMode
         }
 
-        val gwId = elem.childText("SecureGatewayID").takeIf { it.isNotBlank() }
-        val rawGwMode = elem.childText("GatewayMode").trim()
+        val gwId = elem.childText("SecureGatewayID")
+            .ifBlank { elem.childText("RDGatewayID") }
+            .ifBlank { elem.childText("ManagementEndpointID") }
+            .takeIf { it.isNotBlank() }
+        val rawGwMode = elem.childText("GatewayMode").ifBlank { elem.childText("SecureGatewayUsageMode") }.trim()
         val gwMode = when {
             rawGwMode == "0" -> InheritanceMode.NONE_DIRECT
-            rawGwMode == "2" -> InheritanceMode.OVERRIDE_EXPLICIT
+            rawGwMode == "2" || (rawGwMode == "1" && gwId != null) -> InheritanceMode.OVERRIDE_EXPLICIT
             rawGwMode == "3" -> InheritanceMode.PROMPT_AT_CONNECT
             rawGwMode == "4" -> InheritanceMode.INHERIT_FROM_PARENT
             gwId != null -> InheritanceMode.OVERRIDE_EXPLICIT
@@ -412,12 +657,10 @@ class RtszDocumentImporter {
         val inheritableColor = if (isTemplate && elem.hasDirectChild("TemplateColor") && !elem.hasDirectChild("InheritableColor")) {
             null
         } else {
-            elem.childText("InheritableColor")
-                .ifBlank { elem.childText("Color") }
-                .takeIf { it.startsWith("#") && (it.length == 7 || it.length == 9) }
+            normalizeHexColor(elem.childText("InheritableColor").ifBlank { elem.childText("Color") })
         }
 
-        val customProps = (1..10).mapNotNull { idx ->
+        val customProps = (1..20).mapNotNull { idx ->
             val nameTag = "CustomField${idx}Name"
             val valTag = "CustomField$idx"
             val protTag = "CustomField${idx}Protected"
@@ -426,7 +669,7 @@ class RtszDocumentImporter {
             val isProt = if (elem.hasDirectChild(protTag)) {
                 elem.childBoolean(protTag, default = false)
             } else {
-                idx > 8
+                idx in 11..20 || idx in 9..10
             }
             if (v.isNotBlank() || (hasName && isProt)) {
                 val fieldLabel = elem.childText(nameTag).ifBlank { "CustomField$idx" }
@@ -446,62 +689,109 @@ class RtszDocumentImporter {
             gatewayMode = gwMode,
             explicitGatewayId = if (gwMode == InheritanceMode.OVERRIDE_EXPLICIT) gwId else null,
             environmentBadge = elem.childText("EnvironmentBadge").takeIf { it.isNotBlank() },
-            preConnectTaskId = elem.childText("PreConnectTaskID").takeIf { it.isNotBlank() },
-            postDisconnectTaskId = elem.childText("PostDisconnectTaskID").takeIf { it.isNotBlank() },
+            preConnectTaskId = elem.childText("PreConnectTaskID")
+                .ifBlank { elem.childText("ConnectTaskID") }
+                .takeIf { it.isNotBlank() },
+            postDisconnectTaskId = elem.childText("PostDisconnectTaskID")
+                .ifBlank { elem.childText("DisconnectTaskID") }
+                .takeIf { it.isNotBlank() },
             displayColorAccentHex = inheritableColor,
             customProperties = customProps,
             requireConnectConfirmation = elem.childBoolean("RequireConnectConfirmation", default = false)
         )
     }
 
-    private fun resolveProtocolForConnectionElement(elem: Element, tag: String): VaultProtocolType {
+    private fun resolveProtocolForConnectionElement(
+        elem: Element,
+        tag: String,
+        rawEndpoint: String
+    ): VaultProtocolType {
         val explicitProtoName = elem.childText("NexusProtocolType").trim()
         if (explicitProtoName.isNotEmpty()) {
             VaultProtocolType.entries.firstOrNull { it.name.equals(explicitProtoName, ignoreCase = true) }
                 ?.let { return it }
         }
 
-        return when (tag) {
-            "RoyalRDSConnection", "RoyalTemplate" -> VaultProtocolType.RDP
-            "RoyalSSHConnection" -> when {
-                elem.hasDirectChild("BaudRate") || elem.childBoolean("IsSerialPortConnection", default = false) ->
-                    VaultProtocolType.SERIAL
-                elem.hasDirectChild("Workload") || elem.hasDirectChild("ClusterEndpoint") ->
-                    VaultProtocolType.KUBERNETES_POD
-                elem.childBoolean("IsTelnetConnection", default = false) ->
-                    VaultProtocolType.TELNET
-                else -> VaultProtocolType.SSH
-            }
-            "RoyalFileTransferConnection" -> {
-                val connType = elem.childText("ConnectionType").uppercase()
+        val lowerTag = tag.lowercase()
+        return when {
+            lowerTag == "royalrdsconnection" || lowerTag == "royaltemplate" -> VaultProtocolType.RDP
+
+            lowerTag == "royalsshconnection" || lowerTag == "royalterminalconnection" -> {
+                val termType = listOf(
+                    elem.childText("TerminalConnectionType"),
+                    elem.childText("ConnectionType"),
+                    elem.childText("CustomTerminalType")
+                ).joinToString(" ").lowercase()
+
                 when {
-                    connType.contains("SCP") -> VaultProtocolType.SCP
-                    connType.contains("FTPS") -> VaultProtocolType.FTPS
-                    connType.contains("FTP") -> VaultProtocolType.FTP
+                    elem.childBoolean("IsSerialPortConnection", default = false) ||
+                        termType.contains("serial") ||
+                        termType == "2" ||
+                        (elem.hasDirectChild("BaudRate") && !termType.contains("ssh")) ->
+                        VaultProtocolType.SERIAL
+                    elem.hasDirectChild("Workload") || elem.hasDirectChild("ClusterEndpoint") ->
+                        VaultProtocolType.KUBERNETES_POD
+                    elem.childBoolean("IsTelnetConnection", default = false) ||
+                        termType.contains("telnet") ||
+                        termType == "1" ->
+                        VaultProtocolType.TELNET
+                    else -> VaultProtocolType.SSH
+                }
+            }
+
+            lowerTag == "royalfiletransferconnection" -> {
+                val connType = listOf(
+                    elem.childText("ConnectionType"),
+                    elem.childText("FileTransferConnectionType")
+                ).joinToString(" ").uppercase()
+                when {
+                    connType.contains("SCP") || connType == "3" -> VaultProtocolType.SCP
+                    connType.contains("FTPS") || connType == "2" -> VaultProtocolType.FTPS
+                    connType.contains("FTP") || connType == "1" -> VaultProtocolType.FTP
                     else -> VaultProtocolType.SFTP
                 }
             }
-            "RoyalVNCConnection" -> {
-                if (elem.childBoolean("IsAppleRemoteDesktop", default = false)) {
+
+            lowerTag == "royalvncconnection" -> {
+                if (elem.childBoolean("IsAppleRemoteDesktop", "UseAppleScreenSharing", "AppleScreenSharing", default = false)) {
                     VaultProtocolType.APPLE_SCREEN_SHARING
                 } else {
                     VaultProtocolType.VNC
                 }
             }
-            "RoyalWebPageConnection" -> VaultProtocolType.WEB_PAGE
-            "RoyalVMwareConnection" -> VaultProtocolType.VMWARE_VSPHERE
-            "RoyalHyperVConnection" -> VaultProtocolType.HYPER_V
-            else -> VaultProtocolType.SSH
+
+            lowerTag == "royalwebconnection" || lowerTag == "royalwebpageconnection" ->
+                VaultProtocolType.WEB_PAGE
+
+            lowerTag == "royalvmwareconnection" -> VaultProtocolType.VMWARE_VSPHERE
+            lowerTag == "royalhypervconnection" -> VaultProtocolType.HYPER_V
+            lowerTag == "royalproxmoxconnection" -> VaultProtocolType.PROXMOX_VE
+            lowerTag == "royalawsconnection" -> VaultProtocolType.AWS_EC2
+            lowerTag == "royalazureconnection" -> VaultProtocolType.AZURE_VM
+            lowerTag == "royalterminalservicesconnection" ||
+                lowerTag == "royalwindowsterminalservicesconnection" ||
+                lowerTag == "royalwindowsservicesconnection" ||
+                lowerTag == "royalwindowsprocessesconnection" ||
+                lowerTag == "royalwindowseventsconnection" ||
+                lowerTag == "royalperformanceconnection" ->
+                VaultProtocolType.WINDOWS_TERMINAL_SERVICES
+            lowerTag == "royalpowershellconnection" -> VaultProtocolType.SSH
+            lowerTag == "royaldockerconnection" -> VaultProtocolType.DOCKER_CONTAINER
+            lowerTag == "royalkubernetesconnection" -> VaultProtocolType.KUBERNETES_POD
+            rawEndpoint.startsWith("http://", true) || rawEndpoint.startsWith("https://", true) ->
+                VaultProtocolType.WEB_PAGE
+            else -> VaultProtocolType.RDP
         }
     }
 
     private fun parseProtocolSettings(
         elem: Element,
         protocol: VaultProtocolType,
-        uri: String
+        uri: String,
+        uriPortFallback: Int?
     ): ProtocolSpecificSettings = when (protocol) {
         VaultProtocolType.RDP, VaultProtocolType.WINDOWS_TERMINAL_SERVICES -> {
-            val port = elem.childText("RDPPort").toIntOrNull() ?: 3389
+            val port = elem.childInt("RDPPort", "Port", "ServerPort") ?: uriPortFallback ?: 3389
             val audioModeRaw = elem.childText("AudioRedirectionMode").trim()
             val audioMode = when {
                 audioModeRaw == "1" || audioModeRaw.contains("Remote", true) ->
@@ -576,7 +866,7 @@ class RtszDocumentImporter {
                 remoteAppProgram = elem.childText("RemoteAppProgram"),
                 remoteAppArguments = elem.childText("RemoteAppArguments"),
                 rdGatewayHostname = elem.childText("RDGatewayHost"),
-                rdGatewayPort = elem.childText("RDGatewayPort").toIntOrNull() ?: 443,
+                rdGatewayPort = elem.childInt("RDGatewayPort") ?: 443,
                 nlaSecurityRequired = elem.childBoolean("NetworkLevelAuthentication", default = true),
                 tlsSecurity = elem.childBoolean("TlsSecurity", default = true),
                 restrictedAdminMode = elem.childBoolean("RestrictedAdminMode", default = false),
@@ -587,32 +877,38 @@ class RtszDocumentImporter {
         VaultProtocolType.SSH, VaultProtocolType.TELNET -> {
             val defaultPort = if (protocol == VaultProtocolType.TELNET) 23 else 22
             ProtocolSpecificSettings.Ssh(
-                port = elem.childText("Port").toIntOrNull() ?: defaultPort,
-                terminalType = elem.childText("TerminalType").ifBlank { "xterm-256color" },
+                port = elem.childInt("Port", "SSHPort", "ServerPort") ?: uriPortFallback ?: defaultPort,
+                terminalType = elem.childText("TerminalType")
+                    .ifBlank { elem.childText("TerminalName") }
+                    .ifBlank { "xterm-256color" },
                 bastionJumpConnectionId = elem.childText("BastionJumpConnectionId").takeIf { it.isNotBlank() },
-                enableAgentForwarding = elem.childBoolean("EnableAgentForwarding", default = false),
-                enableX11Forwarding = elem.childBoolean("EnableX11Forwarding", default = false),
+                enableAgentForwarding = elem.childBoolean("EnableAgentForwarding", "AllowAgentForwarding", default = false),
+                enableX11Forwarding = elem.childBoolean("EnableX11Forwarding", "UseX11Forwarding", default = false),
                 x11DisplayHost = elem.childText("X11DisplayHost").ifBlank { "127.0.0.1:0" },
                 portForwards = decodePortForwards(elem.childText("PortForwardRules")),
-                startupCommand = elem.childText("StartupCommand"),
-                keepAliveIntervalSec = elem.childText("KeepAliveIntervalSec").toIntOrNull() ?: 30,
-                scrollbackLines = elem.childText("ScrollbackLines").toIntOrNull() ?: 10_000,
-                serialBaudRate = elem.childText("SerialBaudRate").toIntOrNull() ?: 115_200,
+                startupCommand = elem.childText("StartupCommand")
+                    .ifBlank { elem.childText("InitialCommand") }
+                    .ifBlank { elem.childText("CustomCommandOSX") },
+                keepAliveIntervalSec = elem.childInt("KeepAliveIntervalSec", "KeepAliveInterval") ?: 30,
+                scrollbackLines = elem.childInt("ScrollbackLines", "HistoryMaxLength") ?: 10_000,
+                serialBaudRate = elem.childInt("SerialBaudRate", "BaudRate") ?: 115_200,
                 serialDevicePath = elem.childText("SerialDevicePath").ifBlank { "/dev/ttyUSB0" }
             )
         }
 
         VaultProtocolType.SERIAL -> {
             ProtocolSpecificSettings.SerialUart(
-                baudRate = elem.childText("BaudRate").toIntOrNull() ?: 115_200,
-                dataBits = elem.childText("DataBits").toIntOrNull() ?: 8,
-                stopBits = elem.childText("StopBits").toIntOrNull() ?: 1,
+                baudRate = elem.childInt("BaudRate", "SerialBaudRate") ?: 115_200,
+                dataBits = elem.childInt("DataBits") ?: 8,
+                stopBits = elem.childInt("StopBits") ?: 1,
                 parity = elem.childText("Parity").ifBlank { "NONE" },
                 flowControl = elem.childText("FlowControl").ifBlank { "NONE" },
                 dtrEnabled = elem.childBoolean("DtrEnabled", default = true),
                 rtsEnabled = elem.childBoolean("RtsEnabled", default = true),
-                usbVendorIdFilter = elem.childText("UsbVendorIdFilter").toIntOrNull() ?: 0,
-                devicePathHint = elem.childText("DevicePathHint").ifBlank { uri.ifBlank { "/dev/ttyUSB0" } },
+                usbVendorIdFilter = elem.childInt("UsbVendorIdFilter") ?: 0,
+                devicePathHint = elem.childText("DevicePathHint")
+                    .ifBlank { elem.childText("SerialPort") }
+                    .ifBlank { uri.ifBlank { "/dev/ttyUSB0" } },
                 lineEnding = elem.childText("LineEnding").ifBlank { "CRLF" }
             )
         }
@@ -624,29 +920,31 @@ class RtszDocumentImporter {
                 else -> 22
             }
             ProtocolSpecificSettings.FileTransfer(
-                port = elem.childText("Port").toIntOrNull() ?: defaultPort,
-                initialLocalDirectory = elem.childText("InitialLocalPath"),
-                initialRemoteDirectory = elem.childText("InitialRemotePath").ifBlank { "/" },
+                port = elem.childInt("Port", "SSHPort", "FTPPort") ?: uriPortFallback ?: defaultPort,
+                initialLocalDirectory = elem.childText("InitialLocalPath").ifBlank { elem.childText("LocalPath") },
+                initialRemoteDirectory = elem.childText("InitialRemotePath")
+                    .ifBlank { elem.childText("RemotePath") }
+                    .ifBlank { "/" },
                 preserveTimestamps = elem.childBoolean("PreserveTimestamps", default = true),
-                showHiddenDotfiles = elem.childBoolean("ShowHiddenDotfiles", default = true),
-                maxConcurrentTransfers = elem.childText("MaxConcurrentTransfers").toIntOrNull() ?: 4,
+                showHiddenDotfiles = elem.childBoolean("ShowHiddenDotfiles", "ShowHiddenFiles", default = true),
+                maxConcurrentTransfers = elem.childInt("MaxConcurrentTransfers") ?: 4,
                 ftpsImplicitTls = elem.childBoolean("FtpsImplicitTls", default = false)
             )
         }
 
         VaultProtocolType.VNC, VaultProtocolType.APPLE_SCREEN_SHARING -> {
             val isArd = protocol == VaultProtocolType.APPLE_SCREEN_SHARING ||
-                elem.childBoolean("IsAppleRemoteDesktop", "AppleArdDiffieHellmanAuth", default = false)
+                elem.childBoolean("IsAppleRemoteDesktop", "UseAppleScreenSharing", "AppleArdDiffieHellmanAuth", default = false)
             val encodings = elem.childText("PreferredEncodings")
                 .split(',')
                 .map { it.trim() }
                 .filter { it.isNotEmpty() }
                 .ifEmpty { listOf("ZRLE", "Tight", "CopyRect", "Hextile", "Raw") }
             ProtocolSpecificSettings.Vnc(
-                port = elem.childText("VNCPort").toIntOrNull() ?: 5900,
+                port = elem.childInt("VNCPort", "Port") ?: uriPortFallback ?: 5900,
                 preferredEncodings = encodings,
-                compressionLevel = elem.childText("CompressionLevel").toIntOrNull() ?: 6,
-                jpegQualityLevel = elem.childText("JpegQualityLevel").toIntOrNull() ?: 7,
+                compressionLevel = elem.childInt("CompressionLevel") ?: 6,
+                jpegQualityLevel = elem.childInt("JpegQualityLevel") ?: 7,
                 viewOnly = elem.childBoolean("ViewOnly", default = false),
                 sharedSession = elem.childBoolean("SharedSession", default = true),
                 appleArdDiffieHellmanAuth = if (elem.hasDirectChild("AppleArdDiffieHellmanAuth")) {
@@ -658,24 +956,28 @@ class RtszDocumentImporter {
         }
 
         VaultProtocolType.WEB_PAGE -> {
-            val webUrl = if (elem.hasDirectChild("WebPageUrl")) {
-                elem.childText("WebPageUrl")
-            } else {
-                uri.ifBlank { "https://localhost" }
+            val rawUrl = elem.childText("WebPageUrl")
+                .ifBlank { elem.childText("URL") }
+                .ifBlank { uri }
+                .trim()
+            val webUrl = when {
+                rawUrl.isBlank() -> "https://localhost"
+                rawUrl.startsWith("http://", true) || rawUrl.startsWith("https://", true) -> rawUrl
+                else -> "https://$rawUrl"
             }
             ProtocolSpecificSettings.WebPage(
                 url = webUrl,
                 isolatedStorageProfileId = elem.childText("IsolatedProfileId").ifBlank { UUID.randomUUID().toString() },
-                autoFillEnabled = elem.childBoolean("AutoFill", default = true),
+                autoFillEnabled = elem.childBoolean("AutoFill", "EnableAutoFill", default = true),
                 usernameCssSelector = elem.childText("UsernameCssSelector")
                     .ifBlank { "input[type='email'], input[name*='user'], input[type='text']" },
                 passwordCssSelector = elem.childText("PasswordCssSelector")
                     .ifBlank { "input[type='password']" },
                 submitCssSelector = elem.childText("SubmitCssSelector")
                     .ifBlank { "button[type='submit'], input[type='submit']" },
-                injectHttpBasicAuth = elem.childBoolean("InjectHttpBasicAuth", default = false),
+                injectHttpBasicAuth = elem.childBoolean("InjectHttpBasicAuth", "PassCredentialsForBasicAuthentication", default = false),
                 pinnedCertSha256 = elem.childText("PinnedCertSha256"),
-                ignoreSelfSignedInternalCert = elem.childBoolean("IgnoreSelfSignedCert", default = false)
+                ignoreSelfSignedInternalCert = elem.childBoolean("IgnoreSelfSignedCert", "IgnoreCertificateErrors", default = false)
             )
         }
 
@@ -707,15 +1009,15 @@ class RtszDocumentImporter {
         VaultProtocolType.UTILITY_PORT_SCANNER,
         VaultProtocolType.UTILITY_WAKE_ON_LAN -> {
             ProtocolSpecificSettings.NetUtility(
-                pingCount = elem.childText("PingCount").toIntOrNull() ?: 10,
-                pingIntervalMs = elem.childText("PingIntervalMs").toIntOrNull() ?: 1000,
-                tracerouteMaxHops = elem.childText("TracerouteMaxHops").toIntOrNull() ?: 30,
-                portScanRangeStart = elem.childText("PortScanStart").toIntOrNull() ?: 1,
-                portScanRangeEnd = elem.childText("PortScanEnd").toIntOrNull() ?: 1024,
-                portScanConcurrency = elem.childText("PortScanConcurrency").toIntOrNull() ?: 128,
-                wolMacAddress = elem.childText("WolMacAddress"),
+                pingCount = elem.childInt("PingCount") ?: 10,
+                pingIntervalMs = elem.childInt("PingIntervalMs") ?: 1000,
+                tracerouteMaxHops = elem.childInt("TracerouteMaxHops") ?: 30,
+                portScanRangeStart = elem.childInt("PortScanStart") ?: 1,
+                portScanRangeEnd = elem.childInt("PortScanEnd") ?: 1024,
+                portScanConcurrency = elem.childInt("PortScanConcurrency") ?: 128,
+                wolMacAddress = elem.childText("WolMacAddress").ifBlank { elem.childText("MACAddress") },
                 wolBroadcastAddress = elem.childText("WolBroadcastIp").ifBlank { "255.255.255.255" },
-                wolUdpPort = elem.childText("WolUdpPort").toIntOrNull() ?: 9,
+                wolUdpPort = elem.childInt("WolUdpPort") ?: 9,
                 wolSecureOnHex = elem.childText("WolSecureOnHex")
             )
         }
@@ -741,7 +1043,7 @@ class RtszDocumentImporter {
                 subContainerName = elem.childText("ContainerName"),
                 shellCommand = elem.childText("Shell").ifBlank { "/bin/sh" },
                 followLogsOnOpen = elem.childBoolean("FollowLogs", default = false),
-                logTailLines = elem.childText("LogTailLines").toIntOrNull() ?: 200,
+                logTailLines = elem.childInt("LogTailLines") ?: 200,
                 portForwards = decodePortForwards(elem.childText("PortForwardRules")),
                 verifyTls = elem.childBoolean("VerifyTls", default = true)
             )
@@ -784,7 +1086,7 @@ class RtszDocumentImporter {
         }
     }
 
-    private fun extractXmlFromZipOrRaw(rawBytes: ByteArray): ByteArray {
+    private fun extractNormalizedUtf8Xml(rawBytes: ByteArray, archivePassword: CharArray?): ByteArray {
         if (rawBytes.isEmpty()) {
             throw IllegalArgumentException("Cannot import empty Royal TS .rtsz / .rtsx payload.")
         }
@@ -813,66 +1115,148 @@ class RtszDocumentImporter {
             )
         }
 
-        // ZIP local file header magic PK\x03\x04
-        if (rawBytes.size >= 4 &&
-            rawBytes[0] == 0x50.toByte() &&
-            rawBytes[1] == 0x4B.toByte() &&
-            rawBytes[2] == 0x03.toByte() &&
-            rawBytes[3] == 0x04.toByte()
-        ) {
+        val unwrappedBytes = unwrapArchiveOrCompression(rawBytes, archivePassword)
+        val xmlText = decodeBomAwareXmlText(unwrappedBytes)
+        val trimmedText = xmlText.trimStart('\uFEFF', ' ', '\t', '\r', '\n')
+        if (!trimmedText.startsWith("<")) {
+            throw IllegalArgumentException(
+                "File is neither a valid Royal TS .rtsz archive nor a valid .rtsx XML document."
+            )
+        }
+
+        val sanitizedXml = sanitizeDotNetXmlForStrictParser(trimmedText)
+        return sanitizedXml.toByteArray(StandardCharsets.UTF_8)
+    }
+
+    private fun unwrapArchiveOrCompression(bytes: ByteArray, archivePassword: CharArray?): ByteArray {
+        // 1. GZIP compressed .rtsz stream (magic 1F 8B) — used by Royal TS & Royal TSX V2-V7!
+        if (isGzipStream(bytes)) {
+            val gunzipped = runCatching {
+                GZIPInputStream(ByteArrayInputStream(bytes)).use { it.readBytes() }
+            }.getOrElse { ex ->
+                throw IllegalArgumentException("Corrupted GZIP stream in Royal TS .rtsz file: ${ex.message}", ex)
+            }
+            return if (isZipStream(gunzipped) || isGzipStream(gunzipped)) {
+                unwrapArchiveOrCompression(gunzipped, archivePassword)
+            } else {
+                gunzipped
+            }
+        }
+
+        // 2. ZIP local file header magic PK\x03\x04
+        if (isZipStream(bytes)) {
+            if (EncryptedZipExtractor.isEncryptedZip(bytes)) {
+                if (archivePassword == null || archivePassword.isEmpty()) {
+                    throw IllegalArgumentException(
+                        "Royal TS Lockdown .rtsz archive is password-encrypted. Please provide the archive password."
+                    )
+                }
+                val decrypted = EncryptedZipExtractor.extractDecryptedXmlEntry(bytes, archivePassword)
+                return if (isGzipStream(decrypted)) {
+                    GZIPInputStream(ByteArrayInputStream(decrypted)).use { it.readBytes() }
+                } else {
+                    decrypted
+                }
+            }
+
             var xmlSniffCandidate: ByteArray? = null
-            ZipInputStream(ByteArrayInputStream(rawBytes)).use { zis ->
+            ZipInputStream(ByteArrayInputStream(bytes)).use { zis ->
                 var entry = zis.nextEntry
                 while (entry != null) {
                     if (!entry.isDirectory) {
                         val entryName = entry.name
+                        val entryPayload = zis.readBytes()
+                        val decompressedCandidate = if (isGzipStream(entryPayload)) {
+                            runCatching {
+                                GZIPInputStream(ByteArrayInputStream(entryPayload)).use { it.readBytes() }
+                            }.getOrDefault(entryPayload)
+                        } else {
+                            entryPayload
+                        }
                         if (entryName.endsWith(".rtsx", ignoreCase = true) ||
                             entryName.endsWith(".xml", ignoreCase = true)
                         ) {
-                            return zis.readBytes()
+                            return decompressedCandidate
                         }
-                        if (xmlSniffCandidate == null) {
-                            val candidateBytes = zis.readBytes()
-                            if (looksLikeRoyalXml(candidateBytes)) {
-                                xmlSniffCandidate = candidateBytes
-                            }
+                        if (xmlSniffCandidate == null && looksLikeXmlPayload(decompressedCandidate)) {
+                            xmlSniffCandidate = decompressedCandidate
                         }
                     }
                     entry = zis.nextEntry
                 }
             }
             return xmlSniffCandidate ?: throw IllegalArgumentException(
-                "ZIP archive is not a valid Royal TS .rtsz document (no .rtsx or .xml entry found)."
+                "ZIP archive is not a valid Royal TS .rtsz document (no XML payload found)."
             )
         }
 
-        if (!looksLikeXmlPayload(rawBytes)) {
-            throw IllegalArgumentException(
-                "File is neither a valid Royal TS .rtsz ZIP archive nor a valid .rtsx XML document."
-            )
-        }
-        return rawBytes
+        return bytes
     }
 
-    private fun looksLikeRoyalXml(bytes: ByteArray): Boolean {
-        val head = bytes.decodeToString(0, minOf(bytes.size, 1024), throwOnInvalidSequence = false)
-            .trimStart('\uFEFF', ' ', '\t', '\r', '\n')
-        return head.startsWith("<?xml", ignoreCase = true) ||
-            head.startsWith("<RTSZDocument", ignoreCase = true) ||
-            head.startsWith("<RoyalDocument", ignoreCase = true)
+    private fun isGzipStream(bytes: ByteArray): Boolean =
+        bytes.size >= 2 && bytes[0] == 0x1F.toByte() && bytes[1] == 0x8B.toByte()
+
+    private fun isZipStream(bytes: ByteArray): Boolean =
+        bytes.size >= 4 &&
+            bytes[0] == 0x50.toByte() &&
+            bytes[1] == 0x4B.toByte() &&
+            bytes[2] == 0x03.toByte() &&
+            bytes[3] == 0x04.toByte()
+
+    private fun decodeBomAwareXmlText(bytes: ByteArray): String {
+        val (charset: Charset, offset: Int) = when {
+            bytes.size >= 3 &&
+                bytes[0] == 0xEF.toByte() &&
+                bytes[1] == 0xBB.toByte() &&
+                bytes[2] == 0xBF.toByte() -> StandardCharsets.UTF_8 to 3
+
+            bytes.size >= 2 &&
+                bytes[0] == 0xFF.toByte() &&
+                bytes[1] == 0xFE.toByte() -> StandardCharsets.UTF_16LE to 2
+
+            bytes.size >= 2 &&
+                bytes[0] == 0xFE.toByte() &&
+                bytes[1] == 0xFF.toByte() -> StandardCharsets.UTF_16BE to 2
+
+            bytes.size >= 4 && bytes[0] == 0x3C.toByte() && bytes[1] == 0x00.toByte() ->
+                StandardCharsets.UTF_16LE to 0
+
+            bytes.size >= 4 && bytes[0] == 0x00.toByte() && bytes[1] == 0x3C.toByte() ->
+                StandardCharsets.UTF_16BE to 0
+
+            else -> StandardCharsets.UTF_8 to 0
+        }
+        return String(bytes, offset, bytes.size - offset, charset)
+    }
+
+    private fun sanitizeDotNetXmlForStrictParser(xml: String): String {
+        // Rewrite encoding="utf-16..." prolog declaration since we normalize to UTF-8 bytes
+        val fixedEncoding = UTF16_DECL_REGEX.replaceFirst(xml, "encoding=\"utf-8\"")
+        // Strip invalid XML 1.0 character entity references (e.g. &#x1B; ANSI escape in Royal TS key tasks)
+        val withoutBadEntities = INVALID_CHAR_REF_REGEX.replace(fixedEncoding, "")
+        // Strip raw control characters disallowed by XML 1.0
+        val sb = StringBuilder(withoutBadEntities.length)
+        for (ch in withoutBadEntities) {
+            val code = ch.code
+            if (code == 0x09 || code == 0x0A || code == 0x0D || code >= 0x20) {
+                sb.append(ch)
+            }
+        }
+        return sb.toString()
     }
 
     private fun looksLikeXmlPayload(bytes: ByteArray): Boolean {
-        val head = bytes.decodeToString(0, minOf(bytes.size, 1024), throwOnInvalidSequence = false)
+        if (bytes.isEmpty()) return false
+        val preview = decodeBomAwareXmlText(bytes.copyOfRange(0, minOf(bytes.size, 2048)))
             .trimStart('\uFEFF', ' ', '\t', '\r', '\n')
-        return head.startsWith("<")
+        return preview.startsWith("<")
     }
 
     private fun Element.hasDirectChild(tagName: String): Boolean {
         val children = this.childNodes
         for (idx in 0 until children.length) {
             val child = children.item(idx)
-            if (child.nodeType == Node.ELEMENT_NODE && (child as Element).tagName == tagName) {
+            if (child.nodeType == Node.ELEMENT_NODE && (child as Element).tagName.equals(tagName, ignoreCase = true)) {
                 return true
             }
         }
@@ -883,11 +1267,19 @@ class RtszDocumentImporter {
         val children = this.childNodes
         for (idx in 0 until children.length) {
             val child = children.item(idx)
-            if (child.nodeType == Node.ELEMENT_NODE && (child as Element).tagName == tagName) {
+            if (child.nodeType == Node.ELEMENT_NODE && (child as Element).tagName.equals(tagName, ignoreCase = true)) {
                 return child.textContent?.trim().orEmpty()
             }
         }
         return ""
+    }
+
+    private fun Element.childInt(vararg tagNames: String): Int? {
+        for (tag in tagNames) {
+            val v = childText(tag).toIntOrNull()
+            if (v != null && v > 0) return v
+        }
+        return null
     }
 
     private fun Element.childBoolean(vararg tagNames: String, default: Boolean): Boolean {
@@ -899,5 +1291,13 @@ class RtszDocumentImporter {
             }
         }
         return default
+    }
+
+    companion object {
+        private val UTF16_DECL_REGEX = Regex("""encoding\s*=\s*["']utf-16[^"']*["']""", RegexOption.IGNORE_CASE)
+        private val INVALID_CHAR_REF_REGEX = Regex(
+            """&#x(?:0*[0-8bcef]|1[0-9a-f]);|&#(?:0*[0-8]|11|12|1[4-9]|2[0-9]|3[01]);""",
+            RegexOption.IGNORE_CASE
+        )
     }
 }

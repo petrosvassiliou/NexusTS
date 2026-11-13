@@ -34,8 +34,8 @@ import androidx.compose.material.icons.outlined.Send
 import androidx.compose.material.icons.outlined.Usb
 import androidx.compose.material.icons.outlined.VolumeOff
 import androidx.compose.material.icons.outlined.VolumeUp
-import androidx.compose.material3.AssistChip
 import androidx.compose.material3.CircularProgressIndicator
+import com.nexusts.app.core.ui.components.NexusActionChip
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -474,7 +474,7 @@ fun RdpSessionSurfaceView(
                 }
 
                 if (session.settings.hiDpiEnabled) {
-                    AssistChip(
+                    NexusActionChip(
                         onClick = {
                             val nextScale = when (activeScalePercent) {
                                 100 -> 125
@@ -493,24 +493,13 @@ fun RdpSessionSurfaceView(
                                 )
                             }
                         },
-                        label = {
-                            Text(
-                                text = "HiDPI ${activeScalePercent}%",
-                                style = MaterialTheme.typography.labelSmall
-                            )
-                        },
-                        leadingIcon = {
-                            Icon(
-                                imageVector = Icons.Outlined.AspectRatio,
-                                contentDescription = dynamicResizeLabel,
-                                modifier = Modifier.size(14.dp)
-                            )
-                        }
+                        label = "HiDPI ${activeScalePercent}%",
+                        leadingIcon = Icons.Outlined.AspectRatio
                     )
                 }
 
                 if (session.settings.redirectClipboard) {
-                    AssistChip(
+                    NexusActionChip(
                         onClick = {
                             val localText = clipboardManager.getText()?.text.orEmpty()
                             if (localText.isNotEmpty()) {
@@ -519,21 +508,10 @@ fun RdpSessionSurfaceView(
                                 }
                             }
                         },
-                        label = {
-                            Text(
-                                text = if (clipboardSyncLabel == "Clipboard") "Push Clipboard" else "Push $clipboardSyncLabel",
-                                style = MaterialTheme.typography.labelSmall
-                            )
-                        },
-                        leadingIcon = {
-                            Icon(
-                                imageVector = Icons.Outlined.ContentPaste,
-                                contentDescription = null,
-                                modifier = Modifier.size(14.dp)
-                            )
-                        }
+                        label = if (clipboardSyncLabel == "Clipboard") "Push Clipboard" else "Push $clipboardSyncLabel",
+                        leadingIcon = Icons.Outlined.ContentPaste
                     )
-                    AssistChip(
+                    NexusActionChip(
                         onClick = {
                             coroutineScope.launch(Dispatchers.IO) {
                                 val remoteText = session.pullRemoteClipboardText()
@@ -544,54 +522,21 @@ fun RdpSessionSurfaceView(
                                 }
                             }
                         },
-                        label = {
-                            Text(
-                                text = if (clipboardSyncLabel == "Clipboard") "Pull Clipboard" else "Pull $clipboardSyncLabel",
-                                style = MaterialTheme.typography.labelSmall
-                            )
-                        },
-                        leadingIcon = {
-                            Icon(
-                                imageVector = Icons.Outlined.ContentCopy,
-                                contentDescription = null,
-                                modifier = Modifier.size(14.dp)
-                            )
-                        }
+                        label = if (clipboardSyncLabel == "Clipboard") "Pull Clipboard" else "Pull $clipboardSyncLabel",
+                        leadingIcon = Icons.Outlined.ContentCopy
                     )
                 }
 
-                AssistChip(
+                NexusActionChip(
                     onClick = { showKeyboardBar = !showKeyboardBar },
-                    label = {
-                        Text(
-                            text = "⌨ Keys",
-                            style = MaterialTheme.typography.labelSmall
-                        )
-                    },
-                    leadingIcon = {
-                        Icon(
-                            imageVector = Icons.Outlined.Keyboard,
-                            contentDescription = null,
-                            modifier = Modifier.size(14.dp)
-                        )
-                    }
+                    label = "⌨ Keys",
+                    leadingIcon = Icons.Outlined.Keyboard
                 )
 
-                AssistChip(
+                NexusActionChip(
                     onClick = { session.sendCtrlAltDel() },
-                    label = {
-                        Text(
-                            text = ctrlAltDelLabel,
-                            style = MaterialTheme.typography.labelSmall
-                        )
-                    },
-                    leadingIcon = {
-                        Icon(
-                            imageVector = Icons.Outlined.Keyboard,
-                            contentDescription = null,
-                            modifier = Modifier.size(14.dp)
-                        )
-                    }
+                    label = ctrlAltDelLabel,
+                    leadingIcon = Icons.Outlined.Keyboard
                 )
             }
         }

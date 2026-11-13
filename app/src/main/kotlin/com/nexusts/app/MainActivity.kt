@@ -5,6 +5,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.provider.OpenableColumns
+import android.view.KeyEvent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -13,6 +14,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
@@ -27,6 +29,7 @@ import com.nexusts.app.core.gdrivesync.sync.GoogleDriveVaultSyncEngine
 import com.nexusts.app.core.gdrivesync.sync.SafDriveSyncOutcome
 import com.nexusts.app.core.gdrivesync.sync.SafLiveGoogleDriveBridge
 import com.nexusts.app.core.gdrivesync.sync.VaultSyncResult
+import com.nexusts.app.core.ui.input.NexusShortcutAction
 import com.nexusts.app.core.ui.theme.NexusTSTheme
 import com.nexusts.app.core.ui.workspace.AdHocConnectionSyntaxParser
 import com.nexusts.app.core.ui.workspace.GooglebookWindowController
@@ -47,10 +50,11 @@ import kotlinx.serialization.json.Json
 import javax.inject.Inject
 
 /**
- * Primary Adaptive Googlebook OS & Android Tablet Desktop Window Activity (`v1.1.1`).
+ * Primary Adaptive Googlebook OS & Android Tablet Desktop Window Activity (`v1.1.3`).
  * Handles:
  * - Atomic local `.nxts` vault persistence & cold-start restoration (`nexusts_local_vault.nxts`)
- * - Direct `.nxts`, `.rtsz`, KeePass `.kdbx` / XML, Bitwarden JSON, 1Password `.1pux` / `.1pif`, & CSV opening
+ * - Direct `.nxts`, Royal TS `.rtsz` / `.rtsx` / `.rjson`, KeePass `.kdbx` / XML, Bitwarden JSON, 1Password `.1pux` / `.1pif`, & CSV opening
+ * - Window-level hardware keyboard shortcut interception (`Ctrl+K`, `Escape`, `Ctrl+N`, `Ctrl+T`, etc.) even with zero focused Compose node
  * - Dual-Engine Live Google Drive Synchronization:
  *   1. Zero-Cloud-Console Persistent SAF Bridge (`SafLiveGoogleDriveBridge`) + 3-Way Delta Merge
  *   2. Google Drive REST API v3 (`AuthorizationClient` OAuth 2.0 + `GoogleDriveVaultSyncEngine`)
@@ -83,6 +87,8 @@ class MainActivity : AppCompatActivity() {
     lateinit var vaultSerializer: NxtsVaultSerializer
 
     private val githubUpdateChecker = GitHubReleaseUpdateChecker()
+    private var triggerFileImportFromActivity: (() -> Unit)? = null
+    private val consumedShortcutKeyCodes = mutableSetOf<Int>()
 
     private val playUpdateLauncher = registerForActivityResult(
         ActivityResultContracts.StartIntentSenderForResult()
@@ -167,6 +173,7 @@ class MainActivity : AppCompatActivity() {
             }
 
             var pendingExportBytes by remember { mutableStateOf<ByteArray?>(null) }
+            var pendingExportFileName by remember { mutableStateOf("") }
             var lastObservedAutoSyncRev by remember { mutableLongStateOf(uiState.vaultDocument.revision) }
 
             // Atomically persist encrypted .nxts vault locally whenever vault mutations or lock events occur
@@ -237,16 +244,32 @@ class MainActivity : AppCompatActivity() {
                 }
             }
 
+            SideEffect {
+                triggerFileImportFromActivity = { fileImportLauncher.launch(arrayOf("*/*")) }
+            }
+
             val fileExportLauncher = rememberLauncherForActivityResult(
                 contract = ActivityResultContracts.CreateDocument("*/*")
             ) { uri: Uri? ->
                 val payload = pendingExportBytes
+                val targetName = pendingExportFileName.ifBlank { "vault-export" }
                 pendingExportBytes = null
+                pendingExportFileName = ""
                 if (uri != null && payload != null) {
-                    runCatching {
-                        contentResolver.openOutputStream(uri)?.use { stream ->
-                            stream.write(payload)
-                            stream.flush()
+                    lifecycleScope.launch {
+                        runCatching {
+                            withContext(Dispatchers.IO) {
+                                val stream = contentResolver.openOutputStream(uri)
+                                    ?: throw IllegalStateException("Could not open output stream for '$targetName'.")
+                                stream.use {
+                                    it.write(payload)
+                                    it.flush()
+                                }
+                            }
+                        }.onSuccess {
+                            workspaceViewModel.notifyUserMessage("Exported '$targetName' (${payload.size} bytes).")
+                        }.onFailure { err ->
+                            workspaceViewModel.reportImportFailure("Export failed for '$targetName': ${err.message}")
                         }
                     }
                 }
@@ -294,6 +317,7 @@ class MainActivity : AppCompatActivity() {
                     onRequestExportVault = { format ->
                         val (suggestedFileName, payloadBytes) = workspaceViewModel.buildVaultExportPayload(format)
                         pendingExportBytes = payloadBytes
+                        pendingExportFileName = suggestedFileName
                         fileExportLauncher.launch(suggestedFileName)
                     },
                     initialOAuthWebClientId = effectiveInitialClientId,
@@ -365,12 +389,48 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (event.action == KeyEvent.ACTION_UP && consumedShortcutKeyCodes.remove(event.keyCode)) {
+            return true
+        }
+        if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
+            val state = workspaceViewModel.uiState.value
+            if (!state.isVaultLocked && event.keyCode == KeyEvent.KEYCODE_ESCAPE && state.isQuickConnectVisible) {
+                workspaceViewModel.dismissQuickConnect()
+                consumedShortcutKeyCodes.add(event.keyCode)
+                return true
+            }
+            val handled = workspaceViewModel.shortcutEngine.dispatchAndroidKeyEvent(
+                native = event,
+                remoteCaptureActive = state.remoteKeyCaptureEnabled
+            ) { action ->
+                if (state.isVaultLocked && action != NexusShortcutAction.OPEN_VAULT_DOCUMENT) {
+                    false
+                } else {
+                    workspaceViewModel.handleShortcut(
+                        action = action,
+                        onOpenVaultPicker = { triggerFileImportFromActivity?.invoke() },
+                        onSyncDriveNow = { triggerLiveGoogleDriveSync() },
+                        onDetachActiveTab = { tab -> launchDetachedTabActivity(tab, null) }
+                    )
+                    true
+                }
+            }
+            if (handled) {
+                consumedShortcutKeyCodes.add(event.keyCode)
+                return true
+            }
+        }
+        return super.dispatchKeyEvent(event)
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         handleIncomingIntent(intent)
     }
 
     override fun onDestroy() {
+        triggerFileImportFromActivity = null
         updateCoordinator.unregisterFlexibleListener()
         super.onDestroy()
     }
@@ -589,11 +649,19 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun importVaultUri(uri: Uri) {
-        runCatching {
-            val fileName = resolveDisplayName(uri)
-            contentResolver.openInputStream(uri)?.use { stream ->
-                val rawBytes = stream.readBytes()
+        lifecycleScope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    val fileName = resolveDisplayName(uri)
+                    val stream = contentResolver.openInputStream(uri)
+                        ?: throw IllegalStateException("Could not open selected file '$fileName'. Check storage permissions or cloud file availability.")
+                    val rawBytes = stream.use { it.readBytes() }
+                    fileName to rawBytes
+                }
+            }.onSuccess { (fileName, rawBytes) ->
                 workspaceViewModel.importVaultOrRtszBytes(fileName = fileName, bytes = rawBytes)
+            }.onFailure { err ->
+                workspaceViewModel.reportImportFailure("Unable to read selected file: ${err.message}")
             }
         }
     }

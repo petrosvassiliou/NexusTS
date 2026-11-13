@@ -6,6 +6,7 @@ import android.content.res.Configuration
 import android.os.Looper
 import android.view.KeyEvent
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onFirst
 import androidx.compose.ui.test.performClick
@@ -59,10 +60,12 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.Shadows
 import org.robolectric.annotation.Config
+import java.io.ByteArrayOutputStream
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.zip.GZIPOutputStream
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], qualifiers = "w1440dp-h900dp-xhdpi", application = Application::class)
@@ -275,8 +278,11 @@ class NexusWorkspaceComposeE2ETest {
 
         assertTextRendered("115200 8N1")
         assertTextRendered("Send BREAK")
-        composeRule.onAllNodesWithText("Send BREAK").onFirst().performClick()
-        composeRule.waitForIdle()
+        composeRule.onAllNodesWithText("Send BREAK").onFirst().performScrollTo().performClick()
+        composeRule.waitUntil(timeoutMillis = 5_000) {
+            Shadows.shadowOf(Looper.getMainLooper()).idle()
+            composeRule.onAllNodesWithText("[UART BREAK]", substring = true).fetchSemanticsNodes().isNotEmpty()
+        }
         assertTextRendered("[UART BREAK]")
 
         // 2. Create and launch Kubernetes Pod Exec & Live Log Streamer session
@@ -779,5 +785,163 @@ class NexusWorkspaceComposeE2ETest {
             "\u001bf".toByteArray(StandardCharsets.UTF_8),
             SshNativeBridge.translateHardwareKeyToAnsi(KeyEvent.KEYCODE_F, 'f'.code, ctrlPressed = false, altPressed = true)
         )
+    }
+
+    @Test
+    fun hardwareCtrlKShortcutFolderInlineRdpPlusButtonAndRtszMergeImportWorkEndToEnd() {
+        val vm = buildRealViewModel()
+        val strings = WorkspaceLocalizedStrings.defaultEnglish()
+
+        composeRule.setContent {
+            NexusTSTheme {
+                NexusWorkspaceScreen(
+                    viewModel = vm,
+                    strings = strings,
+                    connectedDisplays = emptyList(),
+                    flexibleUpdateDownloaded = false,
+                    onCompleteFlexibleUpdate = {},
+                    onRequestImportFilePicker = {},
+                    onRequestGoogleDriveSync = {},
+                    onDetachTabToNativeWindow = { _, _ -> }
+                )
+            }
+        }
+        composeRule.waitForIdle()
+
+        // 1. Cold-start hardware Ctrl+K with ZERO focused Compose node opens Quick Connect & deduplicates same event
+        assertFalse(vm.uiState.value.isQuickConnectVisible)
+        var actionDispatchCount = 0
+        composeRule.runOnIdle {
+            val ctrlKEvent = KeyEvent(
+                100L,
+                105L,
+                KeyEvent.ACTION_DOWN,
+                KeyEvent.KEYCODE_K,
+                0,
+                KeyEvent.META_CTRL_ON or KeyEvent.META_CTRL_LEFT_ON
+            )
+            val handledFirst = vm.shortcutEngine.dispatchAndroidKeyEvent(
+                native = ctrlKEvent,
+                remoteCaptureActive = vm.uiState.value.remoteKeyCaptureEnabled
+            ) { action ->
+                actionDispatchCount++
+                vm.handleShortcut(action)
+                true
+            }
+            assertTrue(handledFirst)
+
+            // Same (downTime, eventTime, keyCode) from Compose onPreviewKeyEvent must be deduplicated (no double-toggle)
+            val handledDuplicate = vm.shortcutEngine.dispatchAndroidKeyEvent(
+                native = ctrlKEvent,
+                remoteCaptureActive = vm.uiState.value.remoteKeyCaptureEnabled
+            ) { action ->
+                actionDispatchCount++
+                vm.handleShortcut(action)
+                true
+            }
+            assertTrue(handledDuplicate)
+        }
+        composeRule.waitForIdle()
+        assertEquals(1, actionDispatchCount)
+        assertTrue(vm.uiState.value.isQuickConnectVisible)
+        assertTextRendered(strings.quickConnectPlaceholder)
+
+        // Escape dismisses Quick Connect Command Palette
+        composeRule.runOnIdle {
+            vm.dismissQuickConnect()
+        }
+        composeRule.waitForIdle()
+        assertFalse(vm.uiState.value.isQuickConnectVisible)
+
+        // 2. Create folder -> click inline '+' RDP icon button -> verify RDP & folder pre-populated -> save RDP connection
+        composeRule.runOnIdle {
+            vm.saveFolderAndCredentialToVault(
+                VaultFolder(id = "folder-prod-win", name = "Production Windows Tier")
+            )
+        }
+        composeRule.waitForIdle()
+
+        composeRule
+            .onAllNodesWithContentDescription("New RDP Connection in Production Windows Tier")
+            .onFirst()
+            .performClick()
+        composeRule.waitForIdle()
+
+        assertTrue(vm.uiState.value.isNewConnectionDialogVisible)
+        assertEquals("folder-prod-win", vm.uiState.value.newConnectionDefaultFolderId)
+        assertEquals(VaultProtocolType.RDP, vm.uiState.value.newConnectionDefaultProtocol)
+
+        composeRule.runOnIdle {
+            vm.dismissNewConnectionDialog()
+            vm.saveConnectionToVault(
+                VaultConnection(
+                    id = "conn-existing-win",
+                    parentFolderId = "folder-prod-win",
+                    name = "Existing-Prod-DC01",
+                    host = "10.10.0.10",
+                    protocol = VaultProtocolType.RDP,
+                    settings = ProtocolSpecificSettings.Rdp()
+                )
+            )
+        }
+        composeRule.waitForIdle()
+        assertEquals(1, vm.uiState.value.vaultDocument.connections.size)
+
+        // 3. Import GZIP-compressed Royal TS .rtsz archive -> verify non-destructive merge keeps existing + adds imported
+        val rtszXml = """
+            <?xml version="1.0" encoding="utf-8"?>
+            <RTSZDocument>
+              <RoyalDocument>
+                <ID>doc-rtsz-e2e</ID>
+                <Name>Imported Corp RTSZ</Name>
+              </RoyalDocument>
+              <RoyalFolder>
+                <ID>fld-imported-eu</ID>
+                <ParentID>doc-rtsz-e2e</ParentID>
+                <Name>Imported EU Cluster</Name>
+              </RoyalFolder>
+              <RoyalRDSConnection>
+                <ID>conn-imported-rdp</ID>
+                <ParentID>fld-imported-eu</ParentID>
+                <Name>Imported-Royal-RDP</Name>
+                <URI>rdp-eu.corp.internal</URI>
+              </RoyalRDSConnection>
+            </RTSZDocument>
+        """.trimIndent().toByteArray(StandardCharsets.UTF_8)
+
+        val gzipBytes = ByteArrayOutputStream().also { baos ->
+            GZIPOutputStream(baos).use { gos -> gos.write(rtszXml) }
+        }.toByteArray()
+
+        composeRule.runOnIdle {
+            vm.importVaultOrRtszBytes("corp_import.rtsz", gzipBytes)
+        }
+        composeRule.waitUntil(timeoutMillis = 5_000L) {
+            Shadows.shadowOf(Looper.getMainLooper()).idle()
+            vm.uiState.value.vaultDocument.connections.any { it.id == "conn-imported-rdp" }
+        }
+        composeRule.waitForIdle()
+
+        assertFalse(vm.uiState.value.isVaultLocked)
+        assertTrue(vm.uiState.value.vaultDocument.connections.any { it.id == "conn-existing-win" })
+        assertTrue(vm.uiState.value.vaultDocument.connections.any { it.id == "conn-imported-rdp" })
+        assertTrue(vm.uiState.value.vaultDocument.folders.any { it.id == "fld-imported-eu" })
+        assertTrue(vm.uiState.value.userSnackbarMessage.orEmpty().contains("Imported"))
+
+        // 4. Import unsupported binary file -> NEVER locks vault behind shield; shows dismissible error dialog
+        composeRule.runOnIdle {
+            vm.importVaultOrRtszBytes("broken.bin", byteArrayOf(0x00, 0xFF.toByte(), 0x13, 0x37))
+        }
+        composeRule.waitForIdle()
+
+        assertFalse(vm.uiState.value.isVaultLocked)
+        assertNotNull(vm.uiState.value.importErrorDialogMessage)
+        assertTrue(vm.uiState.value.importErrorDialogMessage.orEmpty().contains("broken.bin"))
+
+        composeRule.runOnIdle {
+            vm.dismissImportErrorDialog()
+        }
+        composeRule.waitForIdle()
+        assertEquals(null, vm.uiState.value.importErrorDialogMessage)
     }
 }

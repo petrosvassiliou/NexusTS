@@ -16,7 +16,7 @@ while [ -h "$app_path" ]; do
 done
 
 APP_HOME=$( cd "${app_path%"${app_path##*/}"}" > /dev/null; pwd -P ) || exit
-DEFAULT_JVM_OPTS='"-Xmx64m" "-Xms64m"'
+DEFAULT_JVM_OPTS="-Xmx64m -Xms64m"
 CLASSPATH="$APP_HOME/gradle/wrapper/gradle-wrapper.jar"
 
 # Auto-bootstrap gradle-wrapper.jar (v8.13.0) if not yet present in working tree

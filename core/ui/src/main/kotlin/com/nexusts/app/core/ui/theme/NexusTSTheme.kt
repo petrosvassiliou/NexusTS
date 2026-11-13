@@ -1,17 +1,23 @@
 package com.nexusts.app.core.ui.theme
 
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.material.ripple.RippleAlpha
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.LocalRippleConfiguration
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.RippleConfiguration
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.ReadOnlyComposable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalContext
 
 /**
  * Root Material 3 Expressive Theme for NexusTS (`com.nexusts.app`).
  * Provides Expressive color schemes, typography, spatial/effects spring physics,
- * morphing container shapes, and multi-protocol extended colors.
+ * morphing container shapes, subtle desktop hover ripple tuning, and multi-protocol extended colors.
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun NexusTSTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
@@ -39,16 +45,28 @@ fun NexusTSTheme(
             lineHeight = defaultMono.terminalBold.lineHeight * terminalFontScale
         )
     )
+    val subtleDesktopRipple = remember(colorScheme.primary) {
+        RippleConfiguration(
+            color = colorScheme.primary,
+            rippleAlpha = RippleAlpha(
+                pressedAlpha = 0.10f,
+                focusedAlpha = 0.05f,
+                hoveredAlpha = 0.04f,
+                draggedAlpha = 0.08f
+            )
+        )
+    }
 
-    CompositionLocalProvider(
-        LocalNexusExtendedColors provides extendedColors,
-        LocalNexusMonospaceTypography provides scaledMono,
-        LocalNexusMotion provides NexusMotionScheme()
+    MaterialTheme(
+        colorScheme = colorScheme,
+        typography = NexusExpressiveTypography,
+        shapes = NexusExpressiveShapes
     ) {
-        MaterialTheme(
-            colorScheme = colorScheme,
-            typography = NexusExpressiveTypography,
-            shapes = NexusExpressiveShapes,
+        CompositionLocalProvider(
+            LocalNexusExtendedColors provides extendedColors,
+            LocalNexusMonospaceTypography provides scaledMono,
+            LocalNexusMotion provides NexusMotionScheme(),
+            LocalRippleConfiguration provides subtleDesktopRipple,
             content = content
         )
     }

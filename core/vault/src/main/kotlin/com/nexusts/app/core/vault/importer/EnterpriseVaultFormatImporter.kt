@@ -1,6 +1,7 @@
 package com.nexusts.app.core.vault.importer
 
 import com.nexusts.app.core.vault.credentials.KeePassKdbx4Reader
+import com.nexusts.app.core.vault.model.CommandTask
 import com.nexusts.app.core.vault.model.CredentialSourceKind
 import com.nexusts.app.core.vault.model.InheritableProperties
 import com.nexusts.app.core.vault.model.InheritanceMode
@@ -10,6 +11,7 @@ import com.nexusts.app.core.vault.model.VaultConnection
 import com.nexusts.app.core.vault.model.VaultCredential
 import com.nexusts.app.core.vault.model.VaultFolder
 import com.nexusts.app.core.vault.model.VaultProtocolType
+import com.nexusts.app.core.vault.model.VaultTodoItem
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -21,14 +23,18 @@ import org.w3c.dom.Element
 import org.w3c.dom.Node
 import java.io.ByteArrayInputStream
 import java.net.URLDecoder
+import java.nio.charset.Charset
 import java.nio.charset.StandardCharsets
 import java.util.UUID
+import java.util.zip.GZIPInputStream
 import java.util.zip.ZipInputStream
 import javax.xml.parsers.DocumentBuilderFactory
 
 enum class DetectedExternalVaultFormat {
     NXTS_ENCRYPTED_BINARY,
     ROYAL_TS_RTSZ_OR_RTSX,
+    ROYAL_TS_ENCRYPTED_ARCHIVE,
+    ROYAL_JSON,
     KEEPASS_KDBX_BINARY,
     KEEPASS_XML_2X,
     BITWARDEN_JSON,
@@ -38,8 +44,10 @@ enum class DetectedExternalVaultFormat {
 }
 
 /**
- * Enterprise Multi-Format Password Manager & Inventory Importer (`v1.2`).
+ * Enterprise Multi-Format Password Manager & Inventory Importer (`v1.3`).
  * Supports native zero-loss import of:
+ * - **Royal TS / Royal TSX (`.rtsz`, `.rtsx`, `.rjson`)**: GZIP-compressed `.rtsz`, ZIP & WinZip-AES/ZipCrypto
+ *   Lockdown `.rtsz`, UTF-8 / UTF-16 XML `.rtsx`, and RoyalJSON (`.rjson`) documents.
  * - **KeePass `.kdbx` 4.x Binary & KeePass 2.x XML**: Nested `<Group>` folders, `<Entry>` credentials,
  *   RFC 6238 `otpauth://` TOTP secrets, OpenSSH PEM keys, and protocol endpoint synthesis.
  * - **Bitwarden Vault JSON (`.json`)**: Nested `folders[]` (`"Prod/EU/Linux"`), `items[]` (Logins, TOTP, URIs, and SSH Keys),
@@ -55,6 +63,8 @@ class EnterpriseVaultFormatImporter {
     }
 
     fun detectFormat(fileName: String, rawBytes: ByteArray): DetectedExternalVaultFormat {
+        if (rawBytes.isEmpty()) return DetectedExternalVaultFormat.UNKNOWN
+
         // 1. Encrypted NexusTS .nxts container magic ("NXTS")
         if (rawBytes.size >= 4 &&
             rawBytes[0] == 0x4E.toByte() &&
@@ -75,7 +85,34 @@ class EnterpriseVaultFormatImporter {
             return DetectedExternalVaultFormat.KEEPASS_KDBX_BINARY
         }
 
-        val lowerName = fileName.lowercase()
+        val lowerName = fileName.trim().lowercase()
+
+        // 3. GZIP magic (0x1F, 0x8B) — Default Royal TS (Windows) & Royal TSX (macOS) .rtsz container!
+        if (rawBytes.size >= 2 &&
+            rawBytes[0] == 0x1F.toByte() &&
+            rawBytes[1] == 0x8B.toByte()
+        ) {
+            val gunzippedHead = gunzipPreviewBytes(rawBytes, maxBytes = 8192)
+            if (gunzippedHead != null && gunzippedHead.isNotEmpty()) {
+                val innerText = decodeBomAwarePreview(gunzippedHead, maxBytes = gunzippedHead.size)
+                if (innerText.contains("<KeePassFile", ignoreCase = true)) {
+                    return DetectedExternalVaultFormat.KEEPASS_XML_2X
+                }
+                if (innerText.startsWith("<") ||
+                    innerText.contains("RTSZDocument", ignoreCase = true) ||
+                    innerText.contains("RoyalDocument", ignoreCase = true) ||
+                    innerText.contains("RoyalFolder", ignoreCase = true)
+                ) {
+                    return DetectedExternalVaultFormat.ROYAL_TS_RTSZ_OR_RTSX
+                }
+            }
+            if (lowerName.endsWith(".rtsz") || lowerName.endsWith(".rtsx")) {
+                return DetectedExternalVaultFormat.ROYAL_TS_RTSZ_OR_RTSX
+            }
+            return DetectedExternalVaultFormat.UNKNOWN
+        }
+
+        // 4. ZIP archive magic (0x50, 0x4B, 0x03, 0x04)
         val isZip = rawBytes.size >= 4 &&
             rawBytes[0] == 0x50.toByte() &&
             rawBytes[1] == 0x4B.toByte() &&
@@ -86,8 +123,34 @@ class EnterpriseVaultFormatImporter {
             if (lowerName.endsWith(".1pux") || zipContainsEntry(rawBytes, "export.data")) {
                 return DetectedExternalVaultFormat.ONEPASSWORD_1PUX_OR_JSON
             }
+            if (EncryptedZipExtractor.isEncryptedZip(rawBytes)) {
+                return DetectedExternalVaultFormat.ROYAL_TS_ENCRYPTED_ARCHIVE
+            }
+            val firstEntryPreview = readFirstZipEntryPreview(rawBytes, maxBytes = 8192)
+            if (firstEntryPreview != null && firstEntryPreview.isNotEmpty()) {
+                val unwrapped = if (firstEntryPreview.size >= 2 &&
+                    firstEntryPreview[0] == 0x1F.toByte() &&
+                    firstEntryPreview[1] == 0x8B.toByte()
+                ) {
+                    gunzipPreviewBytes(firstEntryPreview, maxBytes = 8192) ?: firstEntryPreview
+                } else {
+                    firstEntryPreview
+                }
+                val previewText = decodeBomAwarePreview(unwrapped, maxBytes = unwrapped.size)
+                if (previewText.contains("<KeePassFile", ignoreCase = true)) {
+                    return DetectedExternalVaultFormat.KEEPASS_XML_2X
+                }
+                if (previewText.startsWith("<") ||
+                    previewText.contains("RTSZDocument", ignoreCase = true) ||
+                    previewText.contains("RoyalDocument", ignoreCase = true)
+                ) {
+                    return DetectedExternalVaultFormat.ROYAL_TS_RTSZ_OR_RTSX
+                }
+            }
             if (lowerName.endsWith(".rtsz") ||
+                lowerName.endsWith(".rtsx") ||
                 zipContainsEntry(rawBytes, ".rtsx") ||
+                zipContainsEntry(rawBytes, ".rtsz") ||
                 zipContainsEntry(rawBytes, ".xml")
             ) {
                 return DetectedExternalVaultFormat.ROYAL_TS_RTSZ_OR_RTSX
@@ -95,9 +158,8 @@ class EnterpriseVaultFormatImporter {
             return DetectedExternalVaultFormat.UNKNOWN
         }
 
-        val headText = rawBytes
-            .decodeToString(0, minOf(rawBytes.size, 4096), throwOnInvalidSequence = false)
-            .trimStart('\uFEFF', ' ', '\t', '\r', '\n')
+        // 5. BOM-aware UTF-8 / UTF-16LE / UTF-16BE text inspection
+        val headText = decodeBomAwarePreview(rawBytes, maxBytes = 8192)
 
         if (headText.startsWith("<")) {
             return if (headText.contains("<KeePassFile", ignoreCase = true)) {
@@ -107,25 +169,46 @@ class EnterpriseVaultFormatImporter {
             }
         }
 
+        if ((lowerName.endsWith(".rtsz") || lowerName.endsWith(".rtsx")) && headText.contains("<")) {
+            return DetectedExternalVaultFormat.ROYAL_TS_RTSZ_OR_RTSX
+        }
+
         if (lowerName.endsWith(".1pif") || headText.startsWith("***")) {
             return DetectedExternalVaultFormat.ONEPASSWORD_1PUX_OR_JSON
         }
 
+        if (lowerName.endsWith(".rjson")) {
+            return DetectedExternalVaultFormat.ROYAL_JSON
+        }
+
         if (headText.startsWith("{")) {
-            return if (
+            return when {
+                headText.contains("\"Objects\"") && (
+                    headText.contains("\"RemoteDesktopConnection\"", ignoreCase = true) ||
+                        headText.contains("\"TerminalConnection\"", ignoreCase = true) ||
+                        headText.contains("\"SSHConnection\"", ignoreCase = true) ||
+                        headText.contains("\"RoyalFolder\"", ignoreCase = true) ||
+                        headText.contains("\"ComputerName\"", ignoreCase = true) ||
+                        headText.contains("\"Type\"", ignoreCase = true)
+                    ) -> DetectedExternalVaultFormat.ROYAL_JSON
+
                 (headText.contains("\"accounts\"") && headText.contains("\"vaults\"")) ||
-                headText.contains("\"secureContents\"") ||
-                (headText.contains("\"typeName\"") && headText.contains("\"uuid\"")) ||
-                headText.contains("\n***") ||
-                lowerName.contains("1password")
-            ) {
-                DetectedExternalVaultFormat.ONEPASSWORD_1PUX_OR_JSON
-            } else {
-                DetectedExternalVaultFormat.BITWARDEN_JSON
+                    headText.contains("\"secureContents\"") ||
+                    (headText.contains("\"typeName\"") && headText.contains("\"uuid\"")) ||
+                    headText.contains("\n***") ||
+                    lowerName.contains("1password") ->
+                    DetectedExternalVaultFormat.ONEPASSWORD_1PUX_OR_JSON
+
+                else -> DetectedExternalVaultFormat.BITWARDEN_JSON
             }
         }
 
-        if (lowerName.endsWith(".csv") || headText.lines().firstOrNull()?.contains(",") == true) {
+        if (looksLikePrintableText(rawBytes) && (
+                lowerName.endsWith(".csv") ||
+                    (headText.lines().firstOrNull()?.contains(",") == true &&
+                        headText.lines().count { it.isNotBlank() } >= 2)
+                )
+        ) {
             return DetectedExternalVaultFormat.CSV_INVENTORY_OR_PASSWORDS
         }
 
@@ -141,9 +224,19 @@ class EnterpriseVaultFormatImporter {
     ): NxtsVaultDocument {
         val cleanName = documentNameHint.substringBeforeLast('.').ifBlank { "Imported Enterprise Vault" }
         return when (format) {
-            DetectedExternalVaultFormat.ROYAL_TS_RTSZ_OR_RTSX -> RtszDocumentImporter().importRtszBytes(rawBytes, cleanName)
+            DetectedExternalVaultFormat.ROYAL_TS_RTSZ_OR_RTSX ->
+                RtszDocumentImporter().importRtszBytes(rawBytes, cleanName, masterPassphrase)
+            DetectedExternalVaultFormat.ROYAL_TS_ENCRYPTED_ARCHIVE -> {
+                if (masterPassphrase == null || masterPassphrase.isEmpty()) {
+                    throw IllegalArgumentException(
+                        "Royal TS Lockdown (.rtsz) archive is password-protected and requires a password to import."
+                    )
+                }
+                RtszDocumentImporter().importRtszBytes(rawBytes, cleanName, masterPassphrase)
+            }
+            DetectedExternalVaultFormat.ROYAL_JSON -> importRoyalJson(rawBytes, cleanName)
             DetectedExternalVaultFormat.KEEPASS_KDBX_BINARY -> {
-                if (masterPassphrase == null) {
+                if (masterPassphrase == null || masterPassphrase.isEmpty()) {
                     throw IllegalArgumentException(
                         "KeePass .kdbx binary database is encrypted and requires a master passphrase to import."
                     )
@@ -1308,6 +1401,310 @@ class EnterpriseVaultFormatImporter {
         } else {
             "" to trimmed
         }
+    }
+
+    /**
+     * Imports RoyalJSON (`.rjson` / Dynamic Folder JSON) documents supporting both nested `Objects[]`
+     * inside `Folder` items and flat `ParentID`-linked `Objects[]` lists.
+     */
+    fun importRoyalJson(rawBytes: ByteArray, vaultName: String = "Imported RoyalJSON Vault"): NxtsVaultDocument {
+        val text = decodeBomAwareFullText(rawBytes)
+        val root = lenientJson.parseToJsonElement(text).jsonObject
+        val docName = root.strAny("Name", "DocumentName").ifBlank { vaultName }
+        val docDesc = root.strAny("Description", "Notes").ifBlank { "Imported from RoyalJSON (.rjson)" }
+
+        val folders = mutableListOf<VaultFolder>()
+        val connections = mutableListOf<VaultConnection>()
+        val credentials = mutableListOf<VaultCredential>()
+        val commandTasks = mutableListOf<CommandTask>()
+        val todoItems = mutableListOf<VaultTodoItem>()
+
+        fun visitObjects(array: JsonArray?, implicitParentFolderId: String?) {
+            array?.forEach { elem ->
+                val obj = elem as? JsonObject ?: return@forEach
+                val typeRaw = obj.strAny("Type", "ObjectType").trim()
+                val typeLower = typeRaw.lowercase()
+                val id = obj.strAny("ID", "Id", "id").ifBlank { UUID.randomUUID().toString() }
+                val name = obj.strAny("Name", "DisplayName", "Title").ifBlank { typeRaw.ifBlank { "Royal Item" } }
+                val parentId = obj.strAny("ParentID", "ParentId").ifBlank { implicitParentFolderId.orEmpty() }
+                    .takeIf { it.isNotBlank() }
+                val notes = obj.strAny("Notes", "Description")
+                val colorHex = obj.strAny("Color", "ColorName").takeIf { it.startsWith("#") }
+                val isFavorite = obj.strAny("Favorite", "IsFavorite").equals("true", ignoreCase = true)
+
+                when {
+                    typeLower == "folder" || typeLower == "royalfolder" -> {
+                        val credFromParent = obj.strAny("CredentialsFromParent").equals("true", ignoreCase = true)
+                        val credId = obj.strAny("CredentialId", "CredentialID").takeIf { it.isNotBlank() }
+                        folders += VaultFolder(
+                            id = id,
+                            parentFolderId = parentId,
+                            name = name,
+                            description = notes,
+                            inheritable = InheritableProperties(
+                                credentialMode = when {
+                                    credId != null -> InheritanceMode.OVERRIDE_EXPLICIT
+                                    credFromParent -> InheritanceMode.INHERIT_FROM_PARENT
+                                    else -> InheritanceMode.INHERIT_FROM_PARENT
+                                },
+                                explicitCredentialId = credId,
+                                displayColorAccentHex = colorHex
+                            )
+                        )
+                        visitObjects(obj["Objects"] as? JsonArray, id)
+                    }
+
+                    typeLower == "credential" || typeLower == "royalcredential" || typeLower == "dynamiccredential" -> {
+                        val rawUser = obj.strAny("Username", "UserName")
+                        val explicitDomain = obj.strAny("Domain")
+                        val (parsedDom, parsedUser) = splitDomainUser(rawUser)
+                        val privKey = obj.strAny("KeyFileContent", "PrivateKey", "PrivateKeyContent")
+                        credentials += VaultCredential(
+                            id = id,
+                            parentFolderId = parentId,
+                            name = name,
+                            sourceKind = if (privKey.isNotBlank()) {
+                                CredentialSourceKind.SSH_KEY_PAIR
+                            } else {
+                                CredentialSourceKind.VAULT_INTERNAL
+                            },
+                            username = parsedUser,
+                            domain = explicitDomain.ifBlank { parsedDom },
+                            secretPassword = obj.strAny("Password"),
+                            privateKeyPem = privKey,
+                            keyPassphrase = obj.strAny("Passphrase", "KeyPassphrase")
+                        )
+                    }
+
+                    typeLower == "commandtask" || typeLower == "royalcommandtask" || typeLower == "task" -> {
+                        commandTasks += CommandTask(
+                            id = id,
+                            name = name,
+                            commandTemplate = obj.strAny("Command", "CommandLine"),
+                            broadcastToAllSelectedSessions = obj.strAny("BroadcastToAll").equals("true", ignoreCase = true),
+                            appendNewline = !obj.strAny("AppendNewline").equals("false", ignoreCase = true)
+                        )
+                    }
+
+                    typeLower == "todo" || typeLower == "todoitem" || typeLower == "royaltodo" -> {
+                        todoItems += VaultTodoItem(
+                            id = id,
+                            targetObjectId = parentId,
+                            title = name,
+                            completed = obj.strAny("Completed", "IsCompleted", "Done").equals("true", ignoreCase = true),
+                            priority = obj.strAny("Priority").ifBlank { "NORMAL" },
+                            dueIsoDate = obj.strAny("DueDate")
+                        )
+                    }
+
+                    else -> {
+                        val subType = obj.strAny("SubType", "ConnectionType", "TerminalType").lowercase()
+                        val proto: VaultProtocolType? = when {
+                            typeLower in setOf("remotedesktopconnection", "remotedesktop", "rds", "rdp", "royalrdsconnection") ->
+                                VaultProtocolType.RDP
+                            typeLower in setOf("terminalconnection", "ssh", "sshconnection", "royalsshconnection", "royalterminalconnection") ->
+                                when {
+                                    subType.contains("telnet") -> VaultProtocolType.TELNET
+                                    subType.contains("serial") -> VaultProtocolType.SERIAL
+                                    else -> VaultProtocolType.SSH
+                                }
+                            typeLower in setOf("telnet", "telnetconnection") -> VaultProtocolType.TELNET
+                            typeLower in setOf("serial", "serialconnection") -> VaultProtocolType.SERIAL
+                            typeLower in setOf("vnc", "vncconnection", "royalvncconnection") -> VaultProtocolType.VNC
+                            typeLower in setOf("filetransferconnection", "filetransfer", "sftp", "scp", "ftp", "ftps") ->
+                                when {
+                                    typeLower == "scp" || subType.contains("scp") -> VaultProtocolType.SCP
+                                    typeLower == "ftps" || subType.contains("ftps") -> VaultProtocolType.FTPS
+                                    typeLower == "ftp" || (subType.contains("ftp") && !subType.contains("sftp")) -> VaultProtocolType.FTP
+                                    else -> VaultProtocolType.SFTP
+                                }
+                            typeLower in setOf("webconnection", "webpage", "web", "royalwebconnection", "royalwebpageconnection") ->
+                                VaultProtocolType.WEB_PAGE
+                            else -> null
+                        }
+
+                        if (proto != null) {
+                            val rawHost = obj.strAny("ComputerName", "URI", "Host", "HostName", "URL").ifBlank { name }
+                            val explicitPort = obj.strAny("Port", "RDPPort", "SSHPort").toIntOrNull()
+                                ?.takeIf { it in 1..65535 }
+
+                            val inlineUser = obj.strAny("Username", "UserName")
+                            val inlinePass = obj.strAny("Password")
+                            val explicitCredId = obj.strAny("CredentialId", "CredentialID").takeIf { it.isNotBlank() }
+                            val credIdToBind = if (explicitCredId != null) {
+                                explicitCredId
+                            } else if (inlineUser.isNotBlank() || inlinePass.isNotBlank()) {
+                                val synthId = "rjson-cred-$id"
+                                val (dom, usr) = splitDomainUser(inlineUser)
+                                credentials += VaultCredential(
+                                    id = synthId,
+                                    parentFolderId = parentId,
+                                    name = "$name Credential",
+                                    sourceKind = CredentialSourceKind.VAULT_INTERNAL,
+                                    username = usr,
+                                    domain = obj.strAny("Domain").ifBlank { dom },
+                                    secretPassword = inlinePass
+                                )
+                                synthId
+                            } else {
+                                null
+                            }
+
+                            val credFromParent = obj.strAny("CredentialsFromParent").equals("true", ignoreCase = true)
+                            val credMode = when {
+                                credIdToBind != null -> InheritanceMode.OVERRIDE_EXPLICIT
+                                credFromParent || parentId != null -> InheritanceMode.INHERIT_FROM_PARENT
+                                else -> InheritanceMode.NONE_DIRECT
+                            }
+
+                            connections += buildConnectionForProtocol(
+                                idOverride = id,
+                                title = name,
+                                host = rawHost,
+                                protocol = proto,
+                                portOverride = explicitPort,
+                                parentFolderId = parentId,
+                                credentialId = credIdToBind,
+                                credentialModeOverride = credMode,
+                                colorHex = colorHex,
+                                notes = notes,
+                                favorite = isFavorite
+                            )
+                        }
+                        if (obj["Objects"] is JsonArray) {
+                            visitObjects(obj["Objects"] as? JsonArray, parentId)
+                        }
+                    }
+                }
+            }
+        }
+
+        visitObjects(root["Objects"] as? JsonArray, null)
+
+        return NxtsVaultDocument(
+            name = docName,
+            description = docDesc,
+            folders = folders,
+            connections = connections,
+            credentials = credentials,
+            commandTasks = commandTasks,
+            todoItems = todoItems
+        )
+    }
+
+    private fun JsonObject.strAny(vararg keys: String): String {
+        for (k in keys) {
+            val direct = str(k)
+            if (direct.isNotBlank()) return direct
+            val ciKey = entries.firstOrNull { it.key.equals(k, ignoreCase = true) }?.key
+            if (ciKey != null) {
+                val ciVal = str(ciKey)
+                if (ciVal.isNotBlank()) return ciVal
+            }
+        }
+        return ""
+    }
+
+    private fun gunzipPreviewBytes(rawBytes: ByteArray, maxBytes: Int): ByteArray? = runCatching {
+        GZIPInputStream(ByteArrayInputStream(rawBytes)).use { gis ->
+            val out = java.io.ByteArrayOutputStream()
+            val buf = ByteArray(2048)
+            var remaining = maxBytes
+            while (remaining > 0) {
+                val read = gis.read(buf, 0, minOf(buf.size, remaining))
+                if (read <= 0) break
+                out.write(buf, 0, read)
+                remaining -= read
+            }
+            out.toByteArray()
+        }
+    }.getOrNull()
+
+    private fun readFirstZipEntryPreview(rawBytes: ByteArray, maxBytes: Int): ByteArray? = runCatching {
+        ZipInputStream(ByteArrayInputStream(rawBytes)).use { zis ->
+            var entry = zis.nextEntry
+            while (entry != null) {
+                if (!entry.isDirectory) {
+                    val out = java.io.ByteArrayOutputStream()
+                    val buf = ByteArray(2048)
+                    var remaining = maxBytes
+                    while (remaining > 0) {
+                        val read = zis.read(buf, 0, minOf(buf.size, remaining))
+                        if (read <= 0) break
+                        out.write(buf, 0, read)
+                        remaining -= read
+                    }
+                    return@runCatching out.toByteArray()
+                }
+                entry = zis.nextEntry
+            }
+            null
+        }
+    }.getOrNull()
+
+    private fun decodeBomAwarePreview(bytes: ByteArray, maxBytes: Int): String {
+        val sliceLen = minOf(bytes.size, maxBytes)
+        if (sliceLen <= 0) return ""
+        val (charset, offset) = detectBomCharsetAndOffset(bytes, sliceLen)
+        if (sliceLen <= offset) return ""
+        val usableLen = if (charset == StandardCharsets.UTF_16LE || charset == StandardCharsets.UTF_16BE) {
+            (sliceLen - offset) and 0x7FFFFFFE // even byte count for UTF-16
+        } else {
+            sliceLen - offset
+        }
+        if (usableLen <= 0) return ""
+        return String(bytes, offset, usableLen, charset)
+            .trimStart('\uFEFF', '\u0000', ' ', '\t', '\r', '\n')
+    }
+
+    private fun decodeBomAwareFullText(bytes: ByteArray): String {
+        if (bytes.isEmpty()) return ""
+        val (charset, offset) = detectBomCharsetAndOffset(bytes, bytes.size)
+        return String(bytes, offset, bytes.size - offset, charset)
+            .trimStart('\uFEFF', '\u0000', ' ', '\t', '\r', '\n')
+    }
+
+    private fun detectBomCharsetAndOffset(bytes: ByteArray, len: Int): Pair<Charset, Int> {
+        if (len >= 3 &&
+            bytes[0] == 0xEF.toByte() &&
+            bytes[1] == 0xBB.toByte() &&
+            bytes[2] == 0xBF.toByte()
+        ) {
+            return StandardCharsets.UTF_8 to 3
+        }
+        if (len >= 2 &&
+            bytes[0] == 0xFF.toByte() &&
+            bytes[1] == 0xFE.toByte()
+        ) {
+            return StandardCharsets.UTF_16LE to 2
+        }
+        if (len >= 2 &&
+            bytes[0] == 0xFE.toByte() &&
+            bytes[1] == 0xFF.toByte()
+        ) {
+            return StandardCharsets.UTF_16BE to 2
+        }
+        if (len >= 4 && bytes[1] == 0x00.toByte() && bytes[3] == 0x00.toByte() && bytes[0] != 0x00.toByte()) {
+            return StandardCharsets.UTF_16LE to 0
+        }
+        if (len >= 4 && bytes[0] == 0x00.toByte() && bytes[2] == 0x00.toByte() && bytes[1] != 0x00.toByte()) {
+            return StandardCharsets.UTF_16BE to 0
+        }
+        return StandardCharsets.UTF_8 to 0
+    }
+
+    private fun looksLikePrintableText(rawBytes: ByteArray): Boolean {
+        val sampleLen = minOf(rawBytes.size, 512)
+        if (sampleLen == 0) return false
+        var suspiciousControlCount = 0
+        for (i in 0 until sampleLen) {
+            val b = rawBytes[i].toInt() and 0xFF
+            if (b == 0) return false
+            if (b < 0x09 || (b in 0x0E..0x1F)) {
+                suspiciousControlCount++
+            }
+        }
+        return suspiciousControlCount * 20 <= sampleLen // <= 5% control bytes
     }
 
     private fun zipContainsEntry(rawBytes: ByteArray, entrySuffix: String): Boolean {

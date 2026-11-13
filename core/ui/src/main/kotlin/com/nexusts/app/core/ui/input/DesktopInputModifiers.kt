@@ -59,7 +59,7 @@ fun Modifier.nexusDesktopPointerButtons(
     awaitPointerEventScope {
         while (true) {
             val event = awaitPointerEvent(PointerEventPass.Main)
-            if (event.type == PointerEventType.Press) {
+            if (event.type == PointerEventType.Press && event.changes.none { it.isConsumed }) {
                 val position = event.changes.firstOrNull()?.position ?: Offset.Zero
                 when {
                     event.buttons.isSecondaryPressed && onSecondaryClick != null -> {

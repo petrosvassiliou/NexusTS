@@ -3,6 +3,7 @@ package com.nexusts.app.feature.workspace
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.nexusts.app.core.ui.input.NexusShortcutAction
+import com.nexusts.app.core.ui.input.NexusShortcutEngine
 import com.nexusts.app.core.ui.input.RawHardwareKeyPacket
 import com.nexusts.app.core.ui.workspace.QuickConnectCandidate
 import com.nexusts.app.core.ui.workspace.QuickLaunchPlacement
@@ -71,13 +72,21 @@ data class WorkspaceUiState(
     val isQuickConnectVisible: Boolean = false,
     val isNewConnectionDialogVisible: Boolean = false,
     val editingConnection: VaultConnection? = null,
+    val newConnectionDefaultFolderId: String? = null,
+    val newConnectionDefaultProtocol: VaultProtocolType = VaultProtocolType.RDP,
     val isFolderDialogVisible: Boolean = false,
     val editingFolder: VaultFolder? = null,
+    val newFolderDefaultParentId: String? = null,
     val connectWithOptionsTarget: VaultConnection? = null,
     val isNewSmartFolderDialogVisible: Boolean = false,
     val isNewDynamicFolderDialogVisible: Boolean = false,
     val isNewTemplateDialogVisible: Boolean = false,
     val isLockVaultDialogVisible: Boolean = false,
+    val pendingEncryptedImportFileName: String? = null,
+    val pendingEncryptedImportFormat: DetectedExternalVaultFormat? = null,
+    val pendingEncryptedImportError: String? = null,
+    val importErrorDialogMessage: String? = null,
+    val userSnackbarMessage: String? = null,
     val sidebarFilterQuery: String = "",
     val useSharedTeamDriveZone: Boolean = false,
     val driveSignedInEmail: String = "",
@@ -121,10 +130,12 @@ class NexusWorkspaceViewModel @Inject constructor(
     val sessionStore: ActiveVaultSessionStore
         get() = activeVaultStore
 
+    val shortcutEngine = NexusShortcutEngine()
     val tilingController = WorkspaceTilingController()
     private val rtszImporter = RtszDocumentImporter()
     private val enterpriseFormatImporter = EnterpriseVaultFormatImporter()
     private val vaultExporter = VaultDocumentExporter()
+    private var pendingEncryptedImportBytes: ByteArray? = null
 
     private val sshControllers
         get() = activeVaultStore.sshControllers
@@ -295,32 +306,101 @@ class NexusWorkspaceViewModel @Inject constructor(
         _uiState.update { it.copy(remoteKeyCaptureEnabled = !it.remoteKeyCaptureEnabled) }
     }
 
+    fun dismissQuickConnect() {
+        _uiState.update { it.copy(isQuickConnectVisible = false) }
+    }
+
     fun openNewConnectionDialog() {
         if (_uiState.value.isVaultLocked) return
-        _uiState.update { it.copy(editingConnection = null, isNewConnectionDialogVisible = true) }
+        _uiState.update {
+            it.copy(
+                editingConnection = null,
+                newConnectionDefaultFolderId = null,
+                newConnectionDefaultProtocol = VaultProtocolType.RDP,
+                isNewConnectionDialogVisible = true
+            )
+        }
+    }
+
+    fun openNewConnectionInFolder(
+        folderId: String?,
+        protocol: VaultProtocolType = VaultProtocolType.RDP
+    ) {
+        if (_uiState.value.isVaultLocked) return
+        _uiState.update {
+            it.copy(
+                editingConnection = null,
+                newConnectionDefaultFolderId = folderId,
+                newConnectionDefaultProtocol = protocol,
+                isNewConnectionDialogVisible = true
+            )
+        }
     }
 
     fun openEditConnectionDialog(connection: VaultConnection) {
         if (_uiState.value.isVaultLocked) return
-        _uiState.update { it.copy(editingConnection = connection, isNewConnectionDialogVisible = true) }
+        _uiState.update {
+            it.copy(
+                editingConnection = connection,
+                newConnectionDefaultFolderId = connection.parentFolderId,
+                newConnectionDefaultProtocol = connection.protocol,
+                isNewConnectionDialogVisible = true
+            )
+        }
     }
 
     fun dismissNewConnectionDialog() {
-        _uiState.update { it.copy(editingConnection = null, isNewConnectionDialogVisible = false) }
+        _uiState.update {
+            it.copy(
+                editingConnection = null,
+                newConnectionDefaultFolderId = null,
+                newConnectionDefaultProtocol = VaultProtocolType.RDP,
+                isNewConnectionDialogVisible = false
+            )
+        }
     }
 
     fun openNewFolderDialog() {
         if (_uiState.value.isVaultLocked) return
-        _uiState.update { it.copy(editingFolder = null, isFolderDialogVisible = true) }
+        _uiState.update {
+            it.copy(
+                editingFolder = null,
+                newFolderDefaultParentId = null,
+                isFolderDialogVisible = true
+            )
+        }
+    }
+
+    fun openNewSubfolder(parentFolderId: String?) {
+        if (_uiState.value.isVaultLocked) return
+        _uiState.update {
+            it.copy(
+                editingFolder = null,
+                newFolderDefaultParentId = parentFolderId,
+                isFolderDialogVisible = true
+            )
+        }
     }
 
     fun openEditFolderDialog(folder: VaultFolder) {
         if (_uiState.value.isVaultLocked) return
-        _uiState.update { it.copy(editingFolder = folder, isFolderDialogVisible = true) }
+        _uiState.update {
+            it.copy(
+                editingFolder = folder,
+                newFolderDefaultParentId = folder.parentFolderId,
+                isFolderDialogVisible = true
+            )
+        }
     }
 
     fun dismissFolderDialog() {
-        _uiState.update { it.copy(editingFolder = null, isFolderDialogVisible = false) }
+        _uiState.update {
+            it.copy(
+                editingFolder = null,
+                newFolderDefaultParentId = null,
+                isFolderDialogVisible = false
+            )
+        }
     }
 
     fun resolveFolderInheritedPreview(folderId: String?): Pair<VaultCredential?, String> {
@@ -701,6 +781,41 @@ class NexusWorkspaceViewModel @Inject constructor(
         _uiState.update { it.copy(vaultDocument = activeVaultStore.snapshot.value.vaultDocument) }
     }
 
+    fun launchConnectionInSplitDown(connection: VaultConnection) {
+        val state = _uiState.value
+        if (state.isVaultLocked) return
+        if (requiresInteractiveConnectPrompt(state.vaultDocument, connection)) {
+            _uiState.update { it.copy(connectWithOptionsTarget = connection) }
+            return
+        }
+        val profile = inheritanceResolver.resolveEffectiveProfile(state.vaultDocument, connection)
+        val uiKind = mapProtocolToUiKind(connection.protocol)
+        val tab = WorkspaceSessionTab(
+            connectionId = connection.id,
+            title = connection.name,
+            subtitleHost = connection.host,
+            protocol = uiKind,
+            status = SessionLifecycleStatus.CONNECTED,
+            environmentTag = profile.effectiveEnvironmentBadge,
+            customColorHex = profile.effectiveColorAccentHex,
+            broadcastEnabled = state.broadcastModeEnabled
+        )
+        recordRecentConnection(connection.id)
+        _uiState.update {
+            it.copy(
+                activeRailId = "connections",
+                selectedConnectionId = connection.id,
+                remoteKeyCaptureEnabled = isInteractiveRemoteKeyProtocol(uiKind) || it.remoteKeyCaptureEnabled
+            )
+        }
+        tilingController.splitPane(
+            orientation = SplitOrientation.VERTICAL,
+            tabForNewPane = tab
+        )
+        appendLog("[Connect] Split down ${connection.protocol.name} session '${connection.name}' (${connection.host})")
+        runConfiguredLifecycleTask(connection.inheritable.preConnectTaskId, "Pre-Connect")
+    }
+
     fun duplicateConnection(connection: VaultConnection) {
         val cloned = connection.copy(
             id = UUID.randomUUID().toString(),
@@ -708,6 +823,15 @@ class NexusWorkspaceViewModel @Inject constructor(
             updatedAtEpochMs = System.currentTimeMillis()
         )
         saveConnectionToVault(cloned)
+    }
+
+    fun duplicateFolder(folder: VaultFolder) {
+        val cloned = folder.copy(
+            id = UUID.randomUUID().toString(),
+            name = "${folder.name} (Copy)",
+            updatedAtEpochMs = System.currentTimeMillis()
+        )
+        saveFolderAndCredentialToVault(cloned)
     }
 
     fun deleteConnection(connectionId: String) {
@@ -826,7 +950,10 @@ class NexusWorkspaceViewModel @Inject constructor(
             } else {
                 doc.dynamicFolders + dynamicFolder
             }
-            bumpDocRevisionAndClock(doc).copy(dynamicFolders = nextList)
+            bumpDocRevisionAndClock(doc).copy(
+                dynamicFolders = nextList,
+                tombstonedObjectIds = doc.tombstonedObjectIds - dynamicFolder.id
+            )
         }
         _uiState.update {
             it.copy(
@@ -867,8 +994,15 @@ class NexusWorkspaceViewModel @Inject constructor(
 
     fun saveSmartFolderToVault(smartFolder: SmartFolder) {
         activeVaultStore.updateVaultDocument { doc ->
+            val exists = doc.smartFolders.any { it.id == smartFolder.id }
+            val nextList = if (exists) {
+                doc.smartFolders.map { if (it.id == smartFolder.id) smartFolder else it }
+            } else {
+                doc.smartFolders + smartFolder
+            }
             bumpDocRevisionAndClock(doc).copy(
-                smartFolders = doc.smartFolders + smartFolder
+                smartFolders = nextList,
+                tombstonedObjectIds = doc.tombstonedObjectIds - smartFolder.id
             )
         }
         _uiState.update {
@@ -878,7 +1012,7 @@ class NexusWorkspaceViewModel @Inject constructor(
                 vaultDocument = activeVaultStore.snapshot.value.vaultDocument
             )
         }
-        appendLog("[SmartFolder] Created dynamic filter '${smartFolder.name}'")
+        appendLog("[SmartFolder] Saved dynamic filter '${smartFolder.name}'")
     }
 
     fun deleteSmartFolderFromVault(smartFolderId: String) {
@@ -908,8 +1042,15 @@ class NexusWorkspaceViewModel @Inject constructor(
 
     fun saveTemplateToVault(template: ConnectionTemplate) {
         activeVaultStore.updateVaultDocument { doc ->
+            val exists = doc.templates.any { it.id == template.id }
+            val nextTemplates = if (exists) {
+                doc.templates.map { if (it.id == template.id) template else it }
+            } else {
+                doc.templates + template
+            }
             bumpDocRevisionAndClock(doc).copy(
-                templates = doc.templates + template
+                templates = nextTemplates,
+                tombstonedObjectIds = doc.tombstonedObjectIds - template.id
             )
         }
         _uiState.update {
@@ -919,6 +1060,15 @@ class NexusWorkspaceViewModel @Inject constructor(
             )
         }
         appendLog("[Templates] Saved reusable Royal TS template '${template.name}' (${template.protocol.name})")
+    }
+
+    fun duplicateTemplate(template: ConnectionTemplate) {
+        saveTemplateToVault(
+            template.copy(
+                id = UUID.randomUUID().toString(),
+                name = "${template.name} (Copy)"
+            )
+        )
     }
 
     fun deleteTemplateFromVault(templateId: String) {
@@ -1119,7 +1269,7 @@ class NexusWorkspaceViewModel @Inject constructor(
         action: NexusShortcutAction,
         onOpenVaultPicker: (() -> Unit)? = null,
         onSyncDriveNow: (() -> Unit)? = null,
-        onDetachActiveTab: (WorkspaceSessionTab) -> Unit
+        onDetachActiveTab: (WorkspaceSessionTab) -> Unit = {}
     ) {
         if (_uiState.value.isVaultLocked) {
             if (action == NexusShortcutAction.OPEN_VAULT_DOCUMENT) {
@@ -1135,7 +1285,9 @@ class NexusWorkspaceViewModel @Inject constructor(
                 _uiState.update {
                     val nextOpen = !it.isNewConnectionDialogVisible
                     it.copy(
-                        editingConnection = if (nextOpen) null else it.editingConnection,
+                        editingConnection = null,
+                        newConnectionDefaultFolderId = null,
+                        newConnectionDefaultProtocol = VaultProtocolType.RDP,
                         isNewConnectionDialogVisible = nextOpen
                     )
                 }
@@ -1217,6 +1369,8 @@ class NexusWorkspaceViewModel @Inject constructor(
                 selectedConnectionId = stamped.id,
                 isNewConnectionDialogVisible = false,
                 editingConnection = null,
+                newConnectionDefaultFolderId = null,
+                newConnectionDefaultProtocol = VaultProtocolType.RDP,
                 vaultDocument = activeVaultStore.snapshot.value.vaultDocument
             )
         }
@@ -1283,6 +1437,7 @@ class NexusWorkspaceViewModel @Inject constructor(
             state.copy(
                 isFolderDialogVisible = false,
                 editingFolder = null,
+                newFolderDefaultParentId = null,
                 vaultDocument = activeVaultStore.snapshot.value.vaultDocument
             )
         }
@@ -1305,6 +1460,16 @@ class NexusWorkspaceViewModel @Inject constructor(
         }
         _uiState.update { it.copy(vaultDocument = activeVaultStore.snapshot.value.vaultDocument) }
         appendLog("[Credentials] Stored '${credential.name}' (${credential.sourceKind.name})")
+    }
+
+    fun duplicateCredential(credential: VaultCredential) {
+        addCredentialToVault(
+            credential.copy(
+                id = UUID.randomUUID().toString(),
+                name = "${credential.name} (Copy)",
+                updatedAtEpochMs = System.currentTimeMillis()
+            )
+        )
     }
 
     fun updateCredentialInVault(credential: VaultCredential) {
@@ -1479,12 +1644,23 @@ class NexusWorkspaceViewModel @Inject constructor(
 
     fun addCommandTaskToVault(task: CommandTask) {
         activeVaultStore.updateVaultDocument { doc ->
+            val exists = doc.commandTasks.any { it.id == task.id }
+            val nextTasks = if (exists) {
+                doc.commandTasks.map { if (it.id == task.id) task else it }
+            } else {
+                doc.commandTasks + task
+            }
             bumpDocRevisionAndClock(doc).copy(
-                commandTasks = doc.commandTasks + task
+                commandTasks = nextTasks,
+                tombstonedObjectIds = doc.tombstonedObjectIds - task.id
             )
         }
         _uiState.update { it.copy(vaultDocument = activeVaultStore.snapshot.value.vaultDocument) }
-        appendLog("[Automation] Added task '${task.name}'")
+        appendLog("[Automation] Saved task '${task.name}'")
+    }
+
+    fun updateCommandTaskInVault(task: CommandTask) {
+        addCommandTaskToVault(task)
     }
 
     fun deleteCommandTask(taskId: String) {
@@ -1500,12 +1676,23 @@ class NexusWorkspaceViewModel @Inject constructor(
 
     fun addKeySequenceTaskToVault(macro: KeySequenceTask) {
         activeVaultStore.updateVaultDocument { doc ->
+            val exists = doc.keySequenceTasks.any { it.id == macro.id }
+            val nextMacros = if (exists) {
+                doc.keySequenceTasks.map { if (it.id == macro.id) macro else it }
+            } else {
+                doc.keySequenceTasks + macro
+            }
             bumpDocRevisionAndClock(doc).copy(
-                keySequenceTasks = doc.keySequenceTasks + macro
+                keySequenceTasks = nextMacros,
+                tombstonedObjectIds = doc.tombstonedObjectIds - macro.id
             )
         }
         _uiState.update { it.copy(vaultDocument = activeVaultStore.snapshot.value.vaultDocument) }
-        appendLog("[KeySequence] Added macro '${macro.name}'")
+        appendLog("[KeySequence] Saved macro '${macro.name}'")
+    }
+
+    fun updateKeySequenceTaskInVault(macro: KeySequenceTask) {
+        addKeySequenceTaskToVault(macro)
     }
 
     fun deleteKeySequenceTask(macroId: String) {
@@ -1743,6 +1930,8 @@ class NexusWorkspaceViewModel @Inject constructor(
             state.isNewDynamicFolderDialogVisible ||
             state.isNewTemplateDialogVisible ||
             state.isLockVaultDialogVisible ||
+            state.pendingEncryptedImportFileName != null ||
+            state.importErrorDialogMessage != null ||
             state.isBottomDrawerVisible
     }
 
@@ -1805,7 +1994,12 @@ class NexusWorkspaceViewModel @Inject constructor(
                 credentials = doc.credentials + newCred
             )
         }
-        _uiState.update { it.copy(vaultDocument = activeVaultStore.snapshot.value.vaultDocument) }
+        _uiState.update {
+            it.copy(
+                vaultDocument = activeVaultStore.snapshot.value.vaultDocument,
+                userSnackbarMessage = "Generated Ed25519 SSH key (${generated.sha256_fingerprint.take(19)}…)"
+            )
+        }
         appendLog("[SSH Agent] Generated OpenSSH Ed25519 key ${generated.sha256_fingerprint}")
     }
 
@@ -1871,19 +2065,23 @@ class NexusWorkspaceViewModel @Inject constructor(
             try {
                 runCatching {
                     withContext(Dispatchers.Default) {
-                        if (detected == DetectedExternalVaultFormat.KEEPASS_KDBX_BINARY) {
-                            enterpriseFormatImporter.importExternalFormat(
-                                format = DetectedExternalVaultFormat.KEEPASS_KDBX_BINARY,
-                                rawBytes = blob,
-                                documentNameHint = pendingFile.ifBlank { "Database.kdbx" },
-                                masterPassphrase = passCopy.copyOf()
-                            )
-                        } else {
-                            vaultSerializer.unsealDocument(blob, passCopy.copyOf())
+                        when (detected) {
+                            DetectedExternalVaultFormat.KEEPASS_KDBX_BINARY,
+                            DetectedExternalVaultFormat.ROYAL_TS_ENCRYPTED_ARCHIVE ->
+                                enterpriseFormatImporter.importExternalFormat(
+                                    format = detected,
+                                    rawBytes = blob,
+                                    documentNameHint = pendingFile.ifBlank { "ImportedVault" },
+                                    masterPassphrase = passCopy.copyOf()
+                                )
+
+                            else -> vaultSerializer.unsealDocument(blob, passCopy.copyOf())
                         }
                     }
                 }.onSuccess { unlockedDoc ->
-                    val finalDoc = if (detected == DetectedExternalVaultFormat.KEEPASS_KDBX_BINARY && snap.hasPreImportBackup) {
+                    val isExternalEncrypted = detected == DetectedExternalVaultFormat.KEEPASS_KDBX_BINARY ||
+                        detected == DetectedExternalVaultFormat.ROYAL_TS_ENCRYPTED_ARCHIVE
+                    val finalDoc = if (isExternalEncrypted && snap.hasPreImportBackup) {
                         val baseDoc = activeVaultStore.cancelPendingImport()
                         mergeImportedIntoCurrentVault(baseDoc, unlockedDoc)
                     } else {
@@ -1919,13 +2117,55 @@ class NexusWorkspaceViewModel @Inject constructor(
         cur: NxtsVaultDocument,
         importedDoc: NxtsVaultDocument
     ): NxtsVaultDocument {
+        val currentIsEmpty = cur.folders.isEmpty() &&
+            cur.connections.isEmpty() &&
+            cur.credentials.isEmpty() &&
+            cur.gateways.isEmpty() &&
+            cur.commandTasks.isEmpty() &&
+            cur.keySequenceTasks.isEmpty() &&
+            cur.templates.isEmpty() &&
+            cur.smartFolders.isEmpty() &&
+            cur.dynamicFolders.isEmpty() &&
+            cur.todoItems.isEmpty()
+
         val mergedFolders = cur.folders.filterNot { f -> importedDoc.folders.any { it.id == f.id } } + importedDoc.folders
-        val mergedCreds = cur.credentials.filterNot { c -> importedDoc.credentials.any { it.id == c.id } } + importedDoc.credentials
+        val mergedSmartFolders = cur.smartFolders.filterNot { s -> importedDoc.smartFolders.any { it.id == s.id } } + importedDoc.smartFolders
+        val mergedDynamicFolders = cur.dynamicFolders.filterNot { d -> importedDoc.dynamicFolders.any { it.id == d.id } } + importedDoc.dynamicFolders
         val mergedConns = cur.connections.filterNot { c -> importedDoc.connections.any { it.id == c.id } } + importedDoc.connections
+        val mergedCreds = cur.credentials.filterNot { c -> importedDoc.credentials.any { it.id == c.id } } + importedDoc.credentials
+        val mergedGateways = cur.gateways.filterNot { g -> importedDoc.gateways.any { it.id == g.id } } + importedDoc.gateways
+        val mergedCommandTasks = cur.commandTasks.filterNot { t -> importedDoc.commandTasks.any { it.id == t.id } } + importedDoc.commandTasks
+        val mergedKeyTasks = cur.keySequenceTasks.filterNot { k -> importedDoc.keySequenceTasks.any { it.id == k.id } } + importedDoc.keySequenceTasks
+        val mergedTemplates = cur.templates.filterNot { t -> importedDoc.templates.any { it.id == t.id } } + importedDoc.templates
+        val mergedTodos = cur.todoItems.filterNot { t -> importedDoc.todoItems.any { it.id == t.id } } + importedDoc.todoItems
+
+        val importedIds = buildSet {
+            importedDoc.folders.forEach { add(it.id) }
+            importedDoc.smartFolders.forEach { add(it.id) }
+            importedDoc.dynamicFolders.forEach { add(it.id) }
+            importedDoc.connections.forEach { add(it.id) }
+            importedDoc.credentials.forEach { add(it.id) }
+            importedDoc.gateways.forEach { add(it.id) }
+            importedDoc.commandTasks.forEach { add(it.id) }
+            importedDoc.keySequenceTasks.forEach { add(it.id) }
+            importedDoc.templates.forEach { add(it.id) }
+            importedDoc.todoItems.forEach { add(it.id) }
+        }
+
         return bumpDocRevisionAndClock(cur).copy(
+            name = if (currentIsEmpty && importedDoc.name.isNotBlank()) importedDoc.name else cur.name,
+            rootInheritable = if (currentIsEmpty) importedDoc.rootInheritable else cur.rootInheritable,
             folders = mergedFolders,
+            smartFolders = mergedSmartFolders,
+            dynamicFolders = mergedDynamicFolders,
+            connections = mergedConns,
             credentials = mergedCreds,
-            connections = mergedConns
+            gateways = mergedGateways,
+            commandTasks = mergedCommandTasks,
+            keySequenceTasks = mergedKeyTasks,
+            templates = mergedTemplates,
+            todoItems = mergedTodos,
+            tombstonedObjectIds = cur.tombstonedObjectIds - importedIds
         )
     }
 
@@ -1935,14 +2175,24 @@ class NexusWorkspaceViewModel @Inject constructor(
         passphraseOrNull: CharArray? = null,
         mergePasswordManagerEntries: Boolean = true
     ) {
+        if (bytes.isEmpty()) {
+            passphraseOrNull?.let { Arrays.fill(it, '\u0000') }
+            reportImportFailure("Selected file '$fileName' is empty (0 bytes).")
+            return
+        }
+
         val detected = enterpriseFormatImporter.detectFormat(fileName, bytes)
 
-        if (passphraseOrNull == null && (
-                detected == DetectedExternalVaultFormat.NXTS_ENCRYPTED_BINARY ||
-                    detected == DetectedExternalVaultFormat.KEEPASS_KDBX_BINARY ||
-                    detected == DetectedExternalVaultFormat.UNKNOWN
-                )
-        ) {
+        if (detected == DetectedExternalVaultFormat.UNKNOWN) {
+            passphraseOrNull?.let { Arrays.fill(it, '\u0000') }
+            reportImportFailure(
+                "Could not recognize '$fileName' as a valid Royal TS (.rtsz / .rtsx / .rjson), " +
+                    "NexusTS (.nxts), KeePass (.kdbx / .xml), Bitwarden (.json), 1Password (.1pux / .1pif), or CSV vault file."
+            )
+            return
+        }
+
+        if (passphraseOrNull == null && detected == DetectedExternalVaultFormat.NXTS_ENCRYPTED_BINARY) {
             activeVaultStore.stageEncryptedBytesForUnlock(bytes, fileName)
             _uiState.update {
                 it.copy(
@@ -1953,47 +2203,67 @@ class NexusWorkspaceViewModel @Inject constructor(
                     isSidebarVisible = true
                 )
             }
-            appendLog("[Import] Staged encrypted vault '$fileName' — enter passphrase to unlock.")
+            appendLog("[Import] Staged encrypted .nxts vault '$fileName' — enter passphrase to unlock.")
+            return
+        }
+
+        if (passphraseOrNull == null && (
+                detected == DetectedExternalVaultFormat.KEEPASS_KDBX_BINARY ||
+                    detected == DetectedExternalVaultFormat.ROYAL_TS_ENCRYPTED_ARCHIVE
+                )
+        ) {
+            pendingEncryptedImportBytes = bytes.copyOf()
+            _uiState.update {
+                it.copy(
+                    pendingEncryptedImportFileName = fileName,
+                    pendingEncryptedImportFormat = detected,
+                    pendingEncryptedImportError = null
+                )
+            }
+            appendLog("[Import] Encrypted archive '$fileName' (${detected.name}) requires password to import.")
             return
         }
 
         val passCopy = passphraseOrNull?.copyOf()
+        passphraseOrNull?.let { Arrays.fill(it, '\u0000') }
+
         viewModelScope.launch {
             try {
                 runCatching {
                     withContext(Dispatchers.Default) {
                         when (detected) {
-                            DetectedExternalVaultFormat.NXTS_ENCRYPTED_BINARY,
-                            DetectedExternalVaultFormat.UNKNOWN ->
+                            DetectedExternalVaultFormat.NXTS_ENCRYPTED_BINARY ->
                                 vaultSerializer.unsealDocument(bytes, passCopy!!.copyOf())
 
-                            DetectedExternalVaultFormat.KEEPASS_KDBX_BINARY ->
+                            DetectedExternalVaultFormat.KEEPASS_KDBX_BINARY,
+                            DetectedExternalVaultFormat.ROYAL_TS_ENCRYPTED_ARCHIVE ->
                                 enterpriseFormatImporter.importExternalFormat(
-                                    format = DetectedExternalVaultFormat.KEEPASS_KDBX_BINARY,
+                                    format = detected,
                                     rawBytes = bytes,
                                     documentNameHint = fileName,
                                     masterPassphrase = passCopy!!.copyOf()
                                 )
 
                             DetectedExternalVaultFormat.ROYAL_TS_RTSZ_OR_RTSX ->
-                                rtszImporter.importRtszBytes(bytes, fileName.substringBeforeLast('.'))
+                                rtszImporter.importRtszBytes(
+                                    rawBytes = bytes,
+                                    fallbackDocumentName = fileName.substringBeforeLast('.').ifBlank { "RoyalTS Document" }
+                                )
 
+                            DetectedExternalVaultFormat.ROYAL_JSON,
                             DetectedExternalVaultFormat.KEEPASS_XML_2X,
                             DetectedExternalVaultFormat.BITWARDEN_JSON,
                             DetectedExternalVaultFormat.ONEPASSWORD_1PUX_OR_JSON,
                             DetectedExternalVaultFormat.CSV_INVENTORY_OR_PASSWORDS ->
                                 enterpriseFormatImporter.importExternalFormat(detected, bytes, fileName)
+
+                            DetectedExternalVaultFormat.UNKNOWN ->
+                                throw IllegalArgumentException("Unsupported vault file format: '$fileName'")
                         }
                     }
                 }.onSuccess { importedDoc ->
-                    val isPasswordManagerFormat = detected in setOf(
-                        DetectedExternalVaultFormat.KEEPASS_KDBX_BINARY,
-                        DetectedExternalVaultFormat.KEEPASS_XML_2X,
-                        DetectedExternalVaultFormat.BITWARDEN_JSON,
-                        DetectedExternalVaultFormat.ONEPASSWORD_1PUX_OR_JSON,
-                        DetectedExternalVaultFormat.CSV_INVENTORY_OR_PASSWORDS
-                    )
-                    val finalDoc = if (isPasswordManagerFormat && mergePasswordManagerEntries) {
+                    val shouldMerge = detected != DetectedExternalVaultFormat.NXTS_ENCRYPTED_BINARY && mergePasswordManagerEntries
+                    val finalDoc = if (shouldMerge) {
                         mergeImportedIntoCurrentVault(activeVaultStore.snapshot.value.vaultDocument, importedDoc)
                     } else {
                         if (detected == DetectedExternalVaultFormat.NXTS_ENCRYPTED_BINARY && passCopy != null) {
@@ -2002,27 +2272,139 @@ class NexusWorkspaceViewModel @Inject constructor(
                         importedDoc
                     }
 
+                    pendingEncryptedImportBytes?.let { Arrays.fill(it, 0.toByte()) }
+                    pendingEncryptedImportBytes = null
+
                     activeVaultStore.replaceUnlockedVault(finalDoc, markInitialized = true)
+                    val summaryMsg = "Imported ${importedDoc.connections.size} connection(s), " +
+                        "${importedDoc.folders.size} folder(s), ${importedDoc.credentials.size} credential(s) from '$fileName'"
                     _uiState.update {
                         it.copy(
                             vaultDocument = finalDoc,
-                            selectedConnectionId = importedDoc.connections.firstOrNull()?.id ?: finalDoc.connections.firstOrNull()?.id,
+                            activeRailId = "connections",
+                            isSidebarVisible = true,
+                            selectedConnectionId = importedDoc.connections.firstOrNull()?.id
+                                ?: finalDoc.connections.firstOrNull()?.id,
+                            selectedSmartFolderId = null,
+                            selectedDynamicFolderId = null,
                             isVaultLocked = false,
                             vaultUnlockError = null,
                             hasPreImportBackup = false,
-                            pendingImportFileName = null
+                            pendingImportFileName = null,
+                            pendingEncryptedImportFileName = null,
+                            pendingEncryptedImportFormat = null,
+                            pendingEncryptedImportError = null,
+                            importErrorDialogMessage = null,
+                            userSnackbarMessage = summaryMsg
                         )
                     }
-                    appendLog(
-                        "[Import ${detected.name}] Imported ${importedDoc.credentials.size} credential(s), " +
-                            "${importedDoc.connections.size} connection(s), ${importedDoc.folders.size} folder(s) from '$fileName'"
-                    )
+                    appendLog("[Import ${detected.name}] $summaryMsg")
                 }.onFailure { err ->
-                    appendLog("[Import Error] ${err.message}")
+                    val errMsg = err.message ?: "Failed to import '$fileName'."
+                    reportImportFailure("Failed to import '$fileName': $errMsg")
                 }
             } finally {
                 passCopy?.let { Arrays.fill(it, '\u0000') }
             }
+        }
+    }
+
+    fun submitEncryptedImportPassword(passphrase: CharArray) {
+        val rawBytes = pendingEncryptedImportBytes
+        val state = _uiState.value
+        val fileName = state.pendingEncryptedImportFileName.orEmpty()
+        val format = state.pendingEncryptedImportFormat
+        if (rawBytes == null || format == null) {
+            Arrays.fill(passphrase, '\u0000')
+            dismissEncryptedImportDialog()
+            return
+        }
+
+        val passCopy = passphrase.copyOf()
+        Arrays.fill(passphrase, '\u0000')
+
+        viewModelScope.launch {
+            try {
+                runCatching {
+                    withContext(Dispatchers.Default) {
+                        enterpriseFormatImporter.importExternalFormat(
+                            format = format,
+                            rawBytes = rawBytes,
+                            documentNameHint = fileName,
+                            masterPassphrase = passCopy.copyOf()
+                        )
+                    }
+                }.onSuccess { importedDoc ->
+                    pendingEncryptedImportBytes?.let { Arrays.fill(it, 0.toByte()) }
+                    pendingEncryptedImportBytes = null
+
+                    val finalDoc = mergeImportedIntoCurrentVault(
+                        activeVaultStore.snapshot.value.vaultDocument,
+                        importedDoc
+                    )
+                    activeVaultStore.replaceUnlockedVault(finalDoc, markInitialized = true)
+                    val summaryMsg = "Imported ${importedDoc.connections.size} connection(s), " +
+                        "${importedDoc.folders.size} folder(s), ${importedDoc.credentials.size} credential(s) from '$fileName'"
+                    _uiState.update {
+                        it.copy(
+                            vaultDocument = finalDoc,
+                            activeRailId = "connections",
+                            isSidebarVisible = true,
+                            selectedConnectionId = importedDoc.connections.firstOrNull()?.id
+                                ?: finalDoc.connections.firstOrNull()?.id,
+                            selectedSmartFolderId = null,
+                            selectedDynamicFolderId = null,
+                            pendingEncryptedImportFileName = null,
+                            pendingEncryptedImportFormat = null,
+                            pendingEncryptedImportError = null,
+                            userSnackbarMessage = summaryMsg
+                        )
+                    }
+                    appendLog("[Import ${format.name}] $summaryMsg")
+                }.onFailure { err ->
+                    val errMsg = err.message ?: "Incorrect password or corrupted encrypted archive."
+                    _uiState.update { it.copy(pendingEncryptedImportError = errMsg) }
+                    appendLog("[Import Error] '$fileName': $errMsg")
+                }
+            } finally {
+                Arrays.fill(passCopy, '\u0000')
+            }
+        }
+    }
+
+    fun dismissEncryptedImportDialog() {
+        pendingEncryptedImportBytes?.let { Arrays.fill(it, 0.toByte()) }
+        pendingEncryptedImportBytes = null
+        _uiState.update {
+            it.copy(
+                pendingEncryptedImportFileName = null,
+                pendingEncryptedImportFormat = null,
+                pendingEncryptedImportError = null
+            )
+        }
+    }
+
+    fun reportImportFailure(message: String) {
+        _uiState.update { it.copy(importErrorDialogMessage = message) }
+        appendLog("[Import Error] $message")
+    }
+
+    fun dismissImportErrorDialog() {
+        _uiState.update { it.copy(importErrorDialogMessage = null) }
+    }
+
+    fun notifyUserMessage(message: String) {
+        if (message.isBlank()) return
+        _uiState.update { it.copy(userSnackbarMessage = message) }
+    }
+
+    fun consumeUserSnackbar() {
+        _uiState.update { it.copy(userSnackbarMessage = null) }
+    }
+
+    fun clearAuditLogs() {
+        _uiState.update {
+            it.copy(auditLogs = listOf("[NexusTS] Audit log cleared."))
         }
     }
 

@@ -39,13 +39,14 @@ import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.PowerSettingsNew
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.SmartDisplay
-import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import com.nexusts.app.core.ui.components.NexusActionChip
+import com.nexusts.app.core.ui.components.NexusChoiceChip
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -339,23 +340,25 @@ fun VncSessionCanvasView(
                         text = "$host:${settings.port} • $encodingLabel",
                         style = NexusTheme.monospace.keycapShortcut
                     )
-                    FilterChip(
+                    NexusChoiceChip(
                         selected = rightClickToggle,
                         onClick = { rightClickToggle = !rightClickToggle },
-                        label = { Text("R-Click", style = MaterialTheme.typography.labelSmall) }
+                        label = "R-Click",
+                        showCheckmarkWhenSelected = false
                     )
-                    FilterChip(
+                    NexusChoiceChip(
                         selected = showInputBar,
                         onClick = { showInputBar = !showInputBar },
-                        leadingIcon = {
-                            Icon(Icons.Outlined.Keyboard, contentDescription = null, modifier = Modifier.size(14.dp))
-                        },
-                        label = { Text("Keys", style = MaterialTheme.typography.labelSmall) }
+                        leadingIcon = Icons.Outlined.Keyboard,
+                        label = "Keys",
+                        showCheckmarkWhenSelected = false
                     )
-                    AssistChip(
+                    IconButton(
                         onClick = { reconnectNonce++ },
-                        label = { Icon(Icons.Outlined.Refresh, contentDescription = null, modifier = Modifier.size(14.dp)) }
-                    )
+                        modifier = Modifier.size(28.dp)
+                    ) {
+                        Icon(Icons.Outlined.Refresh, contentDescription = "Reconnect", modifier = Modifier.size(16.dp))
+                    }
                 }
             }
         }
@@ -377,29 +380,35 @@ fun VncSessionCanvasView(
                             .horizontalScroll(rememberScrollState()),
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        AssistChip(
+                        NexusActionChip(
                             onClick = { client.sendCtrlAltDel() },
-                            label = { Text("Ctrl+Alt+Del", style = NexusTheme.monospace.keycapShortcut) }
+                            label = "Ctrl+Alt+Del",
+                            monospace = true
                         )
-                        AssistChip(
+                        NexusActionChip(
                             onClick = { client.sendKeyTap(0xFF1B) },
-                            label = { Text("Esc", style = NexusTheme.monospace.keycapShortcut) }
+                            label = "Esc",
+                            monospace = true
                         )
-                        AssistChip(
+                        NexusActionChip(
                             onClick = { client.sendKeyTap(0xFF09) },
-                            label = { Text("Tab", style = NexusTheme.monospace.keycapShortcut) }
+                            label = "Tab",
+                            monospace = true
                         )
-                        AssistChip(
+                        NexusActionChip(
                             onClick = { client.sendKeyTap(0xFFEB) },
-                            label = { Text("Super/Win", style = NexusTheme.monospace.keycapShortcut) }
+                            label = "Super/Win",
+                            monospace = true
                         )
-                        AssistChip(
+                        NexusActionChip(
                             onClick = { client.sendKeyTap(0xFF0D) },
-                            label = { Text("Enter", style = NexusTheme.monospace.keycapShortcut) }
+                            label = "Enter",
+                            monospace = true
                         )
-                        AssistChip(
+                        NexusActionChip(
                             onClick = { client.sendKeyTap(0xFF08) },
-                            label = { Text("Bksp", style = NexusTheme.monospace.keycapShortcut) }
+                            label = "Bksp",
+                            monospace = true
                         )
                     }
 
@@ -647,18 +656,23 @@ fun IsolatedWebSessionView(
                         maxLines = 1
                     )
                 }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    AssistChip(
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    NexusActionChip(
                         onClick = { webViewRef?.let { injectAutoFillJs(it, true) } },
-                        label = { Text(autoFillActionLabel, style = MaterialTheme.typography.labelSmall) }
+                        label = autoFillActionLabel
                     )
-                    AssistChip(
+                    IconButton(
                         onClick = {
                             attemptedHttpAuthScopes.clear()
                             webViewRef?.reload()
                         },
-                        label = { Icon(Icons.Outlined.Refresh, contentDescription = null, modifier = Modifier.size(15.dp)) }
-                    )
+                        modifier = Modifier.size(28.dp)
+                    ) {
+                        Icon(Icons.Outlined.Refresh, contentDescription = "Reload", modifier = Modifier.size(15.dp))
+                    }
                 }
             }
         }
@@ -866,9 +880,10 @@ fun CloudHypervisorConsoleView(
                     )
                 }
             }
-            AssistChip(
+            NexusActionChip(
                 onClick = refreshLiveInventory,
-                label = { Icon(Icons.Outlined.Refresh, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                leadingIcon = Icons.Outlined.Refresh,
+                label = "Sync"
             )
         }
 
@@ -907,8 +922,11 @@ fun CloudHypervisorConsoleView(
                             },
                             modifier = Modifier.padding(end = 12.dp)
                         )
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            AssistChip(
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            IconButton(
                                 onClick = {
                                     val desired = if (isRunning) {
                                         com.nexusts.app.protocols.vnc.cloud.VmPowerAction.STOP
@@ -937,14 +955,14 @@ fun CloudHypervisorConsoleView(
                                             }
                                     }
                                 },
-                                label = {
-                                    Icon(
-                                        imageVector = Icons.Outlined.PowerSettingsNew,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(15.dp)
-                                    )
-                                }
-                            )
+                                modifier = Modifier.size(32.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Outlined.PowerSettingsNew,
+                                    contentDescription = "Toggle Power",
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
                             FilledTonalButton(
                                 onClick = {
                                     openConsoleCallback(vm.name, vm.addressOrSessionHost, vm.preferredConsoleProtocol)
@@ -1025,19 +1043,12 @@ fun NetworkUtilitiesView(
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             NetUtilityMode.entries.forEach { mode ->
-                AssistChip(
+                NexusChoiceChip(
+                    selected = activeMode == mode,
                     onClick = { activeMode = mode },
-                    label = {
-                        Text(
-                            text = mode.badge,
-                            style = NexusTheme.monospace.keycapShortcut,
-                            color = if (activeMode == mode) {
-                                MaterialTheme.colorScheme.primary
-                            } else {
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            }
-                        )
-                    }
+                    label = mode.badge,
+                    monospace = true,
+                    showCheckmarkWhenSelected = false
                 )
             }
         }
