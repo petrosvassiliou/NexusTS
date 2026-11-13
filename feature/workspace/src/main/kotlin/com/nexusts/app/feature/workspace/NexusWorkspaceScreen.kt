@@ -948,7 +948,7 @@ private fun VaultHierarchySidebarTree(
             conn.host.lowercase().contains(query) ||
             conn.protocol.name.lowercase().contains(query) ||
             conn.osFamily.lowercase().contains(query) ||
-            conn.inheritable.tags.any { it.lowercase().contains(query) }
+            conn.tags.any { it.lowercase().contains(query) }
     }
 
     val favorites = remember(doc.connections, doc.tombstonedObjectIds, query) {

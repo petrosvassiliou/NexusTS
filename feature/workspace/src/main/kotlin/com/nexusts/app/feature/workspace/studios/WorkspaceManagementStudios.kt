@@ -990,7 +990,7 @@ fun NewOrEditConnectionDialog(
                             ) {
                                 Text(
                                     text = cliFlag,
-                                    style = NexusTheme.monospace.codeSnippet,
+                                    style = NexusTheme.monospace.logEntry,
                                     color = MaterialTheme.colorScheme.onSurface,
                                     modifier = Modifier.weight(1f)
                                 )

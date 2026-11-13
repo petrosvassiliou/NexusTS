@@ -86,7 +86,7 @@ data class WorkspaceUiState(
     val remoteKeyCaptureEnabled: Boolean = false,
     val broadcastModeEnabled: Boolean = false,
     val isVaultLocked: Boolean = false,
-    val vaultDocument: NxtsVaultDocument = createEnterpriseStarterVault(),
+    val vaultDocument: NxtsVaultDocument = NexusWorkspaceViewModel.createEnterpriseStarterVault(),
     val selectedConnectionId: String? = null,
     val selectedSmartFolderId: String? = null,
     val selectedDynamicFolderId: String? = null,
@@ -191,7 +191,8 @@ class NexusWorkspaceViewModel @Inject constructor(
             name = "Inherited Preview",
             host = "preview.internal",
             protocol = VaultProtocolType.RDP,
-            inheritable = InheritableProperties(credentialMode = InheritanceMode.INHERIT_FROM_PARENT)
+            inheritable = InheritableProperties(credentialMode = InheritanceMode.INHERIT_FROM_PARENT),
+            settings = ProtocolSpecificSettings.Rdp()
         )
         val profile = inheritanceResolver.resolveEffectiveProfile(doc, syntheticProbe)
         return profile.effectiveCredential to profile.credentialSourceLabel

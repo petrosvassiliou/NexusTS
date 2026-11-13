@@ -827,8 +827,8 @@ fun NewTemplateDialog(
                         VaultProtocolType.SSH -> ProtocolSpecificSettings.Ssh()
                         VaultProtocolType.SFTP -> ProtocolSpecificSettings.FileTransfer()
                         VaultProtocolType.VNC -> ProtocolSpecificSettings.Vnc()
-                        VaultProtocolType.WEB_PAGE -> ProtocolSpecificSettings.WebPage()
-                        else -> ProtocolSpecificSettings.CloudVirtualization()
+                        VaultProtocolType.WEB_PAGE -> ProtocolSpecificSettings.WebPage(url = "https://")
+                        else -> ProtocolSpecificSettings.CloudVirtualization(apiEndpointUrl = "https://")
                     }
                     onSaveTemplate(
                         ConnectionTemplate(
@@ -1135,15 +1135,15 @@ fun NewSmartFolderDialog(
             Button(
                 enabled = name.isNotBlank(),
                 onClick = {
-                    val tags = tagsCsv.split(',').map { it.trim() }.filter { it.isNotEmpty() }.toSet()
+                    val tags = tagsCsv.split(',').map { it.trim() }.filter { it.isNotEmpty() }
                     onSaveSmartFolder(
                         SmartFolder(
                             name = name.trim(),
                             filter = SmartFolderFilter(
-                                requiredTags = tags,
+                                includeTags = tags,
                                 osFamilyFilter = osFilter.ifBlank { null },
                                 environmentFilter = envFilter.trim().ifBlank { null },
-                                hostRegex = hostRegex.trim().ifBlank { null }
+                                hostPatternRegex = hostRegex.trim().ifBlank { null }
                             )
                         )
                     )
