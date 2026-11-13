@@ -36,7 +36,7 @@ googleid = "1.1.1"
 playServicesAuth = "21.3.0"
 playServicesFido = "21.2.0"
 googleApiClient = "2.7.2"
-googleApiServicesDrive = "v3-rev20250219-2.0.0"
+googleApiServicesDrive = "v3-rev20261023-2.9.2"
 googleHttpClient = "1.46.3"
 
 # Google Play In-App Updates (Play Protect Compliant)
