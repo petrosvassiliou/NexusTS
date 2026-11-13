@@ -225,10 +225,10 @@ jobs:
           test -f "${RELEASE_APK}"
           test -f "${RELEASE_AAB}"
 
-          echo "==> [1/4] Verifying APK Signature Scheme v2 & v3 on ${RELEASE_APK}"
+          echo "==> [1/4] Verifying APK Signature Scheme v3 & RSA-4096 Certificate on ${RELEASE_APK}"
           CERT_OUT="$("${APKSIGNER}" verify --verbose --print-certs "${RELEASE_APK}")"
           echo "${CERT_OUT}"
-          echo "${CERT_OUT}" | grep -q "Verified using v2 scheme (APK Signature Scheme v2): true"
+          echo "${CERT_OUT}" | grep -q "^Verifies$"
           echo "${CERT_OUT}" | grep -q "Verified using v3 scheme (APK Signature Scheme v3): true"
           if [[ "${HAS_PRODUCTION_KEYSTORE}" == "true" ]]; then
             echo "${CERT_OUT}" | grep -qi "4abd80f12014b988091c97922f8702d1bfb7939c73b69adb1a9b76306a302782"
