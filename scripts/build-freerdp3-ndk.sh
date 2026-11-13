@@ -154,7 +154,7 @@ for ABI in "${TARGET_ABIS[@]}"; do
   echo "==> [1/3] Building OpenSSL ${OPENSSL_VERSION} for ${ABI} (API ${ANDROID_API_LEVEL})"
   echo "======================================================================"
   rm -rf "$ABI_BUILD/openssl"
-  cp -R "$WORK_DIR/src/openssl-${OPENSSL_VERSION}" "$ABI_BUILD/openssl"
+  cp -a "$WORK_DIR/src/openssl-${OPENSSL_VERSION}" "$ABI_BUILD/openssl"
   (
     cd "$ABI_BUILD/openssl"
     export ANDROID_NDK_ROOT="$NDK_ROOT"
@@ -175,9 +175,10 @@ for ABI in "${TARGET_ABIS[@]}"; do
   echo "==> [2/3] Building libusb ${LIBUSB_VERSION} for ${ABI} (Smartcard/YubiKey CCID)"
   echo "======================================================================"
   rm -rf "$ABI_BUILD/libusb"
-  cp -R "$WORK_DIR/src/libusb-${LIBUSB_VERSION}" "$ABI_BUILD/libusb"
+  cp -a "$WORK_DIR/src/libusb-${LIBUSB_VERSION}" "$ABI_BUILD/libusb"
   (
     cd "$ABI_BUILD/libusb"
+    autoreconf -fi
     CC="$TOOLCHAIN/bin/${AUTOCONF_HOST}${ANDROID_API_LEVEL}-clang" \
     CXX="$TOOLCHAIN/bin/${AUTOCONF_HOST}${ANDROID_API_LEVEL}-clang++" \
     AR="$TOOLCHAIN/bin/llvm-ar" \
@@ -258,6 +259,7 @@ for ABI in "${TARGET_ABIS[@]}"; do
     -DWITH_CAIRO=OFF \
     -DWITH_OPENH264=OFF \
     -DWITH_FFMPEG=OFF \
+    -DWITH_VIDEO_FFMPEG=OFF \
     -DWITH_DSP_FFMPEG=OFF \
     -DWITH_SWSCALE=OFF \
     -DWITH_VAAPI=OFF \
