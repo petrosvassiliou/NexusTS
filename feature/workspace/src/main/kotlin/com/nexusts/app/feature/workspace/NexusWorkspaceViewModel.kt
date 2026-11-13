@@ -1760,8 +1760,8 @@ class NexusWorkspaceViewModel @Inject constructor(
                 val ansiBytes = SshNativeBridge.translateHardwareKeyToAnsi(
                     keyCode = packet.keyCode,
                     unicodeChar = packet.unicodeChar,
-                    ctrlPressed = packet.isCtrlPressed,
-                    altPressed = packet.isAltPressed
+                    ctrlPressed = packet.ctrlPressed,
+                    altPressed = packet.altPressed
                 ) ?: return false
                 if (packet.isKeyDown) {
                     if (activeTab.broadcastEnabled) {

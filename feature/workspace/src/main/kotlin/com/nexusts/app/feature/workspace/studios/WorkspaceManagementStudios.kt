@@ -1424,17 +1424,21 @@ fun NewOrEditConnectionDialog(
                                 ))
                                 .copy(port = vncPortText.toIntOrNull()?.takeIf { it in 1..65535 } ?: 5900)
 
-                        VaultProtocolType.WEB_PAGE ->
+                        VaultProtocolType.WEB_PAGE -> {
+                            val normalizedUrl = if (host.startsWith("http")) host.trim() else "https://${host.trim()}"
                             ((initialConnection?.settings as? ProtocolSpecificSettings.WebPage)
-                                ?: ProtocolSpecificSettings.WebPage())
-                                .copy(url = if (host.startsWith("http")) host.trim() else "https://${host.trim()}")
+                                ?: ProtocolSpecificSettings.WebPage(url = normalizedUrl))
+                                .copy(url = normalizedUrl)
+                        }
 
                         VaultProtocolType.VMWARE_VSPHERE, VaultProtocolType.PROXMOX_VE,
                         VaultProtocolType.HYPER_V, VaultProtocolType.AWS_EC2,
-                        VaultProtocolType.AZURE_VM, VaultProtocolType.WINDOWS_TERMINAL_SERVICES ->
+                        VaultProtocolType.AZURE_VM, VaultProtocolType.WINDOWS_TERMINAL_SERVICES -> {
+                            val normalizedUrl = if (host.startsWith("http")) host.trim() else "https://${host.trim()}"
                             ((initialConnection?.settings as? ProtocolSpecificSettings.CloudVirtualization)
-                                ?: ProtocolSpecificSettings.CloudVirtualization())
-                                .copy(apiEndpointUrl = if (host.startsWith("http")) host.trim() else "https://${host.trim()}")
+                                ?: ProtocolSpecificSettings.CloudVirtualization(apiEndpointUrl = normalizedUrl))
+                                .copy(apiEndpointUrl = normalizedUrl)
+                        }
 
                         VaultProtocolType.UTILITY_PING, VaultProtocolType.UTILITY_TRACEROUTE,
                         VaultProtocolType.UTILITY_PORT_SCANNER, VaultProtocolType.UTILITY_WAKE_ON_LAN ->
@@ -2016,7 +2020,7 @@ fun SecureGatewayStudioView(
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             Text(
-                                text = "${lease.localBindHost}:${lease.localBindPort} -> ${lease.remoteTargetHost}:${lease.remoteTargetPort} (${lease.kind.name})",
+                                text = "${lease.localBindHost}:${lease.localBindPort} -> ${lease.remoteTargetHost}:${lease.remoteTargetPort} (${lease.gatewayKind.name})",
                                 style = NexusTheme.monospace.keycapShortcut,
                                 color = NexusTheme.extendedColors.statusConnected
                             )
