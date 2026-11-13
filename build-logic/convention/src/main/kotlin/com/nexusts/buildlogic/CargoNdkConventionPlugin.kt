@@ -51,6 +51,11 @@ abstract class CargoNdkBuildTask @Inject constructor(
         val outputRoot = jniLibsOutputDir.get().asFile
         outputRoot.mkdirs()
 
+        if (System.getenv("NEXUSTS_PREBUILT_RUST_JNILIBS") == "true") {
+            logger.lifecycle("NexusTS: Using prebuilt Rust NDK jniLibs from CI artifact (NEXUSTS_PREBUILT_RUST_JNILIBS=true).")
+            return
+        }
+
         val profileFlag = if (releaseProfile.get()) listOf("--release") else emptyList()
 
         abis.get().forEach { abi ->

@@ -161,10 +161,11 @@ for ABI in "${TARGET_ABIS[@]}"; do
     PATH="$TOOLCHAIN/bin:$PATH" \
       ./Configure "$OPENSSL_TARGET" \
       -D__ANDROID_API__="${ANDROID_API_LEVEL}" \
+      -fPIC \
       no-shared \
       no-tests \
-      "$PAGE_ALIGN_LDFLAGS" \
       --prefix="$ABI_PREFIX" \
+      --libdir=lib \
       --openssldir="$ABI_PREFIX/ssl"
     PATH="$TOOLCHAIN/bin:$PATH" make -j"$JOBS"
     PATH="$TOOLCHAIN/bin:$PATH" make install_sw
@@ -196,8 +197,15 @@ for ABI in "${TARGET_ABIS[@]}"; do
   echo "======================================================================"
   echo "==> [3/3] Building FreeRDP ${FREERDP_VERSION} for ${ABI} (16 KB Page Aligned)"
   echo "======================================================================"
+  CMAKE_GEN_ARGS=()
+  if command -v ninja >/dev/null 2>&1; then
+    CMAKE_GEN_ARGS=(-G Ninja)
+  fi
+  rm -rf "$ABI_BUILD/freerdp"
+  PKG_CONFIG_LIBDIR="$ABI_PREFIX/lib/pkgconfig" \
   cmake -S "$WORK_DIR/src/freerdp-${FREERDP_VERSION}" \
     -B "$ABI_BUILD/freerdp" \
+    "${CMAKE_GEN_ARGS[@]}" \
     -DCMAKE_TOOLCHAIN_FILE="$CMAKE_TOOLCHAIN_FILE" \
     -DANDROID_ABI="$ABI" \
     -DANDROID_PLATFORM="android-${ANDROID_API_LEVEL}" \
@@ -205,29 +213,52 @@ for ABI in "${TARGET_ABIS[@]}"; do
     -DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_INSTALL_PREFIX="$ABI_PREFIX" \
-    -DCMAKE_FIND_ROOT_PATH="$ABI_PREFIX" \
+    -DCMAKE_PREFIX_PATH="$ABI_PREFIX" \
+    -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=BOTH \
+    -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=BOTH \
+    -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=BOTH \
     -DCMAKE_SHARED_LINKER_FLAGS="$PAGE_ALIGN_LDFLAGS" \
     -DOPENSSL_ROOT_DIR="$ABI_PREFIX" \
     -DOPENSSL_INCLUDE_DIR="$ABI_PREFIX/include" \
     -DOPENSSL_CRYPTO_LIBRARY="$ABI_PREFIX/lib/libcrypto.a" \
     -DOPENSSL_SSL_LIBRARY="$ABI_PREFIX/lib/libssl.a" \
+    -DLIBUSB_1_INCLUDE_DIR="$ABI_PREFIX/include/libusb-1.0" \
+    -DLIBUSB_1_LIBRARY="$ABI_PREFIX/lib/libusb-1.0.so" \
     -DBUILD_SHARED_LIBS=ON \
+    -DBUILD_TESTING=OFF \
+    -DWITH_UNICODE_BUILTIN=ON \
     -DWITH_CLIENT=ON \
     -DWITH_CLIENT_COMMON=ON \
     -DWITH_CLIENT_SDL=OFF \
     -DWITH_SERVER=OFF \
     -DWITH_SAMPLE=OFF \
+    -DWITH_SHADOW=OFF \
+    -DWITH_PROXY=OFF \
+    -DWITH_PLATFORM_SERVER=OFF \
     -DWITH_MANPAGES=OFF \
     -DWITH_X11=OFF \
     -DWITH_WAYLAND=OFF \
+    -DWITH_ALSA=OFF \
+    -DWITH_PULSE=OFF \
+    -DWITH_OSS=OFF \
     -DWITH_CUPS=OFF \
     -DWITH_PCSC=OFF \
+    -DWITH_FUSE=OFF \
+    -DWITH_KRB5=OFF \
+    -DWITH_PKCS11=OFF \
+    -DWITH_AAD=OFF \
+    -DWITH_CJSON_REQUIRED=OFF \
+    -DWITH_CAIRO=OFF \
     -DWITH_FFMPEG=OFF \
+    -DWITH_DSP_FFMPEG=OFF \
     -DWITH_SWSCALE=OFF \
+    -DWITH_VAAPI=OFF \
+    -DWITH_WEBVIEW=OFF \
     -DWITH_MEDIACODEC=ON \
     -DWITH_OPENSLES=ON \
     -DWITH_CHANNELS=ON \
     -DCHANNEL_URBDRC=ON \
+    -DCHANNEL_URBDRC_CLIENT=ON \
     -DCHANNEL_DISP=ON \
     -DCHANNEL_CLIPRDR=ON \
     -DCHANNEL_RDPDR=ON \

@@ -1,0 +1,8 @@
+NexusTS est un gestionnaire de connexions à distance d'entreprise conçu nativement pour Googlebook OS (bureau Android multi-fenêtres et multi-écrans) et les tablettes Android, doté de Material Design 3 Expressive et compatible Royal TS (.rtsz).
+
+FONCTIONNALITÉS CLÉS
+• Expérience Bureau Googlebook OS Native : Pavage multi-volets, fenêtres détachables sur écrans externes, raccourcis clavier physiques et palette rapide (Ctrl/Cmd+K).
+• Bureau à Distance (RDP) Complet : Décodage matériel H.264/AVC444, redimensionnement dynamique DISP_DVC, mise à l'échelle HiDPI, connexion Console (/admin), partage du presse-papiers, redirection audio/micro/lecteurs et carte à puce USB / YubiKey PIV.
+• Héritage d'Identifiants par Dossier : Enregistrez vos identifiants directement sur un dossier parent pour les appliquer automatiquement aux connexions RDP, SSH, SFTP et VNC enfants.
+• SSH, SFTP, VNC et Cloud : Terminal xterm-256color, éditeur visuel de tunnels SSH (-L/-R/-D), enregistrement asciicast (.cast), gestionnaire SFTP double volet et consoles Proxmox / vSphere.
+• Chiffrement Zero-Knowledge et Google Drive : Coffres .nxts chiffrés via Argon2id + AES-256-GCM, import/export .rtsz et .csv, et synchronisation via Google Drive API v3.

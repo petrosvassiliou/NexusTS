@@ -15,6 +15,7 @@
 #if defined(NEXUSTS_HAS_FREERDP3_BINARY) && NEXUSTS_HAS_FREERDP3_BINARY == 1
 #include <freerdp/freerdp.h>
 #include <freerdp/client/disp.h>
+#include <freerdp/input.h>
 #include <freerdp/settings.h>
 #endif
 
@@ -122,7 +123,7 @@ bool RdpSessionContext::connect() {
         freerdp_settings_set_string(settings, FreeRDP_Domain, params_.domain.c_str());
     }
     if (!params_.rd_gateway_host.empty()) {
-        freerdp_settings_set_bool(settings, FreeRDP_GatewayEnabled, TRUE);
+        freerdp_settings_set_bool(settings, FreeRDP_GatewayEnabled, true);
         freerdp_settings_set_string(settings, FreeRDP_GatewayHostname, params_.rd_gateway_host.c_str());
         freerdp_settings_set_uint32(settings, FreeRDP_GatewayPort, params_.rd_gateway_port);
     }

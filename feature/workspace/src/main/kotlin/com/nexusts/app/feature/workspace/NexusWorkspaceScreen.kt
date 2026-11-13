@@ -148,6 +148,9 @@ fun NexusWorkspaceScreen(
     onRequestGoogleDriveSync: () -> Unit,
     onDetachTabToNativeWindow: (WorkspaceSessionTab, Int?) -> Unit,
     onRequestExportVault: (VaultExportFormat) -> Unit = {},
+    initialOAuthWebClientId: String = "",
+    initialSharedDriveFolderId: String = "",
+    onSaveOAuthConfig: (String, String) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier
 ) {
     val uiState by viewModel.uiState.collectAsState()
@@ -317,7 +320,10 @@ fun NexusWorkspaceScreen(
                     useSharedTeamDrive = uiState.useSharedTeamDriveZone,
                     strings = strings,
                     onSelectSyncZone = viewModel::setDriveSyncZone,
-                    onTriggerDeltaSync = onRequestGoogleDriveSync
+                    onTriggerDeltaSync = onRequestGoogleDriveSync,
+                    initialOAuthWebClientId = initialOAuthWebClientId,
+                    initialSharedFolderId = initialSharedDriveFolderId,
+                    onSaveOAuthConfig = onSaveOAuthConfig
                 )
 
                 else -> SplitPaneWorkspaceContainer(

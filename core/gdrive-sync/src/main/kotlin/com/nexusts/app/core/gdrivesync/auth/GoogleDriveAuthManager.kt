@@ -39,15 +39,47 @@ class GoogleDriveConsentResolutionRequiredException(
 class GoogleDriveAuthManager(
     private val appContext: Context
 ) {
+    private val prefs by lazy {
+        appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    }
+
     /**
-     * Resolves the OAuth 2.0 Web Client ID from Android Enterprise `RestrictionsManager`
-     * (`google_oauth_web_client_id`) first, falling back to compile-time `BuildConfig.GOOGLE_OAUTH_WEB_CLIENT_ID`.
+     * Persists runtime Google Cloud OAuth 2.0 Web Client ID & optional Shared Drive Folder ID
+     * configured inside the NexusTS Google Drive Sync Studio.
+     */
+    fun saveRuntimeOAuthConfiguration(webClientId: String, sharedDriveFolderId: String = "") {
+        prefs.edit()
+            .putString(KEY_RUNTIME_WEB_CLIENT_ID, webClientId.trim())
+            .putString(KEY_RUNTIME_SHARED_FOLDER_ID, sharedDriveFolderId.trim())
+            .apply()
+    }
+
+    fun readRuntimeOAuthConfiguration(): Pair<String, String> {
+        val clientId = prefs.getString(KEY_RUNTIME_WEB_CLIENT_ID, "").orEmpty()
+        val folderId = prefs.getString(KEY_RUNTIME_SHARED_FOLDER_ID, "").orEmpty()
+        return clientId to folderId
+    }
+
+    /**
+     * Resolves the OAuth 2.0 Web Client ID in strict enterprise precedence:
+     * 1. Android Enterprise `RestrictionsManager` (`google_oauth_web_client_id`)
+     * 2. User-saved runtime configuration (`nexusts_oauth_config`)
+     * 3. Compile-time `BuildConfig.GOOGLE_OAUTH_WEB_CLIENT_ID`
      */
     fun resolveConfiguredWebClientId(fallbackWebClientId: String = ""): String {
         val restrictions = appContext.getSystemService(RestrictionsManager::class.java)
             ?.applicationRestrictions
         val mdmClientId = restrictions?.getString("google_oauth_web_client_id")?.trim().orEmpty()
-        return mdmClientId.ifBlank { fallbackWebClientId.trim() }
+        if (mdmClientId.isNotBlank()) return mdmClientId
+        val runtimeClientId = prefs.getString(KEY_RUNTIME_WEB_CLIENT_ID, "")?.trim().orEmpty()
+        if (runtimeClientId.isNotBlank()) return runtimeClientId
+        return fallbackWebClientId.trim()
+    }
+
+    companion object {
+        private const val PREFS_NAME = "nexusts_oauth_config"
+        private const val KEY_RUNTIME_WEB_CLIENT_ID = "web_client_id"
+        private const val KEY_RUNTIME_SHARED_FOLDER_ID = "shared_drive_folder_id"
     }
 
     /**

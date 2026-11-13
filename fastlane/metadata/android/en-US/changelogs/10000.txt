@@ -1,0 +1,1 @@
+v1.0.0: Initial Googlebook OS & Android Tablet release. Freeform multi-window & multi-monitor workspace, RDP (H.264/AVC444, HiDPI, Console, Folder Credential Inheritance), SSH/SFTP, VNC, Argon2id + AES-256-GCM .nxts & .rtsz vaults, and Google Drive v3 sync.

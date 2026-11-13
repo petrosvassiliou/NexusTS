@@ -1,0 +1,9 @@
+NexusTS is an enterprise Remote Management & Connection Manager built natively for Googlebook OS (Android desktop freeform multi-window & multi-monitor) and Android Tablets & Foldables, featuring Material Design 3 Expressive design and Royal TS (.rtsz) vault compatibility.
+
+KEY CAPABILITIES
+• Native Googlebook OS Desktop Experience: Arbitrary split-pane tiling, detachable session windows across external displays, hardware keyboard shortcut capture, right-click context menus, and Command Palette (Ctrl/Cmd+K).
+• Enterprise Remote Desktop (RDP): FreeRDP 3.x NDK bridge with H.264/AVC444 hardware MediaCodec decoding, dynamic DISP_DVC window resize, HiDPI scaling (100%–200%), Connect to Console (/admin), clipboard sharing, low-latency AAudio playback & microphone redirection, drive/printer/serial redirection, RemoteApp, and USB CCID Smartcard / YubiKey PIV pass-through.
+• Folder-Level Credential Inheritance: Save Active Directory or SSH credentials once on a parent folder and automatically inherit them across child RDP, SSH, SFTP, VNC, and Cloud connections—with one-click Connect with Options overrides.
+• SSH, SFTP, VNC & Cloud Consoles: GPU-accelerated xterm-256color terminal, visual SSH Local/Remote/SOCKS5 (-L/-R/-D) port-forwarding & jump-host editor, asciicast v2 (.cast) session recording, dual-pane SFTP/SCP commander, VNC / Apple Screen Sharing, and Proxmox VE / VMware vSphere / Hyper-V / AWS / Azure consoles.
+• Zero-Knowledge Cryptography & Google Drive Sync: Argon2id (64 MiB) + AES-256-GCM .nxts vaults, hardware-backed Passkeys & Ed25519 keys, TOTP 2FA, Royal TS (.rtsz) & CSV import/export, and delta sync via Google Drive API v3 (appDataFolder & Shared Team Drives).
+• Built-in Multilingual UI: Instant Per-App Language switching across English, German, Italian, Spanish, Greek, and French.

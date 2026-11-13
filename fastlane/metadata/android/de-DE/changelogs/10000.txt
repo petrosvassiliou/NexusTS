@@ -1,0 +1,1 @@
+v1.0.0: Erstveröffentlichung für Googlebook OS & Android-Tablets mit Multi-Window, RDP (H.264/AVC444, HiDPI, Ordner-Anmeldedatenvererbung), SSH/SFTP, VNC, .nxts/.rtsz-Tresoren und Google Drive v3 Synchronisierung.

@@ -1,0 +1,36 @@
+{
+  "application_id": "com.nexusts.app",
+  "target_platforms": [
+    "Googlebook OS (Native Android Desktop Freeform Multi-Window & Multi-Monitor)",
+    "Android Tablets & Foldables (API 29 - API 35+)"
+  ],
+  "production_signing_certificate": {
+    "key_alias": "nexusts-upload",
+    "algorithm": "RSA-4096 (SHA384withRSA)",
+    "apk_signature_schemes": ["v2", "v3", "v4"],
+    "public_certificate_pem": "certs/nexusts-upload-certificate.pem",
+    "sha1_fingerprint": "A6:AF:15:A9:BF:0B:FE:38:D4:66:46:3E:3E:72:A6:5B:4F:9C:4D:F6",
+    "sha256_fingerprint": "4A:BD:80:F1:20:14:B9:88:09:1C:97:92:2F:87:02:D1:BF:B7:93:9C:73:B6:9A:DB:1A:9B:76:30:6A:30:27:82",
+    "mdm_enterprise_signer_sha256_hex": "4abd80f12014b988091c97922f8702d1bfb7939c73b69adb1a9b76306a302782"
+  },
+  "google_cloud_oauth2_registration": {
+    "enabled_apis": [
+      "drive.googleapis.com"
+    ],
+    "oauth_scopes": [
+      "https://www.googleapis.com/auth/drive.appdata",
+      "https://www.googleapis.com/auth/drive.file"
+    ],
+    "android_oauth_client": {
+      "package_name": "com.nexusts.app",
+      "certificate_sha1": "A6:AF:15:A9:BF:0B:FE:38:D4:66:46:3E:3E:72:A6:5B:4F:9C:4D:F6"
+    },
+    "credential_manager_server_client_note": "Create a Web Application OAuth 2.0 Client ID (*.apps.googleusercontent.com) in the same Google Cloud project and supply it via MDM google_oauth_web_client_id, in-app Drive Sync Studio, or GitHub secret NEXUSTS_GOOGLE_WEB_CLIENT_ID."
+  },
+  "managed_google_play_app_restrictions_template": {
+    "allow_in_app_updates": true,
+    "enterprise_update_signer_sha256": "4abd80f12014b988091c97922f8702d1bfb7939c73b69adb1a9b76306a302782",
+    "managed_team_drive_id": "",
+    "google_oauth_web_client_id": ""
+  }
+}

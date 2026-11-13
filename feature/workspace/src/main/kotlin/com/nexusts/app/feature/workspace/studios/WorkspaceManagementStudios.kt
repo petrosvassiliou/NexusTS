@@ -1778,12 +1778,21 @@ fun DriveSyncAndConflictStudioView(
     strings: WorkspaceLocalizedStrings,
     onSelectSyncZone: (Boolean) -> Unit,
     onTriggerDeltaSync: () -> Unit,
+    initialOAuthWebClientId: String = "",
+    initialSharedFolderId: String = "",
+    onSaveOAuthConfig: (String, String) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier
 ) {
+    val clipboard = LocalClipboardManager.current
+    var webClientIdInput by remember(initialOAuthWebClientId) { mutableStateOf(initialOAuthWebClientId) }
+    var sharedFolderInput by remember(initialSharedFolderId) { mutableStateOf(initialSharedFolderId) }
+    var savedBanner by remember { mutableStateOf(false) }
+
     Column(
         modifier = modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.surfaceContainerLowest)
+            .verticalScroll(rememberScrollState())
             .padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
@@ -1849,6 +1858,84 @@ fun DriveSyncAndConflictStudioView(
                     style = NexusTheme.monospace.keycapShortcut,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+            }
+        }
+
+        // Enterprise OAuth 2.0 Web Client ID & Team Drive Provisioning Card
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            color = MaterialTheme.colorScheme.surfaceContainerLow,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    text = "Google Cloud OAuth 2.0 & Credential Manager Provisioning",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = "com.nexusts.app • Release SHA-1: A6:AF:15:A9:BF:0B:FE:38:D4:66:46:3E:3E:72:A6:5B:4F:9C:4D:F6",
+                        style = NexusTheme.monospace.keycapShortcut,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.weight(1f)
+                    )
+                    AssistChip(
+                        onClick = {
+                            clipboard.setText(AnnotatedString("A6:AF:15:A9:BF:0B:FE:38:D4:66:46:3E:3E:72:A6:5B:4F:9C:4D:F6"))
+                        },
+                        label = { Text("Copy SHA-1") },
+                        leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null, modifier = Modifier.size(14.dp)) }
+                    )
+                }
+                OutlinedTextField(
+                    value = webClientIdInput,
+                    onValueChange = {
+                        webClientIdInput = it
+                        savedBanner = false
+                    },
+                    label = { Text("OAuth 2.0 Web Client ID (*.apps.googleusercontent.com)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                if (useSharedTeamDrive) {
+                    OutlinedTextField(
+                        value = sharedFolderInput,
+                        onValueChange = {
+                            sharedFolderInput = it
+                            savedBanner = false
+                        },
+                        label = { Text("Shared Google Drive / Team Drive Folder ID") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    FilledTonalButton(
+                        onClick = {
+                            onSaveOAuthConfig(webClientIdInput.trim(), sharedFolderInput.trim())
+                            savedBanner = true
+                        }
+                    ) {
+                        Icon(Icons.Outlined.Key, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Save OAuth 2.0 Configuration")
+                    }
+                    if (savedBanner) {
+                        Text(
+                            text = "Saved to Credential Manager Sync Store",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = NexusTheme.extendedColors.statusConnected
+                        )
+                    }
+                }
             }
         }
     }

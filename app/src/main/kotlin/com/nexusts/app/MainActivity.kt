@@ -16,6 +16,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.lifecycleScope
+import com.nexusts.app.core.gdrivesync.auth.GoogleDriveAuthManager
 import com.nexusts.app.core.gdrivesync.sync.GoogleDriveVaultSyncEngine
 import com.nexusts.app.core.ui.theme.NexusTSTheme
 import com.nexusts.app.core.ui.workspace.AdHocConnectionSyntaxParser
@@ -73,6 +74,14 @@ class MainActivity : AppCompatActivity() {
             val updateState by updateCoordinator.updateState.collectAsState()
             val localizedStrings = rememberLocalizedWorkspaceStrings()
 
+            val driveAuthManager = remember { GoogleDriveAuthManager(applicationContext) }
+            val (savedClientId, savedFolderId) = remember(driveAuthManager) {
+                driveAuthManager.readRuntimeOAuthConfiguration()
+            }
+            val effectiveInitialClientId = remember(driveAuthManager, savedClientId) {
+                driveAuthManager.resolveConfiguredWebClientId(BuildConfig.GOOGLE_OAUTH_WEB_CLIENT_ID)
+            }
+
             var pendingExportBytes by remember { mutableStateOf<ByteArray?>(null) }
 
             val fileImportLauncher = rememberLauncherForActivityResult(
@@ -124,6 +133,11 @@ class MainActivity : AppCompatActivity() {
                         val (suggestedFileName, payloadBytes) = workspaceViewModel.buildVaultExportPayload(format)
                         pendingExportBytes = payloadBytes
                         fileExportLauncher.launch(suggestedFileName)
+                    },
+                    initialOAuthWebClientId = effectiveInitialClientId,
+                    initialSharedDriveFolderId = savedFolderId,
+                    onSaveOAuthConfig = { clientId, folderId ->
+                        driveAuthManager.saveRuntimeOAuthConfiguration(clientId, folderId)
                     }
                 )
             }

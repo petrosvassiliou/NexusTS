@@ -1,0 +1,1 @@
+v1.0.0: Πρώτη έκδοση για Googlebook OS & Android Tablets με πολλαπλά παράθυρα, πλήρες RDP (H.264, HiDPI, κληρονομικότητα διαπιστευτηρίων φακέλου), SSH/SFTP, VNC, .nxts/.rtsz και Google Drive Sync.
