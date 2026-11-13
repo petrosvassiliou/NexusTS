@@ -24,7 +24,7 @@ dependencies {
     implementation(libs.kotlinx.datetime)
     implementation(libs.bouncycastle.prov)
     implementation(libs.bouncycastle.pkix)
-    implementation(libs.okhttp)
+    api(libs.okhttp)
 
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)

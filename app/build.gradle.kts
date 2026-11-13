@@ -170,6 +170,8 @@ dependencies {
     implementation(libs.androidx.window)
     implementation(libs.androidx.work.runtime.ktx)
     implementation(libs.androidx.datastore.preferences)
+    implementation(libs.androidx.room.runtime)
+    implementation(libs.okhttp)
     implementation(libs.kotlinx.serialization.json)
 
     // Play Protect Compliant In-App Updates API

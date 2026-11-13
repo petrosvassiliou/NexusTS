@@ -29,7 +29,7 @@ dependencies {
     implementation(libs.google.http.client.gson)
 
     // Encrypted Local Offline Sync Cache (Room + SQLCipher)
-    implementation(libs.androidx.room.runtime)
+    api(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)
     ksp(libs.androidx.room.compiler)
     implementation(libs.sqlcipher.android)

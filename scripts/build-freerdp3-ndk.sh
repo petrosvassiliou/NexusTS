@@ -183,13 +183,15 @@ for ABI in "${TARGET_ABIS[@]}"; do
     AR="$TOOLCHAIN/bin/llvm-ar" \
     RANLIB="$TOOLCHAIN/bin/llvm-ranlib" \
     STRIP="$TOOLCHAIN/bin/llvm-strip" \
+    CFLAGS="-fPIC -O2" \
     LDFLAGS="$PAGE_ALIGN_LDFLAGS" \
       ./configure \
       --host="$AUTOCONF_HOST" \
       --prefix="$ABI_PREFIX" \
+      --with-pic \
       --disable-udev \
-      --enable-shared \
-      --disable-static
+      --disable-shared \
+      --enable-static
     make -j"$JOBS"
     make install
   )
@@ -213,17 +215,22 @@ for ABI in "${TARGET_ABIS[@]}"; do
     -DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_INSTALL_PREFIX="$ABI_PREFIX" \
+    -DCMAKE_INSTALL_LIBDIR=lib \
     -DCMAKE_PREFIX_PATH="$ABI_PREFIX" \
     -DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=BOTH \
     -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=BOTH \
     -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=BOTH \
     -DCMAKE_SHARED_LINKER_FLAGS="$PAGE_ALIGN_LDFLAGS" \
+    -DWITH_LIBRARY_VERSIONING=OFF \
+    -DWITH_INTERNAL_RC4=ON \
+    -DWITH_INTERNAL_MD4=ON \
+    -DWITH_INTERNAL_MD5=ON \
     -DOPENSSL_ROOT_DIR="$ABI_PREFIX" \
     -DOPENSSL_INCLUDE_DIR="$ABI_PREFIX/include" \
     -DOPENSSL_CRYPTO_LIBRARY="$ABI_PREFIX/lib/libcrypto.a" \
     -DOPENSSL_SSL_LIBRARY="$ABI_PREFIX/lib/libssl.a" \
     -DLIBUSB_1_INCLUDE_DIR="$ABI_PREFIX/include/libusb-1.0" \
-    -DLIBUSB_1_LIBRARY="$ABI_PREFIX/lib/libusb-1.0.so" \
+    -DLIBUSB_1_LIBRARY="$ABI_PREFIX/lib/libusb-1.0.a" \
     -DBUILD_SHARED_LIBS=ON \
     -DBUILD_TESTING=OFF \
     -DWITH_UNICODE_BUILTIN=ON \
@@ -249,6 +256,7 @@ for ABI in "${TARGET_ABIS[@]}"; do
     -DWITH_AAD=OFF \
     -DWITH_CJSON_REQUIRED=OFF \
     -DWITH_CAIRO=OFF \
+    -DWITH_OPENH264=OFF \
     -DWITH_FFMPEG=OFF \
     -DWITH_DSP_FFMPEG=OFF \
     -DWITH_SWSCALE=OFF \
@@ -269,10 +277,13 @@ for ABI in "${TARGET_ABIS[@]}"; do
   cmake --build "$ABI_BUILD/freerdp" --parallel "$JOBS"
   cmake --install "$ABI_BUILD/freerdp"
 
-  for so_file in libfreerdp3.so libfreerdp-client3.so libwinpr3.so libusb-1.0.so; do
+  for so_file in libfreerdp3.so libfreerdp-client3.so libwinpr3.so; do
     if [[ -f "$ABI_PREFIX/lib/$so_file" ]]; then
       "$TOOLCHAIN/bin/llvm-strip" --strip-unneeded "$ABI_PREFIX/lib/$so_file" || true
       cp -f "$ABI_PREFIX/lib/$so_file" "$JNILIBS_ROOT/$ABI/$so_file"
+    else
+      echo "ERROR: Expected shared library $ABI_PREFIX/lib/$so_file was not produced!" >&2
+      exit 1
     fi
   done
 
