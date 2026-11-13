@@ -417,6 +417,10 @@ class NexusWorkspaceComposeE2ETest {
         }
         composeRule.waitForIdle()
         assertTextRendered("WinServer-2025-DC01")
+        composeRule.runOnIdle {
+            vm.updateSidebarFilterQuery("Persisted-ZeroKnowledge-Node")
+        }
+        composeRule.waitForIdle()
         assertTextRendered("Persisted-ZeroKnowledge-Node")
 
         // Verify atomic disk persistence -> cold-start restoration round-trip
