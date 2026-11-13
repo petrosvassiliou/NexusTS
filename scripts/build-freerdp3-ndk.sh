@@ -15,7 +15,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-WORK_DIR="${NEXUSTS_FREERDP_WORK_DIR:-$REPO_ROOT/.freerdp-ndk-work}"
+WORK_DIR="${NEXUSTS_FREERDP_WORK_DIR:-${RUNNER_TEMP:-/tmp}/nexusts-freerdp-ndk-work}"
 STAGE_ROOT="$REPO_ROOT/native/third_party/freerdp3"
 JNILIBS_ROOT="$REPO_ROOT/protocols/rdp/src/main/jniLibs"
 
@@ -222,7 +222,8 @@ for ABI in "${TARGET_ABIS[@]}"; do
     -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=BOTH \
     -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=BOTH \
     -DCMAKE_SHARED_LINKER_FLAGS="$PAGE_ALIGN_LDFLAGS" \
-    -DWITH_LIBRARY_VERSIONING=OFF \
+    -DUSE_VERSION_FROM_GIT_TAG=OFF \
+    -DWITH_LIBRARY_VERSIONING=ON \
     -DWITH_INTERNAL_RC4=ON \
     -DWITH_INTERNAL_MD4=ON \
     -DWITH_INTERNAL_MD5=ON \
