@@ -173,7 +173,9 @@ pub fn trace_route_hops(
 
     for ttl in 1..=capped_hops {
         let udp = UdpSocket::bind(bind_addr)?;
-        udp.set_ttl(u32::from(ttl))?;
+        if target_ip.is_ipv4() {
+            let _ = udp.set_ttl(u32::from(ttl));
+        }
         udp.set_read_timeout(Some(timeout))?;
 
         let udp_dest = SocketAddr::new(target_ip, 33434u16.saturating_add(u16::from(ttl)));
@@ -233,7 +235,9 @@ fn probe_tcp_with_ttl(addr: SocketAddr, ttl: u8, timeout: Duration) -> bool {
     }
     match TcpStream::connect_timeout(&addr, timeout) {
         Ok(sock) => {
-            let _ = sock.set_ttl(u32::from(ttl));
+            if addr.is_ipv4() {
+                let _ = sock.set_ttl(u32::from(ttl));
+            }
             true
         }
         Err(err) => {
@@ -282,5 +286,12 @@ mod tests {
             build_wol_magic_packet("00-11-22-AA-BB-CC", Some("DE:AD:BE:EF:01:02")).expect("secureon");
         assert_eq!(sec_pkt.len(), 108);
         assert_eq!(&sec_pkt[102..108], &[0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02]);
+    }
+
+    #[test]
+    fn ipv6_traceroute_does_not_fail_with_einval() {
+        // Should not return EINVAL from IPv4 IP_TTL setsockopt on an AF_INET6 socket
+        let res = trace_route_hops("[::1]", 65530, 1, 100);
+        assert!(res.is_ok(), "IPv6 traceroute failed: {res:?}");
     }
 }

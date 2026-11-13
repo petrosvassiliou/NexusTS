@@ -41,7 +41,7 @@ class GitHubReleaseUpdateChecker(
     suspend fun checkLatestRelease(currentVersionName: String): Result<GitHubReleaseCheckResult> =
         withContext(Dispatchers.IO) {
             runCatching {
-                val cleanCurrent = currentVersionName.substringBefore('-').removePrefix("v").trim()
+                val normalizedCurrent = currentVersionName.removePrefix("v").trim()
                 val req = Request.Builder()
                     .url("https://api.github.com/repos/$repositorySlug/releases/latest")
                     .header("Accept", "application/vnd.github+json")
@@ -70,11 +70,11 @@ class GitHubReleaseUpdateChecker(
                         }
                     }
 
-                    val cleanLatest = tagName.substringBefore('-').removePrefix("v").trim()
+                    val normalizedLatest = tagName.removePrefix("v").trim()
                     GitHubReleaseCheckResult(
-                        latestTag = tagName.ifBlank { "v$cleanCurrent" },
+                        latestTag = tagName.ifBlank { "v$normalizedCurrent" },
                         currentVersion = currentVersionName,
-                        isUpdateAvailable = isNewerSemanticVersion(cleanLatest, cleanCurrent),
+                        isUpdateAvailable = isNewerSemanticVersion(normalizedLatest, normalizedCurrent),
                         releaseHtmlUrl = htmlUrl,
                         signedApkDownloadUrl = apkAssetUrl,
                         publishedAtIso = publishedAt
@@ -85,9 +85,17 @@ class GitHubReleaseUpdateChecker(
 
     companion object {
         internal fun isNewerSemanticVersion(candidate: String, current: String): Boolean {
-            if (candidate.isBlank() || current.isBlank()) return false
-            val candParts = candidate.split('.').map { it.toIntOrNull() ?: 0 }
-            val currParts = current.split('.').map { it.toIntOrNull() ?: 0 }
+            val candTrim = candidate.removePrefix("v").trim()
+            val currTrim = current.removePrefix("v").trim()
+            if (candTrim.isBlank() || currTrim.isBlank()) return false
+
+            val candCore = candTrim.substringBefore('-').substringBefore('+')
+            val currCore = currTrim.substringBefore('-').substringBefore('+')
+            val candPre = candTrim.substringAfter('-', "").substringBefore('+')
+            val currPre = currTrim.substringAfter('-', "").substringBefore('+')
+
+            val candParts = candCore.split('.').map { it.toIntOrNull() ?: 0 }
+            val currParts = currCore.split('.').map { it.toIntOrNull() ?: 0 }
             val maxLen = maxOf(candParts.size, currParts.size)
             for (i in 0 until maxLen) {
                 val c = candParts.getOrElse(i) { 0 }
@@ -95,7 +103,14 @@ class GitHubReleaseUpdateChecker(
                 if (c > cur) return true
                 if (c < cur) return false
             }
-            return false
+            // Same numeric core (e.g. 1.1.1 vs 1.1.1-dev or 1.1.1-alpha1): stable > pre-release (except local -dev debug suffix if same release)
+            if (candPre.isEmpty() && currPre.isNotEmpty() && !currPre.equals("dev", ignoreCase = true)) {
+                return true
+            }
+            if (candPre.isNotEmpty() && currPre.isEmpty()) {
+                return false
+            }
+            return candPre > currPre && candPre.isNotEmpty()
         }
     }
 }

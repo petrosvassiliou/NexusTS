@@ -3,14 +3,17 @@ package com.nexusts.app
 import android.app.Application
 import android.content.Context
 import android.content.res.Configuration
+import android.view.KeyEvent
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onFirst
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.test.core.app.ApplicationProvider
+import com.nexusts.app.core.ui.input.NexusShortcutAction
 import com.nexusts.app.core.ui.theme.NexusTSTheme
 import com.nexusts.app.core.ui.workspace.AdHocConnectionSyntaxParser
+import com.nexusts.app.core.ui.workspace.PaneNode
 import com.nexusts.app.core.ui.workspace.SessionProtocolKind
 import com.nexusts.app.core.vault.automation.AutomationTaskEngine
 import com.nexusts.app.core.vault.credentials.EnterpriseCredentialHub
@@ -18,10 +21,20 @@ import com.nexusts.app.core.vault.crypto.KdfSecurityParameters
 import com.nexusts.app.core.vault.crypto.NxtsVaultSerializer
 import com.nexusts.app.core.vault.gateway.SecureGatewayTunnelManager
 import com.nexusts.app.core.vault.inheritance.PropertyInheritanceResolver
+import com.nexusts.app.core.vault.model.CommandTask
+import com.nexusts.app.core.vault.model.ConnectionTemplate
 import com.nexusts.app.core.vault.model.CredentialSourceKind
+import com.nexusts.app.core.vault.model.CustomPropertyEntry
+import com.nexusts.app.core.vault.model.DynamicFolder
+import com.nexusts.app.core.vault.model.DynamicScriptInterpreter
+import com.nexusts.app.core.vault.model.GatewayTransportKind
 import com.nexusts.app.core.vault.model.InheritableProperties
 import com.nexusts.app.core.vault.model.InheritanceMode
+import com.nexusts.app.core.vault.model.KeySequenceTask
 import com.nexusts.app.core.vault.model.ProtocolSpecificSettings
+import com.nexusts.app.core.vault.model.SecureGatewayConfig
+import com.nexusts.app.core.vault.model.SmartFolder
+import com.nexusts.app.core.vault.model.SmartFolderFilter
 import com.nexusts.app.core.vault.model.VaultConnection
 import com.nexusts.app.core.vault.model.VaultCredential
 import com.nexusts.app.core.vault.model.VaultFolder
@@ -30,10 +43,13 @@ import com.nexusts.app.feature.workspace.ActiveVaultSessionStore
 import com.nexusts.app.feature.workspace.NexusWorkspaceScreen
 import com.nexusts.app.feature.workspace.NexusWorkspaceViewModel
 import com.nexusts.app.feature.workspace.i18n.WorkspaceLocalizedStrings
+import com.nexusts.app.protocols.ssh.bridge.SshNativeBridge
 import com.nexusts.app.updater.GitHubReleaseUpdateChecker
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -41,6 +57,7 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import java.nio.charset.StandardCharsets
+import java.nio.file.Files
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -51,16 +68,21 @@ class NexusWorkspaceComposeE2ETest {
     @get:Rule
     val composeRule = createComposeRule()
 
-    private fun buildRealViewModel(): NexusWorkspaceViewModel {
+    private fun buildFastSerializer(): NxtsVaultSerializer = NxtsVaultSerializer(
+        KdfSecurityParameters(memoryKiB = 8_192, iterations = 1, parallelism = 1)
+    )
+
+    private fun buildRealViewModel(
+        serializer: NxtsVaultSerializer = buildFastSerializer(),
+        store: ActiveVaultSessionStore = ActiveVaultSessionStore()
+    ): NexusWorkspaceViewModel {
         return NexusWorkspaceViewModel(
-            vaultSerializer = NxtsVaultSerializer(
-                KdfSecurityParameters(memoryKiB = 8_192, iterations = 1, parallelism = 1)
-            ),
+            vaultSerializer = serializer,
             inheritanceResolver = PropertyInheritanceResolver(),
             credentialHub = EnterpriseCredentialHub(),
             automationEngine = AutomationTaskEngine(),
             gatewayTunnelManager = SecureGatewayTunnelManager(),
-            activeVaultStore = ActiveVaultSessionStore()
+            activeVaultStore = store
         )
     }
 
@@ -71,6 +93,16 @@ class NexusWorkspaceComposeE2ETest {
         assertTrue(
             "Expected Compose semantics tree to contain '$substringText'",
             nodes.isNotEmpty()
+        )
+    }
+
+    private fun assertTextNotRendered(substringText: String) {
+        val nodes = composeRule
+            .onAllNodesWithText(substringText, substring = true)
+            .fetchSemanticsNodes()
+        assertTrue(
+            "Expected Compose semantics tree NOT to expose '$substringText' while shielded",
+            nodes.isEmpty()
         )
     }
 
@@ -312,5 +344,365 @@ class NexusWorkspaceComposeE2ETest {
         assertTrue(GitHubReleaseUpdateChecker.isNewerSemanticVersion("1.2.0", "1.1.0"))
         assertFalse(GitHubReleaseUpdateChecker.isNewerSemanticVersion("1.1.0", "1.1.0"))
         assertFalse(GitHubReleaseUpdateChecker.isNewerSemanticVersion("1.0.9", "1.1.0"))
+    }
+
+    @Test
+    fun vaultLockShieldIsolatesWorkspaceAndPersistsVaultRoundTrip() {
+        val serializer = buildFastSerializer()
+        val vm = buildRealViewModel(serializer = serializer)
+        val strings = WorkspaceLocalizedStrings.defaultEnglish()
+
+        composeRule.setContent {
+            NexusTSTheme {
+                NexusWorkspaceScreen(
+                    viewModel = vm,
+                    strings = strings,
+                    connectedDisplays = emptyList(),
+                    flexibleUpdateDownloaded = false,
+                    onCompleteFlexibleUpdate = {},
+                    onRequestImportFilePicker = {},
+                    onRequestGoogleDriveSync = {},
+                    onDetachTabToNativeWindow = { _, _ -> }
+                )
+            }
+        }
+        composeRule.waitForIdle()
+        assertTextRendered("WinServer-2025-DC01")
+
+        // Seal & lock vault -> FullScreenVaultUnlockShield hides all connections, sidebar, and inspector metadata
+        composeRule.runOnIdle {
+            vm.saveConnectionToVault(
+                VaultConnection(
+                    id = "conn-persisted-host",
+                    name = "Persisted-ZeroKnowledge-Node",
+                    host = "zk01.nexusts.internal",
+                    protocol = VaultProtocolType.SSH
+                )
+            )
+            vm.lockVaultWithPassphrase("MasterSecret#2026".toCharArray())
+        }
+        composeRule.waitUntil(timeoutMillis = 8_000) { vm.uiState.value.isVaultLocked }
+        composeRule.waitForIdle()
+
+        assertTextRendered(strings.vaultLockedBanner)
+        assertTextNotRendered("WinServer-2025-DC01")
+        assertTextNotRendered("Persisted-ZeroKnowledge-Node")
+        assertTrue(vm.buildQuickConnectCandidates().isEmpty())
+
+        // Invalid passphrase surfaces an unlock error while keeping the vault shielded
+        composeRule.runOnIdle {
+            vm.unlockVaultWithPassphrase("WrongPassphrase!".toCharArray())
+        }
+        composeRule.waitUntil(timeoutMillis = 8_000) {
+            !vm.uiState.value.vaultUnlockError.isNullOrBlank()
+        }
+        composeRule.waitForIdle()
+        assertTrue(vm.uiState.value.isVaultLocked)
+        assertTextNotRendered("WinServer-2025-DC01")
+
+        // Valid passphrase cleanly unseals the vault and restores the full workspace
+        composeRule.runOnIdle {
+            vm.unlockVaultWithPassphrase("MasterSecret#2026".toCharArray())
+        }
+        composeRule.waitUntil(timeoutMillis = 8_000) { !vm.uiState.value.isVaultLocked }
+        composeRule.waitForIdle()
+        assertTextRendered("WinServer-2025-DC01")
+        assertTextRendered("Persisted-ZeroKnowledge-Node")
+
+        // Verify atomic disk persistence -> cold-start restoration round-trip
+        val tempDir = Files.createTempDirectory("nexusts-vault-persist").toFile()
+        try {
+            val savedFile = vm.sessionStore.persistVaultToDisk(
+                filesDir = tempDir,
+                serializer = serializer,
+                explicitPassphrase = "DiskVaultKey!2026".toCharArray()
+            )
+            assertTrue(savedFile.isFile && savedFile.length() > 64L)
+
+            val coldStartStore = ActiveVaultSessionStore()
+            val loaded = coldStartStore.loadPersistedVaultIfNeeded(
+                filesDir = tempDir,
+                serializer = serializer,
+                candidatePassphrases = listOf("DiskVaultKey!2026".toCharArray())
+            )
+            assertTrue(loaded)
+            assertFalse(coldStartStore.snapshot.value.isStarterUninitialized)
+            assertTrue(
+                coldStartStore.snapshot.value.vaultDocument.connections.any {
+                    it.id == "conn-persisted-host" && it.name == "Persisted-ZeroKnowledge-Node"
+                }
+            )
+        } finally {
+            tempDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun liveSessionsSurviveUnrelatedVaultEditsAndSupportTearOffReDockAndEmptyPaneClose() {
+        val vm = buildRealViewModel()
+        val strings = WorkspaceLocalizedStrings.defaultEnglish()
+
+        composeRule.setContent {
+            NexusTSTheme {
+                NexusWorkspaceScreen(
+                    viewModel = vm,
+                    strings = strings,
+                    connectedDisplays = emptyList(),
+                    flexibleUpdateDownloaded = false,
+                    onCompleteFlexibleUpdate = {},
+                    onRequestImportFilePicker = {},
+                    onRequestGoogleDriveSync = {},
+                    onDetachTabToNativeWindow = { _, _ -> }
+                )
+            }
+        }
+        composeRule.waitForIdle()
+
+        var launchedTabId = ""
+        composeRule.runOnIdle {
+            val sshConn = vm.uiState.value.vaultDocument.connections.first {
+                it.protocol == VaultProtocolType.SSH
+            }
+            vm.launchConnection(sshConn)
+            val activeTab = vm.tilingController.allActiveTabs().first()
+            launchedTabId = activeTab.tabId
+        }
+        composeRule.waitForIdle()
+
+        val initialController = vm.sessionStore.sshControllers[launchedTabId]
+        assertNotNull("Expected live SSH controller to be registered", initialController)
+
+        // Unrelated vault mutations must NOT evict the live SSH session
+        composeRule.runOnIdle {
+            vm.addTodoItem("Rotate bastion host certificates")
+            vm.addCredentialToVault(
+                VaultCredential(
+                    id = "cred-unrelated-test",
+                    name = "Unrelated Audit Identity",
+                    username = "auditor",
+                    secretPassword = "audit-pass"
+                )
+            )
+            vm.saveFolderAndCredentialToVault(
+                VaultFolder(id = "folder-unrelated", name = "Unrelated Lab Folder")
+            )
+        }
+        composeRule.waitForIdle()
+        assertSame(
+            "Live SSH session controller must survive unrelated vault mutations",
+            initialController,
+            vm.sessionStore.sshControllers[launchedTabId]
+        )
+
+        // Tear-off into detached freeform window keeps live controller alive while removing tab from main pane
+        var detachedTab = vm.tilingController.allActiveTabs().firstOrNull()
+        composeRule.runOnIdle {
+            detachedTab = vm.transferTabToDetachedWindow(launchedTabId)
+        }
+        composeRule.waitForIdle()
+        assertNotNull(detachedTab)
+        assertTrue(vm.tilingController.allActiveTabs().none { it.tabId == launchedTabId })
+        assertSame(initialController, vm.sessionStore.sshControllers[launchedTabId])
+
+        // Re-dock from DetachedSessionActivity restores the exact same live session into main workspace
+        composeRule.runOnIdle {
+            vm.sessionStore.enqueueReDockTab(detachedTab!!)
+        }
+        composeRule.waitUntil(timeoutMillis = 5_000) {
+            vm.tilingController.allActiveTabs().any { it.tabId == launchedTabId }
+        }
+        composeRule.waitForIdle()
+        assertSame(initialController, vm.sessionStore.sshControllers[launchedTabId])
+
+        // Split pane -> empty right pane focused -> CLOSE_ACTIVE_TAB collapses empty split pane cleanly
+        composeRule.runOnIdle {
+            vm.handleShortcut(NexusShortcutAction.SPLIT_PANE_VERTICAL) {}
+        }
+        composeRule.waitForIdle()
+        assertTrue(vm.tilingController.rootNode.value is PaneNode.Split)
+
+        composeRule.runOnIdle {
+            vm.handleShortcut(NexusShortcutAction.CLOSE_ACTIVE_TAB) {}
+        }
+        composeRule.waitForIdle()
+        assertTrue(vm.tilingController.rootNode.value is PaneNode.Leaf)
+    }
+
+    @Test
+    fun nestedFoldersHardwareAnsiKeysAndFullStudioCrudOperationsWorkEndToEnd() {
+        val vm = buildRealViewModel()
+        val strings = WorkspaceLocalizedStrings.defaultEnglish()
+
+        composeRule.setContent {
+            NexusTSTheme {
+                NexusWorkspaceScreen(
+                    viewModel = vm,
+                    strings = strings,
+                    connectedDisplays = emptyList(),
+                    flexibleUpdateDownloaded = false,
+                    onCompleteFlexibleUpdate = {},
+                    onRequestImportFilePicker = {},
+                    onRequestGoogleDriveSync = {},
+                    onDetachTabToNativeWindow = { _, _ -> }
+                )
+            }
+        }
+        composeRule.waitForIdle()
+
+        // 1. Recursive nested folders + safe re-parenting on deleteFolder
+        composeRule.runOnIdle {
+            vm.saveFolderAndCredentialToVault(
+                VaultFolder(id = "folder-region-eu", name = "EU Sovereign Region")
+            )
+            vm.saveFolderAndCredentialToVault(
+                VaultFolder(
+                    id = "folder-az-fra1",
+                    parentFolderId = "folder-region-eu",
+                    name = "Frankfurt AZ-1 Subfolder"
+                )
+            )
+            vm.saveConnectionToVault(
+                VaultConnection(
+                    id = "conn-nested-az1",
+                    parentFolderId = "folder-az-fra1",
+                    name = "FRA1-Core-Router",
+                    host = "10.49.1.1",
+                    protocol = VaultProtocolType.SSH
+                )
+            )
+        }
+        composeRule.waitForIdle()
+
+        // Delete child folder -> FRA1-Core-Router re-parents to folder-region-eu without losing connection
+        composeRule.runOnIdle {
+            vm.deleteFolder("folder-az-fra1")
+        }
+        composeRule.waitForIdle()
+        val reparented = vm.uiState.value.vaultDocument.connections.first { it.id == "conn-nested-az1" }
+        assertEquals("folder-region-eu", reparented.parentFolderId)
+        assertTrue("folder-az-fra1" in vm.uiState.value.vaultDocument.tombstonedObjectIds)
+
+        // 2. Full CRUD across Credentials, Gateways, SmartFolders, DynamicFolders, Templates, Tasks, Macros, CustomProps, To-Dos
+        composeRule.runOnIdle {
+            val cred = VaultCredential(
+                id = "cred-crud-1",
+                name = "CRUD Service Account",
+                domain = "CORP",
+                username = "svc.deploy",
+                secretPassword = "InitialPassword"
+            )
+            vm.addCredentialToVault(cred)
+            vm.updateCredentialInVault(cred.copy(name = "CRUD Service Account v2", username = "svc.deploy2"))
+        }
+        composeRule.waitForIdle()
+        assertEquals(
+            "svc.deploy2",
+            vm.uiState.value.vaultDocument.credentials.first { it.id == "cred-crud-1" }.username
+        )
+
+        composeRule.runOnIdle {
+            vm.deleteCredentialFromVault("cred-crud-1")
+            val gw = SecureGatewayConfig(
+                id = "gw-crud-1",
+                name = "Zurich SOCKS5 Relay",
+                kind = GatewayTransportKind.SOCKS5_PROXY,
+                host = "socks.zrh.internal",
+                port = 1080
+            )
+            vm.addGatewayToVault(gw)
+            vm.updateGatewayInVault(gw.copy(port = 1085))
+        }
+        composeRule.waitForIdle()
+        assertFalse(vm.uiState.value.vaultDocument.credentials.any { it.id == "cred-crud-1" })
+        assertEquals(1085, vm.uiState.value.vaultDocument.gateways.first { it.id == "gw-crud-1" }.port)
+
+        composeRule.runOnIdle {
+            vm.deleteGatewayFromVault("gw-crud-1")
+
+            val sf = SmartFolder(
+                id = "sf-crud-1",
+                name = "All SSH Routers",
+                filter = SmartFolderFilter(includeProtocols = listOf(VaultProtocolType.SSH))
+            )
+            vm.saveSmartFolderToVault(sf)
+            vm.deleteSmartFolderFromVault("sf-crud-1")
+
+            val df = DynamicFolder(
+                id = "df-crud-1",
+                name = "Dynamic Lab Inventory",
+                interpreter = DynamicScriptInterpreter.JSON_HTTP_API,
+                scriptOrEndpointPayload = """[{"name":"dyn-lab-01","host":"10.99.0.10","protocol":"SSH"}]"""
+            )
+            vm.saveDynamicFolderToVault(df)
+            vm.deleteDynamicFolderFromVault("df-crud-1")
+
+            val tpl = ConnectionTemplate(
+                id = "tpl-crud-1",
+                name = "VNC Retina Console",
+                protocol = VaultProtocolType.VNC,
+                settings = ProtocolSpecificSettings.Vnc()
+            )
+            vm.saveTemplateToVault(tpl)
+            vm.deleteTemplateFromVault("tpl-crud-1")
+
+            val cmdTask = CommandTask(
+                id = "task-crud-1",
+                name = "Check Kernel Version",
+                commandTemplate = "uname -a",
+                broadcastToAllSelectedSessions = true
+            )
+            vm.addCommandTaskToVault(cmdTask)
+            vm.deleteCommandTask("task-crud-1")
+
+            val macro = KeySequenceTask(
+                id = "macro-crud-1",
+                name = "Send Enter Macro",
+                macroSequence = "{ENTER}"
+            )
+            vm.addKeySequenceTaskToVault(macro)
+            vm.deleteKeySequenceTask("macro-crud-1")
+
+            vm.updateConnectionNotesAndCustomProps(
+                connectionId = "conn-nested-az1",
+                notes = "Primary Frankfurt BGP edge",
+                customProps = listOf(CustomPropertyEntry("RackUnit", "RU-42")),
+                colorAccentHex = "#3CE6B8"
+            )
+            vm.deleteCustomProperty("conn-nested-az1", "RackUnit")
+
+            vm.addTodoItem("Verify BGP peerings", targetObjectId = "conn-nested-az1")
+            val addedTodoId = vm.uiState.value.vaultDocument.todoItems.first {
+                it.title == "Verify BGP peerings"
+            }.id
+            vm.toggleTodoItem(addedTodoId)
+            vm.deleteTodoItem(addedTodoId)
+        }
+        composeRule.waitForIdle()
+
+        val docAfterCrud = vm.uiState.value.vaultDocument
+        assertFalse(docAfterCrud.gateways.any { it.id == "gw-crud-1" })
+        assertFalse(docAfterCrud.smartFolders.any { it.id == "sf-crud-1" })
+        assertFalse(docAfterCrud.dynamicFolders.any { it.id == "df-crud-1" })
+        assertFalse(docAfterCrud.templates.any { it.id == "tpl-crud-1" })
+        assertFalse(docAfterCrud.commandTasks.any { it.id == "task-crud-1" })
+        assertFalse(docAfterCrud.keySequenceTasks.any { it.id == "macro-crud-1" })
+        assertTrue(
+            docAfterCrud.connections.first { it.id == "conn-nested-az1" }.inheritable.customProperties.isEmpty()
+        )
+        assertFalse(docAfterCrud.todoItems.any { it.title == "Verify BGP peerings" })
+
+        // 3. Verify hardware keyboard -> xterm ANSI escape sequence translator
+        assertArrayEquals(
+            byteArrayOf(0x03),
+            SshNativeBridge.translateHardwareKeyToAnsi(KeyEvent.KEYCODE_C, 'c'.code, ctrlPressed = true, altPressed = false)
+        )
+        assertArrayEquals(
+            "\u001b[A".toByteArray(StandardCharsets.UTF_8),
+            SshNativeBridge.translateHardwareKeyToAnsi(KeyEvent.KEYCODE_DPAD_UP, 0, ctrlPressed = false, altPressed = false)
+        )
+        assertArrayEquals(
+            "\u001bf".toByteArray(StandardCharsets.UTF_8),
+            SshNativeBridge.translateHardwareKeyToAnsi(KeyEvent.KEYCODE_F, 'f'.code, ctrlPressed = false, altPressed = true)
+        )
     }
 }

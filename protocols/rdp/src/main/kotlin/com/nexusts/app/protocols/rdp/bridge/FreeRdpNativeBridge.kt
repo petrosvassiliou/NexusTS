@@ -1,6 +1,8 @@
 package com.nexusts.app.protocols.rdp.bridge
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
 import android.hardware.usb.UsbConstants
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbDeviceConnection
@@ -9,12 +11,16 @@ import android.hardware.usb.UsbInterface
 import android.hardware.usb.UsbManager
 import android.view.KeyEvent
 import android.view.Surface
+import androidx.core.content.ContextCompat
 import com.nexusts.app.core.ui.input.RawHardwareKeyPacket
 import com.nexusts.app.core.vault.credentials.ResolvedSessionSecret
 import com.nexusts.app.core.vault.model.ProtocolSpecificSettings
 import com.nexusts.app.core.vault.model.RdpAudioRedirectionMode
 import com.nexusts.app.core.vault.model.RdpResizeBehavior
 import com.nexusts.app.core.vault.model.VaultConnection
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 /**
  * JNI Bridge to `libnexusts_rdp_jni.so` (FreeRDP 3.x + AMediaCodec H.264/AVC444 + AAudio + DISP_DVC).
@@ -33,6 +39,20 @@ object FreeRdpNativeBridge {
     const val PTRFLAGS_BUTTON1_LEFT = 0x1000
     const val PTRFLAGS_BUTTON2_RIGHT = 0x2000
     const val PTRFLAGS_BUTTON3_MIDDLE = 0x4000
+
+    /**
+     * Encodes MS-RDPBCGR 9-bit two's-complement wheel rotation flags.
+     * Negative rotation uses `PTRFLAGS_WHEEL_NEGATIVE | ((-steps) & 0x00FF)` (e.g. `0x0188` for `-120`).
+     */
+    fun encodeMouseWheelFlags(steps: Int, negative: Boolean): Int {
+        val magnitude = kotlin.math.abs(steps).coerceIn(1, 255)
+        val rotationBits = if (negative) {
+            PTRFLAGS_WHEEL_NEGATIVE or ((-magnitude) and 0x00FF)
+        } else {
+            magnitude and 0x00FF
+        }
+        return PTRFLAGS_WHEEL or rotationBits
+    }
 
     @JvmStatic
     external fun nativeCreateSession(
@@ -117,10 +137,13 @@ object FreeRdpNativeBridge {
  * preserving full Win/Meta, Alt, Ctrl, Fn, and Function F1–F12 key passthrough.
  */
 object RdpScanCodeMapper {
-    data class MappedScanCode(val scanCode: Int, val extended: Boolean)
+    data class MappedScanCode(val scanCode: Int, val extended: Boolean, val needsShift: Boolean = false)
 
-    fun mapKeyPacket(packet: RawHardwareKeyPacket): MappedScanCode? {
-        return when (packet.keyCode) {
+    fun mapKeyPacket(packet: RawHardwareKeyPacket): MappedScanCode? =
+        mapAndroidKeyCode(packet.keyCode, packet.scanCode)
+
+    fun mapAndroidKeyCode(keyCode: Int, scanCode: Int = 0): MappedScanCode? {
+        return when (keyCode) {
             KeyEvent.KEYCODE_ESCAPE -> MappedScanCode(0x01, false)
             KeyEvent.KEYCODE_1 -> MappedScanCode(0x02, false)
             KeyEvent.KEYCODE_2 -> MappedScanCode(0x03, false)
@@ -136,7 +159,7 @@ object RdpScanCodeMapper {
             KeyEvent.KEYCODE_EQUALS -> MappedScanCode(0x0D, false)
             KeyEvent.KEYCODE_DEL -> MappedScanCode(0x0E, false)
             KeyEvent.KEYCODE_TAB -> MappedScanCode(0x0F, false)
-            KeyEvent.KEYCODE_ENTER -> MappedScanCode(0x1C, false)
+            KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER -> MappedScanCode(0x1C, keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER)
             KeyEvent.KEYCODE_CTRL_LEFT -> MappedScanCode(0x1D, false)
             KeyEvent.KEYCODE_CTRL_RIGHT -> MappedScanCode(0x1D, true)
             KeyEvent.KEYCODE_SHIFT_LEFT -> MappedScanCode(0x2A, false)
@@ -146,6 +169,15 @@ object RdpScanCodeMapper {
             KeyEvent.KEYCODE_META_LEFT -> MappedScanCode(0x5B, true)  // Left Windows / Meta / Search
             KeyEvent.KEYCODE_META_RIGHT -> MappedScanCode(0x5C, true) // Right Windows / Cmd
             KeyEvent.KEYCODE_SPACE -> MappedScanCode(0x39, false)
+            KeyEvent.KEYCODE_GRAVE -> MappedScanCode(0x29, false)
+            KeyEvent.KEYCODE_LEFT_BRACKET -> MappedScanCode(0x1A, false)
+            KeyEvent.KEYCODE_RIGHT_BRACKET -> MappedScanCode(0x1B, false)
+            KeyEvent.KEYCODE_BACKSLASH -> MappedScanCode(0x2B, false)
+            KeyEvent.KEYCODE_SEMICOLON -> MappedScanCode(0x27, false)
+            KeyEvent.KEYCODE_APOSTROPHE -> MappedScanCode(0x28, false)
+            KeyEvent.KEYCODE_COMMA -> MappedScanCode(0x33, false)
+            KeyEvent.KEYCODE_PERIOD -> MappedScanCode(0x34, false)
+            KeyEvent.KEYCODE_SLASH -> MappedScanCode(0x35, false)
             KeyEvent.KEYCODE_F1 -> MappedScanCode(0x3B, false)
             KeyEvent.KEYCODE_F2 -> MappedScanCode(0x3C, false)
             KeyEvent.KEYCODE_F3 -> MappedScanCode(0x3D, false)
@@ -174,9 +206,66 @@ object RdpScanCodeMapper {
                     0x25, 0x26, 0x32, 0x31, 0x18, 0x19, 0x10, 0x13, 0x1F, 0x14,
                     0x16, 0x2F, 0x11, 0x2D, 0x15, 0x2C
                 )
-                MappedScanCode(qwertyMap[packet.keyCode - KeyEvent.KEYCODE_A], false)
+                MappedScanCode(qwertyMap[keyCode - KeyEvent.KEYCODE_A], false)
             }
-            else -> if (packet.scanCode in 1..127) MappedScanCode(packet.scanCode, false) else null
+            else -> if (scanCode in 1..127) MappedScanCode(scanCode, false) else null
+        }
+    }
+
+    fun mapCharToScanCode(ch: Char): MappedScanCode? {
+        val lower = ch.lowercaseChar()
+        if (lower in 'a'..'z') {
+            val base = mapAndroidKeyCode(KeyEvent.KEYCODE_A + (lower - 'a')) ?: return null
+            return base.copy(needsShift = ch.isUpperCase())
+        }
+        return when (ch) {
+            '1' -> MappedScanCode(0x02, false, false)
+            '!' -> MappedScanCode(0x02, false, true)
+            '2' -> MappedScanCode(0x03, false, false)
+            '@' -> MappedScanCode(0x03, false, true)
+            '3' -> MappedScanCode(0x04, false, false)
+            '#' -> MappedScanCode(0x04, false, true)
+            '4' -> MappedScanCode(0x05, false, false)
+            '$' -> MappedScanCode(0x05, false, true)
+            '5' -> MappedScanCode(0x06, false, false)
+            '%' -> MappedScanCode(0x06, false, true)
+            '6' -> MappedScanCode(0x07, false, false)
+            '^' -> MappedScanCode(0x07, false, true)
+            '7' -> MappedScanCode(0x08, false, false)
+            '&' -> MappedScanCode(0x08, false, true)
+            '8' -> MappedScanCode(0x09, false, false)
+            '*' -> MappedScanCode(0x09, false, true)
+            '9' -> MappedScanCode(0x0A, false, false)
+            '(' -> MappedScanCode(0x0A, false, true)
+            '0' -> MappedScanCode(0x0B, false, false)
+            ')' -> MappedScanCode(0x0B, false, true)
+            '-' -> MappedScanCode(0x0C, false, false)
+            '_' -> MappedScanCode(0x0C, false, true)
+            '=' -> MappedScanCode(0x0D, false, false)
+            '+' -> MappedScanCode(0x0D, false, true)
+            '\b' -> MappedScanCode(0x0E, false, false)
+            '\t' -> MappedScanCode(0x0F, false, false)
+            '\n', '\r' -> MappedScanCode(0x1C, false, false)
+            ' ' -> MappedScanCode(0x39, false, false)
+            '`' -> MappedScanCode(0x29, false, false)
+            '~' -> MappedScanCode(0x29, false, true)
+            '[' -> MappedScanCode(0x1A, false, false)
+            '{' -> MappedScanCode(0x1A, false, true)
+            ']' -> MappedScanCode(0x1B, false, false)
+            '}' -> MappedScanCode(0x1B, false, true)
+            '\\' -> MappedScanCode(0x2B, false, false)
+            '|' -> MappedScanCode(0x2B, false, true)
+            ';' -> MappedScanCode(0x27, false, false)
+            ':' -> MappedScanCode(0x27, false, true)
+            '\'' -> MappedScanCode(0x28, false, false)
+            '"' -> MappedScanCode(0x28, false, true)
+            ',' -> MappedScanCode(0x33, false, false)
+            '<' -> MappedScanCode(0x33, false, true)
+            '.' -> MappedScanCode(0x34, false, false)
+            '>' -> MappedScanCode(0x34, false, true)
+            '/' -> MappedScanCode(0x35, false, false)
+            '?' -> MappedScanCode(0x35, false, true)
+            else -> null
         }
     }
 }
@@ -263,126 +352,235 @@ class RdpManagedSession(
     val settings: ProtocolSpecificSettings.Rdp,
     val secret: ResolvedSessionSecret
 ) {
+    @Volatile
     private var nativeHandle: Long = 0L
     private val started = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val surfaceLock = Any()
+    private var pendingSurface: Surface? = null
 
-    fun start(initialWidthPx: Int, initialHeightPx: Int, effectiveScalePercent: Int = settings.desktopScaleFactorPercent): Boolean {
-        if (!FreeRdpNativeBridge.isNativeLoaded) return false
+    private val _isConnecting = MutableStateFlow(false)
+    val isConnecting: StateFlow<Boolean> = _isConnecting.asStateFlow()
+
+    private val _isConnected = MutableStateFlow(false)
+    val isConnected: StateFlow<Boolean> = _isConnected.asStateFlow()
+
+    private val _remoteDesktopDimensions = MutableStateFlow(
+        (settings.customDesktopWidth.coerceAtLeast(320) and -2) to
+            (settings.customDesktopHeight.coerceAtLeast(240) and -2)
+    )
+    val remoteDesktopDimensions: StateFlow<Pair<Int, Int>> = _remoteDesktopDimensions.asStateFlow()
+
+    @Volatile
+    var isMicrophoneRedirected: Boolean = false
+        private set
+
+    fun start(
+        initialWidthPx: Int,
+        initialHeightPx: Int,
+        effectiveScalePercent: Int = settings.desktopScaleFactorPercent,
+        context: Context? = null,
+        micPermissionGranted: Boolean = context?.let {
+            ContextCompat.checkSelfPermission(it, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        } ?: false
+    ): Boolean {
+        if (!FreeRdpNativeBridge.isNativeLoaded) {
+            _isConnecting.value = false
+            return false
+        }
         if (!started.compareAndSet(false, true)) {
             return nativeHandle != 0L
         }
-        val useFixedSize = settings.resizeBehavior == RdpResizeBehavior.FIXED_SERVER_RESOLUTION
-        val startW = if (useFixedSize) settings.customDesktopWidth else initialWidthPx
-        val startH = if (useFixedSize) settings.customDesktopHeight else initialHeightPx
-        val audioModeCode = when (settings.audioRedirectionMode) {
-            RdpAudioRedirectionMode.PLAY_ON_THIS_DEVICE -> 0
-            RdpAudioRedirectionMode.PLAY_ON_REMOTE_HOST -> 1
-            RdpAudioRedirectionMode.DO_NOT_PLAY -> 2
+        _isConnecting.value = true
+        return try {
+            val useFixedSize = settings.resizeBehavior == RdpResizeBehavior.FIXED_SERVER_RESOLUTION
+            val startW = (if (useFixedSize) settings.customDesktopWidth else initialWidthPx).coerceAtLeast(320) and -2
+            val startH = (if (useFixedSize) settings.customDesktopHeight else initialHeightPx).coerceAtLeast(240) and -2
+            _remoteDesktopDimensions.value = startW to startH
+
+            val audioModeCode = when (settings.audioRedirectionMode) {
+                RdpAudioRedirectionMode.PLAY_ON_THIS_DEVICE -> 0
+                RdpAudioRedirectionMode.PLAY_ON_REMOTE_HOST -> 1
+                RdpAudioRedirectionMode.DO_NOT_PLAY -> 2
+            }
+            val effectiveMicRedirect = settings.redirectMicrophone && micPermissionGranted
+            isMicrophoneRedirected = effectiveMicRedirect
+
+            val createdHandle = FreeRdpNativeBridge.nativeCreateSession(
+                host = connection.host,
+                port = settings.port,
+                username = secret.username,
+                password = secret.password,
+                domain = secret.domain,
+                gatewayHost = settings.rdGatewayHostname,
+                gatewayPort = settings.rdGatewayPort,
+                initialWidth = startW,
+                initialHeight = startH,
+                connectToConsole = settings.connectToConsoleAdmin,
+                hiDpiEnabled = settings.hiDpiEnabled,
+                desktopScalePercent = if (settings.hiDpiEnabled) effectiveScalePercent.coerceIn(100, 200) else 100,
+                colorDepthBits = settings.colorDepthBits,
+                enableH264Avc444 = settings.enableH264Avc444,
+                enableRemoteFx = settings.enableRemoteFx,
+                enableDynamicResize = settings.resizeBehavior == RdpResizeBehavior.DYNAMIC_DISP_DVC,
+                multiMonitor = settings.multiMonitorSpanning,
+                redirectClipboard = settings.redirectClipboard,
+                audioRedirectionMode = audioModeCode,
+                redirectMic = effectiveMicRedirect,
+                redirectDrives = settings.redirectDrives || settings.redirectedDriveSafUris.isNotEmpty(),
+                redirectPrinters = settings.redirectPrinters,
+                redirectPorts = settings.redirectPorts,
+                redirectSmartcard = settings.redirectSmartcardYubiKey,
+                enableFontSmoothing = settings.enableFontSmoothing,
+                enableDesktopComposition = settings.enableDesktopComposition,
+                enableWallpaper = settings.enableWallpaper,
+                compressionEnabled = settings.compressionEnabled,
+                nlaSecurity = settings.nlaSecurityRequired,
+                restrictedAdminMode = settings.restrictedAdminMode,
+                ignoreCertificate = settings.ignoreCertificateWarnings,
+                remoteAppMode = settings.remoteAppMode,
+                remoteAppProgram = settings.remoteAppProgram,
+                remoteAppArgs = settings.remoteAppArguments
+            )
+            nativeHandle = createdHandle
+            synchronized(surfaceLock) {
+                if (createdHandle != 0L && pendingSurface != null) {
+                    FreeRdpNativeBridge.nativeBindSurface(createdHandle, pendingSurface)
+                }
+            }
+            val connected = createdHandle != 0L && FreeRdpNativeBridge.nativeConnect(createdHandle)
+            _isConnected.value = connected
+            connected
+        } finally {
+            _isConnecting.value = false
         }
-        nativeHandle = FreeRdpNativeBridge.nativeCreateSession(
-            host = connection.host,
-            port = settings.port,
-            username = secret.username,
-            password = secret.password,
-            domain = secret.domain,
-            gatewayHost = settings.rdGatewayHostname,
-            gatewayPort = settings.rdGatewayPort,
-            initialWidth = startW,
-            initialHeight = startH,
-            connectToConsole = settings.connectToConsoleAdmin,
-            hiDpiEnabled = settings.hiDpiEnabled,
-            desktopScalePercent = if (settings.hiDpiEnabled) effectiveScalePercent.coerceIn(100, 200) else 100,
-            colorDepthBits = settings.colorDepthBits,
-            enableH264Avc444 = settings.enableH264Avc444,
-            enableRemoteFx = settings.enableRemoteFx,
-            enableDynamicResize = settings.resizeBehavior == RdpResizeBehavior.DYNAMIC_DISP_DVC,
-            multiMonitor = settings.multiMonitorSpanning,
-            redirectClipboard = settings.redirectClipboard,
-            audioRedirectionMode = audioModeCode,
-            redirectMic = settings.redirectMicrophone,
-            redirectDrives = settings.redirectDrives || settings.redirectedDriveSafUris.isNotEmpty(),
-            redirectPrinters = settings.redirectPrinters,
-            redirectPorts = settings.redirectPorts,
-            redirectSmartcard = settings.redirectSmartcardYubiKey,
-            enableFontSmoothing = settings.enableFontSmoothing,
-            enableDesktopComposition = settings.enableDesktopComposition,
-            enableWallpaper = settings.enableWallpaper,
-            compressionEnabled = settings.compressionEnabled,
-            nlaSecurity = settings.nlaSecurityRequired,
-            restrictedAdminMode = settings.restrictedAdminMode,
-            ignoreCertificate = settings.ignoreCertificateWarnings,
-            remoteAppMode = settings.remoteAppMode,
-            remoteAppProgram = settings.remoteAppProgram,
-            remoteAppArgs = settings.remoteAppArguments
-        )
-        return FreeRdpNativeBridge.nativeConnect(nativeHandle)
     }
 
     fun bindSurface(surface: Surface?) {
-        if (nativeHandle != 0L && FreeRdpNativeBridge.isNativeLoaded) {
-            FreeRdpNativeBridge.nativeBindSurface(nativeHandle, surface)
+        synchronized(surfaceLock) {
+            pendingSurface = surface
+            val handle = nativeHandle
+            if (handle != 0L && FreeRdpNativeBridge.isNativeLoaded) {
+                FreeRdpNativeBridge.nativeBindSurface(handle, surface)
+            }
         }
     }
 
-    fun onViewportResized(widthPx: Int, heightPx: Int, scalePercent: Int = settings.desktopScaleFactorPercent) {
-        if (nativeHandle != 0L &&
+    fun onViewportResized(
+        widthPx: Int,
+        heightPx: Int,
+        scalePercent: Int = settings.desktopScaleFactorPercent,
+        forceDynamic: Boolean = false
+    ) {
+        val handle = nativeHandle
+        if (handle != 0L &&
             FreeRdpNativeBridge.isNativeLoaded &&
-            settings.resizeBehavior == RdpResizeBehavior.DYNAMIC_DISP_DVC
+            (settings.resizeBehavior == RdpResizeBehavior.DYNAMIC_DISP_DVC || forceDynamic)
         ) {
-            val effectiveScale = if (settings.hiDpiEnabled) scalePercent.coerceIn(100, 200) else 100
-            FreeRdpNativeBridge.nativeRequestDynamicResize(nativeHandle, widthPx, heightPx, effectiveScale)
+            val alignedW = widthPx.coerceAtLeast(320) and -2
+            val alignedH = heightPx.coerceAtLeast(240) and -2
+            val effectiveScale = if (settings.hiDpiEnabled || forceDynamic) scalePercent.coerceIn(100, 200) else 100
+            if (FreeRdpNativeBridge.nativeRequestDynamicResize(handle, alignedW, alignedH, effectiveScale)) {
+                _remoteDesktopDimensions.value = alignedW to alignedH
+            }
         }
     }
 
     fun syncClipboardToRemote(utf8Text: String) {
         if (!settings.redirectClipboard || utf8Text.isEmpty()) return
-        if (nativeHandle != 0L && FreeRdpNativeBridge.isNativeLoaded) {
-            FreeRdpNativeBridge.nativeSyncClipboardText(nativeHandle, utf8Text)
+        val handle = nativeHandle
+        if (handle != 0L && FreeRdpNativeBridge.isNativeLoaded) {
+            FreeRdpNativeBridge.nativeSyncClipboardText(handle, utf8Text)
         }
     }
 
     fun pullRemoteClipboardText(): String {
         if (!settings.redirectClipboard) return ""
-        if (nativeHandle != 0L && FreeRdpNativeBridge.isNativeLoaded) {
-            return FreeRdpNativeBridge.nativePullRemoteClipboardText(nativeHandle)
+        val handle = nativeHandle
+        if (handle != 0L && FreeRdpNativeBridge.isNativeLoaded) {
+            return FreeRdpNativeBridge.nativePullRemoteClipboardText(handle)
         }
         return ""
     }
 
-    fun sendHardwareKey(packet: RawHardwareKeyPacket): Boolean {
-        val mapped = RdpScanCodeMapper.mapKeyPacket(packet) ?: return false
-        if (nativeHandle != 0L && FreeRdpNativeBridge.isNativeLoaded) {
+    fun sendHardwareKey(packet: RawHardwareKeyPacket): Boolean =
+        sendAndroidKeyEvent(packet.keyCode, packet.scanCode, packet.isKeyDown)
+
+    fun sendAndroidKeyEvent(keyCode: Int, scanCode: Int = 0, isKeyDown: Boolean): Boolean {
+        val mapped = RdpScanCodeMapper.mapAndroidKeyCode(keyCode, scanCode) ?: return false
+        val handle = nativeHandle
+        if (handle != 0L && FreeRdpNativeBridge.isNativeLoaded) {
             FreeRdpNativeBridge.nativeSendKeyScancode(
-                handle = nativeHandle,
+                handle = handle,
                 rdpScancode = mapped.scanCode,
-                keyDown = packet.isKeyDown,
+                keyDown = isKeyDown,
                 extended = mapped.extended
             )
         }
         return true
     }
 
+    fun sendKeyTap(rdpScancode: Int, extended: Boolean = false) {
+        val handle = nativeHandle
+        if (handle == 0L || !FreeRdpNativeBridge.isNativeLoaded) return
+        FreeRdpNativeBridge.nativeSendKeyScancode(handle, rdpScancode, true, extended)
+        FreeRdpNativeBridge.nativeSendKeyScancode(handle, rdpScancode, false, extended)
+    }
+
+    fun sendTextInput(text: String) {
+        if (text.isEmpty()) return
+        val handle = nativeHandle
+        if (handle != 0L && FreeRdpNativeBridge.isNativeLoaded) {
+            var anyUnmapped = false
+            for (ch in text) {
+                val mapped = RdpScanCodeMapper.mapCharToScanCode(ch)
+                if (mapped != null) {
+                    if (mapped.needsShift) {
+                        FreeRdpNativeBridge.nativeSendKeyScancode(handle, 0x2A, true, false)
+                    }
+                    FreeRdpNativeBridge.nativeSendKeyScancode(handle, mapped.scanCode, true, mapped.extended)
+                    FreeRdpNativeBridge.nativeSendKeyScancode(handle, mapped.scanCode, false, mapped.extended)
+                    if (mapped.needsShift) {
+                        FreeRdpNativeBridge.nativeSendKeyScancode(handle, 0x2A, false, false)
+                    }
+                } else {
+                    anyUnmapped = true
+                }
+            }
+            if (anyUnmapped && settings.redirectClipboard) {
+                FreeRdpNativeBridge.nativeSyncClipboardText(handle, text)
+            }
+        }
+    }
+
     fun sendCtrlAltDel() {
-        if (nativeHandle == 0L || !FreeRdpNativeBridge.isNativeLoaded) return
-        FreeRdpNativeBridge.nativeSendKeyScancode(nativeHandle, 0x1D, true, false)  // Ctrl down
-        FreeRdpNativeBridge.nativeSendKeyScancode(nativeHandle, 0x38, true, false)  // Alt down
-        FreeRdpNativeBridge.nativeSendKeyScancode(nativeHandle, 0x53, true, true)   // Del down
-        FreeRdpNativeBridge.nativeSendKeyScancode(nativeHandle, 0x53, false, true)  // Del up
-        FreeRdpNativeBridge.nativeSendKeyScancode(nativeHandle, 0x38, false, false) // Alt up
-        FreeRdpNativeBridge.nativeSendKeyScancode(nativeHandle, 0x1D, false, false) // Ctrl up
+        val handle = nativeHandle
+        if (handle == 0L || !FreeRdpNativeBridge.isNativeLoaded) return
+        FreeRdpNativeBridge.nativeSendKeyScancode(handle, 0x1D, true, false)  // Ctrl down
+        FreeRdpNativeBridge.nativeSendKeyScancode(handle, 0x38, true, false)  // Alt down
+        FreeRdpNativeBridge.nativeSendKeyScancode(handle, 0x53, true, true)   // Del down
+        FreeRdpNativeBridge.nativeSendKeyScancode(handle, 0x53, false, true)  // Del up
+        FreeRdpNativeBridge.nativeSendKeyScancode(handle, 0x38, false, false) // Alt up
+        FreeRdpNativeBridge.nativeSendKeyScancode(handle, 0x1D, false, false) // Ctrl up
     }
 
     fun sendMouse(flags: Int, x: Int, y: Int) {
-        if (nativeHandle != 0L && FreeRdpNativeBridge.isNativeLoaded) {
-            FreeRdpNativeBridge.nativeSendMouseEvent(nativeHandle, flags, x, y)
+        val handle = nativeHandle
+        if (handle != 0L && FreeRdpNativeBridge.isNativeLoaded) {
+            FreeRdpNativeBridge.nativeSendMouseEvent(handle, flags, x, y)
         }
     }
 
     fun close() {
         started.set(false)
-        if (nativeHandle != 0L && FreeRdpNativeBridge.isNativeLoaded) {
-            FreeRdpNativeBridge.nativeDestroySession(nativeHandle)
-            nativeHandle = 0L
+        _isConnecting.value = false
+        _isConnected.value = false
+        val handle = nativeHandle
+        nativeHandle = 0L
+        synchronized(surfaceLock) {
+            pendingSurface = null
+        }
+        if (handle != 0L && FreeRdpNativeBridge.isNativeLoaded) {
+            FreeRdpNativeBridge.nativeDestroySession(handle)
         }
     }
 }

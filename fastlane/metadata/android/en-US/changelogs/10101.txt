@@ -1,0 +1,5 @@
+NexusTS 1.1.1 — Complete Quality Sweep & Enterprise Hardening:
+• Full-screen zero-knowledge Vault Lock shield, encrypted local vault persistence, and custom Google Drive sync passphrases.
+• Fixed live RDP/SSH session retention during vault edits and multi-window detached tab re-docking.
+• Full hardware keyboard ANSI/VT passthrough, recursive nested folders, and complete CRUD across all Studios.
+• Hardened FreeRDP 3.12, SSH/SFTP, USB-C UART, K8s/Docker, R8 rules, and Android 15 FGS compliance.

@@ -3,11 +3,14 @@ package com.nexusts.app.core.ui.workspace
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -102,6 +105,8 @@ fun SplitPaneWorkspaceContainer(
     onDetachTabToWindow: (tab: WorkspaceSessionTab, displayId: Int?) -> Unit,
     onToggleTabBroadcast: (tab: WorkspaceSessionTab) -> Unit,
     onReconnectTab: ((tab: WorkspaceSessionTab) -> Unit)? = null,
+    onCloseEmptyPane: ((paneId: String) -> Unit)? = null,
+    isInsideSplit: Boolean = false,
     emptyStateContent: @Composable () -> Unit,
     sessionRenderer: @Composable (WorkspaceSessionTab, isPaneFocused: Boolean) -> Unit,
     modifier: Modifier = Modifier
@@ -109,15 +114,47 @@ fun SplitPaneWorkspaceContainer(
     when (node) {
         is PaneNode.Leaf -> {
             if (node.tabs.isEmpty()) {
+                val isFocused = node.nodeId == focusedPaneId
+                val focusBorder = if (isFocused && isInsideSplit) {
+                    NexusTheme.extendedColors.activePaneFocusRing.copy(alpha = 0.65f)
+                } else {
+                    MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
+                }
                 Box(
                     modifier = modifier
                         .fillMaxSize()
                         .padding(6.dp)
+                        .border(
+                            width = if (isFocused && isInsideSplit) 1.5.dp else 1.dp,
+                            color = focusBorder,
+                            shape = MaterialTheme.shapes.large
+                        )
                         .clip(MaterialTheme.shapes.large)
-                        .background(MaterialTheme.colorScheme.surfaceContainerLowest),
+                        .background(MaterialTheme.colorScheme.surfaceContainerLowest)
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                            onClick = { onFocusPane(node.nodeId) }
+                        ),
                     contentAlignment = Alignment.Center
                 ) {
                     emptyStateContent()
+                    if (isInsideSplit && onCloseEmptyPane != null) {
+                        IconButton(
+                            onClick = { onCloseEmptyPane(node.nodeId) },
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .padding(8.dp)
+                                .size(30.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.Close,
+                                contentDescription = labels.closeTabLabel,
+                                modifier = Modifier.size(16.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
                 }
             } else {
                 LeafSessionPane(
@@ -159,6 +196,8 @@ fun SplitPaneWorkspaceContainer(
                             onDetachTabToWindow = onDetachTabToWindow,
                             onToggleTabBroadcast = onToggleTabBroadcast,
                             onReconnectTab = onReconnectTab,
+                            onCloseEmptyPane = onCloseEmptyPane,
+                            isInsideSplit = true,
                             emptyStateContent = emptyStateContent,
                             sessionRenderer = sessionRenderer,
                             modifier = Modifier
@@ -188,6 +227,8 @@ fun SplitPaneWorkspaceContainer(
                             onDetachTabToWindow = onDetachTabToWindow,
                             onToggleTabBroadcast = onToggleTabBroadcast,
                             onReconnectTab = onReconnectTab,
+                            onCloseEmptyPane = onCloseEmptyPane,
+                            isInsideSplit = true,
                             emptyStateContent = emptyStateContent,
                             sessionRenderer = sessionRenderer,
                             modifier = Modifier
@@ -210,6 +251,8 @@ fun SplitPaneWorkspaceContainer(
                             onDetachTabToWindow = onDetachTabToWindow,
                             onToggleTabBroadcast = onToggleTabBroadcast,
                             onReconnectTab = onReconnectTab,
+                            onCloseEmptyPane = onCloseEmptyPane,
+                            isInsideSplit = true,
                             emptyStateContent = emptyStateContent,
                             sessionRenderer = sessionRenderer,
                             modifier = Modifier
@@ -239,6 +282,8 @@ fun SplitPaneWorkspaceContainer(
                             onDetachTabToWindow = onDetachTabToWindow,
                             onToggleTabBroadcast = onToggleTabBroadcast,
                             onReconnectTab = onReconnectTab,
+                            onCloseEmptyPane = onCloseEmptyPane,
+                            isInsideSplit = true,
                             emptyStateContent = emptyStateContent,
                             sessionRenderer = sessionRenderer,
                             modifier = Modifier
@@ -396,25 +441,38 @@ private fun LeafSessionPane(
                 }
             }
 
-            // Environment Guardrail Banner (e.g. PRODUCTION warning ribbon)
+            // Environment Guardrail & Broadcast Input Banner
             val activeTab = leaf.activeTab
             if (activeTab != null) {
-                if (activeTab.environmentTag.equals("PROD", ignoreCase = true) ||
+                val isProd = activeTab.environmentTag.equals("PROD", ignoreCase = true) ||
                     activeTab.environmentTag.equals("PRODUCTION", ignoreCase = true)
-                ) {
+                if (isProd || activeTab.broadcastEnabled) {
+                    val bannerBg = if (isProd) {
+                        extendedColors.envProductionBanner.copy(alpha = 0.22f)
+                    } else {
+                        extendedColors.broadcastActiveBanner.copy(alpha = 0.14f)
+                    }
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .background(extendedColors.envProductionBanner.copy(alpha = 0.22f))
+                            .background(bannerBg)
                             .padding(horizontal = 12.dp, vertical = 2.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Text(
-                            text = "PRODUCTION ENVIRONMENT • ${activeTab.subtitleHost}",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = Color(0xFFFFB3C0)
-                        )
+                        if (isProd) {
+                            Text(
+                                text = "PRODUCTION ENVIRONMENT • ${activeTab.subtitleHost}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color(0xFFFFB3C0)
+                            )
+                        } else {
+                            Text(
+                                text = activeTab.subtitleHost,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                         if (activeTab.broadcastEnabled) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Icon(
@@ -638,6 +696,7 @@ private fun ExpressiveSessionTabChip(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ExpressiveSplitDivider(
     isHorizontalSplit: Boolean,
@@ -675,7 +734,12 @@ private fun ExpressiveSplitDivider(
         }
             .nexusHoverTracker(hoverState)
             .nexusResizeCursor(horizontalResize = isHorizontalSplit)
-            .clickable(onClick = onDoubleClickReset)
+            .combinedClickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = {},
+                onDoubleClick = onDoubleClickReset
+            )
             .pointerInput(isHorizontalSplit) {
                 detectDragGestures(
                     onDragStart = { isDragging = true },

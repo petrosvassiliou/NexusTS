@@ -6,14 +6,17 @@ import androidx.work.BackoffPolicy
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import com.google.api.client.http.ByteArrayContent
+import com.google.api.client.http.HttpResponseException
 import com.google.api.services.drive.Drive
 import com.google.api.services.drive.model.File as DriveFile
+import com.nexusts.app.core.gdrivesync.auth.GoogleDriveAuthManager
 import com.nexusts.app.core.gdrivesync.cache.CachedVaultRecord
 import com.nexusts.app.core.gdrivesync.cache.SyncedVaultDao
 import com.nexusts.app.core.gdrivesync.cache.VaultSnapshotRecord
@@ -22,9 +25,12 @@ import com.nexusts.app.core.vault.model.NxtsVaultDocument
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.util.Arrays
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 
@@ -63,6 +69,8 @@ sealed interface VaultSyncResult {
  * Production Google Drive API v3 Synchronization Engine for `.nxts` Vaults.
  * Supports:
  * - Private `appDataFolder` storage AND Collaborative Shared Folders / Team Drives (`supportsAllDrives = true`)
+ * - Cloud Vault Discovery (`drive.files().list()`) & automatic `"NexusTS Vaults"` folder creation on 404
+ * - Mutex-serialized foreground + WorkManager background sync
  * - Encrypted offline local cache
  * - Advisory Multi-User File Locking (`appProperties["nxts_lock_holder"]`)
  * - Drive Revision History inspection & Automated Rolling Backup Snapshots
@@ -73,6 +81,7 @@ class GoogleDriveVaultSyncEngine(
     private val vaultDao: SyncedVaultDao,
     private val serializer: NxtsVaultSerializer
 ) {
+    private val syncMutex = Mutex()
     private val localVaultDir = File(appContext.filesDir, "vaults").apply { mkdirs() }
     private val snapshotsDir = File(appContext.filesDir, "vaults/snapshots").apply { mkdirs() }
 
@@ -154,7 +163,8 @@ class GoogleDriveVaultSyncEngine(
 
     /**
      * Synchronizes a `.nxts` vault with Google Drive (`appDataFolder` or Shared Team Drive),
-     * creating an automated rolling snapshot before overwriting or merging divergent revisions.
+     * performing Cloud Vault Discovery when unbound, auto-creating `"NexusTS Vaults"` if `parentFolderId`
+     * returns 404, and creating an automated rolling snapshot before overwriting or merging divergent revisions.
      */
     suspend fun synchronizeVault(
         drive: Drive,
@@ -165,130 +175,216 @@ class GoogleDriveVaultSyncEngine(
         parentFolderId: String? = null,
         unlockedPassphraseOrNull: CharArray? = null,
         localDeviceId: String = "Googlebook-OS"
-    ): VaultSyncResult = withContext(Dispatchers.IO) {
-        val localFile = File(localVaultDir, "$documentId.nxts")
-        val existingRecord = vaultDao.getByDocumentId(documentId)
+    ): VaultSyncResult = syncMutex.withLock {
+        withContext(Dispatchers.IO) {
+            val localFile = File(localVaultDir, "$documentId.nxts")
+            val existingRecord = vaultDao.getByDocumentId(documentId)
 
-        // Initial upload when vault does not yet exist on Google Drive
-        if (existingRecord?.driveFileId == null) {
-            require(localFile.exists()) { "Local .nxts vault file missing for initial Drive upload" }
-            val localBytes = localFile.readBytes()
-            val localRev = serializer.inspectUnencryptedRevisionHeader(localBytes) ?: 1L
-            val meta = DriveFile().apply {
-                name = if (displayName.endsWith(".nxts")) displayName else "$displayName.nxts"
-                mimeType = NXTS_MIME_TYPE
-                parents = when (zone) {
-                    DriveStorageZone.APPDATA_PRIVATE -> listOf("appDataFolder")
-                    DriveStorageZone.SHARED_TEAM_DRIVE -> listOfNotNull(parentFolderId ?: sharedDriveId)
+            val boundDriveFileId = existingRecord?.driveFileId?.takeIf { it.isNotBlank() }
+
+            // Cloud Vault Discovery & Initial Upload when vault is not yet bound locally to a Drive file ID
+            if (existingRecord == null || boundDriveFileId == null) {
+                val effectiveParentFolderId = if (zone == DriveStorageZone.SHARED_TEAM_DRIVE) {
+                    resolveAccessibleParentFolderId(drive, parentFolderId, sharedDriveId)
+                } else {
+                    null
                 }
-                appProperties = mapOf("nxts_doc_id" to documentId, "nxts_rev" to localRev.toString())
+
+                val discoveredRemote = discoverExistingCloudVault(
+                    drive = drive,
+                    displayName = displayName,
+                    zone = zone,
+                    parentFolderId = effectiveParentFolderId
+                )
+
+                if (discoveredRemote?.id != null) {
+                    val discoveredId = discoveredRemote.id
+                    val discoveredHeadRev = discoveredRemote.headRevisionId.orEmpty()
+                    val remoteBytes = downloadDriveBytes(drive, discoveredId)
+
+                    if (!localFile.exists() || existingRecord == null || !existingRecord.hasPendingLocalEdits) {
+                        localFile.writeBytes(remoteBytes)
+                        val pulledRev = serializer.inspectUnencryptedRevisionHeader(remoteBytes) ?: 1L
+                        vaultDao.upsertVault(
+                            CachedVaultRecord(
+                                documentId = documentId,
+                                driveFileId = discoveredId,
+                                storageZone = zone.name,
+                                sharedDriveId = sharedDriveId,
+                                parentFolderDriveId = effectiveParentFolderId,
+                                displayName = displayName,
+                                localRevision = pulledRev,
+                                lastSyncedHeadRevisionId = discoveredHeadRev,
+                                localEncryptedPath = localFile.absolutePath,
+                                hasPendingLocalEdits = false,
+                                activeRemoteLockHolder = null,
+                                activeRemoteLockExpiresEpochMs = null,
+                                lastSyncedEpochMs = System.currentTimeMillis()
+                            )
+                        )
+                        return@withContext VaultSyncResult.PulledRemoteUpdate(discoveredHeadRev, remoteBytes)
+                    }
+
+                    val localBytes = localFile.readBytes()
+                    createAutomatedLocalSnapshot(documentId, existingRecord.localRevision, localBytes, "cloud-discovery-local-backup")
+
+                    if (unlockedPassphraseOrNull != null) {
+                        val localDoc = runCatching { serializer.unsealDocument(localBytes, unlockedPassphraseOrNull.copyOf()) }.getOrNull()
+                        val remoteDoc = runCatching { serializer.unsealDocument(remoteBytes, unlockedPassphraseOrNull.copyOf()) }.getOrNull()
+                        if (localDoc != null && remoteDoc != null && localDoc.documentId == remoteDoc.documentId) {
+                            val mergeOutcome = VaultDeltaConflictResolver.mergeDocuments(localDoc, remoteDoc, localDeviceId)
+                            val mergedBytes = serializer.sealDocument(mergeOutcome.mergedDocument, unlockedPassphraseOrNull.copyOf())
+                            localFile.writeBytes(mergedBytes)
+                            val pushed = drive.files().update(
+                                discoveredId,
+                                DriveFile().apply {
+                                    keepForeverForCriticalMerge()
+                                    appProperties = mapOf("nxts_rev" to mergeOutcome.mergedDocument.revision.toString())
+                                },
+                                ByteArrayContent(NXTS_MIME_TYPE, mergedBytes)
+                            )
+                                .setSupportsAllDrives(true)
+                                .setFields("id, headRevisionId")
+                                .execute()
+
+                            vaultDao.upsertVault(
+                                CachedVaultRecord(
+                                    documentId = documentId,
+                                    driveFileId = discoveredId,
+                                    storageZone = zone.name,
+                                    sharedDriveId = sharedDriveId,
+                                    parentFolderDriveId = effectiveParentFolderId,
+                                    displayName = displayName,
+                                    localRevision = mergeOutcome.mergedDocument.revision,
+                                    lastSyncedHeadRevisionId = pushed.headRevisionId,
+                                    localEncryptedPath = localFile.absolutePath,
+                                    hasPendingLocalEdits = false,
+                                    activeRemoteLockHolder = null,
+                                    activeRemoteLockExpiresEpochMs = null,
+                                    lastSyncedEpochMs = System.currentTimeMillis()
+                                )
+                            )
+                            return@withContext VaultSyncResult.DeltaMergedAndSynced(
+                                newRevisionId = pushed.headRevisionId.orEmpty(),
+                                mergedDocument = mergeOutcome.mergedDocument,
+                                resolvedConflicts = mergeOutcome.detectedConflicts
+                            )
+                        }
+                    }
+
+                    localFile.writeBytes(remoteBytes)
+                    val pulledRev = serializer.inspectUnencryptedRevisionHeader(remoteBytes) ?: existingRecord.localRevision
+                    vaultDao.upsertVault(
+                        CachedVaultRecord(
+                            documentId = documentId,
+                            driveFileId = discoveredId,
+                            storageZone = zone.name,
+                            sharedDriveId = sharedDriveId,
+                            parentFolderDriveId = effectiveParentFolderId,
+                            displayName = displayName,
+                            localRevision = pulledRev,
+                            lastSyncedHeadRevisionId = discoveredHeadRev,
+                            localEncryptedPath = localFile.absolutePath,
+                            hasPendingLocalEdits = false,
+                            activeRemoteLockHolder = null,
+                            activeRemoteLockExpiresEpochMs = null,
+                            lastSyncedEpochMs = System.currentTimeMillis()
+                        )
+                    )
+                    return@withContext VaultSyncResult.PulledRemoteUpdate(discoveredHeadRev, remoteBytes)
+                }
+
+                // No remote file exists yet — create initial .nxts file on Google Drive
+                require(localFile.exists()) { "Local .nxts vault file missing for initial Drive upload" }
+                val localBytes = localFile.readBytes()
+                val localRev = serializer.inspectUnencryptedRevisionHeader(localBytes) ?: 1L
+                val remoteFileName = if (displayName.endsWith(".nxts", ignoreCase = true)) displayName else "$displayName.nxts"
+
+                var usedParentId = effectiveParentFolderId
+                val created = try {
+                    val meta = DriveFile().apply {
+                        name = remoteFileName
+                        mimeType = NXTS_MIME_TYPE
+                        parents = when (zone) {
+                            DriveStorageZone.APPDATA_PRIVATE -> listOf("appDataFolder")
+                            DriveStorageZone.SHARED_TEAM_DRIVE -> listOfNotNull(usedParentId)
+                        }
+                        appProperties = mapOf("nxts_doc_id" to documentId, "nxts_rev" to localRev.toString())
+                    }
+                    drive.files().create(meta, ByteArrayContent(NXTS_MIME_TYPE, localBytes))
+                        .setSupportsAllDrives(true)
+                        .setFields("id, headRevisionId, modifiedTime")
+                        .execute()
+                } catch (httpEx: HttpResponseException) {
+                    if (httpEx.statusCode == 404 && zone == DriveStorageZone.SHARED_TEAM_DRIVE) {
+                        val fallbackFolderId = findOrCreateNexusTsVaultsFolder(drive)
+                        usedParentId = fallbackFolderId
+                        val retryMeta = DriveFile().apply {
+                            name = remoteFileName
+                            mimeType = NXTS_MIME_TYPE
+                            parents = listOf(fallbackFolderId)
+                            appProperties = mapOf("nxts_doc_id" to documentId, "nxts_rev" to localRev.toString())
+                        }
+                        drive.files().create(retryMeta, ByteArrayContent(NXTS_MIME_TYPE, localBytes))
+                            .setSupportsAllDrives(true)
+                            .setFields("id, headRevisionId, modifiedTime")
+                            .execute()
+                    } else {
+                        throw httpEx
+                    }
+                }
+
+                vaultDao.upsertVault(
+                    CachedVaultRecord(
+                        documentId = documentId,
+                        driveFileId = created.id,
+                        storageZone = zone.name,
+                        sharedDriveId = sharedDriveId,
+                        parentFolderDriveId = usedParentId,
+                        displayName = displayName,
+                        localRevision = localRev,
+                        lastSyncedHeadRevisionId = created.headRevisionId,
+                        localEncryptedPath = localFile.absolutePath,
+                        hasPendingLocalEdits = false,
+                        activeRemoteLockHolder = null,
+                        activeRemoteLockExpiresEpochMs = null,
+                        lastSyncedEpochMs = System.currentTimeMillis()
+                    )
+                )
+                return@withContext VaultSyncResult.PushedNewRevision(created.headRevisionId.orEmpty(), localRev)
             }
-            val created = drive.files().create(meta, ByteArrayContent(NXTS_MIME_TYPE, localBytes))
+
+            val driveFileId: String = boundDriveFileId
+            val remoteMeta = drive.files().get(driveFileId)
                 .setSupportsAllDrives(true)
-                .setFields("id, headRevisionId, modifiedTime")
+                .setFields("id, headRevisionId, appProperties")
                 .execute()
 
-            vaultDao.upsertVault(
-                CachedVaultRecord(
-                    documentId = documentId,
-                    driveFileId = created.id,
-                    storageZone = zone.name,
-                    sharedDriveId = sharedDriveId,
-                    parentFolderDriveId = parentFolderId,
-                    displayName = displayName,
-                    localRevision = localRev,
-                    lastSyncedHeadRevisionId = created.headRevisionId,
-                    localEncryptedPath = localFile.absolutePath,
-                    hasPendingLocalEdits = false,
-                    activeRemoteLockHolder = null,
-                    activeRemoteLockExpiresEpochMs = null,
-                    lastSyncedEpochMs = System.currentTimeMillis()
+            val remoteHeadRev = remoteMeta.headRevisionId.orEmpty()
+            val remoteChanged = remoteHeadRev != existingRecord.lastSyncedHeadRevisionId
+            val localChanged = existingRecord.hasPendingLocalEdits
+
+            // Check active advisory lock held by another team member before pushing
+            val lockHolder = remoteMeta.appProperties?.get(PROP_LOCK_HOLDER)
+            val lockExp = remoteMeta.appProperties?.get(PROP_LOCK_EXPIRES)?.toLongOrNull() ?: 0L
+            if (localChanged && !lockHolder.isNullOrBlank() && lockHolder != localDeviceId && lockExp > System.currentTimeMillis()) {
+                return@withContext VaultSyncResult.RemoteLockActiveAlert(
+                    AdvisoryLockWarning(lockedByIdentity = lockHolder, expiresAtEpochMs = lockExp)
                 )
-            )
-            return@withContext VaultSyncResult.PushedNewRevision(created.headRevisionId.orEmpty(), localRev)
-        }
-
-        val driveFileId = existingRecord.driveFileId
-        val remoteMeta = drive.files().get(driveFileId)
-            .setSupportsAllDrives(true)
-            .setFields("id, headRevisionId, appProperties")
-            .execute()
-
-        val remoteHeadRev = remoteMeta.headRevisionId.orEmpty()
-        val remoteChanged = remoteHeadRev != existingRecord.lastSyncedHeadRevisionId
-        val localChanged = existingRecord.hasPendingLocalEdits
-
-        // Check active advisory lock held by another team member before pushing
-        val lockHolder = remoteMeta.appProperties?.get(PROP_LOCK_HOLDER)
-        val lockExp = remoteMeta.appProperties?.get(PROP_LOCK_EXPIRES)?.toLongOrNull() ?: 0L
-        if (localChanged && !lockHolder.isNullOrBlank() && lockHolder != localDeviceId && lockExp > System.currentTimeMillis()) {
-            return@withContext VaultSyncResult.RemoteLockActiveAlert(
-                AdvisoryLockWarning(lockedByIdentity = lockHolder, expiresAtEpochMs = lockExp)
-            )
-        }
-
-        return@withContext when {
-            !remoteChanged && !localChanged -> VaultSyncResult.UpToDate(remoteHeadRev)
-
-            !remoteChanged && localChanged -> {
-                val localBytes = localFile.readBytes()
-                createAutomatedLocalSnapshot(documentId, existingRecord.localRevision, localBytes, "pre-push")
-                val updated = drive.files().update(
-                    driveFileId,
-                    DriveFile().apply {
-                        appProperties = mapOf("nxts_rev" to (existingRecord.localRevision + 1).toString())
-                    },
-                    ByteArrayContent(NXTS_MIME_TYPE, localBytes)
-                )
-                    .setSupportsAllDrives(true)
-                    .setFields("id, headRevisionId")
-                    .execute()
-
-                vaultDao.upsertVault(
-                    existingRecord.copy(
-                        lastSyncedHeadRevisionId = updated.headRevisionId,
-                        hasPendingLocalEdits = false,
-                        lastSyncedEpochMs = System.currentTimeMillis()
-                    )
-                )
-                VaultSyncResult.PushedNewRevision(updated.headRevisionId.orEmpty(), existingRecord.localRevision)
             }
 
-            remoteChanged && !localChanged -> {
-                if (localFile.exists()) {
-                    createAutomatedLocalSnapshot(documentId, existingRecord.localRevision, localFile.readBytes(), "pre-pull")
-                }
-                val remoteBytes = downloadDriveBytes(drive, driveFileId)
-                localFile.writeBytes(remoteBytes)
-                val pulledRev = serializer.inspectUnencryptedRevisionHeader(remoteBytes) ?: existingRecord.localRevision
-                vaultDao.upsertVault(
-                    existingRecord.copy(
-                        localRevision = pulledRev,
-                        lastSyncedHeadRevisionId = remoteHeadRev,
-                        lastSyncedEpochMs = System.currentTimeMillis()
-                    )
-                )
-                VaultSyncResult.PulledRemoteUpdate(remoteHeadRev, remoteBytes)
-            }
+            return@withContext when {
+                !remoteChanged && !localChanged -> VaultSyncResult.UpToDate(remoteHeadRev)
 
-            else -> {
-                // Concurrent edits on both local & remote! Perform zero-knowledge 3-way object merge if unlocked,
-                // or preserve both copies via conflict snapshot if locked.
-                val localBytes = localFile.readBytes()
-                val remoteBytes = downloadDriveBytes(drive, driveFileId)
-                createAutomatedLocalSnapshot(documentId, existingRecord.localRevision, localBytes, "conflict-local-backup")
-
-                if (unlockedPassphraseOrNull != null) {
-                    val localDoc = serializer.unsealDocument(localBytes, unlockedPassphraseOrNull)
-                    val remoteDoc = serializer.unsealDocument(remoteBytes, unlockedPassphraseOrNull)
-                    val mergeOutcome = VaultDeltaConflictResolver.mergeDocuments(localDoc, remoteDoc, localDeviceId)
-                    val mergedBytes = serializer.sealDocument(mergeOutcome.mergedDocument, unlockedPassphraseOrNull)
-                    localFile.writeBytes(mergedBytes)
-
-                    val pushed = drive.files().update(
+                !remoteChanged && localChanged -> {
+                    val localBytes = localFile.readBytes()
+                    createAutomatedLocalSnapshot(documentId, existingRecord.localRevision, localBytes, "pre-push")
+                    val updated = drive.files().update(
                         driveFileId,
-                        DriveFile().apply { keepForeverForCriticalMerge() },
-                        ByteArrayContent(NXTS_MIME_TYPE, mergedBytes)
+                        DriveFile().apply {
+                            appProperties = mapOf("nxts_rev" to existingRecord.localRevision.toString())
+                        },
+                        ByteArrayContent(NXTS_MIME_TYPE, localBytes)
                     )
                         .setSupportsAllDrives(true)
                         .setFields("id, headRevisionId")
@@ -296,25 +392,201 @@ class GoogleDriveVaultSyncEngine(
 
                     vaultDao.upsertVault(
                         existingRecord.copy(
-                            localRevision = mergeOutcome.mergedDocument.revision,
-                            lastSyncedHeadRevisionId = pushed.headRevisionId,
+                            lastSyncedHeadRevisionId = updated.headRevisionId,
                             hasPendingLocalEdits = false,
                             lastSyncedEpochMs = System.currentTimeMillis()
                         )
                     )
-                    VaultSyncResult.DeltaMergedAndSynced(
-                        newRevisionId = pushed.headRevisionId.orEmpty(),
-                        mergedDocument = mergeOutcome.mergedDocument,
-                        resolvedConflicts = mergeOutcome.detectedConflicts
-                    )
-                } else {
-                    // Vault is locked in background worker; keep remote as latest synced & snapshot local safely
+                    VaultSyncResult.PushedNewRevision(updated.headRevisionId.orEmpty(), existingRecord.localRevision)
+                }
+
+                remoteChanged && !localChanged -> {
+                    if (localFile.exists()) {
+                        createAutomatedLocalSnapshot(documentId, existingRecord.localRevision, localFile.readBytes(), "pre-pull")
+                    }
+                    val remoteBytes = downloadDriveBytes(drive, driveFileId)
                     localFile.writeBytes(remoteBytes)
+                    val pulledRev = serializer.inspectUnencryptedRevisionHeader(remoteBytes) ?: existingRecord.localRevision
+                    vaultDao.upsertVault(
+                        existingRecord.copy(
+                            localRevision = pulledRev,
+                            lastSyncedHeadRevisionId = remoteHeadRev,
+                            lastSyncedEpochMs = System.currentTimeMillis()
+                        )
+                    )
                     VaultSyncResult.PulledRemoteUpdate(remoteHeadRev, remoteBytes)
+                }
+
+                else -> {
+                    // Concurrent edits on both local & remote! Perform zero-knowledge 3-way object merge if unlocked,
+                    // or preserve both copies via conflict snapshot and update vaultDao cleanly if locked.
+                    val localBytes = localFile.readBytes()
+                    val remoteBytes = downloadDriveBytes(drive, driveFileId)
+                    createAutomatedLocalSnapshot(documentId, existingRecord.localRevision, localBytes, "conflict-local-backup")
+
+                    if (unlockedPassphraseOrNull != null) {
+                        val localDoc = serializer.unsealDocument(localBytes, unlockedPassphraseOrNull.copyOf())
+                        val remoteDoc = serializer.unsealDocument(remoteBytes, unlockedPassphraseOrNull.copyOf())
+                        val mergeOutcome = VaultDeltaConflictResolver.mergeDocuments(localDoc, remoteDoc, localDeviceId)
+                        val mergedBytes = serializer.sealDocument(mergeOutcome.mergedDocument, unlockedPassphraseOrNull.copyOf())
+                        localFile.writeBytes(mergedBytes)
+
+                        val pushed = drive.files().update(
+                            driveFileId,
+                            DriveFile().apply {
+                                keepForeverForCriticalMerge()
+                                appProperties = mapOf("nxts_rev" to mergeOutcome.mergedDocument.revision.toString())
+                            },
+                            ByteArrayContent(NXTS_MIME_TYPE, mergedBytes)
+                        )
+                            .setSupportsAllDrives(true)
+                            .setFields("id, headRevisionId")
+                            .execute()
+
+                        vaultDao.upsertVault(
+                            existingRecord.copy(
+                                localRevision = mergeOutcome.mergedDocument.revision,
+                                lastSyncedHeadRevisionId = pushed.headRevisionId,
+                                hasPendingLocalEdits = false,
+                                lastSyncedEpochMs = System.currentTimeMillis()
+                            )
+                        )
+                        VaultSyncResult.DeltaMergedAndSynced(
+                            newRevisionId = pushed.headRevisionId.orEmpty(),
+                            mergedDocument = mergeOutcome.mergedDocument,
+                            resolvedConflicts = mergeOutcome.detectedConflicts
+                        )
+                    } else {
+                        // Vault is locked in background worker; keep remote as latest synced, snapshot local safely,
+                        // and update vaultDao so we don't repeatedly re-trigger conflict sync on next pass.
+                        localFile.writeBytes(remoteBytes)
+                        val pulledRev = serializer.inspectUnencryptedRevisionHeader(remoteBytes) ?: existingRecord.localRevision
+                        vaultDao.upsertVault(
+                            existingRecord.copy(
+                                localRevision = pulledRev,
+                                lastSyncedHeadRevisionId = remoteHeadRev,
+                                hasPendingLocalEdits = false,
+                                lastSyncedEpochMs = System.currentTimeMillis()
+                            )
+                        )
+                        VaultSyncResult.PulledRemoteUpdate(remoteHeadRev, remoteBytes)
+                    }
                 }
             }
         }
     }
+
+    /**
+     * Resolves an accessible parent folder ID in Google Drive. If `parentFolderId` returns HTTP 404
+     * (e.g. external account without the pre-provisioned folder ID), automatically searches/creates
+     * a `"NexusTS Vaults"` folder in My Drive and returns its ID.
+     */
+    private fun resolveAccessibleParentFolderId(
+        drive: Drive,
+        parentFolderId: String?,
+        sharedDriveId: String?
+    ): String? {
+        val candidate = parentFolderId?.takeIf { it.isNotBlank() } ?: sharedDriveId?.takeIf { it.isNotBlank() }
+        if (candidate == null) {
+            return findOrCreateNexusTsVaultsFolder(drive)
+        }
+        return try {
+            val folderMeta = drive.files().get(candidate)
+                .setSupportsAllDrives(true)
+                .setFields("id, trashed")
+                .execute()
+            if (folderMeta?.trashed == true) {
+                findOrCreateNexusTsVaultsFolder(drive)
+            } else {
+                candidate
+            }
+        } catch (httpEx: HttpResponseException) {
+            if (httpEx.statusCode == 404) {
+                findOrCreateNexusTsVaultsFolder(drive)
+            } else {
+                throw httpEx
+            }
+        }
+    }
+
+    private fun findOrCreateNexusTsVaultsFolder(drive: Drive): String {
+        val escapedFolderName = escapeDriveQueryLiteral(DEFAULT_VAULTS_FOLDER_NAME)
+        val query = "mimeType = '$DRIVE_FOLDER_MIME_TYPE' and name = '$escapedFolderName' and trashed = false"
+        val existing = drive.files().list()
+            .setSpaces("drive")
+            .setQ(query)
+            .setIncludeItemsFromAllDrives(true)
+            .setSupportsAllDrives(true)
+            .setPageSize(5)
+            .setFields("files(id, name)")
+            .execute()
+            .files
+            ?.firstOrNull()
+
+        val existingId = existing?.id?.takeIf { it.isNotBlank() }
+        if (existingId != null) {
+            return existingId
+        }
+
+        val folderMeta = DriveFile().apply {
+            name = DEFAULT_VAULTS_FOLDER_NAME
+            mimeType = DRIVE_FOLDER_MIME_TYPE
+        }
+        return drive.files().create(folderMeta)
+            .setSupportsAllDrives(true)
+            .setFields("id")
+            .execute()
+            .id
+    }
+
+    private fun discoverExistingCloudVault(
+        drive: Drive,
+        displayName: String,
+        zone: DriveStorageZone,
+        parentFolderId: String?
+    ): DriveFile? {
+        val normalizedWithExt = if (displayName.endsWith(".nxts", ignoreCase = true)) displayName else "$displayName.nxts"
+        val escapedExt = escapeDriveQueryLiteral(normalizedWithExt)
+        val escapedRaw = escapeDriveQueryLiteral(displayName)
+        val nameClause = if (escapedExt == escapedRaw) {
+            "name = '$escapedExt'"
+        } else {
+            "(name = '$escapedExt' or name = '$escapedRaw')"
+        }
+
+        return when (zone) {
+            DriveStorageZone.APPDATA_PRIVATE -> {
+                drive.files().list()
+                    .setSpaces("appDataFolder")
+                    .setQ("$nameClause and trashed = false")
+                    .setPageSize(5)
+                    .setFields("files(id, name, headRevisionId, modifiedTime, appProperties)")
+                    .execute()
+                    .files
+                    ?.firstOrNull()
+            }
+            DriveStorageZone.SHARED_TEAM_DRIVE -> {
+                val parentClause = if (!parentFolderId.isNullOrBlank()) {
+                    "'${escapeDriveQueryLiteral(parentFolderId)}' in parents and "
+                } else {
+                    ""
+                }
+                drive.files().list()
+                    .setSpaces("drive")
+                    .setQ("$parentClause$nameClause and trashed = false")
+                    .setIncludeItemsFromAllDrives(true)
+                    .setSupportsAllDrives(true)
+                    .setPageSize(5)
+                    .setFields("files(id, name, headRevisionId, modifiedTime, appProperties)")
+                    .execute()
+                    .files
+                    ?.firstOrNull()
+            }
+        }
+    }
+
+    private fun escapeDriveQueryLiteral(value: String): String =
+        value.replace("\\", "\\\\").replace("'", "\\'")
 
     suspend fun stageLocalEncryptedVaultForSync(
         document: NxtsVaultDocument,
@@ -393,6 +665,8 @@ class GoogleDriveVaultSyncEngine(
 
     companion object {
         const val NXTS_MIME_TYPE = "application/vnd.nexusts.vault"
+        private const val DRIVE_FOLDER_MIME_TYPE = "application/vnd.google-apps.folder"
+        private const val DEFAULT_VAULTS_FOLDER_NAME = "NexusTS Vaults"
         private const val PROP_LOCK_HOLDER = "nxts_lock_holder"
         private const val PROP_LOCK_EXPIRES = "nxts_lock_expires_ms"
 
@@ -420,7 +694,11 @@ class GoogleDriveVaultSyncEngine(
             val request = OneTimeWorkRequestBuilder<VaultDriveSyncWorker>()
                 .setConstraints(constraints)
                 .build()
-            WorkManager.getInstance(context).enqueue(request)
+            WorkManager.getInstance(context).enqueueUniqueWork(
+                "nexusts_gdrive_immediate_sync",
+                ExistingWorkPolicy.REPLACE,
+                request
+            )
         }
     }
 }
@@ -430,7 +708,7 @@ class VaultDriveSyncWorker @AssistedInject constructor(
     @Assisted appContext: Context,
     @Assisted workerParams: WorkerParameters,
     private val vaultDao: SyncedVaultDao,
-    private val authManager: com.nexusts.app.core.gdrivesync.auth.GoogleDriveAuthManager,
+    private val authManager: GoogleDriveAuthManager,
     private val syncEngine: GoogleDriveVaultSyncEngine,
     private val safBridge: SafLiveGoogleDriveBridge
 ) : CoroutineWorker(appContext, workerParams) {
@@ -439,15 +717,30 @@ class VaultDriveSyncWorker @AssistedInject constructor(
         val dirtyVaults = vaultDao.listDirtyVaults()
         if (dirtyVaults.isEmpty()) return Result.success()
 
-        // 1. Sync via persistent Google Drive SAF URI if linked
-        if (safBridge.getLinkedVaultInfo() != null) {
-            dirtyVaults.forEach { record ->
-                val file = File(record.localEncryptedPath)
+        // 1. Sync via persistent Google Drive SAF URI ONLY for the record matching the linked SAF vault
+        val linkedSaf = safBridge.getLinkedVaultInfo()
+        if (linkedSaf != null) {
+            val matchingSafRecord = dirtyVaults.firstOrNull { record ->
+                if (!linkedSaf.linkedDocumentId.isNullOrBlank()) {
+                    record.documentId == linkedSaf.linkedDocumentId
+                } else {
+                    val linkedClean = linkedSaf.displayName.removeSuffix(".nxts").removeSuffix(".NXTS")
+                    val recordClean = record.displayName.removeSuffix(".nxts").removeSuffix(".NXTS")
+                    recordClean.equals(linkedClean, ignoreCase = true)
+                }
+            }
+            if (matchingSafRecord != null) {
+                val file = File(matchingSafRecord.localEncryptedPath)
                 if (file.exists()) {
                     runCatching {
-                        if (safBridge.pushPreSealedSnapshotIfRemoteUnchanged(file.readBytes(), record.localRevision)) {
+                        if (safBridge.pushPreSealedSnapshotIfRemoteUnchanged(
+                                sealedBytes = file.readBytes(),
+                                revision = matchingSafRecord.localRevision,
+                                documentId = matchingSafRecord.documentId
+                            )
+                        ) {
                             vaultDao.upsertVault(
-                                record.copy(
+                                matchingSafRecord.copy(
                                     hasPendingLocalEdits = false,
                                     lastSyncedEpochMs = System.currentTimeMillis()
                                 )
@@ -465,17 +758,25 @@ class VaultDriveSyncWorker @AssistedInject constructor(
             for (record in vaultDao.listDirtyVaults()) {
                 val zone = runCatching { DriveStorageZone.valueOf(record.storageZone) }
                     .getOrDefault(DriveStorageZone.APPDATA_PRIVATE)
-                runCatching {
-                    syncEngine.synchronizeVault(
-                        drive = drive,
-                        documentId = record.documentId,
-                        displayName = record.displayName,
-                        zone = zone,
-                        sharedDriveId = record.sharedDriveId,
-                        parentFolderId = record.parentFolderDriveId
-                    )
-                }.onFailure {
-                    return Result.retry()
+                val savedPassphrase = authManager.readVaultPassphraseOrNull(record.documentId)
+                try {
+                    runCatching {
+                        syncEngine.synchronizeVault(
+                            drive = drive,
+                            documentId = record.documentId,
+                            displayName = record.displayName,
+                            zone = zone,
+                            sharedDriveId = record.sharedDriveId,
+                            parentFolderId = record.parentFolderDriveId,
+                            unlockedPassphraseOrNull = savedPassphrase
+                        )
+                    }.onFailure {
+                        return Result.retry()
+                    }
+                } finally {
+                    if (savedPassphrase != null) {
+                        Arrays.fill(savedPassphrase, '\u0000')
+                    }
                 }
             }
         }

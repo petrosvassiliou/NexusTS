@@ -1,7 +1,10 @@
 #include "rdp_session_context.hpp"
 
 #include <jni.h>
+#include <algorithm>
+#include <memory>
 #include <unordered_map>
+#include <vector>
 
 #ifdef __ANDROID__
 #include <android/native_window_jni.h>
@@ -11,24 +14,145 @@ namespace {
 
 std::mutex g_sessions_mutex;
 int64_t g_next_rdp_handle = 5000;
-std::unordered_map<int64_t, std::unique_ptr<nexusts::rdp::RdpSessionContext>> g_sessions;
+std::unordered_map<int64_t, std::shared_ptr<nexusts::rdp::RdpSessionContext>> g_sessions;
 
+void append_utf8_codepoint(std::string& out, uint32_t cp) {
+    if (cp <= 0x7Fu) {
+        out.push_back(static_cast<char>(cp));
+    } else if (cp <= 0x7FFu) {
+        out.push_back(static_cast<char>(0xC0u | (cp >> 6)));
+        out.push_back(static_cast<char>(0x80u | (cp & 0x3Fu)));
+    } else if (cp <= 0xFFFFu) {
+        out.push_back(static_cast<char>(0xE0u | (cp >> 12)));
+        out.push_back(static_cast<char>(0x80u | ((cp >> 6) & 0x3Fu)));
+        out.push_back(static_cast<char>(0x80u | (cp & 0x3Fu)));
+    } else if (cp <= 0x10FFFFu) {
+        out.push_back(static_cast<char>(0xF0u | (cp >> 18)));
+        out.push_back(static_cast<char>(0x80u | ((cp >> 12) & 0x3Fu)));
+        out.push_back(static_cast<char>(0x80u | ((cp >> 6) & 0x3Fu)));
+        out.push_back(static_cast<char>(0x80u | (cp & 0x3Fu)));
+    } else {
+        append_utf8_codepoint(out, 0xFFFDu);
+    }
+}
+
+/**
+ * Converts a Java UTF-16 `jstring` into standard RFC 3629 UTF-8 using `GetStringChars`/`GetStringLength`
+ * so 4-byte supplementary plane codepoints (emojis, symbols) never trigger Android CheckJNI modified-UTF-8 aborts.
+ */
 std::string jstring_to_utf8(JNIEnv* env, jstring jstr) {
-    if (!jstr) {
+    if (!env || !jstr) {
         return {};
     }
-    const char* chars = env->GetStringUTFChars(jstr, nullptr);
+    const jsize utf16_len = env->GetStringLength(jstr);
+    if (utf16_len <= 0) {
+        return {};
+    }
+    const jchar* chars = env->GetStringChars(jstr, nullptr);
     if (!chars) {
         return {};
     }
-    std::string out(chars);
-    env->ReleaseStringUTFChars(jstr, chars);
+
+    std::string out;
+    out.reserve(static_cast<size_t>(utf16_len) * 2u);
+    for (jsize i = 0; i < utf16_len; ++i) {
+        uint32_t cp = static_cast<uint32_t>(chars[i]);
+        if (cp >= 0xD800u && cp <= 0xDBFFu) {
+            if (i + 1 < utf16_len) {
+                const uint32_t low = static_cast<uint32_t>(chars[i + 1]);
+                if (low >= 0xDC00u && low <= 0xDFFFu) {
+                    cp = 0x10000u + (((cp - 0xD800u) << 10) | (low - 0xDC00u));
+                    ++i;
+                } else {
+                    cp = 0xFFFDu;
+                }
+            } else {
+                cp = 0xFFFDu;
+            }
+        } else if (cp >= 0xDC00u && cp <= 0xDFFFu) {
+            cp = 0xFFFDu;
+        }
+        append_utf8_codepoint(out, cp);
+    }
+
+    env->ReleaseStringChars(jstr, chars);
     return out;
 }
 
-nexusts::rdp::RdpSessionContext* lookup_session(jlong handle) {
+/**
+ * Converts standard RFC 3629 UTF-8 into a Java UTF-16 `jstring` via `NewString` (avoiding `NewStringUTF`
+ * which rejects standard 4-byte UTF-8 sequences under Android CheckJNI).
+ */
+jstring utf8_to_jstring(JNIEnv* env, const std::string& utf8) {
+    if (!env) {
+        return nullptr;
+    }
+    if (utf8.empty()) {
+        const jchar empty_char = 0;
+        return env->NewString(&empty_char, 0);
+    }
+
+    std::vector<jchar> utf16;
+    utf16.reserve(utf8.size());
+    const auto* bytes = reinterpret_cast<const uint8_t*>(utf8.data());
+    const size_t n = utf8.size();
+    size_t i = 0;
+
+    while (i < n) {
+        const uint8_t b0 = bytes[i];
+        uint32_t cp = 0xFFFDu;
+        size_t step = 1;
+
+        if (b0 < 0x80u) {
+            cp = b0;
+        } else if ((b0 & 0xE0u) == 0xC0u && i + 1 < n && (bytes[i + 1] & 0xC0u) == 0x80u) {
+            const uint32_t candidate = ((static_cast<uint32_t>(b0 & 0x1Fu) << 6) |
+                                        static_cast<uint32_t>(bytes[i + 1] & 0x3Fu));
+            if (candidate >= 0x80u) {
+                cp = candidate;
+                step = 2;
+            }
+        } else if ((b0 & 0xF0u) == 0xE0u && i + 2 < n &&
+                   (bytes[i + 1] & 0xC0u) == 0x80u &&
+                   (bytes[i + 2] & 0xC0u) == 0x80u) {
+            const uint32_t candidate = ((static_cast<uint32_t>(b0 & 0x0Fu) << 12) |
+                                        (static_cast<uint32_t>(bytes[i + 1] & 0x3Fu) << 6) |
+                                        static_cast<uint32_t>(bytes[i + 2] & 0x3Fu));
+            if (candidate >= 0x800u && (candidate < 0xD800u || candidate > 0xDFFFu)) {
+                cp = candidate;
+                step = 3;
+            }
+        } else if ((b0 & 0xF8u) == 0xF0u && i + 3 < n &&
+                   (bytes[i + 1] & 0xC0u) == 0x80u &&
+                   (bytes[i + 2] & 0xC0u) == 0x80u &&
+                   (bytes[i + 3] & 0xC0u) == 0x80u) {
+            const uint32_t candidate = ((static_cast<uint32_t>(b0 & 0x07u) << 18) |
+                                        (static_cast<uint32_t>(bytes[i + 1] & 0x3Fu) << 12) |
+                                        (static_cast<uint32_t>(bytes[i + 2] & 0x3Fu) << 6) |
+                                        static_cast<uint32_t>(bytes[i + 3] & 0x3Fu));
+            if (candidate >= 0x10000u && candidate <= 0x10FFFFu) {
+                cp = candidate;
+                step = 4;
+            }
+        }
+
+        if (cp <= 0xFFFFu) {
+            utf16.push_back(static_cast<jchar>(cp));
+        } else {
+            const uint32_t adj = cp - 0x10000u;
+            utf16.push_back(static_cast<jchar>(0xD800u + (adj >> 10)));
+            utf16.push_back(static_cast<jchar>(0xDC00u + (adj & 0x3FFu)));
+        }
+        i += step;
+    }
+
+    return env->NewString(utf16.data(), static_cast<jsize>(utf16.size()));
+}
+
+std::shared_ptr<nexusts::rdp::RdpSessionContext> lookup_session_shared(jlong handle) {
+    std::lock_guard<std::mutex> lock(g_sessions_mutex);
     auto it = g_sessions.find(static_cast<int64_t>(handle));
-    return (it != g_sessions.end()) ? it->second.get() : nullptr;
+    return (it != g_sessions.end()) ? it->second : nullptr;
 }
 
 } // namespace
@@ -76,19 +200,19 @@ Java_com_nexusts_app_protocols_rdp_bridge_FreeRdpNativeBridge_nativeCreateSessio
 ) {
     nexusts::rdp::RdpConnectParams params;
     params.host = jstring_to_utf8(env, host);
-    params.port = static_cast<uint16_t>(port);
+    params.port = static_cast<uint16_t>(std::clamp<jint>(port, 1, 65535));
     params.username = jstring_to_utf8(env, username);
     params.password = jstring_to_utf8(env, password);
     params.domain = jstring_to_utf8(env, domain);
     params.rd_gateway_host = jstring_to_utf8(env, gateway_host);
-    params.rd_gateway_port = static_cast<uint16_t>(gateway_port);
-    params.initial_width = static_cast<uint32_t>(initial_width);
-    params.initial_height = static_cast<uint32_t>(initial_height);
+    params.rd_gateway_port = static_cast<uint16_t>(std::clamp<jint>(gateway_port, 1, 65535));
+    params.initial_width = static_cast<uint32_t>(std::max<jint>(320, initial_width));
+    params.initial_height = static_cast<uint32_t>(std::max<jint>(240, initial_height));
     params.connect_to_console = (connect_to_console == JNI_TRUE);
     params.hidpi_enabled = (hidpi_enabled == JNI_TRUE);
-    params.desktop_scale_factor = static_cast<uint32_t>(desktop_scale_percent);
-    params.device_scale_factor = (desktop_scale_percent >= 175) ? 180u
-        : ((desktop_scale_percent >= 125) ? 140u : 100u);
+    const uint32_t clamped_scale = static_cast<uint32_t>(std::clamp<jint>(desktop_scale_percent, 100, 500));
+    params.desktop_scale_factor = clamped_scale;
+    params.device_scale_factor = nexusts::rdp::map_device_scale_factor(clamped_scale);
     params.color_depth_bits = static_cast<uint32_t>(color_depth_bits);
     params.enable_h264_avc444 = (enable_h264_avc444 == JNI_TRUE);
     params.enable_remotefx = (enable_remotefx == JNI_TRUE);
@@ -113,9 +237,10 @@ Java_com_nexusts_app_protocols_rdp_bridge_FreeRdpNativeBridge_nativeCreateSessio
     params.remote_app_program = jstring_to_utf8(env, remote_app_program);
     params.remote_app_args = jstring_to_utf8(env, remote_app_args);
 
+    auto session = std::make_shared<nexusts::rdp::RdpSessionContext>(std::move(params));
     std::lock_guard<std::mutex> lock(g_sessions_mutex);
     const int64_t handle = g_next_rdp_handle++;
-    g_sessions.emplace(handle, std::make_unique<nexusts::rdp::RdpSessionContext>(std::move(params)));
+    g_sessions.emplace(handle, std::move(session));
     return static_cast<jlong>(handle);
 }
 
@@ -125,12 +250,12 @@ Java_com_nexusts_app_protocols_rdp_bridge_FreeRdpNativeBridge_nativeConnect(
     jclass /*clazz*/,
     jlong handle
 ) {
-    std::lock_guard<std::mutex> lock(g_sessions_mutex);
-    auto* ctx = lookup_session(handle);
-    if (!ctx) {
+    // Copy shared_ptr under g_sessions_mutex and unlock BEFORE slow network connect()
+    const auto session = lookup_session_shared(handle);
+    if (!session) {
         return JNI_FALSE;
     }
-    return ctx->connect() ? JNI_TRUE : JNI_FALSE;
+    return session->connect() ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT void JNICALL
@@ -140,20 +265,20 @@ Java_com_nexusts_app_protocols_rdp_bridge_FreeRdpNativeBridge_nativeBindSurface(
     jlong handle,
     jobject surface
 ) {
-    std::lock_guard<std::mutex> lock(g_sessions_mutex);
-    auto* ctx = lookup_session(handle);
-    if (!ctx) {
+    const auto session = lookup_session_shared(handle);
+    if (!session) {
         return;
     }
 #ifdef __ANDROID__
     if (surface) {
         ANativeWindow* win = ANativeWindow_fromSurface(env, surface);
-        ctx->presenter().attach_native_window(win);
+        session->presenter().attach_native_window(win);
         if (win) {
             ANativeWindow_release(win);
         }
+        session->on_surface_bound();
     } else {
-        ctx->presenter().detach_native_window();
+        session->presenter().detach_native_window();
     }
 #else
     (void)env;
@@ -170,15 +295,14 @@ Java_com_nexusts_app_protocols_rdp_bridge_FreeRdpNativeBridge_nativeRequestDynam
     jint height_px,
     jint desktop_scale_percent
 ) {
-    std::lock_guard<std::mutex> lock(g_sessions_mutex);
-    auto* ctx = lookup_session(handle);
-    if (!ctx) {
+    const auto session = lookup_session_shared(handle);
+    if (!session) {
         return JNI_FALSE;
     }
-    const bool ok = ctx->request_dynamic_display_resize(
-        static_cast<uint32_t>(width_px),
-        static_cast<uint32_t>(height_px),
-        static_cast<uint32_t>(desktop_scale_percent)
+    const bool ok = session->request_dynamic_display_resize(
+        static_cast<uint32_t>(std::max<jint>(320, width_px)),
+        static_cast<uint32_t>(std::max<jint>(240, height_px)),
+        static_cast<uint32_t>(std::clamp<jint>(desktop_scale_percent, 100, 500))
     );
     return ok ? JNI_TRUE : JNI_FALSE;
 }
@@ -192,9 +316,8 @@ Java_com_nexusts_app_protocols_rdp_bridge_FreeRdpNativeBridge_nativeSendKeyScanc
     jboolean key_down,
     jboolean extended
 ) {
-    std::lock_guard<std::mutex> lock(g_sessions_mutex);
-    if (auto* ctx = lookup_session(handle)) {
-        ctx->send_keyboard_scancode(
+    if (const auto session = lookup_session_shared(handle)) {
+        session->send_keyboard_scancode(
             static_cast<uint16_t>(rdp_scancode),
             key_down == JNI_TRUE,
             extended == JNI_TRUE
@@ -211,12 +334,11 @@ Java_com_nexusts_app_protocols_rdp_bridge_FreeRdpNativeBridge_nativeSendMouseEve
     jint x,
     jint y
 ) {
-    std::lock_guard<std::mutex> lock(g_sessions_mutex);
-    if (auto* ctx = lookup_session(handle)) {
-        ctx->send_pointer_event(
+    if (const auto session = lookup_session_shared(handle)) {
+        session->send_pointer_event(
             static_cast<uint16_t>(pointer_flags),
-            static_cast<uint16_t>(x),
-            static_cast<uint16_t>(y)
+            static_cast<uint16_t>(std::clamp<jint>(x, 0, 65535)),
+            static_cast<uint16_t>(std::clamp<jint>(y, 0, 65535))
         );
     }
 }
@@ -228,9 +350,9 @@ Java_com_nexusts_app_protocols_rdp_bridge_FreeRdpNativeBridge_nativeSyncClipboar
     jlong handle,
     jstring utf8_text
 ) {
-    std::lock_guard<std::mutex> lock(g_sessions_mutex);
-    if (auto* ctx = lookup_session(handle)) {
-        ctx->channels().on_local_clipboard_text(jstring_to_utf8(env, utf8_text));
+    const std::string converted = jstring_to_utf8(env, utf8_text);
+    if (const auto session = lookup_session_shared(handle)) {
+        session->channels().on_local_clipboard_text(converted);
     }
 }
 
@@ -240,12 +362,11 @@ Java_com_nexusts_app_protocols_rdp_bridge_FreeRdpNativeBridge_nativePullRemoteCl
     jclass /*clazz*/,
     jlong handle
 ) {
-    std::lock_guard<std::mutex> lock(g_sessions_mutex);
-    if (auto* ctx = lookup_session(handle)) {
-        const std::string text = ctx->channels().latest_remote_clipboard_text();
-        return env->NewStringUTF(text.c_str());
+    if (const auto session = lookup_session_shared(handle)) {
+        const std::string text = session->channels().latest_remote_clipboard_text();
+        return utf8_to_jstring(env, text);
     }
-    return env->NewStringUTF("");
+    return utf8_to_jstring(env, "");
 }
 
 JNIEXPORT void JNICALL
@@ -254,11 +375,17 @@ Java_com_nexusts_app_protocols_rdp_bridge_FreeRdpNativeBridge_nativeDestroySessi
     jclass /*clazz*/,
     jlong handle
 ) {
-    std::lock_guard<std::mutex> lock(g_sessions_mutex);
-    auto it = g_sessions.find(static_cast<int64_t>(handle));
-    if (it != g_sessions.end()) {
-        it->second->disconnect();
-        g_sessions.erase(it);
+    std::shared_ptr<nexusts::rdp::RdpSessionContext> session;
+    {
+        std::lock_guard<std::mutex> lock(g_sessions_mutex);
+        auto it = g_sessions.find(static_cast<int64_t>(handle));
+        if (it != g_sessions.end()) {
+            session = std::move(it->second);
+            g_sessions.erase(it);
+        }
+    }
+    if (session) {
+        session->disconnect();
     }
 }
 

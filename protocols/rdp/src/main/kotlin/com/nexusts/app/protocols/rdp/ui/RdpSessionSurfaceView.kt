@@ -1,64 +1,115 @@
 package com.nexusts.app.protocols.rdp.ui
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.view.KeyEvent
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import androidx.compose.foundation.background
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AdminPanelSettings
 import androidx.compose.material.icons.outlined.AspectRatio
+import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.ContentPaste
 import androidx.compose.material.icons.outlined.DesktopWindows
 import androidx.compose.material.icons.outlined.FolderShared
 import androidx.compose.material.icons.outlined.Keyboard
 import androidx.compose.material.icons.outlined.Mic
+import androidx.compose.material.icons.outlined.MicOff
+import androidx.compose.material.icons.outlined.Send
 import androidx.compose.material.icons.outlined.Usb
 import androidx.compose.material.icons.outlined.VolumeOff
 import androidx.compose.material.icons.outlined.VolumeUp
 import androidx.compose.material3.AssistChip
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.pointer.PointerEventType
-import androidx.compose.ui.input.pointer.isPrimaryPressed
 import androidx.compose.ui.input.pointer.isSecondaryPressed
 import androidx.compose.ui.input.pointer.isTertiaryPressed
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.content.ContextCompat
 import com.nexusts.app.core.ui.input.nexusMouseWheelHandler
 import com.nexusts.app.core.ui.input.nexusTrackpadCanvasGesture
 import com.nexusts.app.core.ui.theme.NexusTheme
 import com.nexusts.app.core.vault.model.RdpAudioRedirectionMode
 import com.nexusts.app.protocols.rdp.bridge.FreeRdpNativeBridge
 import com.nexusts.app.protocols.rdp.bridge.RdpManagedSession
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+private fun transformViewportToRemoteDesktop(
+    rawX: Float,
+    rawY: Float,
+    viewportSize: IntSize,
+    remoteDimensions: Pair<Int, Int>,
+    zoomScale: Float,
+    panOffsetX: Float,
+    panOffsetY: Float
+): Pair<Int, Int> {
+    val vw = viewportSize.width.coerceAtLeast(1).toFloat()
+    val vh = viewportSize.height.coerceAtLeast(1).toFloat()
+    val safeZoom = zoomScale.coerceAtLeast(0.1f)
+
+    // Invert graphicsLayer center-pivoted scale + pan translation
+    val unzoomedX = ((rawX - vw / 2f - panOffsetX) / safeZoom) + vw / 2f
+    val unzoomedY = ((rawY - vh / 2f - panOffsetY) / safeZoom) + vh / 2f
+
+    val remoteW = remoteDimensions.first.coerceAtLeast(1)
+    val remoteH = remoteDimensions.second.coerceAtLeast(1)
+
+    val mappedX = ((unzoomedX / vw) * remoteW.toFloat()).toInt().coerceIn(0, remoteW - 1)
+    val mappedY = ((unzoomedY / vh) * remoteH.toFloat()).toInt().coerceIn(0, remoteH - 1)
+    return mappedX to mappedY
+}
 
 /**
  * Hardware-accelerated FreeRDP 3.x Jetpack Compose Surface Renderer.
@@ -78,8 +129,19 @@ fun RdpSessionSurfaceView(
     onZoomFactorChanged: (Float) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
     val density = LocalDensity.current.density
     val clipboardManager = LocalClipboardManager.current
+    val coroutineScope = rememberCoroutineScope()
+    val focusRequester = remember { FocusRequester() }
+
+    val hasMicPermission = remember(context, isFocused) {
+        ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
+    }
+
     val initialScale = remember(session, density) {
         when {
             !session.settings.hiDpiEnabled -> 100
@@ -100,17 +162,55 @@ fun RdpSessionSurfaceView(
     var zoomScale by remember(externalZoomFactor) { mutableFloatStateOf(externalZoomFactor) }
     var panOffsetX by remember { mutableFloatStateOf(0f) }
     var panOffsetY by remember { mutableFloatStateOf(0f) }
+    var showKeyboardBar by remember { mutableStateOf(false) }
+    var softKeyboardText by remember { mutableStateOf("") }
+
+    val isConnecting by session.isConnecting.collectAsState()
+    val remoteDesktopDimensions by session.remoteDesktopDimensions.collectAsState()
+    var lastRemoteCursor by remember(remoteDesktopDimensions) {
+        mutableStateOf((remoteDesktopDimensions.first / 2) to (remoteDesktopDimensions.second / 2))
+    }
+
+    val latestViewportSize by rememberUpdatedState(viewportSize)
+    val latestRemoteDimensions by rememberUpdatedState(remoteDesktopDimensions)
+    val latestZoomScale by rememberUpdatedState(zoomScale)
+    val latestPanOffsetX by rememberUpdatedState(panOffsetX)
+    val latestPanOffsetY by rememberUpdatedState(panOffsetY)
+
+    LaunchedEffect(isFocused) {
+        if (isFocused && !showKeyboardBar) {
+            runCatching { focusRequester.requestFocus() }
+        }
+    }
+
+    // Connect asynchronously on Dispatchers.IO so slow network / NLA handshakes never block the Main thread
+    LaunchedEffect(session) {
+        withContext(Dispatchers.IO) {
+            session.start(
+                initialWidthPx = latestViewportSize.width,
+                initialHeightPx = latestViewportSize.height,
+                effectiveScalePercent = activeScalePercent,
+                context = context,
+                micPermissionGranted = hasMicPermission
+            )
+        }
+    }
 
     // Debounce window drag resizing (120ms) and HiDPI scale changes so DISP_DVC cleanly renegotiates H.264 surface geometry
-    LaunchedEffect(viewportSize, activeScalePercent) {
+    LaunchedEffect(viewportSize) {
         if (viewportSize.width >= 320 && viewportSize.height >= 240) {
             delay(120L)
-            session.onViewportResized(viewportSize.width, viewportSize.height, scalePercent = activeScalePercent)
+            withContext(Dispatchers.IO) {
+                session.onViewportResized(
+                    widthPx = viewportSize.width,
+                    heightPx = viewportSize.height,
+                    scalePercent = activeScalePercent
+                )
+            }
         }
     }
 
     DisposableEffect(session) {
-        session.start(viewportSize.width, viewportSize.height, effectiveScalePercent = activeScalePercent)
         onDispose {
             // Detach render surface when switching tabs/views without tearing down the live RDP session.
             session.bindSurface(null)
@@ -121,6 +221,25 @@ fun RdpSessionSurfaceView(
         modifier = modifier
             .fillMaxSize()
             .background(NexusTheme.extendedColors.terminalCanvasBackground)
+            .focusRequester(focusRequester)
+            .focusable()
+            .onKeyEvent { keyEvent ->
+                if (showKeyboardBar) return@onKeyEvent false
+                val nativeEv = keyEvent.nativeKeyEvent
+                when (nativeEv.action) {
+                    KeyEvent.ACTION_DOWN -> session.sendAndroidKeyEvent(
+                        keyCode = nativeEv.keyCode,
+                        scanCode = nativeEv.scanCode,
+                        isKeyDown = true
+                    )
+                    KeyEvent.ACTION_UP -> session.sendAndroidKeyEvent(
+                        keyCode = nativeEv.keyCode,
+                        scanCode = nativeEv.scanCode,
+                        isKeyDown = false
+                    )
+                    else -> false
+                }
+            }
             .onSizeChanged { newSize -> viewportSize = newSize }
             .nexusTrackpadCanvasGesture { _, pan, zoom ->
                 val nextZoom = (zoomScale * zoom).coerceIn(0.75f, 3.0f)
@@ -136,9 +255,15 @@ fun RdpSessionSurfaceView(
             }
             .nexusMouseWheelHandler(
                 onScroll = { _, dy, _ ->
-                    val flags = FreeRdpNativeBridge.PTRFLAGS_WHEEL or
-                        if (dy > 0f) FreeRdpNativeBridge.PTRFLAGS_WHEEL_NEGATIVE else 0
-                    session.sendMouse(flags or 0x0078, viewportSize.width / 2, viewportSize.height / 2)
+                    if (dy != 0f) {
+                        val steps = 120
+                        val wheelFlags = FreeRdpNativeBridge.encodeMouseWheelFlags(
+                            steps = steps,
+                            negative = dy > 0f
+                        )
+                        val (wx, wy) = lastRemoteCursor
+                        session.sendMouse(wheelFlags, wx, wy)
+                    }
                 },
                 onZoom = { delta, _ ->
                     val nextZoom = (zoomScale + delta).coerceIn(0.75f, 3.0f)
@@ -152,13 +277,24 @@ fun RdpSessionSurfaceView(
                     while (true) {
                         val ev = awaitPointerEvent()
                         val change = ev.changes.firstOrNull() ?: continue
-                        val x = change.position.x.toInt().coerceAtLeast(0)
-                        val y = change.position.y.toInt().coerceAtLeast(0)
+                        val (x, y) = transformViewportToRemoteDesktop(
+                            rawX = change.position.x,
+                            rawY = change.position.y,
+                            viewportSize = latestViewportSize,
+                            remoteDimensions = latestRemoteDimensions,
+                            zoomScale = latestZoomScale,
+                            panOffsetX = latestPanOffsetX,
+                            panOffsetY = latestPanOffsetY
+                        )
+                        lastRemoteCursor = x to y
                         when (ev.type) {
                             PointerEventType.Move -> {
                                 session.sendMouse(FreeRdpNativeBridge.PTRFLAGS_MOVE, x, y)
                             }
                             PointerEventType.Press -> {
+                                if (!showKeyboardBar) {
+                                    runCatching { focusRequester.requestFocus() }
+                                }
                                 val btn = when {
                                     ev.buttons.isSecondaryPressed -> FreeRdpNativeBridge.PTRFLAGS_BUTTON2_RIGHT
                                     ev.buttons.isTertiaryPressed -> FreeRdpNativeBridge.PTRFLAGS_BUTTON3_MIDDLE
@@ -208,6 +344,39 @@ fun RdpSessionSurfaceView(
                 }
         )
 
+        if (isConnecting) {
+            Surface(
+                modifier = Modifier.align(Alignment.Center),
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.94f),
+                tonalElevation = 6.dp
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(20.dp),
+                        strokeWidth = 2.5.dp,
+                        color = NexusTheme.extendedColors.rdpAccent
+                    )
+                    Column {
+                        Text(
+                            text = "Connecting…",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = "${session.connection.host}:${session.settings.port}",
+                            style = NexusTheme.monospace.keycapShortcut,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+        }
+
         // Floating Expressive RDP Session Telemetry & Classic Controls Strip
         Surface(
             modifier = Modifier
@@ -237,7 +406,7 @@ fun RdpSessionSurfaceView(
                     session.secret.username
                 }
                 Text(
-                    text = "${viewportSize.width and -2}×${viewportSize.height and -2} • ${session.settings.colorDepthBits}b • $codecTag • $credUser",
+                    text = "${remoteDesktopDimensions.first}×${remoteDesktopDimensions.second} • ${session.settings.colorDepthBits}b • $codecTag • $credUser",
                     style = NexusTheme.monospace.keycapShortcut,
                     color = MaterialTheme.colorScheme.onSurface
                 )
@@ -279,10 +448,10 @@ fun RdpSessionSurfaceView(
 
                 if (session.settings.redirectMicrophone) {
                     Icon(
-                        imageVector = Icons.Outlined.Mic,
+                        imageVector = if (hasMicPermission) Icons.Outlined.Mic else Icons.Outlined.MicOff,
                         contentDescription = null,
                         modifier = Modifier.size(15.dp),
-                        tint = MaterialTheme.colorScheme.secondary
+                        tint = if (hasMicPermission) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.outline
                     )
                 }
 
@@ -307,12 +476,21 @@ fun RdpSessionSurfaceView(
                 if (session.settings.hiDpiEnabled) {
                     AssistChip(
                         onClick = {
-                            activeScalePercent = when (activeScalePercent) {
+                            val nextScale = when (activeScalePercent) {
                                 100 -> 125
                                 125 -> 150
                                 150 -> 175
                                 175 -> 200
                                 else -> 100
+                            }
+                            activeScalePercent = nextScale
+                            coroutineScope.launch(Dispatchers.IO) {
+                                session.onViewportResized(
+                                    widthPx = latestViewportSize.width,
+                                    heightPx = latestViewportSize.height,
+                                    scalePercent = nextScale,
+                                    forceDynamic = true
+                                )
                             }
                         },
                         label = {
@@ -336,17 +514,14 @@ fun RdpSessionSurfaceView(
                         onClick = {
                             val localText = clipboardManager.getText()?.text.orEmpty()
                             if (localText.isNotEmpty()) {
-                                session.syncClipboardToRemote(localText)
-                            } else {
-                                val remoteText = session.pullRemoteClipboardText()
-                                if (remoteText.isNotEmpty()) {
-                                    clipboardManager.setText(AnnotatedString(remoteText))
+                                coroutineScope.launch(Dispatchers.IO) {
+                                    session.syncClipboardToRemote(localText)
                                 }
                             }
                         },
                         label = {
                             Text(
-                                text = clipboardSyncLabel,
+                                text = if (clipboardSyncLabel == "Clipboard") "Push Clipboard" else "Push $clipboardSyncLabel",
                                 style = MaterialTheme.typography.labelSmall
                             )
                         },
@@ -358,7 +533,49 @@ fun RdpSessionSurfaceView(
                             )
                         }
                     )
+                    AssistChip(
+                        onClick = {
+                            coroutineScope.launch(Dispatchers.IO) {
+                                val remoteText = session.pullRemoteClipboardText()
+                                if (remoteText.isNotEmpty()) {
+                                    withContext(Dispatchers.Main) {
+                                        clipboardManager.setText(AnnotatedString(remoteText))
+                                    }
+                                }
+                            }
+                        },
+                        label = {
+                            Text(
+                                text = if (clipboardSyncLabel == "Clipboard") "Pull Clipboard" else "Pull $clipboardSyncLabel",
+                                style = MaterialTheme.typography.labelSmall
+                            )
+                        },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = Icons.Outlined.ContentCopy,
+                                contentDescription = null,
+                                modifier = Modifier.size(14.dp)
+                            )
+                        }
+                    )
                 }
+
+                AssistChip(
+                    onClick = { showKeyboardBar = !showKeyboardBar },
+                    label = {
+                        Text(
+                            text = "⌨ Keys",
+                            style = MaterialTheme.typography.labelSmall
+                        )
+                    },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Outlined.Keyboard,
+                            contentDescription = null,
+                            modifier = Modifier.size(14.dp)
+                        )
+                    }
+                )
 
                 AssistChip(
                     onClick = { session.sendCtrlAltDel() },
@@ -376,6 +593,80 @@ fun RdpSessionSurfaceView(
                         )
                     }
                 )
+            }
+        }
+
+        if (showKeyboardBar) {
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .padding(12.dp),
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.95f),
+                tonalElevation = 6.dp
+            ) {
+                Column(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        FilledTonalButton(onClick = { session.sendKeyTap(0x01, false) }) {
+                            Text("Esc", style = MaterialTheme.typography.labelSmall)
+                        }
+                        FilledTonalButton(onClick = { session.sendKeyTap(0x0F, false) }) {
+                            Text("Tab", style = MaterialTheme.typography.labelSmall)
+                        }
+                        FilledTonalButton(onClick = { session.sendKeyTap(0x5B, true) }) {
+                            Text("Win", style = MaterialTheme.typography.labelSmall)
+                        }
+                        FilledTonalButton(onClick = { session.sendCtrlAltDel() }) {
+                            Text(ctrlAltDelLabel, style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        OutlinedTextField(
+                            value = softKeyboardText,
+                            onValueChange = { softKeyboardText = it },
+                            modifier = Modifier.weight(1f),
+                            singleLine = true,
+                            placeholder = { Text("Type text to send to remote desktop…") },
+                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                            keyboardActions = KeyboardActions(
+                                onSend = {
+                                    val toSend = softKeyboardText
+                                    if (toSend.isNotEmpty()) {
+                                        session.sendTextInput(toSend)
+                                        softKeyboardText = ""
+                                    }
+                                    session.sendKeyTap(0x1C, false)
+                                }
+                            )
+                        )
+                        IconButton(
+                            onClick = {
+                                val toSend = softKeyboardText
+                                if (toSend.isNotEmpty()) {
+                                    session.sendTextInput(toSend)
+                                    softKeyboardText = ""
+                                } else {
+                                    session.sendKeyTap(0x1C, false)
+                                }
+                            }
+                        ) {
+                            Icon(Icons.Outlined.Send, contentDescription = "Send Keys")
+                        }
+                    }
+                }
             }
         }
     }

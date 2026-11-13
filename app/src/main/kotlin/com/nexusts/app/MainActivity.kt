@@ -35,25 +35,29 @@ import com.nexusts.app.core.ui.workspace.WorkspaceSessionTab
 import com.nexusts.app.core.vault.crypto.NxtsVaultSerializer
 import com.nexusts.app.feature.workspace.NexusWorkspaceScreen
 import com.nexusts.app.feature.workspace.NexusWorkspaceViewModel
+import com.nexusts.app.service.ActiveSessionsForegroundService
 import com.nexusts.app.updater.GitHubReleaseUpdateChecker
 import com.nexusts.app.updater.PlayProtectCompliantUpdateCoordinator
 import com.nexusts.app.updater.PlayUpdateUiState
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import javax.inject.Inject
 
 /**
- * Primary Adaptive Googlebook OS & Android Tablet Desktop Window Activity (`v1.1`).
+ * Primary Adaptive Googlebook OS & Android Tablet Desktop Window Activity (`v1.1.1`).
  * Handles:
- * - Direct `.nxts`, `.rtsz`, KeePass XML, Bitwarden JSON, 1Password `.1pux`, & CSV Vault opening
+ * - Atomic local `.nxts` vault persistence & cold-start restoration (`nexusts_local_vault.nxts`)
+ * - Direct `.nxts`, `.rtsz`, KeePass `.kdbx` / XML, Bitwarden JSON, 1Password `.1pux` / `.1pif`, & CSV opening
  * - Dual-Engine Live Google Drive Synchronization:
  *   1. Zero-Cloud-Console Persistent SAF Bridge (`SafLiveGoogleDriveBridge`) + 3-Way Delta Merge
  *   2. Google Drive REST API v3 (`AuthorizationClient` OAuth 2.0 + `GoogleDriveVaultSyncEngine`)
- * - URI scheme launches (`ssh://`, `rdp://`, `vnc://`, `sftp://`, `serial://`, `k8s://`, `docker://`, `nexusts://`)
- * - Multi-monitor & freeform tab detachment into `DetachedSessionActivity`
+ * - URI scheme launches (`ssh://`, `rdp://`, `vnc://`, `sftp://`, `scp://`, `ftp://`, `ftps://`, `telnet://`, `serial://`, `k8s://`, `kubectl://`, `docker://`, `http://`, `https://`, `nexusts://`)
+ * - Multi-monitor & freeform tab detachment into `DetachedSessionActivity` + seamless Re-Dock
  * - Play-Protect-Compliant `AppUpdateManager` & Direct-Install GitHub Releases Update Checker
- * - Android 13+ Per-App Language Preferences dynamic switching
+ * - Android 13+ Per-App Language Preferences dynamic switching across all 6 enterprise locales
  */
 @AndroidEntryPoint
 class MainActivity : AppCompatActivity() {
@@ -107,13 +111,26 @@ class MainActivity : AppCompatActivity() {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
 
-        // Hydrate persisted Google Drive SAF & OAuth 2.0 state on startup
+        // 1. Restore persisted local Argon2id + AES-256-GCM vault container before initializing sync
+        val savedColdStartPass = driveAuthManager.readVaultPassphraseOrNull()
+        try {
+            workspaceViewModel.sessionStore.loadPersistedVaultIfNeeded(
+                filesDir = filesDir,
+                serializer = vaultSerializer,
+                candidatePassphrases = listOfNotNull(savedColdStartPass)
+            )
+        } finally {
+            savedColdStartPass?.fill('\u0000')
+        }
+
+        // 2. Hydrate persisted Google Drive SAF, Keystore Passphrase opt-in, & OAuth 2.0 state
         val (persistedEmail, _) = driveAuthManager.readSignedInAccount()
         val persistedSaf = safDriveBridge.getLinkedVaultInfo()
         workspaceViewModel.updateDriveAccountAndSafState(
             signedInEmail = persistedEmail,
             linkedSafLabel = persistedSaf?.displayName.orEmpty(),
-            autoSyncOnSave = driveAuthManager.isAutoSyncOnSaveEnabled()
+            autoSyncOnSave = driveAuthManager.isAutoSyncOnSaveEnabled(),
+            rememberVaultPassphrase = driveAuthManager.isRememberVaultPassphraseEnabled()
         )
         GoogleDriveVaultSyncEngine.scheduleBackgroundSync(this)
 
@@ -136,11 +153,15 @@ class MainActivity : AppCompatActivity() {
                 .collectAsState(initial = windowController.queryConnectedDisplays())
             val updateState by updateCoordinator.updateState.collectAsState()
             val uiState by workspaceViewModel.uiState.collectAsState()
+            val sharedVaultSnapshot by workspaceViewModel.sessionStore.snapshot.collectAsState()
+            val rootPane by workspaceViewModel.tilingController.rootNode.collectAsState()
             val localizedStrings = rememberLocalizedWorkspaceStrings()
 
-            val (savedClientId, savedFolderId) = remember(driveAuthManager) {
+            val initialOAuthPair = remember(driveAuthManager) {
                 driveAuthManager.readRuntimeOAuthConfiguration()
             }
+            var savedClientId by remember { mutableStateOf(initialOAuthPair.first) }
+            var savedFolderId by remember { mutableStateOf(initialOAuthPair.second) }
             val effectiveInitialClientId = remember(driveAuthManager, savedClientId) {
                 driveAuthManager.resolveConfiguredWebClientId(BuildConfig.GOOGLE_OAUTH_WEB_CLIENT_ID)
             }
@@ -148,10 +169,37 @@ class MainActivity : AppCompatActivity() {
             var pendingExportBytes by remember { mutableStateOf<ByteArray?>(null) }
             var lastObservedAutoSyncRev by remember { mutableLongStateOf(uiState.vaultDocument.revision) }
 
+            // Atomically persist encrypted .nxts vault locally whenever vault mutations or lock events occur
+            LaunchedEffect(sharedVaultSnapshot.mutationRevision) {
+                if (!sharedVaultSnapshot.isStarterUninitialized && !sharedVaultSnapshot.hasPreImportBackup) {
+                    withContext(Dispatchers.IO) {
+                        val kp = driveAuthManager.readVaultPassphraseOrNull(sharedVaultSnapshot.vaultDocument.documentId)
+                        try {
+                            workspaceViewModel.sessionStore.persistVaultToDisk(filesDir, vaultSerializer, kp)
+                        } finally {
+                            kp?.fill('\u0000')
+                        }
+                    }
+                }
+            }
+
+            // Keep background SSH tunnels & RDP sessions alive across Googlebook OS virtual desktops
+            LaunchedEffect(rootPane, sharedVaultSnapshot.isVaultLocked) {
+                val activeCount = if (sharedVaultSnapshot.isVaultLocked) {
+                    0
+                } else {
+                    val uniqueActiveTabIds = workspaceViewModel.tilingController.allActiveTabs().map { it.tabId }.toSet() +
+                        workspaceViewModel.sessionStore.sshControllers.keys +
+                        workspaceViewModel.sessionStore.rdpSessions.keys
+                    uniqueActiveTabIds.size
+                }
+                ActiveSessionsForegroundService.syncSessionKeepAlive(this@MainActivity, activeCount)
+            }
+
             // Auto-sync encrypted .nxts to Google Drive whenever vault mutations bump revision
             LaunchedEffect(uiState.vaultDocument.revision, uiState.driveAutoSyncOnSave) {
                 val rev = uiState.vaultDocument.revision
-                if (uiState.driveAutoSyncOnSave && rev > lastObservedAutoSyncRev) {
+                if (uiState.driveAutoSyncOnSave && !uiState.isVaultLocked && rev > lastObservedAutoSyncRev) {
                     lastObservedAutoSyncRev = rev
                     if (safDriveBridge.getLinkedVaultInfo() != null) {
                         executeSafDriveSync()
@@ -161,14 +209,19 @@ class MainActivity : AppCompatActivity() {
                         } else {
                             DriveStorageZone.APPDATA_PRIVATE
                         }
-                        runCatching {
-                            driveSyncEngine.stageLocalEncryptedVaultForSync(
-                                document = uiState.vaultDocument,
-                                passphrase = DEFAULT_LIVE_DRIVE_PASSPHRASE.toCharArray(),
-                                zone = zone,
-                                sharedFolderId = driveAuthManager.resolveConfiguredSharedFolderId()
-                            )
-                            GoogleDriveVaultSyncEngine.triggerImmediateDeltaSync(this@MainActivity)
+                        val pass = resolveEffectiveSyncPassphrase(uiState.vaultDocument.documentId)
+                        try {
+                            runCatching {
+                                driveSyncEngine.stageLocalEncryptedVaultForSync(
+                                    document = uiState.vaultDocument,
+                                    passphrase = pass.copyOf(),
+                                    zone = zone,
+                                    sharedFolderId = driveAuthManager.resolveConfiguredSharedFolderId()
+                                )
+                                GoogleDriveVaultSyncEngine.triggerImmediateDeltaSync(this@MainActivity)
+                            }
+                        } finally {
+                            pass.fill('\u0000')
                         }
                     }
                 } else {
@@ -203,7 +256,10 @@ class MainActivity : AppCompatActivity() {
                 contract = ActivityResultContracts.CreateDocument("application/octet-stream")
             ) { uri: Uri? ->
                 if (uri != null) {
-                    val linked = safDriveBridge.linkPersistentVaultUri(uri)
+                    val linked = safDriveBridge.linkPersistentVaultUri(
+                        uri = uri,
+                        documentId = uiState.vaultDocument.documentId
+                    )
                     workspaceViewModel.updateDriveAccountAndSafState(linkedSafLabel = linked.displayName)
                     lifecycleScope.launch { executeSafDriveSync() }
                 }
@@ -213,7 +269,7 @@ class MainActivity : AppCompatActivity() {
                 contract = ActivityResultContracts.OpenDocument()
             ) { uri: Uri? ->
                 if (uri != null) {
-                    val linked = safDriveBridge.linkPersistentVaultUri(uri)
+                    val linked = safDriveBridge.linkPersistentVaultUri(uri = uri, documentId = null)
                     workspaceViewModel.updateDriveAccountAndSafState(linkedSafLabel = linked.displayName)
                     lifecycleScope.launch { executeSafDriveSync() }
                 }
@@ -233,13 +289,7 @@ class MainActivity : AppCompatActivity() {
                         triggerLiveGoogleDriveSync()
                     },
                     onDetachTabToNativeWindow = { tab, targetDisplayId ->
-                        val payloadJson = Json.encodeToString(WorkspaceSessionTab.serializer(), tab)
-                        windowController.launchDetachedSessionWindow(
-                            sourceActivity = this@MainActivity,
-                            detachedActivityClass = DetachedSessionActivity::class.java,
-                            serializedTabJson = payloadJson,
-                            targetDisplayId = targetDisplayId
-                        )
+                        launchDetachedTabActivity(tab, targetDisplayId)
                     },
                     onRequestExportVault = { format ->
                         val (suggestedFileName, payloadBytes) = workspaceViewModel.buildVaultExportPayload(format)
@@ -250,6 +300,32 @@ class MainActivity : AppCompatActivity() {
                     initialSharedDriveFolderId = savedFolderId,
                     onSaveOAuthConfig = { clientId, folderId ->
                         driveAuthManager.saveRuntimeOAuthConfiguration(clientId, folderId)
+                        val refreshed = driveAuthManager.readRuntimeOAuthConfiguration()
+                        savedClientId = refreshed.first
+                        savedFolderId = refreshed.second
+                    },
+                    onSaveVaultSyncPassphrase = { pass, rememberInKeystore ->
+                        val chars = pass.toCharArray()
+                        workspaceViewModel.sessionStore.setActivePassphrase(chars)
+                        driveAuthManager.saveVaultPassphrasePreference(
+                            passphrase = chars,
+                            rememberPassphrase = rememberInKeystore,
+                            documentId = uiState.vaultDocument.documentId
+                        )
+                        workspaceViewModel.updateDriveAccountAndSafState(
+                            rememberVaultPassphrase = driveAuthManager.isRememberVaultPassphraseEnabled()
+                        )
+                        lifecycleScope.launch(Dispatchers.IO) {
+                            try {
+                                workspaceViewModel.sessionStore.persistVaultToDisk(filesDir, vaultSerializer, chars)
+                            } finally {
+                                chars.fill('\u0000')
+                            }
+                        }
+                    },
+                    onClearVaultSyncPassphrase = {
+                        driveAuthManager.clearSavedVaultPassphrase()
+                        workspaceViewModel.updateDriveAccountAndSafState(rememberVaultPassphrase = false)
                     },
                     onCreateLiveSafDriveVault = {
                         val baseName = uiState.vaultDocument.name
@@ -299,6 +375,21 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
     }
 
+    private fun launchDetachedTabActivity(tab: WorkspaceSessionTab, targetDisplayId: Int?) {
+        val payloadJson = Json.encodeToString(WorkspaceSessionTab.serializer(), tab)
+        windowController.launchDetachedSessionWindow(
+            sourceActivity = this,
+            detachedActivityClass = DetachedSessionActivity::class.java,
+            serializedTabJson = payloadJson,
+            targetDisplayId = targetDisplayId
+        )
+    }
+
+    private fun resolveEffectiveSyncPassphrase(docId: String? = null): CharArray {
+        return driveAuthManager.readVaultPassphraseOrNull(docId)
+            ?: workspaceViewModel.sessionStore.copyActivePassphraseOrDefault(DEFAULT_LIVE_DRIVE_PASSPHRASE)
+    }
+
     private fun triggerLiveGoogleDriveSync() {
         if (safDriveBridge.getLinkedVaultInfo() != null) {
             lifecycleScope.launch { executeSafDriveSync() }
@@ -310,40 +401,48 @@ class MainActivity : AppCompatActivity() {
 
     private suspend fun executeSafDriveSync() {
         val linked = safDriveBridge.getLinkedVaultInfo() ?: return
+        val snapshotState = workspaceViewModel.uiState.value
         workspaceViewModel.updateDriveSyncProgress(true, "Synchronizing '${linked.displayName}' with Google Drive…")
-        runCatching {
-            safDriveBridge.synchronizeLinkedSafVault(
-                currentDocument = workspaceViewModel.uiState.value.vaultDocument,
-                vaultPassphrase = DEFAULT_LIVE_DRIVE_PASSPHRASE.toCharArray()
-            )
-        }.onSuccess { outcome ->
-            when (outcome) {
-                is SafDriveSyncOutcome.AlreadyUpToDate ->
-                    workspaceViewModel.updateDriveSyncProgress(
-                        false,
-                        "Google Drive '${linked.displayName}' is up to date (Revision ${outcome.revision})."
-                    )
-                is SafDriveSyncOutcome.PushedToDrive ->
-                    workspaceViewModel.applySyncedVaultDocument(
-                        outcome.updatedDocument,
-                        "Pushed encrypted .nxts (${outcome.bytesWritten} B) to Google Drive '${linked.displayName}' (Rev ${outcome.updatedDocument.revision})."
-                    )
-                is SafDriveSyncOutcome.PulledFromDrive ->
-                    workspaceViewModel.applySyncedVaultDocument(
-                        outcome.remoteDocument,
-                        "Pulled latest Google Drive vault '${outcome.remoteDocument.name}' (Rev ${outcome.remoteDocument.revision})."
-                    )
-                is SafDriveSyncOutcome.ThreeWayMerged ->
-                    workspaceViewModel.applySyncedVaultDocument(
-                        outcome.mergedDocument,
-                        "3-Way Vector-Clock Merge synced to Google Drive (${outcome.resolvedConflicts.size} conflict(s) resolved, Rev ${outcome.mergedDocument.revision})."
-                    )
+        val pass = resolveEffectiveSyncPassphrase(snapshotState.vaultDocument.documentId)
+        try {
+            runCatching {
+                safDriveBridge.synchronizeLinkedSafVault(
+                    currentDocument = snapshotState.vaultDocument,
+                    vaultPassphrase = pass.copyOf(),
+                    localDeviceId = "Googlebook-OS",
+                    localIsUninitializedStarter = snapshotState.isStarterUninitialized
+                )
+            }.onSuccess { outcome ->
+                when (outcome) {
+                    is SafDriveSyncOutcome.AlreadyUpToDate ->
+                        workspaceViewModel.updateDriveSyncProgress(
+                            false,
+                            "Google Drive '${linked.displayName}' is up to date (Revision ${outcome.revision})."
+                        )
+                    is SafDriveSyncOutcome.PushedToDrive ->
+                        workspaceViewModel.applySyncedVaultDocument(
+                            outcome.updatedDocument,
+                            "Pushed encrypted .nxts (${outcome.bytesWritten} B) to Google Drive '${linked.displayName}' (Rev ${outcome.updatedDocument.revision})."
+                        )
+                    is SafDriveSyncOutcome.PulledFromDrive ->
+                        workspaceViewModel.applySyncedVaultDocument(
+                            outcome.remoteDocument,
+                            "Pulled latest Google Drive vault '${outcome.remoteDocument.name}' (Rev ${outcome.remoteDocument.revision})."
+                        )
+                    is SafDriveSyncOutcome.ThreeWayMerged ->
+                        workspaceViewModel.applySyncedVaultDocument(
+                            outcome.mergedDocument,
+                            "3-Way Vector-Clock Merge synced to Google Drive (${outcome.resolvedConflicts.size} conflict(s) resolved, Rev ${outcome.mergedDocument.revision})."
+                        )
+                }
+            }.onFailure { err ->
+                workspaceViewModel.updateDriveSyncProgress(
+                    false,
+                    "Google Drive SAF sync error: ${err.message}"
+                )
             }
-        }.onFailure { err ->
-            workspaceViewModel.updateDriveSyncProgress(
-                false,
-                "Google Drive SAF sync error: ${err.message}"
-            )
+        } finally {
+            pass.fill('\u0000')
         }
     }
 
@@ -379,62 +478,68 @@ class MainActivity : AppCompatActivity() {
             DriveStorageZone.APPDATA_PRIVATE
         }
         val folderId = driveAuthManager.resolveConfiguredSharedFolderId()
+        val passphrase = resolveEffectiveSyncPassphrase(doc.documentId)
 
-        runCatching {
-            val passphrase = DEFAULT_LIVE_DRIVE_PASSPHRASE.toCharArray()
-            driveSyncEngine.stageLocalEncryptedVaultForSync(
-                document = doc,
-                passphrase = passphrase,
-                zone = zone,
-                sharedFolderId = folderId
-            )
-            val drive = driveAuthManager.buildDriveService(accessToken)
-            driveSyncEngine.synchronizeVault(
-                drive = drive,
-                documentId = doc.documentId,
-                displayName = doc.name,
-                zone = zone,
-                parentFolderId = if (zone == DriveStorageZone.SHARED_TEAM_DRIVE) folderId else null,
-                unlockedPassphraseOrNull = passphrase,
-                localDeviceId = editorIdentity.ifBlank { "Googlebook-OS" }
-            )
-        }.onSuccess { result ->
-            when (result) {
-                is VaultSyncResult.UpToDate ->
-                    workspaceViewModel.updateDriveSyncProgress(
-                        false,
-                        "Drive API v3 up to date (headRevision=${result.headRevisionId})."
+        try {
+            runCatching {
+                if (!state.isStarterUninitialized && !state.isVaultLocked) {
+                    driveSyncEngine.stageLocalEncryptedVaultForSync(
+                        document = doc,
+                        passphrase = passphrase.copyOf(),
+                        zone = zone,
+                        sharedFolderId = folderId
                     )
-                is VaultSyncResult.PushedNewRevision ->
-                    workspaceViewModel.updateDriveSyncProgress(
-                        false,
-                        "Pushed Revision ${result.localRevision} to Google Drive API v3 (head=${result.newRevisionId})."
-                    )
-                is VaultSyncResult.PulledRemoteUpdate -> {
-                    runCatching {
-                        vaultSerializer.unsealDocument(result.encryptedBytes, DEFAULT_LIVE_DRIVE_PASSPHRASE.toCharArray())
-                    }.onSuccess { pulledDoc ->
-                        workspaceViewModel.applySyncedVaultDocument(
-                            pulledDoc,
-                            "Pulled remote vault from Google Drive API v3 (Rev ${pulledDoc.revision})."
-                        )
-                    }.onFailure {
-                        workspaceViewModel.importVaultOrRtszBytes(doc.name, result.encryptedBytes)
-                    }
                 }
-                is VaultSyncResult.DeltaMergedAndSynced ->
-                    workspaceViewModel.applySyncedVaultDocument(
-                        result.mergedDocument,
-                        "Drive API v3 3-Way Delta Merge complete (${result.resolvedConflicts.size} conflict(s) resolved, Rev ${result.mergedDocument.revision})."
-                    )
-                is VaultSyncResult.RemoteLockActiveAlert ->
-                    workspaceViewModel.updateDriveSyncProgress(
-                        false,
-                        "Advisory Team Lock held by ${result.warning.lockedByIdentity}."
-                    )
+                val drive = driveAuthManager.buildDriveService(accessToken)
+                driveSyncEngine.synchronizeVault(
+                    drive = drive,
+                    documentId = doc.documentId,
+                    displayName = doc.name,
+                    zone = zone,
+                    parentFolderId = if (zone == DriveStorageZone.SHARED_TEAM_DRIVE) folderId else null,
+                    unlockedPassphraseOrNull = passphrase.copyOf(),
+                    localDeviceId = editorIdentity.ifBlank { "Googlebook-OS" }
+                )
+            }.onSuccess { result ->
+                when (result) {
+                    is VaultSyncResult.UpToDate ->
+                        workspaceViewModel.updateDriveSyncProgress(
+                            false,
+                            "Drive API v3 up to date (headRevision=${result.headRevisionId})."
+                        )
+                    is VaultSyncResult.PushedNewRevision ->
+                        workspaceViewModel.updateDriveSyncProgress(
+                            false,
+                            "Pushed Revision ${result.localRevision} to Google Drive API v3 (head=${result.newRevisionId})."
+                        )
+                    is VaultSyncResult.PulledRemoteUpdate -> {
+                        runCatching {
+                            vaultSerializer.unsealDocument(result.encryptedBytes, passphrase.copyOf())
+                        }.onSuccess { pulledDoc ->
+                            workspaceViewModel.applySyncedVaultDocument(
+                                pulledDoc,
+                                "Pulled remote vault from Google Drive API v3 (Rev ${pulledDoc.revision})."
+                            )
+                        }.onFailure {
+                            workspaceViewModel.importVaultOrRtszBytes(doc.name, result.encryptedBytes)
+                        }
+                    }
+                    is VaultSyncResult.DeltaMergedAndSynced ->
+                        workspaceViewModel.applySyncedVaultDocument(
+                            result.mergedDocument,
+                            "Drive API v3 3-Way Delta Merge complete (${result.resolvedConflicts.size} conflict(s) resolved, Rev ${result.mergedDocument.revision})."
+                        )
+                    is VaultSyncResult.RemoteLockActiveAlert ->
+                        workspaceViewModel.updateDriveSyncProgress(
+                            false,
+                            "Advisory Team Lock held by ${result.warning.lockedByIdentity}."
+                        )
+                }
+            }.onFailure { err ->
+                workspaceViewModel.updateDriveSyncProgress(false, "Google Drive API v3 sync failed: ${err.message}")
             }
-        }.onFailure { err ->
-            workspaceViewModel.updateDriveSyncProgress(false, "Google Drive API v3 sync failed: ${err.message}")
+        } finally {
+            passphrase.fill('\u0000')
         }
     }
 
@@ -468,12 +573,14 @@ class MainActivity : AppCompatActivity() {
         val scheme = dataUri.scheme?.lowercase().orEmpty()
 
         when (scheme) {
-            "ssh", "rdp", "vnc", "sftp", "serial", "k8s", "kubectl", "docker", "nexusts" -> {
+            "ssh", "rdp", "vnc", "sftp", "scp", "ftp", "ftps",
+            "telnet", "serial", "k8s", "kubectl", "docker",
+            "http", "https", "nexusts" -> {
                 AdHocConnectionSyntaxParser.parseOrNull(dataUri.toString())?.let { candidate ->
                     workspaceViewModel.launchQuickCandidate(
                         candidate = candidate,
                         placement = QuickLaunchPlacement.ACTIVE_PANE_TAB,
-                        onDetachWindowRequested = {}
+                        onDetachWindowRequested = { tab -> launchDetachedTabActivity(tab, null) }
                     )
                 }
             }

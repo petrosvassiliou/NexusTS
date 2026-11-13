@@ -21,7 +21,7 @@ on:
       release_tag:
         description: "Tag name when publishing via workflow_dispatch"
         required: false
-        default: "v1.1.0"
+        default: "v1.1.1"
         type: string
 
 permissions:
@@ -315,7 +315,7 @@ jobs:
           set -euo pipefail
           TAG_NAME="${GITHUB_REF_NAME}"
           if [[ "${TAG_NAME}" != v* ]]; then
-            TAG_NAME="${{ inputs.release_tag || 'v1.1.0' }}"
+            TAG_NAME="${{ inputs.release_tag || 'v1.1.1' }}"
           fi
           echo "tag_name=${TAG_NAME}" >> "${GITHUB_OUTPUT}"
 
@@ -355,11 +355,11 @@ jobs:
             - **`NexusTS-${{ steps.stage.outputs.tag_name }}-playstore-release.aab`**: Signed Android App Bundle for optional future Google Play / Managed Google Play distribution.
             - **`nexusts-upload-certificate.pem` & `oauth-and-mdm-registration.json`**: Public X.509 upload certificate (`SHA-1: A6:AF:15:A9:BF:0B:FE:38:D4:66:46:3E:3E:72:A6:5B:4F:9C:4D:F6`, `SHA-256: 4A:BD:80:F1:20:14:B9:88:09:1C:97:92:2F:87:02:D1:BF:B7:93:9C:73:B6:9A:DB:1A:9B:76:30:6A:30:27:82`) and Managed Google Play `app_restrictions` template.
 
-            ### What's New in v1.1.0
-            - **Dual-Engine Live Google Drive Sync**: Instant Zero-Cloud-Console persistent Google Drive SAF two-way sync (`SafLiveGoogleDriveBridge` + 3-way vector-clock conflict merge) working out-of-the-box on direct APK installs, plus Google Drive REST API v3 OAuth 2.0 (`NexusTS Vaults` folder `17C98pGqQUAoQwQ-OSLUHPj4_dtb4_wtS`) and reactive Auto-Sync on Save.
-            - **Enterprise Power Protocols**: Out-of-band **USB-C Hardware Serial / UART Console** (FTDI, CP210x, PL2303, CH340, CDC-ACM; `9600`–`921600` baud, `8N1`, `DTR`/`RTS`, 250ms `Send BREAK`) and **Kubernetes Pod & Docker Container Exec / Live Log Terminals** (`k8s://`, `kubectl://`, `docker://`, `serial://`).
-            - **Multi-Format Password Manager Importer**: Zero-loss import of **KeePass 2.x XML**, **Bitwarden Vault JSON**, **1Password `.1pux` / JSON**, Royal TS `.rtsz`, and **RFC 4180 CSV** (preserving nested folders, `otpauth://` TOTP secrets, and OpenSSH PEM keys).
-            - **Play-Protect-Safe GitHub Releases Updater & Compose E2E Suite**: Direct-install update checker over TLS (`zero` `REQUEST_INSTALL_PACKAGES`), 6 bundled locales (`EN`, `DE`, `IT`, `ES`, `EL`, `FR`), and automated Robolectric + Android Instrumentation Compose UI E2E tests.
+            ### What's New in ${{ steps.stage.outputs.tag_name }} (Complete Quality Sweep & Enterprise Hardening)
+            - **Zero-Knowledge Security & Encrypted Local Persistence**: Full-screen Vault Lock shield blocking workspace, studios, shortcuts, and exports while locked; encrypted local disk persistence (`nexusts_local_vault.nxts`); and custom user-defined Google Drive Sync passphrases.
+            - **Live Session Stability & Multi-Window Re-Docking**: Process-wide `ActiveVaultSessionStore` session sharing keeps active FreeRDP 3.12 & SSH/SFTP sessions alive across vault edits and freeform Googlebook OS window tear-off / re-docking.
+            - **Full Hardware Keyboard & Studio CRUD**: Complete ANSI/VT hardware key translation (`Enter`, `Backspace`, `Tab`, `Esc`, Arrows, `Ctrl+A..Z`), recursive nested folders, ad-hoc `user@host:port` / `nexusts://` Quick Connect, and full Create/Edit/Delete CRUD across all Studios & Inspector cards.
+            - **Protocol, Native & Android 15 Hardening**: Hardened FreeRDP 3.12 C++20 JNI bridge, SSH/SFTP commander, USB-C Hardware Serial/UART (`Send BREAK`, `DTR`/`RTS`), Kubernetes/Docker Exec, R8 Full-Mode ProGuard rules, and Android 14/15 `FOREGROUND_SERVICE_SPECIAL_USE` compliance.
           files: release-assets/*
 
       - name: Check Optional Google Play Service Account Secret

@@ -1,5 +1,6 @@
 package com.nexusts.app.core.vault.importer
 
+import com.nexusts.app.core.vault.credentials.KeePassKdbx4Reader
 import com.nexusts.app.core.vault.model.CredentialSourceKind
 import com.nexusts.app.core.vault.model.InheritableProperties
 import com.nexusts.app.core.vault.model.InheritanceMode
@@ -14,14 +15,11 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.intOrNull
-import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.w3c.dom.Element
 import org.w3c.dom.Node
 import java.io.ByteArrayInputStream
-import java.net.URI
 import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
 import java.util.UUID
@@ -31,6 +29,7 @@ import javax.xml.parsers.DocumentBuilderFactory
 enum class DetectedExternalVaultFormat {
     NXTS_ENCRYPTED_BINARY,
     ROYAL_TS_RTSZ_OR_RTSX,
+    KEEPASS_KDBX_BINARY,
     KEEPASS_XML_2X,
     BITWARDEN_JSON,
     ONEPASSWORD_1PUX_OR_JSON,
@@ -39,13 +38,14 @@ enum class DetectedExternalVaultFormat {
 }
 
 /**
- * Enterprise Multi-Format Password Manager & Inventory Importer (`v1.1`).
+ * Enterprise Multi-Format Password Manager & Inventory Importer (`v1.2`).
  * Supports native zero-loss import of:
- * - **KeePass 2.x XML (`.xml` / KDBX4 XML payload)**: Nested `<Group>` folders, `<Entry>` credentials,
+ * - **KeePass `.kdbx` 4.x Binary & KeePass 2.x XML**: Nested `<Group>` folders, `<Entry>` credentials,
  *   RFC 6238 `otpauth://` TOTP secrets, OpenSSH PEM keys, and protocol endpoint synthesis.
- * - **Bitwarden Vault JSON (`.json`)**: `folders[]`, `items[]` (Logins, TOTP, URIs, and SSH Keys).
- * - **1Password `.1pux` ZIP archives & JSON exports**: `accounts[].vaults[].items[]` (`export.data`).
- * - **Enterprise Inventory & Password Manager CSV (`.csv`)**: NexusTS CMDB CSV, Bitwarden CSV, 1Password CSV, and KeePass CSV.
+ * - **Bitwarden Vault JSON (`.json`)**: Nested `folders[]` (`"Prod/EU/Linux"`), `items[]` (Logins, TOTP, URIs, and SSH Keys),
+ *   with explicit encrypted-export detection.
+ * - **1Password `.1pux` ZIP archives, JSON exports & `.1pif` multi-record exports**: `accounts[].vaults[].items[]` (`export.data`) and `***`-delimited `.1pif` records.
+ * - **Enterprise Inventory & Password Manager CSV (`.csv`)**: Lossless NexusTS CMDB CSV round-trips, Bitwarden CSV, 1Password CSV, and KeePass CSV.
  */
 class EnterpriseVaultFormatImporter {
 
@@ -55,6 +55,7 @@ class EnterpriseVaultFormatImporter {
     }
 
     fun detectFormat(fileName: String, rawBytes: ByteArray): DetectedExternalVaultFormat {
+        // 1. Encrypted NexusTS .nxts container magic ("NXTS")
         if (rawBytes.size >= 4 &&
             rawBytes[0] == 0x4E.toByte() &&
             rawBytes[1] == 0x58.toByte() &&
@@ -62,6 +63,16 @@ class EnterpriseVaultFormatImporter {
             rawBytes[3] == 0x53.toByte()
         ) {
             return DetectedExternalVaultFormat.NXTS_ENCRYPTED_BINARY
+        }
+
+        // 2. Binary KeePass .kdbx magic bytes (0x03, 0xD9, 0xA2, 0x9A)
+        if (rawBytes.size >= 4 &&
+            rawBytes[0] == 0x03.toByte() &&
+            rawBytes[1] == 0xD9.toByte() &&
+            rawBytes[2] == 0xA2.toByte() &&
+            rawBytes[3] == 0x9A.toByte()
+        ) {
+            return DetectedExternalVaultFormat.KEEPASS_KDBX_BINARY
         }
 
         val lowerName = fileName.lowercase()
@@ -75,12 +86,18 @@ class EnterpriseVaultFormatImporter {
             if (lowerName.endsWith(".1pux") || zipContainsEntry(rawBytes, "export.data")) {
                 return DetectedExternalVaultFormat.ONEPASSWORD_1PUX_OR_JSON
             }
-            return DetectedExternalVaultFormat.ROYAL_TS_RTSZ_OR_RTSX
+            if (lowerName.endsWith(".rtsz") ||
+                zipContainsEntry(rawBytes, ".rtsx") ||
+                zipContainsEntry(rawBytes, ".xml")
+            ) {
+                return DetectedExternalVaultFormat.ROYAL_TS_RTSZ_OR_RTSX
+            }
+            return DetectedExternalVaultFormat.UNKNOWN
         }
 
         val headText = rawBytes
-            .decodeToString(0, minOf(rawBytes.size, 2048), throwOnInvalidSequence = false)
-            .trimStart()
+            .decodeToString(0, minOf(rawBytes.size, 4096), throwOnInvalidSequence = false)
+            .trimStart('\uFEFF', ' ', '\t', '\r', '\n')
 
         if (headText.startsWith("<")) {
             return if (headText.contains("<KeePassFile", ignoreCase = true)) {
@@ -90,10 +107,18 @@ class EnterpriseVaultFormatImporter {
             }
         }
 
+        if (lowerName.endsWith(".1pif") || headText.startsWith("***")) {
+            return DetectedExternalVaultFormat.ONEPASSWORD_1PUX_OR_JSON
+        }
+
         if (headText.startsWith("{")) {
-            return if (headText.contains("\"accounts\"") && headText.contains("\"vaults\"")) {
-                DetectedExternalVaultFormat.ONEPASSWORD_1PUX_OR_JSON
-            } else if (lowerName.contains("1password") || lowerName.endsWith(".1pif")) {
+            return if (
+                (headText.contains("\"accounts\"") && headText.contains("\"vaults\"")) ||
+                headText.contains("\"secureContents\"") ||
+                (headText.contains("\"typeName\"") && headText.contains("\"uuid\"")) ||
+                headText.contains("\n***") ||
+                lowerName.contains("1password")
+            ) {
                 DetectedExternalVaultFormat.ONEPASSWORD_1PUX_OR_JSON
             } else {
                 DetectedExternalVaultFormat.BITWARDEN_JSON
@@ -107,19 +132,97 @@ class EnterpriseVaultFormatImporter {
         return DetectedExternalVaultFormat.UNKNOWN
     }
 
+    @JvmOverloads
     fun importExternalFormat(
         format: DetectedExternalVaultFormat,
         rawBytes: ByteArray,
-        documentNameHint: String
+        documentNameHint: String,
+        masterPassphrase: CharArray? = null
     ): NxtsVaultDocument {
         val cleanName = documentNameHint.substringBeforeLast('.').ifBlank { "Imported Enterprise Vault" }
         return when (format) {
+            DetectedExternalVaultFormat.ROYAL_TS_RTSZ_OR_RTSX -> RtszDocumentImporter().importRtszBytes(rawBytes, cleanName)
+            DetectedExternalVaultFormat.KEEPASS_KDBX_BINARY -> {
+                if (masterPassphrase == null) {
+                    throw IllegalArgumentException(
+                        "KeePass .kdbx binary database is encrypted and requires a master passphrase to import."
+                    )
+                }
+                importKeePassKdbxBinary(rawBytes, masterPassphrase, cleanName)
+            }
             DetectedExternalVaultFormat.KEEPASS_XML_2X -> importKeePassXml(rawBytes, cleanName)
             DetectedExternalVaultFormat.BITWARDEN_JSON -> importBitwardenJson(rawBytes, cleanName)
             DetectedExternalVaultFormat.ONEPASSWORD_1PUX_OR_JSON -> importOnePassword1PuxOrJson(rawBytes, cleanName)
             DetectedExternalVaultFormat.CSV_INVENTORY_OR_PASSWORDS -> importCsvVault(rawBytes, cleanName)
-            else -> error("Unsupported external vault format: $format")
+            DetectedExternalVaultFormat.NXTS_ENCRYPTED_BINARY -> throw IllegalArgumentException(
+                "Encrypted NexusTS .nxts binary vault requires unlocking with NxtsVaultSerializer."
+            )
+            DetectedExternalVaultFormat.UNKNOWN -> throw IllegalArgumentException(
+                "Unsupported or unrecognized external vault format for '$documentNameHint'."
+            )
         }
+    }
+
+    /**
+     * Imports encrypted KeePass 4.x `.kdbx` binary containers using [KeePassKdbx4Reader].
+     */
+    fun importKeePassKdbxBinary(
+        kdbxBytes: ByteArray,
+        masterPassphrase: CharArray,
+        vaultName: String = "Imported KeePass KDBX Vault"
+    ): NxtsVaultDocument {
+        val kdbxEntries = KeePassKdbx4Reader.readEntries(kdbxBytes, masterPassphrase)
+        val foldersByPath = linkedMapOf<String, VaultFolder>()
+        val credentials = mutableListOf<VaultCredential>()
+        val connections = mutableListOf<VaultConnection>()
+
+        for (entry in kdbxEntries) {
+            if (entry.groupPath.any { it.equals("Recycle Bin", ignoreCase = true) || it.equals("Backup", ignoreCase = true) }) {
+                continue
+            }
+            val folderId = if (entry.groupPath.isNotEmpty()) {
+                ensureNestedFolderChain(entry.groupPath.joinToString("/"), null, foldersByPath)
+            } else {
+                null
+            }
+            val title = entry.title.ifBlank { "KeePass Entry" }
+            val (domain, username) = splitDomainUser(entry.username)
+            val credId = entry.uuidHex.takeIf { it.isNotBlank() }?.let { "kp-cred-$it" }
+                ?: UUID.randomUUID().toString()
+
+            credentials += VaultCredential(
+                id = credId,
+                parentFolderId = folderId,
+                name = title,
+                sourceKind = if (entry.sshPrivateKeyPem.isNotBlank()) {
+                    CredentialSourceKind.SSH_KEY_PAIR
+                } else {
+                    CredentialSourceKind.KEEPASS_KDBX
+                },
+                username = username,
+                domain = domain,
+                secretPassword = entry.password,
+                privateKeyPem = entry.sshPrivateKeyPem,
+                externalReferenceUri = entry.uuidHex,
+                totpSecretBase32 = extractBase32TotpSecret(entry.totpSecret)
+            )
+
+            synthesizeConnectionFromEndpoint(
+                title = title,
+                rawUri = entry.url,
+                parentFolderId = folderId,
+                credentialId = credId,
+                notes = entry.notes
+            )?.let { connections += it }
+        }
+
+        return NxtsVaultDocument(
+            name = vaultName,
+            description = "Imported from KeePass 4.x (.kdbx)",
+            folders = foldersByPath.values.toList(),
+            connections = connections,
+            credentials = credentials
+        )
     }
 
     /**
@@ -249,22 +352,37 @@ class EnterpriseVaultFormatImporter {
     }
 
     /**
-     * Imports Bitwarden unencrypted JSON export (`folders[]` + `items[]`).
+     * Imports Bitwarden unencrypted JSON export (`folders[]` + `items[]`), reconstructing nested
+     * `"Prod/EU/Linux"` folder hierarchies and rejecting encrypted Bitwarden exports with a clear message.
      */
     fun importBitwardenJson(jsonBytes: ByteArray, vaultName: String = "Imported Bitwarden Vault"): NxtsVaultDocument {
         val root = lenientJson.parseToJsonElement(jsonBytes.toString(StandardCharsets.UTF_8)).jsonObject
-        val folders = mutableListOf<VaultFolder>()
+        val isEncrypted = root["encrypted"]?.jsonPrimitive?.contentOrNull?.equals("true", ignoreCase = true) == true
+        if (isEncrypted) {
+            throw IllegalArgumentException(
+                "This Bitwarden JSON export is encrypted. Please export an unencrypted JSON or use .nxts encrypted vaults."
+            )
+        }
+
+        val foldersByPath = linkedMapOf<String, VaultFolder>()
         val credentials = mutableListOf<VaultCredential>()
         val connections = mutableListOf<VaultConnection>()
 
         val folderIdRemap = mutableMapOf<String, String>()
-        (root["folders"] as? JsonArray)?.forEach { folderEl ->
-            val obj = folderEl.jsonObject
-            val origId = obj.str("id")
-            val name = obj.str("name").ifBlank { "Bitwarden Folder" }
-            val mappedId = origId.ifBlank { UUID.randomUUID().toString() }
-            if (origId.isNotBlank()) folderIdRemap[origId] = mappedId
-            folders += VaultFolder(id = mappedId, name = name)
+        val rawFolderEntries = (root["folders"] as? JsonArray)
+            ?.map { folderEl ->
+                val obj = folderEl.jsonObject
+                obj.str("id") to obj.str("name").ifBlank { "Bitwarden Folder" }
+            }
+            ?.sortedBy { (_, name) -> name.split('/').count { it.trim().isNotEmpty() } }
+            .orEmpty()
+
+        for ((origId, rawName) in rawFolderEntries) {
+            val preferredLeafId = origId.takeIf { it.isNotBlank() }
+            val resolvedLeafId = ensureNestedFolderChain(rawName, preferredLeafId, foldersByPath)
+            if (origId.isNotBlank() && resolvedLeafId != null) {
+                folderIdRemap[origId] = resolvedLeafId
+            }
         }
 
         (root["items"] as? JsonArray)?.forEach { itemEl ->
@@ -325,18 +443,25 @@ class EnterpriseVaultFormatImporter {
         return NxtsVaultDocument(
             name = vaultName,
             description = "Imported from Bitwarden Vault JSON",
-            folders = folders,
+            folders = foldersByPath.values.toList(),
             connections = connections,
             credentials = credentials
         )
     }
 
     /**
-     * Imports 1Password `.1pux` ZIP archives (`export.data`) or 1Password JSON exports.
+     * Imports 1Password `.1pux` ZIP archives (`export.data`), 1Password JSON exports,
+     * and 1Password `.1pif` multi-record exports (`***`-delimited records).
      */
     fun importOnePassword1PuxOrJson(rawBytes: ByteArray, vaultName: String = "Imported 1Password Vault"): NxtsVaultDocument {
-        val jsonPayload = extractZipEntryOrRaw(rawBytes, "export.data")
-        val root = lenientJson.parseToJsonElement(jsonPayload.toString(StandardCharsets.UTF_8)).jsonObject
+        val jsonPayloadBytes = extractZipEntryOrRaw(rawBytes, "export.data")
+        val payloadText = jsonPayloadBytes.toString(StandardCharsets.UTF_8).trimStart('\uFEFF', ' ', '\t', '\r', '\n')
+
+        if (isOnePassword1PifPayload(payloadText)) {
+            return importOnePassword1Pif(payloadText, vaultName)
+        }
+
+        val root = lenientJson.parseToJsonElement(payloadText).jsonObject
 
         val folders = mutableListOf<VaultFolder>()
         val credentials = mutableListOf<VaultCredential>()
@@ -358,10 +483,8 @@ class EnterpriseVaultFormatImporter {
             var password = ""
             var totp = ""
             var sshPem = ""
-            var notes = ""
-
             val details = item["details"] as? JsonObject
-            notes = details?.str("notesPlain").orEmpty()
+            val notes = details?.str("notesPlain").orEmpty()
 
             (details?.get("loginFields") as? JsonArray)?.forEach { f ->
                 val fObj = f.jsonObject
@@ -456,6 +579,153 @@ class EnterpriseVaultFormatImporter {
     }
 
     /**
+     * Imports 1Password `.1pif` multi-record exports where JSON records are separated by lines starting with `***`.
+     */
+    fun importOnePassword1Pif(pifText: String, vaultName: String = "Imported 1Password 1PIF Vault"): NxtsVaultDocument {
+        val credentials = mutableListOf<VaultCredential>()
+        val connections = mutableListOf<VaultConnection>()
+
+        val recordBlocks = mutableListOf<String>()
+        val currentBlock = StringBuilder()
+        for (line in pifText.lineSequence()) {
+            val trimmedLine = line.trim()
+            if (trimmedLine.startsWith("***")) {
+                if (currentBlock.isNotBlank()) {
+                    recordBlocks += currentBlock.toString().trim()
+                    currentBlock.setLength(0)
+                }
+            } else if (trimmedLine.isNotEmpty()) {
+                if (currentBlock.isNotEmpty()) currentBlock.append('\n')
+                currentBlock.append(line)
+            }
+        }
+        if (currentBlock.isNotBlank()) {
+            recordBlocks += currentBlock.toString().trim()
+        }
+
+        for (block in recordBlocks) {
+            val record = runCatching { lenientJson.parseToJsonElement(block).jsonObject }.getOrNull() ?: continue
+            if (record["trashed"]?.jsonPrimitive?.contentOrNull?.equals("true", ignoreCase = true) == true) {
+                continue
+            }
+
+            val uuid = record.str("uuid").ifBlank { UUID.randomUUID().toString() }
+            val title = record.str("title").ifBlank { "1Password Item" }
+            val secure = record["secureContents"] as? JsonObject
+
+            var primaryUrl = record.str("location").ifBlank {
+                (secure?.get("URLs") as? JsonArray)
+                    ?.firstOrNull()
+                    ?.let { (it as? JsonObject)?.str("url") }
+                    .orEmpty()
+            }
+            val notes = secure?.str("notesPlain").orEmpty()
+            var username = secure?.str("username").orEmpty()
+            var password = secure?.str("password").orEmpty()
+            var totp = ""
+            var sshPem = ""
+
+            (secure?.get("fields") as? JsonArray)?.forEach { f ->
+                val fObj = (f as? JsonObject) ?: return@forEach
+                val designation = fObj.str("designation").lowercase()
+                val fieldName = fObj.str("name").lowercase()
+                val fieldType = fObj.str("type").uppercase()
+                val value = fObj.str("value")
+                when {
+                    designation == "username" || fieldName == "username" -> if (username.isBlank()) username = value
+                    designation == "password" || fieldName == "password" || (fieldType == "P" && password.isBlank()) ->
+                        password = value
+                    fieldName.contains("otp") || value.startsWith("otpauth://", ignoreCase = true) ->
+                        if (totp.isBlank()) totp = value
+                }
+            }
+
+            (secure?.get("sections") as? JsonArray)?.forEach { sec ->
+                val fields = (sec as? JsonObject)?.get("fields") as? JsonArray ?: return@forEach
+                fields.forEach { fld ->
+                    val fldObj = (fld as? JsonObject) ?: return@forEach
+                    val fldTitle = fldObj.str("t").ifBlank { fldObj.str("title") }.lowercase()
+                    val fldName = fldObj.str("n").ifBlank { fldObj.str("name") }.lowercase()
+                    val valElem = fldObj["v"] ?: fldObj["value"]
+                    val strVal = when (valElem) {
+                        is JsonObject -> valElem.str("totp")
+                            .ifBlank { (valElem["sshKey"] as? JsonObject)?.str("privateKey").orEmpty() }
+                            .ifBlank { valElem.str("string") }
+                        is JsonElement -> runCatching { valElem.jsonPrimitive.contentOrNull }.getOrNull().orEmpty()
+                        else -> ""
+                    }
+                    if (strVal.isNotBlank()) {
+                        when {
+                            fldName.startsWith("totp") || fldTitle.contains("otp") || fldTitle.contains("one-time") ||
+                                strVal.startsWith("otpauth://", ignoreCase = true) ->
+                                if (totp.isBlank()) totp = strVal
+                            fldTitle.contains("private key") ||
+                                strVal.contains("BEGIN OPENSSH PRIVATE KEY") ||
+                                strVal.contains("BEGIN RSA PRIVATE KEY") ->
+                                if (sshPem.isBlank()) sshPem = strVal
+                            fldTitle.contains("user") && username.isBlank() -> username = strVal
+                            fldTitle.contains("pass") && password.isBlank() -> password = strVal
+                            (fldTitle == "hostname" || fldTitle == "server" || fldName == "hostname") && primaryUrl.isBlank() ->
+                                primaryUrl = strVal
+                        }
+                    }
+                }
+            }
+
+            val openTags = ((record["openContents"] as? JsonObject)?.get("tags") as? JsonArray)
+                ?.mapNotNull { runCatching { it.jsonPrimitive.contentOrNull?.trim() }.getOrNull() }
+                ?.filter { it.isNotEmpty() }
+                .orEmpty()
+
+            val (domain, cleanUser) = splitDomainUser(username)
+            val credId = "1p-cred-$uuid"
+            credentials += VaultCredential(
+                id = credId,
+                name = title,
+                sourceKind = if (sshPem.isNotBlank()) {
+                    CredentialSourceKind.SSH_KEY_PAIR
+                } else {
+                    CredentialSourceKind.ONEPASSWORD_CONNECT
+                },
+                username = cleanUser,
+                domain = domain,
+                secretPassword = password,
+                privateKeyPem = sshPem,
+                totpSecretBase32 = extractBase32TotpSecret(totp)
+            )
+
+            synthesizeConnectionFromEndpoint(
+                title = title,
+                rawUri = primaryUrl,
+                parentFolderId = null,
+                credentialId = credId,
+                notes = notes,
+                tags = openTags
+            )?.let { connections += it }
+        }
+
+        return NxtsVaultDocument(
+            name = vaultName,
+            description = "Imported from 1Password (.1pif)",
+            connections = connections,
+            credentials = credentials
+        )
+    }
+
+    private fun isOnePassword1PifPayload(text: String): Boolean {
+        if (text.startsWith("***") || text.contains("\n***")) return true
+        if (text.startsWith("{")) {
+            val root = runCatching { lenientJson.parseToJsonElement(text).jsonObject }.getOrNull()
+            if (root != null && (root.containsKey("secureContents") || root.containsKey("typeName")) &&
+                !root.containsKey("accounts") && !root.containsKey("items")
+            ) {
+                return true
+            }
+        }
+        return false
+    }
+
+    /**
      * Imports RFC 4180 CSV inventories & password exports (NexusTS CSV, Bitwarden CSV, 1Password CSV, KeePass CSV).
      */
     fun importCsvVault(csvBytes: ByteArray, vaultName: String = "Imported CSV Inventory"): NxtsVaultDocument {
@@ -467,17 +737,33 @@ class EnterpriseVaultFormatImporter {
         fun colIndex(vararg aliases: String): Int =
             aliases.firstNotNullOfOrNull { alias -> headers.indexOf(alias.lowercase()).takeIf { it >= 0 } } ?: -1
 
+        val idxConnId = colIndex("connectionid", "id")
         val idxName = colIndex("name", "title", "account")
         val idxHost = colIndex("host", "login_uri", "url", "website", "hostname")
         val idxProto = colIndex("protocol", "type")
         val idxPort = colIndex("port")
         val idxFolder = colIndex("folder", "group")
+        val idxOsFamily = colIndex("osfamily", "os")
+        val idxFavorite = colIndex("favorite", "isfavorite")
+        val idxCredMode = colIndex("credentialmode")
+        val idxAssignedCred = colIndex("assignedcredential")
+        val idxTags = colIndex("tags", "tag")
+        val idxColorHex = colIndex("colorhex", "color")
         val idxUser = colIndex("username", "login_username")
         val idxPass = colIndex("password", "login_password")
         val idxTotp = colIndex("totp", "login_totp", "otp")
         val idxNotes = colIndex("notes", "comments")
 
-        val foldersByName = linkedMapOf<String, VaultFolder>()
+        val idxContainerCluster = colIndex("containercluster")
+        val idxContainerContext = colIndex("containercontext")
+        val idxContainerNamespace = colIndex("containernamespace")
+        val idxContainerWorkload = colIndex("containerworkload")
+        val idxContainerSubContainer = colIndex("containersubcontainer")
+        val idxContainerShell = colIndex("containershell")
+        val idxContainerFollowLogs = colIndex("containerfollowlogs")
+
+        val foldersByPath = linkedMapOf<String, VaultFolder>()
+        val credentialsByName = linkedMapOf<String, VaultCredential>()
         val credentials = mutableListOf<VaultCredential>()
         val connections = mutableListOf<VaultConnection>()
 
@@ -485,10 +771,11 @@ class EnterpriseVaultFormatImporter {
             if (row.all { it.isBlank() }) continue
             fun cell(idx: Int): String = if (idx in row.indices) row[idx].trim() else ""
 
+            val connIdOverride = cell(idxConnId).takeIf { it.isNotBlank() }
             val title = cell(idxName).ifBlank { cell(idxHost).ifBlank { "Imported Entry" } }
-            val folderName = cell(idxFolder)
-            val folderId = if (folderName.isNotBlank()) {
-                foldersByName.getOrPut(folderName) { VaultFolder(name = folderName) }.id
+            val folderPath = cell(idxFolder)
+            val folderId = if (folderPath.isNotBlank()) {
+                ensureNestedFolderChain(folderPath, null, foldersByPath)
             } else {
                 null
             }
@@ -496,24 +783,51 @@ class EnterpriseVaultFormatImporter {
             val rawUser = cell(idxUser)
             val rawPass = cell(idxPass)
             val rawTotp = cell(idxTotp)
+            val assignedCredName = cell(idxAssignedCred)
             val notes = cell(idxNotes)
+            val osFamilyOverride = cell(idxOsFamily).takeIf { it.isNotBlank() }
+            val favoriteVal = cell(idxFavorite).let { it.equals("true", ignoreCase = true) || it == "1" }
+            val explicitCredMode = cell(idxCredMode).let { raw ->
+                InheritanceMode.entries.firstOrNull { it.name.equals(raw, ignoreCase = true) }
+            }
+            val tagsList = cell(idxTags)
+                .let { raw -> if (';' in raw) raw.split(';') else raw.split(',') }
+                .map { it.trim() }
+                .filter { it.isNotEmpty() }
+            val colorHex = cell(idxColorHex).takeIf { it.isNotBlank() }
 
-            val credId: String? = if (rawUser.isNotBlank() || rawPass.isNotBlank() || rawTotp.isNotBlank()) {
-                val (domain, user) = splitDomainUser(rawUser)
-                val id = UUID.randomUUID().toString()
-                credentials += VaultCredential(
-                    id = id,
-                    parentFolderId = folderId,
-                    name = "$title Credential",
-                    sourceKind = CredentialSourceKind.VAULT_INTERNAL,
-                    username = user,
-                    domain = domain,
-                    secretPassword = rawPass,
-                    totpSecretBase32 = extractBase32TotpSecret(rawTotp)
-                )
-                id
-            } else {
-                null
+            val credId: String? = when {
+                rawUser.isNotBlank() || rawPass.isNotBlank() || rawTotp.isNotBlank() -> {
+                    val (domain, user) = splitDomainUser(rawUser)
+                    val id = UUID.randomUUID().toString()
+                    val credObj = VaultCredential(
+                        id = id,
+                        parentFolderId = folderId,
+                        name = assignedCredName.ifBlank { "$title Credential" },
+                        sourceKind = CredentialSourceKind.VAULT_INTERNAL,
+                        username = user,
+                        domain = domain,
+                        secretPassword = rawPass,
+                        totpSecretBase32 = extractBase32TotpSecret(rawTotp)
+                    )
+                    credentials += credObj
+                    if (assignedCredName.isNotBlank()) {
+                        credentialsByName.putIfAbsent(assignedCredName.lowercase(), credObj)
+                    }
+                    id
+                }
+                assignedCredName.isNotBlank() -> {
+                    val existing = credentialsByName.getOrPut(assignedCredName.lowercase()) {
+                        VaultCredential(
+                            id = UUID.randomUUID().toString(),
+                            parentFolderId = folderId,
+                            name = assignedCredName,
+                            sourceKind = CredentialSourceKind.VAULT_INTERNAL
+                        ).also { credentials += it }
+                    }
+                    existing.id
+                }
+                else -> null
             }
 
             val hostVal = cell(idxHost)
@@ -523,22 +837,51 @@ class EnterpriseVaultFormatImporter {
             if (hostVal.isNotBlank()) {
                 val matchedProto = VaultProtocolType.entries.firstOrNull { it.name == explicitProto }
                 if (matchedProto != null) {
+                    val containerCsvMeta = if (
+                        matchedProto == VaultProtocolType.KUBERNETES_POD ||
+                        matchedProto == VaultProtocolType.DOCKER_CONTAINER
+                    ) {
+                        CsvContainerMetadata(
+                            cluster = cell(idxContainerCluster),
+                            context = cell(idxContainerContext),
+                            namespace = cell(idxContainerNamespace),
+                            workload = cell(idxContainerWorkload),
+                            subContainer = cell(idxContainerSubContainer),
+                            shell = cell(idxContainerShell),
+                            followLogs = cell(idxContainerFollowLogs)
+                        )
+                    } else {
+                        null
+                    }
                     connections += buildConnectionForProtocol(
+                        idOverride = connIdOverride,
                         title = title,
                         host = hostVal,
                         protocol = matchedProto,
                         portOverride = explicitPort,
                         parentFolderId = folderId,
                         credentialId = credId,
-                        notes = notes
+                        credentialModeOverride = explicitCredMode,
+                        osFamilyOverride = osFamilyOverride,
+                        tags = tagsList,
+                        colorHex = colorHex,
+                        notes = notes,
+                        favorite = favoriteVal,
+                        containerMetadata = containerCsvMeta
                     )
                 } else {
                     synthesizeConnectionFromEndpoint(
+                        idOverride = connIdOverride,
                         title = title,
                         rawUri = hostVal,
                         parentFolderId = folderId,
                         credentialId = credId,
-                        notes = notes
+                        credentialModeOverride = explicitCredMode,
+                        osFamilyOverride = osFamilyOverride,
+                        tags = tagsList,
+                        colorHex = colorHex,
+                        notes = notes,
+                        favorite = favoriteVal
                     )?.let { connections += it }
                 }
             }
@@ -547,10 +890,49 @@ class EnterpriseVaultFormatImporter {
         return NxtsVaultDocument(
             name = vaultName,
             description = "Imported from CSV Inventory",
-            folders = foldersByName.values.toList(),
+            folders = foldersByPath.values.toList(),
             connections = connections,
             credentials = credentials
         )
+    }
+
+    /**
+     * Reconstructs nested folder paths (e.g. `"Prod/EU/Linux"`) with proper `parentFolderId` chains.
+     */
+    private fun ensureNestedFolderChain(
+        rawPath: String,
+        leafFolderIdHint: String?,
+        foldersByPath: MutableMap<String, VaultFolder>
+    ): String? {
+        val segments = rawPath.split('/')
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+        if (segments.isEmpty()) return null
+
+        var parentId: String? = null
+        var canonicalPath = ""
+        for ((index, seg) in segments.withIndex()) {
+            canonicalPath = if (canonicalPath.isEmpty()) seg else "$canonicalPath/$seg"
+            val key = canonicalPath.lowercase()
+            val isLeaf = index == segments.lastIndex
+            val existing = foldersByPath[key]
+            val folder = if (existing != null) {
+                existing
+            } else {
+                val id = if (isLeaf && !leafFolderIdHint.isNullOrBlank()) {
+                    leafFolderIdHint
+                } else {
+                    UUID.randomUUID().toString()
+                }
+                VaultFolder(
+                    id = id,
+                    parentFolderId = parentId,
+                    name = seg
+                ).also { foldersByPath[key] = it }
+            }
+            parentId = folder.id
+        }
+        return parentId
     }
 
     internal fun extractBase32TotpSecret(raw: String): String {
@@ -570,11 +952,30 @@ class EnterpriseVaultFormatImporter {
         return trimmed.uppercase().filter { it in 'A'..'Z' || it in '2'..'7' }
     }
 
+    private data class CsvContainerMetadata(
+        val cluster: String = "",
+        val context: String = "",
+        val namespace: String = "",
+        val workload: String = "",
+        val subContainer: String = "",
+        val shell: String = "",
+        val followLogs: String = ""
+    ) {
+        val hasExplicitColumns: Boolean
+            get() = cluster.isNotBlank() || context.isNotBlank() || namespace.isNotBlank() ||
+                workload.isNotBlank() || subContainer.isNotBlank() || shell.isNotBlank() || followLogs.isNotBlank()
+    }
+
     private fun synthesizeConnectionFromEndpoint(
+        idOverride: String? = null,
         title: String,
         rawUri: String,
         parentFolderId: String?,
         credentialId: String?,
+        credentialModeOverride: InheritanceMode? = null,
+        osFamilyOverride: String? = null,
+        tags: List<String> = emptyList(),
+        colorHex: String? = null,
         notes: String = "",
         favorite: Boolean = false
     ): VaultConnection? {
@@ -583,83 +984,237 @@ class EnterpriseVaultFormatImporter {
 
         val lower = trimmed.lowercase()
         val (proto, host, port) = when {
-            lower.startsWith("rdp://") -> parseHostPort(trimmed.removePrefix("rdp://").removePrefix("RDP://"), VaultProtocolType.RDP, 3389)
-            lower.startsWith("ssh://") -> parseHostPort(trimmed.substringAfter("://"), VaultProtocolType.SSH, 22)
-            lower.startsWith("sftp://") -> parseHostPort(trimmed.substringAfter("://"), VaultProtocolType.SFTP, 22)
-            lower.startsWith("vnc://") -> parseHostPort(trimmed.substringAfter("://"), VaultProtocolType.VNC, 5900)
-            lower.startsWith("telnet://") -> parseHostPort(trimmed.substringAfter("://"), VaultProtocolType.TELNET, 23)
-            lower.startsWith("serial://") -> Triple(VaultProtocolType.SERIAL, trimmed.substringAfter("://"), 115_200)
+            lower.startsWith("rdp://") ->
+                parseHostPort(trimmed.substringAfter("://"), VaultProtocolType.RDP, 3389)
+            lower.startsWith("ssh://") ->
+                parseHostPort(trimmed.substringAfter("://"), VaultProtocolType.SSH, 22)
+            lower.startsWith("sftp://") ->
+                parseHostPort(trimmed.substringAfter("://"), VaultProtocolType.SFTP, 22)
+            lower.startsWith("ftp://") ->
+                parseHostPort(trimmed.substringAfter("://"), VaultProtocolType.FTP, 21)
+            lower.startsWith("ftps://") ->
+                parseHostPort(trimmed.substringAfter("://"), VaultProtocolType.FTPS, 990)
+            lower.startsWith("scp://") ->
+                parseHostPort(trimmed.substringAfter("://"), VaultProtocolType.SCP, 22)
+            lower.startsWith("vnc://") ->
+                parseHostPort(trimmed.substringAfter("://"), VaultProtocolType.VNC, 5900)
+            lower.startsWith("telnet://") ->
+                parseHostPort(trimmed.substringAfter("://"), VaultProtocolType.TELNET, 23)
+            lower.startsWith("serial://") ->
+                Triple(VaultProtocolType.SERIAL, trimmed.substringAfter("://"), 115_200)
             lower.startsWith("k8s://") || lower.startsWith("kubectl://") ->
                 Triple(VaultProtocolType.KUBERNETES_POD, trimmed.substringAfter("://"), 6443)
             lower.startsWith("docker://") ->
                 Triple(VaultProtocolType.DOCKER_CONTAINER, trimmed.substringAfter("://"), 2376)
             lower.startsWith("http://") || lower.startsWith("https://") ->
-                Triple(VaultProtocolType.WEB_PAGE, trimmed, 443)
-            !trimmed.contains(' ') && (trimmed.contains('.') || trimmed.contains(':')) ->
-                parseHostPort(trimmed, VaultProtocolType.SSH, 22)
+                Triple(VaultProtocolType.WEB_PAGE, trimmed, if (lower.startsWith("http://")) 80 else 443)
+            !trimmed.contains(' ') && (trimmed.contains('.') || trimmed.contains(':')) -> {
+                classifyBarePasswordManagerEndpoint(title, trimmed) ?: return null
+            }
             else -> return null
         }
 
         return buildConnectionForProtocol(
+            idOverride = idOverride,
             title = title,
             host = host,
             protocol = proto,
             portOverride = port,
             parentFolderId = parentFolderId,
             credentialId = credentialId,
+            credentialModeOverride = credentialModeOverride,
+            osFamilyOverride = osFamilyOverride,
+            tags = tags,
+            colorHex = colorHex,
             notes = notes,
             favorite = favorite
         )
     }
 
+    private fun classifyBarePasswordManagerEndpoint(
+        title: String,
+        bareEndpoint: String
+    ): Triple<VaultProtocolType, String, Int>? {
+        val (_, cleanHost, parsedPort) = parseHostPort(bareEndpoint, VaultProtocolType.WEB_PAGE, -1)
+        if (cleanHost.isBlank()) return null
+
+        val hasRdpTitleHint = RDP_TITLE_HINT_REGEX.containsMatchIn(title)
+        val hasSshTitleHint = SSH_TITLE_HINT_REGEX.containsMatchIn(title)
+
+        return when {
+            parsedPort in setOf(22, 2222, 2200, 22222) ->
+                Triple(VaultProtocolType.SSH, cleanHost, parsedPort)
+            parsedPort in setOf(3389, 3390) ->
+                Triple(VaultProtocolType.RDP, cleanHost, parsedPort)
+            parsedPort in 5900..5999 ->
+                Triple(VaultProtocolType.VNC, cleanHost, parsedPort)
+            parsedPort == 23 ->
+                Triple(VaultProtocolType.TELNET, cleanHost, 23)
+            parsedPort == 21 ->
+                Triple(VaultProtocolType.FTP, cleanHost, 21)
+            parsedPort == 80 || parsedPort == 8080 ->
+                Triple(VaultProtocolType.WEB_PAGE, "http://$bareEndpoint", parsedPort)
+            parsedPort == 443 || parsedPort == 8443 ->
+                Triple(VaultProtocolType.WEB_PAGE, "https://$bareEndpoint", parsedPort)
+            hasRdpTitleHint ->
+                Triple(VaultProtocolType.RDP, cleanHost, if (parsedPort > 0) parsedPort else 3389)
+            hasSshTitleHint ->
+                Triple(VaultProtocolType.SSH, cleanHost, if (parsedPort > 0) parsedPort else 22)
+            else -> {
+                val normalizedUrl = if (cleanHost.count { it == ':' } > 1 && !bareEndpoint.startsWith("[")) {
+                    "https://[$bareEndpoint]"
+                } else {
+                    "https://$bareEndpoint"
+                }
+                Triple(VaultProtocolType.WEB_PAGE, normalizedUrl, if (parsedPort > 0) parsedPort else 443)
+            }
+        }
+    }
+
     private fun buildConnectionForProtocol(
+        idOverride: String? = null,
         title: String,
         host: String,
         protocol: VaultProtocolType,
         portOverride: Int?,
         parentFolderId: String?,
         credentialId: String?,
+        credentialModeOverride: InheritanceMode? = null,
+        osFamilyOverride: String? = null,
+        tags: List<String> = emptyList(),
+        colorHex: String? = null,
         notes: String = "",
-        favorite: Boolean = false
+        favorite: Boolean = false,
+        containerMetadata: CsvContainerMetadata? = null
     ): VaultConnection {
-        val settings: ProtocolSpecificSettings = when (protocol) {
-            VaultProtocolType.RDP, VaultProtocolType.WINDOWS_TERMINAL_SERVICES ->
-                ProtocolSpecificSettings.Rdp(port = portOverride ?: 3389)
-            VaultProtocolType.SSH, VaultProtocolType.TELNET ->
-                ProtocolSpecificSettings.Ssh(port = portOverride ?: if (protocol == VaultProtocolType.TELNET) 23 else 22)
-            VaultProtocolType.SERIAL ->
-                ProtocolSpecificSettings.SerialUart(baudRate = portOverride ?: 115_200, devicePathHint = host)
-            VaultProtocolType.KUBERNETES_POD, VaultProtocolType.DOCKER_CONTAINER ->
-                ProtocolSpecificSettings.ContainerExec(
-                    podOrContainerName = host.substringAfterLast('/'),
-                    namespace = host.substringBeforeLast('/', "default").ifBlank { "default" },
-                    clusterOrSocketEndpoint = host
-                )
-            VaultProtocolType.SFTP, VaultProtocolType.FTP, VaultProtocolType.FTPS, VaultProtocolType.SCP ->
-                ProtocolSpecificSettings.FileTransfer(port = portOverride ?: 22)
-            VaultProtocolType.VNC, VaultProtocolType.APPLE_SCREEN_SHARING ->
-                ProtocolSpecificSettings.Vnc(port = portOverride ?: 5900)
-            VaultProtocolType.WEB_PAGE ->
-                ProtocolSpecificSettings.WebPage(url = if (host.startsWith("http")) host else "https://$host")
-            else ->
-                ProtocolSpecificSettings.CloudVirtualization(apiEndpointUrl = if (host.startsWith("http")) host else "https://$host")
+        val isStripPathNonWebProtocol = when (protocol) {
+            VaultProtocolType.RDP,
+            VaultProtocolType.WINDOWS_TERMINAL_SERVICES,
+            VaultProtocolType.SSH,
+            VaultProtocolType.TELNET,
+            VaultProtocolType.SFTP,
+            VaultProtocolType.FTP,
+            VaultProtocolType.FTPS,
+            VaultProtocolType.SCP,
+            VaultProtocolType.VNC,
+            VaultProtocolType.APPLE_SCREEN_SHARING,
+            VaultProtocolType.UTILITY_PING,
+            VaultProtocolType.UTILITY_TRACEROUTE,
+            VaultProtocolType.UTILITY_PORT_SCANNER,
+            VaultProtocolType.UTILITY_WAKE_ON_LAN -> true
+            else -> false
         }
 
-        val inheritable = if (credentialId != null) {
-            InheritableProperties(
-                credentialMode = InheritanceMode.OVERRIDE_EXPLICIT,
-                explicitCredentialId = credentialId
-            )
+        val (effectiveHost, effectivePort) = if (isStripPathNonWebProtocol) {
+            val (_, parsedHost, parsedPort) = parseHostPort(host, protocol, -1)
+            val resolvedHost = parsedHost.ifBlank { host }
+            val resolvedPort = portOverride ?: parsedPort.takeIf { it > 0 }
+            resolvedHost to resolvedPort
         } else {
-            InheritableProperties()
+            host to portOverride
+        }
+
+        val settings: ProtocolSpecificSettings = when (protocol) {
+            VaultProtocolType.RDP, VaultProtocolType.WINDOWS_TERMINAL_SERVICES ->
+                ProtocolSpecificSettings.Rdp(port = effectivePort ?: 3389)
+            VaultProtocolType.SSH, VaultProtocolType.TELNET ->
+                ProtocolSpecificSettings.Ssh(port = effectivePort ?: if (protocol == VaultProtocolType.TELNET) 23 else 22)
+            VaultProtocolType.SERIAL ->
+                ProtocolSpecificSettings.SerialUart(
+                    baudRate = effectivePort?.takeIf { it > 0 } ?: 115_200,
+                    devicePathHint = effectiveHost
+                )
+            VaultProtocolType.KUBERNETES_POD, VaultProtocolType.DOCKER_CONTAINER -> {
+                if (containerMetadata != null && containerMetadata.hasExplicitColumns) {
+                    ProtocolSpecificSettings.ContainerExec(
+                        clusterOrSocketEndpoint = containerMetadata.cluster.ifBlank { effectiveHost },
+                        contextName = containerMetadata.context.ifBlank { "prod-eu-central" },
+                        namespace = containerMetadata.namespace.ifBlank { "default" },
+                        podOrContainerName = containerMetadata.workload,
+                        subContainerName = containerMetadata.subContainer,
+                        shellCommand = containerMetadata.shell.ifBlank { "/bin/sh" },
+                        followLogsOnOpen = containerMetadata.followLogs.equals("true", ignoreCase = true)
+                    )
+                } else if (!effectiveHost.contains("://") && effectiveHost.contains('/')) {
+                    ProtocolSpecificSettings.ContainerExec(
+                        podOrContainerName = effectiveHost.substringAfterLast('/'),
+                        namespace = effectiveHost.substringBeforeLast('/', "default").ifBlank { "default" },
+                        clusterOrSocketEndpoint = effectiveHost
+                    )
+                } else {
+                    ProtocolSpecificSettings.ContainerExec(
+                        clusterOrSocketEndpoint = effectiveHost,
+                        namespace = "default",
+                        podOrContainerName = ""
+                    )
+                }
+            }
+            VaultProtocolType.SFTP, VaultProtocolType.FTP, VaultProtocolType.FTPS, VaultProtocolType.SCP -> {
+                val defaultFtPort = when (protocol) {
+                    VaultProtocolType.FTP -> 21
+                    VaultProtocolType.FTPS -> 990
+                    else -> 22
+                }
+                ProtocolSpecificSettings.FileTransfer(port = effectivePort?.takeIf { it > 0 } ?: defaultFtPort)
+            }
+            VaultProtocolType.VNC, VaultProtocolType.APPLE_SCREEN_SHARING ->
+                ProtocolSpecificSettings.Vnc(
+                    port = effectivePort?.takeIf { it > 0 } ?: 5900,
+                    appleArdDiffieHellmanAuth = protocol == VaultProtocolType.APPLE_SCREEN_SHARING
+                )
+            VaultProtocolType.WEB_PAGE -> {
+                val webUrl = when {
+                    effectiveHost.startsWith("http://", ignoreCase = true) ||
+                        effectiveHost.startsWith("https://", ignoreCase = true) -> effectiveHost
+                    effectiveHost.count { it == ':' } > 1 && !effectiveHost.startsWith("[") -> "https://[$effectiveHost]"
+                    else -> "https://$effectiveHost"
+                }
+                ProtocolSpecificSettings.WebPage(url = webUrl)
+            }
+            VaultProtocolType.UTILITY_PING,
+            VaultProtocolType.UTILITY_TRACEROUTE,
+            VaultProtocolType.UTILITY_PORT_SCANNER,
+            VaultProtocolType.UTILITY_WAKE_ON_LAN ->
+                ProtocolSpecificSettings.NetUtility()
+            else -> {
+                val apiUrl = if (effectiveHost.startsWith("http://", ignoreCase = true) ||
+                    effectiveHost.startsWith("https://", ignoreCase = true)
+                ) {
+                    effectiveHost
+                } else {
+                    "https://$effectiveHost"
+                }
+                ProtocolSpecificSettings.CloudVirtualization(apiEndpointUrl = apiUrl)
+            }
+        }
+
+        val resolvedCredMode = when {
+            credentialId != null && (credentialModeOverride == null || credentialModeOverride == InheritanceMode.OVERRIDE_EXPLICIT) ->
+                InheritanceMode.OVERRIDE_EXPLICIT
+            credentialModeOverride != null -> credentialModeOverride
+            else -> InheritanceMode.INHERIT_FROM_PARENT
+        }
+
+        val inheritable = InheritableProperties(
+            credentialMode = resolvedCredMode,
+            explicitCredentialId = if (resolvedCredMode == InheritanceMode.OVERRIDE_EXPLICIT) credentialId else null,
+            displayColorAccentHex = colorHex
+        )
+
+        val defaultOs = when (protocol) {
+            VaultProtocolType.RDP, VaultProtocolType.WINDOWS_TERMINAL_SERVICES, VaultProtocolType.HYPER_V -> "Windows"
+            VaultProtocolType.APPLE_SCREEN_SHARING -> "macOS"
+            else -> "Linux"
         }
 
         return VaultConnection(
+            id = idOverride ?: UUID.randomUUID().toString(),
             parentFolderId = parentFolderId,
             name = title,
-            host = host,
+            host = effectiveHost,
             protocol = protocol,
-            osFamily = if (protocol == VaultProtocolType.RDP) "Windows" else "Linux",
+            osFamily = osFamilyOverride ?: defaultOs,
+            tags = tags,
             notes = notes,
             favorite = favorite,
             inheritable = inheritable,
@@ -667,19 +1222,54 @@ class EnterpriseVaultFormatImporter {
         )
     }
 
-    private fun parseHostPort(authorityRaw: String, proto: VaultProtocolType, defaultPort: Int): Triple<VaultProtocolType, String, Int> {
-        val clean = authorityRaw.substringAfter('@').substringBefore('/')
-        val colonIdx = clean.lastIndexOf(':')
-        return if (colonIdx > 0 && colonIdx < clean.lastIndex) {
-            val maybePort = clean.substring(colonIdx + 1).toIntOrNull()
-            if (maybePort != null) {
-                Triple(proto, clean.substring(0, colonIdx), maybePort)
-            } else {
-                Triple(proto, clean, defaultPort)
-            }
+    internal fun parseHostPort(
+        authorityRaw: String,
+        proto: VaultProtocolType,
+        defaultPort: Int
+    ): Triple<VaultProtocolType, String, Int> {
+        val withoutScheme = if (authorityRaw.contains("://")) {
+            authorityRaw.substringAfter("://")
         } else {
-            Triple(proto, clean, defaultPort)
+            authorityRaw
         }
+        val clean = withoutScheme
+            .substringBefore('/')
+            .substringBefore('?')
+            .substringBefore('#')
+            .substringAfterLast('@')
+            .trim()
+
+        if (clean.startsWith("[")) {
+            val closeBracketIdx = clean.indexOf(']')
+            if (closeBracketIdx > 1) {
+                val ipv6Host = clean.substring(1, closeBracketIdx)
+                val remainder = clean.substring(closeBracketIdx + 1)
+                val port = if (remainder.startsWith(":")) {
+                    remainder.substring(1).toIntOrNull() ?: defaultPort
+                } else {
+                    defaultPort
+                }
+                return Triple(proto, ipv6Host, port)
+            }
+        }
+
+        val colonCount = clean.count { it == ':' }
+        if (colonCount > 1) {
+            // Bare IPv6 address (multiple colons without brackets, e.g. 2001:db8::1)
+            return Triple(proto, clean, defaultPort)
+        }
+
+        if (colonCount == 1) {
+            val colonIdx = clean.indexOf(':')
+            if (colonIdx > 0 && colonIdx < clean.lastIndex) {
+                val maybePort = clean.substring(colonIdx + 1).toIntOrNull()
+                if (maybePort != null) {
+                    return Triple(proto, clean.substring(0, colonIdx), maybePort)
+                }
+            }
+        }
+
+        return Triple(proto, clean, defaultPort)
     }
 
     private fun parseKeePassEntryStrings(entryElem: Element): Map<String, String> {
@@ -805,5 +1395,12 @@ class EnterpriseVaultFormatImporter {
             rows += currentRow
         }
         return rows
+    }
+
+    companion object {
+        private val RDP_TITLE_HINT_REGEX =
+            Regex("\\b(rdp|remote\\s*desktop|rds|winserver|domain\\s*controller)\\b", RegexOption.IGNORE_CASE)
+        private val SSH_TITLE_HINT_REGEX =
+            Regex("\\b(ssh|bastion|jumpbox|jumphost)\\b", RegexOption.IGNORE_CASE)
     }
 }

@@ -1,14 +1,17 @@
 package com.nexusts.app.protocols.ssh.serial
 
 import android.app.PendingIntent
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.hardware.usb.UsbConstants
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbDeviceConnection
 import android.hardware.usb.UsbEndpoint
 import android.hardware.usb.UsbInterface
 import android.hardware.usb.UsbManager
+import android.os.Build
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
@@ -52,12 +55,14 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import com.nexusts.app.core.ui.theme.NexusTheme
 import com.nexusts.app.core.vault.model.ProtocolSpecificSettings
 import kotlinx.coroutines.Dispatchers
@@ -68,6 +73,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+
+private const val MAX_CONSOLE_LINES = 2_000
 
 data class UsbUartAdapterDescriptor(
     val deviceName: String,
@@ -85,12 +92,22 @@ data class UsbUartAdapterDescriptor(
 class UsbSerialPortDriver(
     private val context: Context
 ) {
-    private val usbManager: UsbManager? = context.getSystemService(UsbManager::class.java)
+    val usbManager: UsbManager? = context.getSystemService(UsbManager::class.java)
+    @Volatile
     private var connection: UsbDeviceConnection? = null
+    @Volatile
     private var claimedInterface: UsbInterface? = null
+    @Volatile
     private var bulkIn: UsbEndpoint? = null
+    @Volatile
     private var bulkOut: UsbEndpoint? = null
+    @Volatile
     private var activeVendorId: Int = 0
+    @Volatile
+    private var ftdiDataControlWord: Int = 0x0008
+    @Volatile
+    var pendingPermissionDeviceName: String? = null
+        private set
     private var readJob: Job? = null
 
     fun listCompatibleAdapters(): List<UsbUartAdapterDescriptor> {
@@ -115,11 +132,20 @@ class UsbSerialPortDriver(
         val mgr = usbManager ?: error("Android UsbManager unavailable")
         val device = mgr.deviceList[adapterName] ?: error("USB UART device '$adapterName' disconnected")
         if (!mgr.hasPermission(device)) {
-            val intent = Intent(ACTION_USB_SERIAL_PERMISSION).setPackage(context.packageName)
-            val pi = PendingIntent.getBroadcast(context, 0, intent, PendingIntent.FLAG_IMMUTABLE)
+            pendingPermissionDeviceName = device.deviceName
+            val intent = Intent(ACTION_USB_SERIAL_PERMISSION)
+                .setPackage(context.packageName)
+                .putExtra(EXTRA_ADAPTER_NAME, device.deviceName)
+            val pi = PendingIntent.getBroadcast(
+                context,
+                0,
+                intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
             mgr.requestPermission(device, pi)
-            error("Requested Android USB permission for ${identifyChipset(device)} — click Connect again once granted.")
+            error("Requested Android USB permission for ${identifyChipset(device)} — will auto-open once granted.")
         }
+        pendingPermissionDeviceName = null
 
         close()
         val conn = mgr.openDevice(device) ?: error("Unable to open USB device ${device.deviceName}")
@@ -155,20 +181,36 @@ class UsbSerialPortDriver(
         bulkOut = outEp
         activeVendorId = device.vendorId
 
+        if (device.vendorId == VENDOR_QINHENG_CH340) {
+            // QinHeng CH340/CH341 controller initialization (vendor request 0xA1)
+            conn.controlTransfer(0x40, CH340_REQ_SERIAL_INIT, 0, 0, null, 0, 500)
+        } else if (device.vendorId == VENDOR_FTDI) {
+            // FTDI_SIO_RESET (0x00)
+            conn.controlTransfer(0x40, 0x00, 0, 0, null, 0, 500)
+        }
+
         applyLineCoding(settings.baudRate, settings.dataBits, settings.stopBits, settings.parity)
         setModemLines(dtr = settings.dtrEnabled, rts = settings.rtsEnabled)
 
         "${identifyChipset(device)} (${device.deviceName}) @ ${settings.baudRate} ${framingSummary(settings)}"
     }
 
-    suspend fun startReadLoop(onBytes: (ByteArray) -> Unit) = withContext(Dispatchers.IO) {
+    suspend fun startReadLoop(onBytes: suspend (ByteArray) -> Unit) = withContext(Dispatchers.IO) {
         val conn = connection ?: return@withContext
         val epIn = bulkIn ?: return@withContext
         val buf = ByteArray(epIn.maxPacketSize.coerceAtLeast(64))
         while (isActive && connection === conn) {
             val read = conn.bulkTransfer(epIn, buf, buf.size, 200)
             if (read > 0) {
-                onBytes(buf.copyOf(read))
+                // FTDI prepends 2 modem-status bytes on every bulk-IN packet
+                val payload = if (activeVendorId == VENDOR_FTDI) {
+                    if (read > 2) buf.copyOfRange(2, read) else ByteArray(0)
+                } else {
+                    buf.copyOf(read)
+                }
+                if (payload.isNotEmpty()) {
+                    onBytes(payload)
+                }
             } else {
                 delay(15)
             }
@@ -185,13 +227,52 @@ class UsbSerialPortDriver(
         val conn = connection ?: return
         when (activeVendorId) {
             VENDOR_FTDI -> {
-                val divisor = (3_000_000 / baudRate.coerceAtLeast(300)).coerceAtLeast(1)
-                conn.controlTransfer(0x40, 0x03, divisor, 0, null, 0, 500)
+                val (baudValue, baudIndex) = encodeFtdiFractionalBaudDivisor(baudRate)
+                conn.controlTransfer(0x40, FTDI_SIO_SET_BAUDRATE, baudValue, baudIndex, null, 0, 500)
+
+                val parityCode = when (parity.uppercase()) {
+                    "ODD" -> 1
+                    "EVEN" -> 2
+                    "MARK" -> 3
+                    "SPACE" -> 4
+                    else -> 0
+                }
+                val stopCode = if (stopBits == 2) 2 else 0
+                val dataWord = dataBits.coerceIn(7, 8) or (parityCode shl 8) or (stopCode shl 11)
+                ftdiDataControlWord = dataWord
+                conn.controlTransfer(0x40, FTDI_SIO_SET_DATA, dataWord, 0, null, 0, 500)
+            }
+            VENDOR_QINHENG_CH340 -> {
+                val (reg1312, reg0f2c) = encodeCh340BaudRegisters(baudRate)
+                val dataCode = (dataBits.coerceIn(5, 8) - 5) and 0x03
+                val stopBitFlag = if (stopBits == 2) 0x04 else 0x00
+                val parityFlags = when (parity.uppercase()) {
+                    "ODD" -> 0x08
+                    "EVEN" -> 0x18
+                    "MARK" -> 0x28
+                    "SPACE" -> 0x38
+                    else -> 0x00
+                }
+                val lcr = CH340_LCR_ENABLE_RX or CH340_LCR_ENABLE_TX or parityFlags or stopBitFlag or dataCode
+                conn.controlTransfer(0x40, CH340_REQ_SERIAL_INIT, (lcr shl 8) or 0x9C, (reg0f2c shl 8) or (reg1312 and 0xFF), null, 0, 500)
+                conn.controlTransfer(0x40, CH340_REQ_WRITE_REG, 0x1312, reg1312, null, 0, 500)
+                conn.controlTransfer(0x40, CH340_REQ_WRITE_REG, 0x0F2C, reg0f2c, null, 0, 500)
+                conn.controlTransfer(0x40, CH340_REQ_WRITE_REG, 0x2518, lcr, null, 0, 500)
             }
             VENDOR_SILABS_CP210X -> {
                 conn.controlTransfer(0x41, 0x00, 0x0001, 0, null, 0, 500) // IFC_ENABLE
                 val baudBuf = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(baudRate).array()
                 conn.controlTransfer(0x41, 0x1E, 0, 0, baudBuf, 4, 500) // SET_BAUDRATE
+                val parityBits = when (parity.uppercase()) {
+                    "ODD" -> 1
+                    "EVEN" -> 2
+                    "MARK" -> 3
+                    "SPACE" -> 4
+                    else -> 0
+                }
+                val stopCode = if (stopBits == 2) 2 else 0
+                val lineCtl = (dataBits.coerceIn(5, 8) shl 8) or (parityBits shl 4) or stopCode
+                conn.controlTransfer(0x41, 0x03, lineCtl, 0, null, 0, 500) // SET_LINE_CTL
             }
             else -> {
                 // Standard USB CDC-ACM SET_LINE_CODING (0x20)
@@ -219,6 +300,12 @@ class UsbSerialPortDriver(
                 val value = (if (dtr) 1 else 0) or (if (rts) 2 else 0) or (0x0100 or 0x0200)
                 conn.controlTransfer(0x40, 0x01, value, 0, null, 0, 500)
             }
+            VENDOR_QINHENG_CH340 -> {
+                // CH340 active-low modem control (0xA4): bit 5 = DTR (0x20), bit 6 = RTS (0x40)
+                val assertedMask = (if (dtr) 0x20 else 0x00) or (if (rts) 0x40 else 0x00)
+                val invertedValue = assertedMask.inv() and 0xFF
+                conn.controlTransfer(0x40, CH340_REQ_MODEM_CTRL, invertedValue, 0, null, 0, 500)
+            }
             VENDOR_SILABS_CP210X -> {
                 val value = (if (dtr) 0x0001 else 0) or (if (rts) 0x0002 else 0) or 0x0300
                 conn.controlTransfer(0x41, 0x07, value, 0, null, 0, 500)
@@ -232,14 +319,23 @@ class UsbSerialPortDriver(
 
     suspend fun sendBreakSignal(durationMs: Int = 250) = withContext(Dispatchers.IO) {
         val conn = connection ?: return@withContext
-        if (activeVendorId == VENDOR_FTDI) {
-            conn.controlTransfer(0x40, 0x04, 0x4008, 0, null, 0, 500)
-            delay(durationMs.toLong())
-            conn.controlTransfer(0x40, 0x04, 0x0008, 0, null, 0, 500)
-        } else {
-            // USB CDC-ACM SEND_BREAK (0x23)
-            conn.controlTransfer(0x21, 0x23, durationMs.coerceIn(1, 5000), 0, null, 0, 500)
-            delay(durationMs.toLong())
+        when (activeVendorId) {
+            VENDOR_FTDI -> {
+                val baseWord = ftdiDataControlWord and 0x3FFF
+                conn.controlTransfer(0x40, FTDI_SIO_SET_DATA, baseWord or 0x4000, 0, null, 0, 500)
+                delay(durationMs.toLong())
+                conn.controlTransfer(0x40, FTDI_SIO_SET_DATA, baseWord, 0, null, 0, 500)
+            }
+            VENDOR_QINHENG_CH340 -> {
+                conn.controlTransfer(0x40, CH340_REQ_WRITE_REG, 0x1805, 0x0000, null, 0, 500)
+                delay(durationMs.toLong())
+                conn.controlTransfer(0x40, CH340_REQ_WRITE_REG, 0x1805, 0x0041, null, 0, 500)
+            }
+            else -> {
+                // USB CDC-ACM SEND_BREAK (0x23)
+                conn.controlTransfer(0x21, 0x23, durationMs.coerceIn(1, 5000), 0, null, 0, 500)
+                delay(durationMs.toLong())
+            }
         }
     }
 
@@ -260,10 +356,70 @@ class UsbSerialPortDriver(
 
     companion object {
         const val ACTION_USB_SERIAL_PERMISSION = "com.nexusts.app.USB_SERIAL_PERMISSION"
+        const val EXTRA_ADAPTER_NAME = "adapter_name"
+
         const val VENDOR_FTDI = 0x0403 // 1027
         const val VENDOR_SILABS_CP210X = 0x10C4 // 4292
         const val VENDOR_PROLIFIC_PL2303 = 0x067B // 1659
         const val VENDOR_QINHENG_CH340 = 0x1A86 // 6790
+
+        private const val FTDI_SIO_SET_BAUDRATE = 0x03
+        private const val FTDI_SIO_SET_DATA = 0x04
+
+        private const val CH340_REQ_WRITE_REG = 0x9A
+        private const val CH340_REQ_SERIAL_INIT = 0xA1
+        private const val CH340_REQ_MODEM_CTRL = 0xA4
+        private const val CH340_LCR_ENABLE_RX = 0x80
+        private const val CH340_LCR_ENABLE_TX = 0x40
+
+        /**
+         * Encodes FTDI FT232BM/FT232R/FT231X fractional 1/8th baud divisor into `(wValue, wIndex)`.
+         */
+        fun encodeFtdiFractionalBaudDivisor(baudRate: Int): Pair<Int, Int> {
+            val safeBaud = baudRate.coerceIn(300, 3_000_000)
+            if (safeBaud >= 3_000_000) return 0 to 0
+            if (safeBaud >= 2_000_000) return 1 to 0
+
+            val subEighthsCode = intArrayOf(0, 3, 2, 4, 1, 5, 6, 7)
+            val divisorEighths = ((24_000_000L + (safeBaud / 2)) / safeBaud)
+                .coerceIn(16L, 131_071L)
+                .toInt()
+            val integerDivisor = divisorEighths ushr 3
+            val fracCode = subEighthsCode[divisorEighths and 0x07]
+
+            val encoded = integerDivisor or (fracCode shl 14)
+            val wValue = encoded and 0xFFFF
+            val wIndex = (encoded ushr 16) and 0xFFFF
+            return wValue to wIndex
+        }
+
+        /**
+         * Encodes QinHeng CH340/CH341 `(reg_0x1312, reg_0x0F2C)` baud generator prescaler & factor.
+         */
+        fun encodeCh340BaudRegisters(baudRate: Int): Pair<Int, Int> {
+            val safeBaud = baudRate.coerceIn(300, 2_000_000)
+            val factor: Long
+            val prescaler: Int
+            if (safeBaud == 921_600) {
+                prescaler = 7
+                factor = 0xF300L
+                val a = (factor.toInt() and 0xFF00) or prescaler or 0x0080
+                return a to 0
+            }
+            val baudBaseFactor = 1_532_620_800L
+            var rawFactor = baudBaseFactor / safeBaud
+            var div = 3
+            while (rawFactor > 0xFFF0L && div > 0) {
+                rawFactor = rawFactor shr 3
+                div--
+            }
+            if (rawFactor > 0xFFF0L) rawFactor = 0xFFF0L
+            factor = 0x10000L - rawFactor
+            prescaler = div
+            val reg1312 = ((factor.toInt() and 0xFF00) or prescaler or 0x0080) and 0xFFFF
+            val reg0f2c = (factor.toInt() and 0x00FF)
+            return reg1312 to reg0f2c
+        }
 
         fun identifyChipset(device: UsbDevice): String? {
             return when (device.vendorId) {
@@ -320,42 +476,108 @@ fun UsbSerialConsoleView(
         )
     }
 
-    DisposableEffect(driver) {
-        onDispose {
-            rxLoopJob?.cancel()
-            driver.close()
+    fun appendConsoleLineOnMain(line: String) {
+        consoleLines += line
+        val overflow = consoleLines.size - MAX_CONSOLE_LINES
+        if (overflow > 0) {
+            consoleLines.removeRange(0, overflow)
         }
     }
 
-    val connectFirstAdapter: () -> Unit = {
-        adapters = driver.listCompatibleAdapters()
-        val first = adapters.firstOrNull()
-        if (first == null) {
-            consoleLines += "[USB Scan] 0 physical USB-C UART adapters attached (interactive console simulation active)."
-        } else {
-            val currentCfg = initialSettings.copy(
-                baudRate = baudRate,
-                dtrEnabled = dtrEnabled,
-                rtsEnabled = rtsEnabled
+    val latestBaudRate by rememberUpdatedState(baudRate)
+    val latestDtrEnabled by rememberUpdatedState(dtrEnabled)
+    val latestRtsEnabled by rememberUpdatedState(rtsEnabled)
+    val latestInitialSettings by rememberUpdatedState(initialSettings)
+
+    fun openAdapterSessionAsync(targetDeviceName: String) {
+        scope.launch {
+            val currentCfg = latestInitialSettings.copy(
+                baudRate = latestBaudRate,
+                dtrEnabled = latestDtrEnabled,
+                rtsEnabled = latestRtsEnabled
             )
-            driver.openAndConfigure(first.deviceName, currentCfg) {}
+            val result = withContext(Dispatchers.IO) {
+                driver.openAndConfigure(targetDeviceName, currentCfg) {}
+            }
+            val refreshed = withContext(Dispatchers.IO) { driver.listCompatibleAdapters() }
+            adapters = refreshed
+            result
                 .onSuccess { summary ->
                     hardwareConnected = true
-                    consoleLines += "[Connected] $summary"
+                    appendConsoleLineOnMain("[Connected] $summary")
                     rxLoopJob?.cancel()
                     rxLoopJob = scope.launch {
                         driver.startReadLoop { chunk ->
-                            rxBytes += chunk.size
-                            val decoded = chunk.decodeToString(throwOnInvalidSequence = false).trimEnd('\r', '\n')
-                            if (decoded.isNotEmpty()) {
-                                consoleLines += decoded
+                            val decodedLines = chunk
+                                .decodeToString(throwOnInvalidSequence = false)
+                                .split('\n')
+                                .map { it.trimEnd('\r') }
+                                .filter { it.isNotEmpty() }
+                            withContext(Dispatchers.Main) {
+                                rxBytes += chunk.size
+                                for (line in decodedLines) {
+                                    appendConsoleLineOnMain(line)
+                                }
                             }
                         }
                     }
                 }
                 .onFailure { err ->
-                    consoleLines += "[USB Notice] ${err.message}"
+                    hardwareConnected = false
+                    appendConsoleLineOnMain("[USB Notice] ${err.message}")
                 }
+        }
+    }
+
+    val connectFirstAdapter: () -> Unit = {
+        scope.launch {
+            val discovered = withContext(Dispatchers.IO) { driver.listCompatibleAdapters() }
+            adapters = discovered
+            val first = discovered.firstOrNull()
+            if (first == null) {
+                hardwareConnected = false
+                appendConsoleLineOnMain("[USB Scan] 0 physical USB-C UART adapters attached (interactive console simulation active).")
+            } else {
+                openAdapterSessionAsync(first.deviceName)
+            }
+        }
+    }
+
+    DisposableEffect(context, driver) {
+        val permissionReceiver = object : BroadcastReceiver() {
+            override fun onReceive(ctx: Context, intent: Intent) {
+                if (intent.action != UsbSerialPortDriver.ACTION_USB_SERIAL_PERMISSION) return
+                val mgr = driver.usbManager ?: return
+                val extraDevice: UsbDevice? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    intent.getParcelableExtra(UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
+                } else {
+                    @Suppress("DEPRECATION")
+                    intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
+                }
+                val fallbackName = intent.getStringExtra(UsbSerialPortDriver.EXTRA_ADAPTER_NAME)
+                    ?: driver.pendingPermissionDeviceName
+                val device = extraDevice ?: fallbackName?.let { mgr.deviceList[it] }
+                if (device != null && mgr.hasPermission(device)) {
+                    openAdapterSessionAsync(device.deviceName)
+                } else {
+                    scope.launch(Dispatchers.Main) {
+                        appendConsoleLineOnMain("[USB Permission] Permission denied for ${device?.deviceName ?: "USB UART adapter"}.")
+                    }
+                }
+            }
+        }
+
+        ContextCompat.registerReceiver(
+            context,
+            permissionReceiver,
+            IntentFilter(UsbSerialPortDriver.ACTION_USB_SERIAL_PERMISSION),
+            ContextCompat.RECEIVER_NOT_EXPORTED
+        )
+
+        onDispose {
+            runCatching { context.unregisterReceiver(permissionReceiver) }
+            rxLoopJob?.cancel()
+            driver.close()
         }
     }
 
@@ -404,8 +626,19 @@ fun UsbSerialConsoleView(
                                 onClick = {
                                     baudRate = candidate
                                     baudMenuExpanded = false
-                                    driver.applyLineCoding(candidate, initialSettings.dataBits, initialSettings.stopBits, initialSettings.parity)
-                                    consoleLines += "[UART] Baud rate set to $candidate (${UsbSerialPortDriver.framingSummary(initialSettings)})"
+                                    scope.launch {
+                                        withContext(Dispatchers.IO) {
+                                            driver.applyLineCoding(
+                                                candidate,
+                                                initialSettings.dataBits,
+                                                initialSettings.stopBits,
+                                                initialSettings.parity
+                                            )
+                                        }
+                                        appendConsoleLineOnMain(
+                                            "[UART] Baud rate set to $candidate (${UsbSerialPortDriver.framingSummary(initialSettings)})"
+                                        )
+                                    }
                                 }
                             )
                         }
@@ -415,9 +648,17 @@ fun UsbSerialConsoleView(
                 FilterChip(
                     selected = dtrEnabled,
                     onClick = {
-                        dtrEnabled = !dtrEnabled
-                        driver.setModemLines(dtrEnabled, rtsEnabled)
-                        consoleLines += "[Modem] DTR=${if (dtrEnabled) "HIGH" else "LOW"}, RTS=${if (rtsEnabled) "HIGH" else "LOW"}"
+                        val nextDtr = !dtrEnabled
+                        val currentRts = rtsEnabled
+                        dtrEnabled = nextDtr
+                        scope.launch {
+                            withContext(Dispatchers.IO) {
+                                driver.setModemLines(nextDtr, currentRts)
+                            }
+                            appendConsoleLineOnMain(
+                                "[Modem] DTR=${if (nextDtr) "HIGH" else "LOW"}, RTS=${if (currentRts) "HIGH" else "LOW"}"
+                            )
+                        }
                     },
                     label = { Text("DTR", style = MaterialTheme.typography.labelSmall) }
                 )
@@ -425,9 +666,17 @@ fun UsbSerialConsoleView(
                 FilterChip(
                     selected = rtsEnabled,
                     onClick = {
-                        rtsEnabled = !rtsEnabled
-                        driver.setModemLines(dtrEnabled, rtsEnabled)
-                        consoleLines += "[Modem] DTR=${if (dtrEnabled) "HIGH" else "LOW"}, RTS=${if (rtsEnabled) "HIGH" else "LOW"}"
+                        val currentDtr = dtrEnabled
+                        val nextRts = !rtsEnabled
+                        rtsEnabled = nextRts
+                        scope.launch {
+                            withContext(Dispatchers.IO) {
+                                driver.setModemLines(currentDtr, nextRts)
+                            }
+                            appendConsoleLineOnMain(
+                                "[Modem] DTR=${if (currentDtr) "HIGH" else "LOW"}, RTS=${if (nextRts) "HIGH" else "LOW"}"
+                            )
+                        }
                     },
                     label = { Text("RTS", style = MaterialTheme.typography.labelSmall) }
                 )
@@ -436,7 +685,9 @@ fun UsbSerialConsoleView(
                     onClick = {
                         scope.launch {
                             driver.sendBreakSignal(250)
-                            consoleLines += "[UART BREAK] Asserted 250ms spacing BREAK signal (Cisco ROMMON / Juniper loader interrupt)"
+                            appendConsoleLineOnMain(
+                                "[UART BREAK] Asserted 250ms spacing BREAK signal (Cisco ROMMON / Juniper loader interrupt)"
+                            )
                         }
                     }
                 ) {
@@ -495,17 +746,24 @@ fun UsbSerialConsoleView(
             modifier = Modifier.fillMaxWidth()
         ) {
             val dispatchSerialFrame: () -> Unit = {
-                if (commandText.isNotEmpty() || initialSettings.lineEnding.isNotEmpty()) {
+                val textSnapshot = commandText
+                if (textSnapshot.isNotEmpty() || initialSettings.lineEnding.isNotEmpty()) {
+                    commandText = ""
                     val terminator = when (initialSettings.lineEnding.uppercase()) {
                         "LF" -> "\n"
                         "CR" -> "\r"
                         else -> "\r\n"
                     }
-                    val payload = (commandText + terminator).toByteArray()
-                    val written = driver.writeBytes(payload)
-                    txBytes += payload.size
-                    consoleLines += "uart> $commandText" + if (written < 0) " (loopback)" else " ($written B)"
-                    commandText = ""
+                    val payload = (textSnapshot + terminator).toByteArray(Charsets.UTF_8)
+                    scope.launch {
+                        val written = withContext(Dispatchers.IO) {
+                            driver.writeBytes(payload)
+                        }
+                        txBytes += payload.size
+                        appendConsoleLineOnMain(
+                            "uart> $textSnapshot" + if (written < 0) " (loopback)" else " ($written B)"
+                        )
+                    }
                 }
             }
 

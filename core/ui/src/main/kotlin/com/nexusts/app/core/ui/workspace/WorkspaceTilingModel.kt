@@ -225,7 +225,28 @@ class WorkspaceTilingController(
     }
 
     /**
-     * Splits [paneId] along [orientation], moving [newOrMovedTab] into the newly created sibling pane.
+     * Collapses an empty split leaf pane (`tabs.isEmpty()`) when more than one pane is open,
+     * allowing users to dismiss accidental splits without closing active tabs in sibling panes.
+     */
+    fun closeEmptyPane(paneId: String = _focusedPaneId.value): Boolean {
+        val currentRoot = _rootNode.value
+        val leaves = collectLeaves(currentRoot)
+        if (leaves.size <= 1) return false
+        val target = leaves.firstOrNull { it.nodeId == paneId } ?: return false
+        if (target.tabs.isNotEmpty()) return false
+        val collapsed = removeSpecificLeaf(currentRoot, paneId) ?: return false
+        _rootNode.value = collapsed
+        if (findLeaf(collapsed, _focusedPaneId.value) == null) {
+            _focusedPaneId.value = firstLeafId(collapsed)
+        }
+        return true
+    }
+
+    fun focusedActiveTab(): WorkspaceSessionTab? =
+        findLeaf(_rootNode.value, _focusedPaneId.value)?.activeTab
+
+    /**
+     * Splits [paneId] along [orientation], moving [tabForNewPane] into the newly created sibling pane.
      */
     fun splitPane(
         paneId: String = _focusedPaneId.value,
@@ -275,6 +296,13 @@ class WorkspaceTilingController(
      * Googlebook OS freeform window on the current or an external monitor.
      */
     fun extractTabForDetachedWindow(tabId: String): WorkspaceSessionTab? = closeTab(tabId)
+
+    fun closeAllTabs(): List<WorkspaceSessionTab> {
+        val all = allActiveTabs()
+        _rootNode.value = PaneNode.Leaf(nodeId = "root-leaf")
+        _focusedPaneId.value = "root-leaf"
+        return all
+    }
 
     fun allActiveTabs(): List<WorkspaceSessionTab> =
         collectLeaves(_rootNode.value).flatMap { it.tabs }
@@ -356,6 +384,19 @@ class WorkspaceTilingController(
             first = mapAllLeaves(node.first, transform),
             second = mapAllLeaves(node.second, transform)
         )
+    }
+
+    private fun removeSpecificLeaf(node: PaneNode, targetLeafId: String): PaneNode? = when (node) {
+        is PaneNode.Leaf -> if (node.nodeId == targetLeafId) null else node
+        is PaneNode.Split -> {
+            val nextFirst = removeSpecificLeaf(node.first, targetLeafId)
+            val nextSecond = removeSpecificLeaf(node.second, targetLeafId)
+            when {
+                nextFirst == null -> nextSecond
+                nextSecond == null -> nextFirst
+                else -> node.copy(first = nextFirst, second = nextSecond)
+            }
+        }
     }
 
     private fun pruneEmptySplits(node: PaneNode): PaneNode = when (node) {

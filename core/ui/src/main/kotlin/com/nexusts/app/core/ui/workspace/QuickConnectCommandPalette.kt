@@ -25,13 +25,17 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Launch
+import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material.icons.outlined.VerticalSplit
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -67,7 +71,11 @@ data class QuickConnectCandidate(
     val protocol: SessionProtocolKind,
     val folderBreadcrumb: String,
     val tags: List<String> = emptyList(),
-    val isAdHocUri: Boolean = false
+    val isAdHocUri: Boolean = false,
+    val parsedHost: String? = null,
+    val parsedPort: Int? = null,
+    val parsedUsername: String? = null,
+    val parsedDomain: String? = null
 )
 
 enum class QuickLaunchPlacement {
@@ -78,47 +86,216 @@ enum class QuickLaunchPlacement {
 
 /**
  * Parses ad-hoc quick connect expressions typed directly into the Ctrl/Cmd + K palette, e.g.:
- * - `ssh://root@10.20.0.5:2222` or `ssh deploy@prod-api.internal`
+ * - `ssh://root@10.20.0.5:2222` or `ssh deploy@prod-api.internal:22`
  * - `rdp://corp\admin@win-jump.corp.local:3389`
+ * - `nexusts://ssh/ubuntu@10.0.0.12:2222` or `nexusts://10.0.0.12:3389`
  * - `sftp://ubuntu@files.example.com`
  * - `vnc://192.168.1.50:5901`
  * - `https://proxmox.internal:8006`
+ * - `root@10.20.0.5:2222` or `CORP\admin@dc01.corp.local`
  */
 object AdHocConnectionSyntaxParser {
+    private data class ParsedTargetEndpoint(
+        val host: String,
+        val port: Int? = null,
+        val username: String? = null,
+        val domain: String? = null
+    )
+
     fun parseOrNull(rawQuery: String): QuickConnectCandidate? {
         val trimmed = rawQuery.trim()
         if (trimmed.length < 4) return null
 
-        val shorthandRegex = Regex("^(ssh|rdp|sftp|scp|ftp|ftps|vnc|telnet|serial|k8s|kubectl|docker)\\s+([^\\s]+)$", RegexOption.IGNORE_CASE)
+        // 1. nexusts:// deep-link scheme (e.g. nexusts://ssh/user@host:2222 or nexusts://host:3389)
+        if (trimmed.startsWith("nexusts://", ignoreCase = true)) {
+            val remainder = trimmed.substring("nexusts://".length).trimStart('/')
+            if (remainder.isBlank()) return null
+            val slashIdx = remainder.indexOf('/')
+            val knownProtos = setOf(
+                "ssh", "rdp", "sftp", "scp", "ftp", "ftps", "vnc",
+                "telnet", "serial", "k8s", "kubectl", "docker", "http", "https"
+            )
+            val (protoToken, rawTarget) = if (slashIdx > 0 &&
+                remainder.substring(0, slashIdx).lowercase() in knownProtos
+            ) {
+                remainder.substring(0, slashIdx).lowercase() to remainder.substring(slashIdx + 1)
+            } else {
+                val inferredEndpoint = parseAuthorityEndpoint(remainder.substringBefore('?'))
+                val inferredProto = when (inferredEndpoint?.port) {
+                    3389 -> "rdp"
+                    5900, 5901 -> "vnc"
+                    23 -> "telnet"
+                    80 -> "http"
+                    443, 8006, 8443 -> "https"
+                    else -> if (inferredEndpoint?.domain != null) "rdp" else "ssh"
+                }
+                inferredProto to remainder
+            }
+            val cleanTarget = rawTarget.substringBefore('?').trimEnd('/')
+            if (cleanTarget.isBlank()) return null
+            val protocol = mapProtocolToken(protoToken)
+            val endpoint = if (protocol == SessionProtocolKind.WEB_PAGE) {
+                val scheme = if (protoToken == "http") "http" else "https"
+                ParsedTargetEndpoint(host = "$scheme://$cleanTarget")
+            } else {
+                parseAuthorityEndpoint(cleanTarget) ?: return null
+            }
+            return QuickConnectCandidate(
+                id = "adhoc:$trimmed",
+                title = "${protocol.name} ${endpoint.host}${endpoint.port?.let { ":$it" } ?: ""}",
+                subtitle = cleanTarget,
+                protocol = protocol,
+                folderBreadcrumb = "NexusTS URI Quick Connect",
+                isAdHocUri = true,
+                parsedHost = endpoint.host,
+                parsedPort = endpoint.port,
+                parsedUsername = endpoint.username,
+                parsedDomain = endpoint.domain
+            )
+        }
+
+        // 2. Shorthand command syntax: "ssh root@10.20.0.5:2222", "rdp corp\admin@10.0.0.5"
+        val shorthandRegex = Regex(
+            "^(ssh|rdp|sftp|scp|ftp|ftps|vnc|telnet|serial|k8s|kubectl|docker)\\s+([^\\s]+)$",
+            RegexOption.IGNORE_CASE
+        )
         shorthandRegex.matchEntire(trimmed)?.let { match ->
             val protoToken = match.groupValues[1].lowercase()
             val target = match.groupValues[2]
             val protocol = mapProtocolToken(protoToken)
+            val endpoint = parseAuthorityEndpoint(target) ?: ParsedTargetEndpoint(host = target)
             return QuickConnectCandidate(
                 id = "adhoc:$protoToken://$target",
                 title = "${protoToken.uppercase()} $target",
                 subtitle = target,
                 protocol = protocol,
                 folderBreadcrumb = "Ad-Hoc Quick Connect",
-                isAdHocUri = true
+                isAdHocUri = true,
+                parsedHost = endpoint.host,
+                parsedPort = endpoint.port,
+                parsedUsername = endpoint.username,
+                parsedDomain = endpoint.domain
             )
         }
 
-        val uriRegex = Regex("^(ssh|rdp|sftp|scp|ftp|ftps|vnc|telnet|serial|k8s|kubectl|docker|http|https)://(.+)$", RegexOption.IGNORE_CASE)
+        // 3. Explicit protocol URI: "ssh://...", "rdp://...", "https://..."
+        val uriRegex = Regex(
+            "^(ssh|rdp|sftp|scp|ftp|ftps|vnc|telnet|serial|k8s|kubectl|docker|http|https)://(.+)$",
+            RegexOption.IGNORE_CASE
+        )
         uriRegex.matchEntire(trimmed)?.let { match ->
             val scheme = match.groupValues[1].lowercase()
-            val target = match.groupValues[2]
+            val target = match.groupValues[2].trim()
+            if (target.isEmpty()) return null
             val protocol = mapProtocolToken(scheme)
+            val endpoint = if (protocol == SessionProtocolKind.WEB_PAGE) {
+                ParsedTargetEndpoint(host = trimmed)
+            } else {
+                parseAuthorityEndpoint(target.trimEnd('/')) ?: ParsedTargetEndpoint(host = target.trimEnd('/'))
+            }
             return QuickConnectCandidate(
                 id = "adhoc:$trimmed",
                 title = trimmed,
                 subtitle = target,
                 protocol = protocol,
                 folderBreadcrumb = "Ad-Hoc URI Connect",
-                isAdHocUri = true
+                isAdHocUri = true,
+                parsedHost = endpoint.host,
+                parsedPort = endpoint.port,
+                parsedUsername = endpoint.username,
+                parsedDomain = endpoint.domain
             )
         }
+
+        // 4. Bare user@host[:port] or domain\user@host[:port] expression without scheme
+        if (!trimmed.contains(' ') && trimmed.contains('@') && !trimmed.startsWith('@') && !trimmed.endsWith('@')) {
+            val endpoint = parseAuthorityEndpoint(trimmed)
+            if (endpoint != null && endpoint.host.isNotBlank() && !endpoint.username.isNullOrBlank()) {
+                val inferredProto = when {
+                    endpoint.port == 3389 || endpoint.domain != null -> SessionProtocolKind.RDP
+                    endpoint.port == 5900 || endpoint.port == 5901 -> SessionProtocolKind.VNC
+                    endpoint.port == 21 -> SessionProtocolKind.FTP
+                    else -> SessionProtocolKind.SSH
+                }
+                return QuickConnectCandidate(
+                    id = "adhoc:${inferredProto.name.lowercase()}://$trimmed",
+                    title = "${inferredProto.name} $trimmed",
+                    subtitle = trimmed,
+                    protocol = inferredProto,
+                    folderBreadcrumb = "Ad-Hoc Quick Connect",
+                    isAdHocUri = true,
+                    parsedHost = endpoint.host,
+                    parsedPort = endpoint.port,
+                    parsedUsername = endpoint.username,
+                    parsedDomain = endpoint.domain
+                )
+            }
+        }
+
         return null
+    }
+
+    private fun parseAuthorityEndpoint(rawTarget: String): ParsedTargetEndpoint? {
+        val cleaned = rawTarget.trim()
+        if (cleaned.isEmpty()) return null
+        // Preserve serial device paths or k8s namespace/pod targets intact
+        if (cleaned.startsWith("/dev/")) {
+            return ParsedTargetEndpoint(host = cleaned)
+        }
+
+        val atIndex = cleaned.lastIndexOf('@')
+        val userPart = if (atIndex > 0) cleaned.substring(0, atIndex) else null
+        val hostPortPart = if (atIndex >= 0) cleaned.substring(atIndex + 1) else cleaned
+        if (hostPortPart.isBlank()) return null
+
+        var domain: String? = null
+        var username: String? = null
+        if (!userPart.isNullOrBlank()) {
+            val slashIdx = userPart.indexOf('\\').takeIf { it >= 0 }
+            if (slashIdx != null) {
+                domain = userPart.substring(0, slashIdx).takeIf { it.isNotBlank() }
+                username = userPart.substring(slashIdx + 1).takeIf { it.isNotBlank() }
+            } else {
+                username = userPart.substringBefore(':') // strip any accidental inline ":pass"
+            }
+        }
+
+        val (host, port) = if (hostPortPart.startsWith('[')) {
+            // IPv6 literal: [2001:db8::1]:2222 or [::1]
+            val closeBracket = hostPortPart.indexOf(']')
+            if (closeBracket <= 1) return null
+            val ipv6Host = hostPortPart.substring(1, closeBracket)
+            val after = hostPortPart.substring(closeBracket + 1)
+            val parsedPort = if (after.startsWith(':')) {
+                after.substring(1).substringBefore('/').toIntOrNull()?.takeIf { it in 1..65535 }
+            } else {
+                null
+            }
+            ipv6Host to parsedPort
+        } else {
+            val withoutPath = hostPortPart.substringBefore('/')
+            val colonCount = withoutPath.count { it == ':' }
+            if (colonCount == 1) {
+                val h = withoutPath.substringBefore(':')
+                val pStr = withoutPath.substringAfter(':')
+                val p = pStr.toIntOrNull()?.takeIf { it in 1..65535 }
+                if (p != null && h.isNotBlank()) {
+                    h to p
+                } else {
+                    withoutPath to null
+                }
+            } else {
+                hostPortPart to null
+            }
+        }
+
+        if (host.isBlank()) return null
+        return ParsedTargetEndpoint(
+            host = host,
+            port = port,
+            username = username,
+            domain = domain
+        )
     }
 
     private fun mapProtocolToken(token: String): SessionProtocolKind = when (token) {
@@ -156,7 +333,10 @@ fun QuickConnectCommandPalette(
     val motion = NexusTheme.motion
     var query by remember(visible) { mutableStateOf("") }
     var selectedIndex by remember(visible, query) { mutableIntStateOf(0) }
+    var shiftHeld by remember(visible) { mutableStateOf(false) }
+    var altHeld by remember(visible) { mutableStateOf(false) }
     val focusRequester = remember { FocusRequester() }
+    val listState = rememberLazyListState()
 
     val filtered = remember(query, vaultCandidates) {
         val q = query.trim().lowercase()
@@ -178,6 +358,12 @@ fun QuickConnectCommandPalette(
     LaunchedEffect(visible) {
         if (visible) {
             focusRequester.requestFocus()
+        }
+    }
+
+    LaunchedEffect(selectedIndex, filtered.size) {
+        if (selectedIndex in filtered.indices) {
+            listState.animateScrollToItem(selectedIndex)
         }
     }
 
@@ -208,6 +394,8 @@ fun QuickConnectCommandPalette(
                         onClick = { /* Consume clicks inside modal so backdrop scrim does not dismiss */ }
                     )
                     .onPreviewKeyEvent { event ->
+                        shiftHeld = event.isShiftPressed
+                        altHeld = event.isAltPressed
                         if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
                         when (event.nativeKeyEvent.keyCode) {
                             AndroidKeyEvent.KEYCODE_ESCAPE -> {
@@ -293,6 +481,7 @@ fun QuickConnectCommandPalette(
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
 
                     LazyColumn(
+                        state = listState,
                         modifier = Modifier
                             .fillMaxWidth()
                             .heightIn(max = 380.dp)
@@ -313,7 +502,12 @@ fun QuickConnectCommandPalette(
                                         }
                                     )
                                     .clickable {
-                                        onLaunchCandidate(candidate, QuickLaunchPlacement.ACTIVE_PANE_TAB)
+                                        val placement = when {
+                                            altHeld -> QuickLaunchPlacement.DETACHED_NEW_WINDOW
+                                            shiftHeld -> QuickLaunchPlacement.SPLIT_RIGHT_PANE
+                                            else -> QuickLaunchPlacement.ACTIVE_PANE_TAB
+                                        }
+                                        onLaunchCandidate(candidate, placement)
                                         onDismiss()
                                     }
                                     .padding(horizontal = 14.dp, vertical = 10.dp),
@@ -361,7 +555,36 @@ fun QuickConnectCommandPalette(
                                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
                                     )
                                 }
-                                Spacer(modifier = Modifier.width(8.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                IconButton(
+                                    onClick = {
+                                        onLaunchCandidate(candidate, QuickLaunchPlacement.SPLIT_RIGHT_PANE)
+                                        onDismiss()
+                                    },
+                                    modifier = Modifier.size(26.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Outlined.VerticalSplit,
+                                        contentDescription = "Split Right",
+                                        modifier = Modifier.size(15.dp),
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                IconButton(
+                                    onClick = {
+                                        onLaunchCandidate(candidate, QuickLaunchPlacement.DETACHED_NEW_WINDOW)
+                                        onDismiss()
+                                    },
+                                    modifier = Modifier.size(26.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.AutoMirrored.Outlined.OpenInNew,
+                                        contentDescription = "Detach Window",
+                                        modifier = Modifier.size(15.dp),
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(2.dp))
                                 Icon(
                                     imageVector = Icons.AutoMirrored.Outlined.Launch,
                                     contentDescription = null,

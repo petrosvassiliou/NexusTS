@@ -2,6 +2,8 @@
 //! and Telnet RFC 854 / RFC 1073 (`IAC` Negotiation) Wire State Machine.
 
 use async_trait::async_trait;
+use base64::engine::general_purpose::{STANDARD as BASE64_STD, STANDARD_NO_PAD as BASE64_NO_PAD};
+use base64::Engine;
 use russh::client::{self, Handle, Msg};
 use russh::{Channel, ChannelId, Disconnect};
 use russh_keys::key::PrivateKeyWithHashAlg;
@@ -53,6 +55,44 @@ pub struct NexusSshHandler {
     x11_events_tx: Option<mpsc::UnboundedSender<Vec<u8>>>,
 }
 
+/// Computes the standard OpenSSH `SHA256:<unpadded_base64>` fingerprint over the decoded public key blob,
+/// along with hex fallback representations so both standard `ssh-keygen -lf` pins and hex pins match.
+pub fn verify_server_public_key_pin(raw_b64: &str, expected: &str) -> Result<String, String> {
+    let decoded_key_bytes = BASE64_STD
+        .decode(raw_b64.trim())
+        .unwrap_or_else(|_| raw_b64.as_bytes().to_vec());
+    let digest = Sha256::digest(&decoded_key_bytes);
+    let openssh_b64 = BASE64_NO_PAD.encode(digest);
+    let computed_openssh = format!("SHA256:{openssh_b64}");
+
+    let trimmed = expected.trim();
+    if trimmed.is_empty() {
+        return Ok(computed_openssh);
+    }
+
+    let stripped_expected = trimmed
+        .strip_prefix("SHA256:")
+        .or_else(|| trimmed.strip_prefix("sha256:"))
+        .unwrap_or(trimmed)
+        .trim_end_matches('=');
+
+    // 1. Standard OpenSSH SHA256:<unpadded_base64> check (base64 is case-sensitive)
+    if stripped_expected == openssh_b64 {
+        return Ok(computed_openssh);
+    }
+
+    // 2. Fallback check against hex of decoded key SHA-256 or legacy base64-string SHA-256
+    let decoded_hex = format!("{:x}", digest);
+    let legacy_hex = format!("{:x}", Sha256::digest(raw_b64.as_bytes()));
+    if stripped_expected.eq_ignore_ascii_case(&decoded_hex)
+        || stripped_expected.eq_ignore_ascii_case(&legacy_hex)
+    {
+        return Ok(computed_openssh);
+    }
+
+    Err(computed_openssh)
+}
+
 #[async_trait]
 impl client::Handler for NexusSshHandler {
     type Error = TransportError;
@@ -62,14 +102,11 @@ impl client::Handler for NexusSshHandler {
         server_public_key: &PublicKey,
     ) -> Result<bool, Self::Error> {
         let raw_b64 = server_public_key.public_key_base64();
-        let digest = Sha256::digest(raw_b64.as_bytes());
-        let computed = format!("SHA256:{:x}", digest);
-
         if let Some(expected) = &self.expected_fp {
-            if !expected.trim().is_empty() && !expected.eq_ignore_ascii_case(&computed) {
+            if let Err(actual) = verify_server_public_key_pin(&raw_b64, expected) {
                 return Err(TransportError::HostKeyMismatch {
                     expected: expected.clone(),
-                    actual: computed,
+                    actual,
                 });
             }
         }
@@ -340,5 +377,29 @@ impl TelnetNegotiator {
         }
 
         (clean, replies)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn openssh_sha256_fingerprint_matches_decoded_key_and_hex_fallback() {
+        let raw_key_blob = b"\x00\x00\x00\x0bssh-ed25519\x00\x00\x00\x200123456789abcdef0123456789abcdef";
+        let key_b64 = BASE64_STD.encode(raw_key_blob);
+        let expected_digest = Sha256::digest(raw_key_blob);
+        let expected_openssh = format!("SHA256:{}", BASE64_NO_PAD.encode(expected_digest));
+        let expected_hex = format!("SHA256:{:x}", expected_digest);
+
+        assert_eq!(
+            verify_server_public_key_pin(&key_b64, &expected_openssh).unwrap(),
+            expected_openssh
+        );
+        assert_eq!(
+            verify_server_public_key_pin(&key_b64, &expected_hex).unwrap(),
+            expected_openssh
+        );
+        assert!(verify_server_public_key_pin(&key_b64, "SHA256:wrongpin").is_err());
     }
 }

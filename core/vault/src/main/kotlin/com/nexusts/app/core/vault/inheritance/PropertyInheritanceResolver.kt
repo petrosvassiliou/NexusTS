@@ -1,6 +1,7 @@
 package com.nexusts.app.core.vault.inheritance
 
 import com.nexusts.app.core.vault.model.CommandTask
+import com.nexusts.app.core.vault.model.CustomPropertyEntry
 import com.nexusts.app.core.vault.model.DynamicFolder
 import com.nexusts.app.core.vault.model.DynamicScriptInterpreter
 import com.nexusts.app.core.vault.model.InheritableProperties
@@ -18,6 +19,7 @@ import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.BufferedReader
+import java.io.File
 import java.util.concurrent.TimeUnit
 
 data class EffectiveConnectionProfile(
@@ -32,7 +34,7 @@ data class EffectiveConnectionProfile(
     val effectivePreConnectTask: CommandTask?,
     val effectivePostDisconnectTask: CommandTask?,
     val effectiveColorAccentHex: String? = null,
-    val effectiveCustomProperties: Map<String, com.nexusts.app.core.vault.model.CustomPropertyEntry> = emptyMap(),
+    val effectiveCustomProperties: Map<String, CustomPropertyEntry> = emptyMap(),
     val requireConnectConfirmation: Boolean = false
 )
 
@@ -123,7 +125,7 @@ class PropertyInheritanceResolver(
         var postTaskId: String? = null
         var resolvedColorHex: String? = null
         var confirmRequired = false
-        val mergedCustomProps = linkedMapOf<String, com.nexusts.app.core.vault.model.CustomPropertyEntry>()
+        val mergedCustomProps = linkedMapOf<String, CustomPropertyEntry>()
         for ((_, props) in chain) {
             if (!props.environmentBadge.isNullOrBlank()) resolvedEnv = props.environmentBadge
             if (!props.preConnectTaskId.isNullOrBlank()) preTaskId = props.preConnectTaskId
@@ -155,33 +157,67 @@ class PropertyInheritanceResolver(
     }
 
     /**
+     * Checks whether a single [VaultConnection] matches a [SmartFolder]'s filter criteria.
+     * Returns `false` if `hostPatternRegex` contains invalid regular expression syntax.
+     */
+    fun matchesSmartFolder(
+        document: NxtsVaultDocument,
+        connection: VaultConnection,
+        smartFolder: SmartFolder
+    ): Boolean {
+        if (connection.id in document.tombstonedObjectIds) return false
+        val filter = smartFolder.filter
+        val rawRegex = filter.hostPatternRegex
+        val compiledRegex: Regex? = if (!rawRegex.isNullOrBlank()) {
+            runCatching { Regex(rawRegex, RegexOption.IGNORE_CASE) }.getOrNull() ?: return false
+        } else {
+            null
+        }
+        return matchesSmartFolderCompiled(document, connection, smartFolder, compiledRegex)
+    }
+
+    /**
      * Evaluates a [SmartFolder] dynamically against all non-tombstoned connections in [document].
+     * If `hostPatternRegex` is invalid syntax, returns an empty list rather than matching all hosts.
      */
     fun evaluateSmartFolder(
         document: NxtsVaultDocument,
         smartFolder: SmartFolder
     ): List<VaultConnection> {
         val filter = smartFolder.filter
-        val compiledRegex = filter.hostPatternRegex
-            ?.takeIf { it.isNotBlank() }
-            ?.let { runCatching { Regex(it, RegexOption.IGNORE_CASE) }.getOrNull() }
+        val rawRegex = filter.hostPatternRegex
+        val compiledRegex: Regex? = if (!rawRegex.isNullOrBlank()) {
+            runCatching { Regex(rawRegex, RegexOption.IGNORE_CASE) }.getOrNull() ?: return emptyList()
+        } else {
+            null
+        }
 
         return document.connections.filter { conn ->
-            if (conn.id in document.tombstonedObjectIds) return@filter false
-            val tagsMatch = filter.includeTags.isEmpty() ||
-                filter.includeTags.all { wanted -> conn.tags.any { it.equals(wanted, ignoreCase = true) } }
-            val protoMatch = filter.includeProtocols.isEmpty() || conn.protocol in filter.includeProtocols
-            val osMatch = filter.osFamilyFilter.isNullOrBlank() ||
-                conn.osFamily.equals(filter.osFamilyFilter, ignoreCase = true)
-            val hostMatch = compiledRegex == null ||
-                compiledRegex.containsMatchIn(conn.host) ||
-                compiledRegex.containsMatchIn(conn.name)
-            val envMatch = filter.environmentFilter.isNullOrBlank() ||
-                resolveEffectiveProfile(document, conn).effectiveEnvironmentBadge
-                    .equals(filter.environmentFilter, ignoreCase = true)
-
-            tagsMatch && protoMatch && osMatch && hostMatch && envMatch
+            matchesSmartFolderCompiled(document, conn, smartFolder, compiledRegex)
         }
+    }
+
+    private fun matchesSmartFolderCompiled(
+        document: NxtsVaultDocument,
+        conn: VaultConnection,
+        smartFolder: SmartFolder,
+        compiledRegex: Regex?
+    ): Boolean {
+        if (conn.id in document.tombstonedObjectIds) return false
+        val filter = smartFolder.filter
+        val tagsMatch = filter.includeTags.isEmpty() ||
+            filter.includeTags.all { wanted -> conn.tags.any { it.equals(wanted, ignoreCase = true) } }
+        val protoMatch = filter.includeProtocols.isEmpty() || conn.protocol in filter.includeProtocols
+        val osMatch = filter.osFamilyFilter.isNullOrBlank() ||
+            conn.osFamily.equals(filter.osFamilyFilter, ignoreCase = true)
+        val hostMatch = compiledRegex == null ||
+            compiledRegex.containsMatchIn(conn.host) ||
+            compiledRegex.containsMatchIn(conn.name)
+        val envMatch = filter.environmentFilter.isNullOrBlank() ||
+            resolveEffectiveProfile(document, conn).effectiveEnvironmentBadge
+                .equals(filter.environmentFilter, ignoreCase = true)
+
+        return tagsMatch && protoMatch && osMatch && hostMatch && envMatch
     }
 
     @Serializable
@@ -202,8 +238,15 @@ class PropertyInheritanceResolver(
     /**
      * Executes or fetches a [DynamicFolder] inventory (Royal TS compatible `{"Objects": [...]}` JSON schema)
      * and materializes child [VaultConnection] definitions inheriting from the DynamicFolder.
+     *
+     * For security on untrusted imported vaults, `SHELL_SH` and `PYTHON3` process execution is disabled
+     * by default (`allowLocalScriptExecution = false`); embedded JSON payloads are still parsed safely.
      */
-    fun evaluateDynamicFolder(dynamicFolder: DynamicFolder): List<VaultConnection> {
+    @JvmOverloads
+    fun evaluateDynamicFolder(
+        dynamicFolder: DynamicFolder,
+        allowLocalScriptExecution: Boolean = false
+    ): List<VaultConnection> {
         val rawJson = when (dynamicFolder.interpreter) {
             DynamicScriptInterpreter.JSON_HTTP_API -> {
                 val payload = dynamicFolder.scriptOrEndpointPayload.trim()
@@ -217,12 +260,31 @@ class PropertyInheritanceResolver(
                     }
                 }
             }
-            DynamicScriptInterpreter.SHELL_SH -> runSandboxedProcess(
-                listOf("/system/bin/sh", "-c", dynamicFolder.scriptOrEndpointPayload)
-            )
-            DynamicScriptInterpreter.PYTHON3 -> runSandboxedProcess(
-                listOf("python3", "-c", dynamicFolder.scriptOrEndpointPayload)
-            )
+            DynamicScriptInterpreter.SHELL_SH -> {
+                val trimmed = dynamicFolder.scriptOrEndpointPayload.trim()
+                if (!allowLocalScriptExecution) {
+                    if (trimmed.startsWith("{")) {
+                        trimmed
+                    } else {
+                        return emptyList()
+                    }
+                } else {
+                    val shBinary = File("/system/bin/sh").takeIf { it.canExecute() }?.absolutePath ?: "/bin/sh"
+                    runSandboxedProcess(listOf(shBinary, "-c", dynamicFolder.scriptOrEndpointPayload))
+                }
+            }
+            DynamicScriptInterpreter.PYTHON3 -> {
+                val trimmed = dynamicFolder.scriptOrEndpointPayload.trim()
+                if (!allowLocalScriptExecution) {
+                    if (trimmed.startsWith("{")) {
+                        trimmed
+                    } else {
+                        return emptyList()
+                    }
+                } else {
+                    runSandboxedProcess(listOf("python3", "-c", dynamicFolder.scriptOrEndpointPayload))
+                }
+            }
         }
 
         val parsed = json.decodeFromString(DynamicInventoryPayload.serializer(), rawJson)
@@ -242,9 +304,15 @@ class PropertyInheritanceResolver(
                 VaultProtocolType.SFTP -> ProtocolSpecificSettings.FileTransfer(port = obj.Port ?: 22)
                 VaultProtocolType.VNC -> ProtocolSpecificSettings.Vnc(port = obj.Port ?: 5900)
                 VaultProtocolType.WEB_PAGE -> ProtocolSpecificSettings.WebPage(url = obj.ComputerName)
-                VaultProtocolType.SERIAL -> ProtocolSpecificSettings.SerialUart(baudRate = obj.Port ?: 115_200, devicePathHint = obj.ComputerName)
+                VaultProtocolType.SERIAL -> ProtocolSpecificSettings.SerialUart(
+                    baudRate = obj.Port ?: 115_200,
+                    devicePathHint = obj.ComputerName
+                )
                 VaultProtocolType.KUBERNETES_POD, VaultProtocolType.DOCKER_CONTAINER ->
-                    ProtocolSpecificSettings.ContainerExec(podOrContainerName = obj.Name, clusterOrSocketEndpoint = obj.ComputerName)
+                    ProtocolSpecificSettings.ContainerExec(
+                        podOrContainerName = obj.Name,
+                        clusterOrSocketEndpoint = obj.ComputerName
+                    )
                 else -> ProtocolSpecificSettings.Ssh(port = obj.Port ?: 22)
             }
             VaultConnection(
@@ -259,6 +327,20 @@ class PropertyInheritanceResolver(
                 settings = settings
             )
         }
+    }
+
+    /**
+     * Returns an informative security notice when a [DynamicFolder] requires local script execution
+     * that is currently gated off (`allowLocalScriptExecution = false`), or `null` otherwise.
+     */
+    fun getDynamicFolderExecutionNotice(
+        dynamicFolder: DynamicFolder,
+        allowLocalScriptExecution: Boolean = false
+    ): String? {
+        if (allowLocalScriptExecution) return null
+        if (dynamicFolder.interpreter == DynamicScriptInterpreter.JSON_HTTP_API) return null
+        if (dynamicFolder.scriptOrEndpointPayload.trim().startsWith("{")) return null
+        return "Local ${dynamicFolder.interpreter.name} script execution is disabled by default for vault security. Explicitly enable allowLocalScriptExecution on trusted vaults."
     }
 
     private fun runSandboxedProcess(cmd: List<String>): String {

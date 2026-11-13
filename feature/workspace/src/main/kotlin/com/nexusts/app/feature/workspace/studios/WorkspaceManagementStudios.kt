@@ -25,6 +25,7 @@ import androidx.compose.material.icons.outlined.CloudSync
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.DeviceHub
+import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.outlined.NetworkCheck
 import androidx.compose.material.icons.outlined.PlayArrow
@@ -63,6 +64,7 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.nexusts.app.core.ui.theme.NexusTheme
+import com.nexusts.app.core.vault.gateway.ActiveTunnelLease
 import com.nexusts.app.core.vault.gateway.GatewayHealthReport
 import com.nexusts.app.core.vault.model.CommandTask
 import com.nexusts.app.core.vault.model.CredentialSourceKind
@@ -99,7 +101,8 @@ fun FolderPropertiesAndCredentialDialog(
     childConnectionCount: Int,
     strings: WorkspaceLocalizedStrings,
     onDismiss: () -> Unit,
-    onSaveFolderAndCredential: (VaultFolder, VaultCredential?) -> Unit
+    onSaveFolderAndCredential: (VaultFolder, VaultCredential?) -> Unit,
+    onDeleteFolder: ((String) -> Unit)? = null
 ) {
     if (!visible) return
 
@@ -115,7 +118,8 @@ fun FolderPropertiesAndCredentialDialog(
                 InheritanceMode.OVERRIDE_EXPLICIT -> 1
                 InheritanceMode.INHERIT_FROM_PARENT -> 2
                 InheritanceMode.PROMPT_AT_CONNECT -> 3
-                else -> 0
+                null -> 2
+                else -> 2
             }
         )
     }
@@ -229,14 +233,14 @@ fun FolderPropertiesAndCredentialDialog(
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         FilterChip(
+                            selected = credAssignChoice == 2,
+                            onClick = { credAssignChoice = 2 },
+                            label = { Text(strings.credModeInheritFolder, style = MaterialTheme.typography.labelSmall) }
+                        )
+                        FilterChip(
                             selected = credAssignChoice == 0,
                             onClick = { credAssignChoice = 0 },
                             label = { Text(strings.credModeInlineNew, style = MaterialTheme.typography.labelSmall) }
-                        )
-                        FilterChip(
-                            selected = credAssignChoice == 1,
-                            onClick = { credAssignChoice = 1 },
-                            label = { Text(strings.credModeOverrideExplicit, style = MaterialTheme.typography.labelSmall) }
                         )
                     }
                     Row(
@@ -244,9 +248,9 @@ fun FolderPropertiesAndCredentialDialog(
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         FilterChip(
-                            selected = credAssignChoice == 2,
-                            onClick = { credAssignChoice = 2 },
-                            label = { Text(strings.credModeInheritFolder, style = MaterialTheme.typography.labelSmall) }
+                            selected = credAssignChoice == 1,
+                            onClick = { credAssignChoice = 1 },
+                            label = { Text(strings.credModeOverrideExplicit, style = MaterialTheme.typography.labelSmall) }
                         )
                         FilterChip(
                             selected = credAssignChoice == 3,
@@ -406,20 +410,25 @@ fun FolderPropertiesAndCredentialDialog(
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text(strings.dialogActionCancel)
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                if (editingFolder != null && onDeleteFolder != null) {
+                    TextButton(
+                        onClick = { onDeleteFolder(editingFolder.id) }
+                    ) {
+                        Text(strings.actionDeleteItem, color = MaterialTheme.colorScheme.error)
+                    }
+                }
+                TextButton(onClick = onDismiss) {
+                    Text(strings.dialogActionCancel)
+                }
             }
         }
     )
 }
 
 /**
- * 1. Expressive Connection Editor Dialog (`Ctrl/Cmd + N` or Edit Connection) supporting all 21 protocols,
- *    Folder-Level Credential Inheritance preview/override, and the full 4-Tab Classic Royal TS RDP Suite:
- *    - General & Console (`/admin`)
- *    - Display & HiDPI Scaling (`100%–200%`, Dynamic Resize `DISP_DVC`, Color Depth, Multi-Monitor)
- *    - Local Resources (Clipboard Sharing, 3-Mode Audio Redirection, Mic, Drives, Printers, Serial Ports, Smartcard)
- *    - Experience & Security (ClearType Font Smoothing, Aero Desktop Composition, Wallpaper, NLA, Restricted Admin, RD Gateway)
+ * 1. Expressive Connection Editor Dialog (`Ctrl/Cmd + N` or Edit Connection) supporting all 23 protocols,
+ *    Folder-Level Credential & Gateway Inheritance preview/override, and the full 4-Tab Classic Royal TS RDP Suite.
  */
 @Composable
 fun NewOrEditConnectionDialog(
@@ -431,12 +440,15 @@ fun NewOrEditConnectionDialog(
     strings: WorkspaceLocalizedStrings,
     onDismiss: () -> Unit,
     onSaveConnection: (VaultConnection) -> Unit,
-    sshConnections: List<VaultConnection> = emptyList()
+    sshConnections: List<VaultConnection> = emptyList(),
+    gateways: List<SecureGatewayConfig> = emptyList()
 ) {
     if (!visible) return
 
     val initialRdp = (initialConnection?.settings as? ProtocolSpecificSettings.Rdp) ?: ProtocolSpecificSettings.Rdp()
     val initialSsh = (initialConnection?.settings as? ProtocolSpecificSettings.Ssh) ?: ProtocolSpecificSettings.Ssh()
+    val initialVnc = (initialConnection?.settings as? ProtocolSpecificSettings.Vnc) ?: ProtocolSpecificSettings.Vnc()
+    val initialFt = (initialConnection?.settings as? ProtocolSpecificSettings.FileTransfer) ?: ProtocolSpecificSettings.FileTransfer()
     val initialSerial = (initialConnection?.settings as? ProtocolSpecificSettings.SerialUart) ?: ProtocolSpecificSettings.SerialUart()
     val initialContainer = (initialConnection?.settings as? ProtocolSpecificSettings.ContainerExec) ?: ProtocolSpecificSettings.ContainerExec()
 
@@ -454,12 +466,23 @@ fun NewOrEditConnectionDialog(
     var explicitCredentialId by remember(initialConnection, credentials) {
         mutableStateOf(initialConnection?.inheritable?.explicitCredentialId ?: credentials.firstOrNull()?.id)
     }
+    var gatewayMode by remember(initialConnection) {
+        mutableStateOf(initialConnection?.inheritable?.gatewayMode ?: InheritanceMode.INHERIT_FROM_PARENT)
+    }
+    var explicitGatewayId by remember(initialConnection, gateways) {
+        mutableStateOf(initialConnection?.inheritable?.explicitGatewayId ?: gateways.firstOrNull()?.id)
+    }
 
     var protoMenuOpen by remember { mutableStateOf(false) }
     var folderMenuOpen by remember { mutableStateOf(false) }
     var credMenuOpen by remember { mutableStateOf(false) }
+    var gwMenuOpen by remember { mutableStateOf(false) }
     var bastionMenuOpen by remember { mutableStateOf(false) }
     var activeRdpTab by remember(initialConnection) { mutableIntStateOf(0) }
+
+    // VNC & File Transfer ports
+    var vncPortText by remember(initialConnection) { mutableStateOf(initialVnc.port.toString()) }
+    var ftPortText by remember(initialConnection) { mutableStateOf(initialFt.port.toString()) }
 
     // USB-C Hardware Serial / UART state
     var serialBaudRate by remember(initialConnection) { mutableIntStateOf(initialSerial.baudRate) }
@@ -547,9 +570,108 @@ fun NewOrEditConnectionDialog(
                                 text = { Text(proto.name) },
                                 onClick = {
                                     selectedProto = proto
+                                    when (proto) {
+                                        VaultProtocolType.FTP -> ftPortText = "21"
+                                        VaultProtocolType.FTPS -> ftPortText = "990"
+                                        VaultProtocolType.SFTP, VaultProtocolType.SCP -> ftPortText = "22"
+                                        VaultProtocolType.TELNET -> sshPortText = "23"
+                                        else -> Unit
+                                    }
                                     protoMenuOpen = false
                                 }
                             )
+                        }
+                    }
+                }
+
+                // Always-visible core connection identity (Name, Host, Port, Parent Folder) across all tabs!
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text(strings.dialogFieldName) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = host,
+                        onValueChange = { host = it },
+                        label = { Text(strings.dialogFieldHost) },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f)
+                    )
+                    when (selectedProto) {
+                        VaultProtocolType.RDP -> {
+                            OutlinedTextField(
+                                value = rdpPortText,
+                                onValueChange = { rdpPortText = it.filter(Char::isDigit).take(5) },
+                                label = { Text(strings.dialogFieldPort) },
+                                singleLine = true,
+                                modifier = Modifier.width(92.dp)
+                            )
+                        }
+                        VaultProtocolType.VNC, VaultProtocolType.APPLE_SCREEN_SHARING -> {
+                            OutlinedTextField(
+                                value = vncPortText,
+                                onValueChange = { vncPortText = it.filter(Char::isDigit).take(5) },
+                                label = { Text(strings.dialogFieldPort) },
+                                singleLine = true,
+                                modifier = Modifier.width(92.dp)
+                            )
+                        }
+                        VaultProtocolType.SFTP, VaultProtocolType.FTP,
+                        VaultProtocolType.FTPS, VaultProtocolType.SCP -> {
+                            OutlinedTextField(
+                                value = ftPortText,
+                                onValueChange = { ftPortText = it.filter(Char::isDigit).take(5) },
+                                label = { Text(strings.dialogFieldPort) },
+                                singleLine = true,
+                                modifier = Modifier.width(92.dp)
+                            )
+                        }
+                        VaultProtocolType.TELNET -> {
+                            OutlinedTextField(
+                                value = sshPortText,
+                                onValueChange = { sshPortText = it.filter(Char::isDigit).take(5) },
+                                label = { Text(strings.dialogFieldPort) },
+                                singleLine = true,
+                                modifier = Modifier.width(92.dp)
+                            )
+                        }
+                        else -> Unit
+                    }
+                }
+
+                // Parent Folder Selector (Property Inheritance Cascade)
+                if (folders.isNotEmpty()) {
+                    val activeFolderName = folders.firstOrNull { it.id == selectedFolderId }?.name ?: "-"
+                    Box(modifier = Modifier.fillMaxWidth()) {
+                        OutlinedButton(
+                            onClick = { folderMenuOpen = true },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("${strings.dialogFieldFolder}: $activeFolderName")
+                        }
+                        DropdownMenu(
+                            expanded = folderMenuOpen,
+                            onDismissRequest = { folderMenuOpen = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("-") },
+                                onClick = {
+                                    selectedFolderId = null
+                                    folderMenuOpen = false
+                                }
+                            )
+                            folders.forEach { folder ->
+                                DropdownMenuItem(
+                                    text = { Text(folder.name) },
+                                    onClick = {
+                                        selectedFolderId = folder.id
+                                        folderMenuOpen = false
+                                    }
+                                )
+                            }
                         }
                     }
                 }
@@ -574,69 +696,8 @@ fun NewOrEditConnectionDialog(
                     }
                 }
 
-                // General Fields (always shown for non-RDP, or shown on Tab 0 for RDP)
+                // Credential & Gateway Inheritance (shown for non-RDP, or shown on Tab 0 for RDP)
                 if (selectedProto != VaultProtocolType.RDP || activeRdpTab == 0) {
-                    OutlinedTextField(
-                        value = name,
-                        onValueChange = { name = it },
-                        label = { Text(strings.dialogFieldName) },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedTextField(
-                            value = host,
-                            onValueChange = { host = it },
-                            label = { Text(strings.dialogFieldHost) },
-                            singleLine = true,
-                            modifier = Modifier.weight(1f)
-                        )
-                        if (selectedProto == VaultProtocolType.RDP) {
-                            OutlinedTextField(
-                                value = rdpPortText,
-                                onValueChange = { rdpPortText = it.filter(Char::isDigit) },
-                                label = { Text(strings.dialogFieldPort) },
-                                singleLine = true,
-                                modifier = Modifier.width(92.dp)
-                            )
-                        }
-                    }
-
-                    // Parent Folder Selector (Property Inheritance Cascade)
-                    if (folders.isNotEmpty()) {
-                        val activeFolderName = folders.firstOrNull { it.id == selectedFolderId }?.name ?: "-"
-                        Box(modifier = Modifier.fillMaxWidth()) {
-                            OutlinedButton(
-                                onClick = { folderMenuOpen = true },
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Text("${strings.dialogFieldFolder}: $activeFolderName")
-                            }
-                            DropdownMenu(
-                                expanded = folderMenuOpen,
-                                onDismissRequest = { folderMenuOpen = false }
-                            ) {
-                                DropdownMenuItem(
-                                    text = { Text("-") },
-                                    onClick = {
-                                        selectedFolderId = null
-                                        folderMenuOpen = false
-                                    }
-                                )
-                                folders.forEach { folder ->
-                                    DropdownMenuItem(
-                                        text = { Text(folder.name) },
-                                        onClick = {
-                                            selectedFolderId = folder.id
-                                            folderMenuOpen = false
-                                        }
-                                    )
-                                }
-                            }
-                        }
-                    }
-
-                    // Credential Inheritance / Folder Credential Application
                     Text(
                         text = strings.dialogFieldCredentialMode,
                         style = MaterialTheme.typography.labelMedium,
@@ -719,6 +780,61 @@ fun NewOrEditConnectionDialog(
                         }
 
                         else -> Unit
+                    }
+
+                    if (gateways.isNotEmpty()) {
+                        Text(
+                            text = strings.inspectorEffectiveGateway,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.secondary
+                        )
+                        Row(
+                            modifier = Modifier.horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            FilterChip(
+                                selected = gatewayMode == InheritanceMode.INHERIT_FROM_PARENT,
+                                onClick = { gatewayMode = InheritanceMode.INHERIT_FROM_PARENT },
+                                label = { Text(strings.credModeInheritFolder, style = MaterialTheme.typography.labelSmall) }
+                            )
+                            FilterChip(
+                                selected = gatewayMode == InheritanceMode.OVERRIDE_EXPLICIT,
+                                onClick = { gatewayMode = InheritanceMode.OVERRIDE_EXPLICIT },
+                                label = { Text(strings.credModeOverrideExplicit, style = MaterialTheme.typography.labelSmall) }
+                            )
+                            FilterChip(
+                                selected = gatewayMode == InheritanceMode.NONE_DIRECT,
+                                onClick = { gatewayMode = InheritanceMode.NONE_DIRECT },
+                                label = { Text("Direct", style = MaterialTheme.typography.labelSmall) }
+                            )
+                        }
+                        if (gatewayMode == InheritanceMode.OVERRIDE_EXPLICIT) {
+                            val chosenGw = gateways.firstOrNull { it.id == explicitGatewayId }
+                            Box(modifier = Modifier.fillMaxWidth()) {
+                                OutlinedButton(
+                                    onClick = { gwMenuOpen = true },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Icon(Icons.Outlined.DeviceHub, contentDescription = null, modifier = Modifier.size(15.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(chosenGw?.let { "${it.name} (${it.host}:${it.port})" } ?: "-")
+                                }
+                                DropdownMenu(
+                                    expanded = gwMenuOpen,
+                                    onDismissRequest = { gwMenuOpen = false }
+                                ) {
+                                    gateways.forEach { gw ->
+                                        DropdownMenuItem(
+                                            text = { Text("${gw.name} • ${gw.host}:${gw.port}") },
+                                            onClick = {
+                                                explicitGatewayId = gw.id
+                                                gwMenuOpen = false
+                                            }
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
 
                     if (selectedProto == VaultProtocolType.RDP) {
@@ -1267,8 +1383,9 @@ fun NewOrEditConnectionDialog(
                         )
 
                         VaultProtocolType.TELNET ->
-                            (initialConnection?.settings as? ProtocolSpecificSettings.Ssh)
-                                ?: ProtocolSpecificSettings.Ssh(port = 23)
+                            ((initialConnection?.settings as? ProtocolSpecificSettings.Ssh)
+                                ?: ProtocolSpecificSettings.Ssh(port = 23))
+                                .copy(port = sshPortText.toIntOrNull()?.takeIf { it in 1..65535 } ?: 23)
 
                         VaultProtocolType.SERIAL -> initialSerial.copy(
                             devicePathHint = host.trim(),
@@ -1289,29 +1406,35 @@ fun NewOrEditConnectionDialog(
                         )
 
                         VaultProtocolType.SFTP, VaultProtocolType.FTP,
-                        VaultProtocolType.FTPS, VaultProtocolType.SCP ->
-                            (initialConnection?.settings as? ProtocolSpecificSettings.FileTransfer)
-                                ?: ProtocolSpecificSettings.FileTransfer()
+                        VaultProtocolType.FTPS, VaultProtocolType.SCP -> {
+                            val defaultFtPort = when (selectedProto) {
+                                VaultProtocolType.FTP -> 21
+                                VaultProtocolType.FTPS -> 990
+                                else -> 22
+                            }
+                            ((initialConnection?.settings as? ProtocolSpecificSettings.FileTransfer)
+                                ?: ProtocolSpecificSettings.FileTransfer(port = defaultFtPort))
+                                .copy(port = ftPortText.toIntOrNull()?.takeIf { it in 1..65535 } ?: defaultFtPort)
+                        }
 
                         VaultProtocolType.VNC, VaultProtocolType.APPLE_SCREEN_SHARING ->
-                            (initialConnection?.settings as? ProtocolSpecificSettings.Vnc)
+                            ((initialConnection?.settings as? ProtocolSpecificSettings.Vnc)
                                 ?: ProtocolSpecificSettings.Vnc(
                                     appleArdDiffieHellmanAuth = selectedProto == VaultProtocolType.APPLE_SCREEN_SHARING
-                                )
+                                ))
+                                .copy(port = vncPortText.toIntOrNull()?.takeIf { it in 1..65535 } ?: 5900)
 
                         VaultProtocolType.WEB_PAGE ->
-                            (initialConnection?.settings as? ProtocolSpecificSettings.WebPage)
-                                ?: ProtocolSpecificSettings.WebPage(
-                                    url = if (host.startsWith("http")) host else "https://$host"
-                                )
+                            ((initialConnection?.settings as? ProtocolSpecificSettings.WebPage)
+                                ?: ProtocolSpecificSettings.WebPage())
+                                .copy(url = if (host.startsWith("http")) host.trim() else "https://${host.trim()}")
 
                         VaultProtocolType.VMWARE_VSPHERE, VaultProtocolType.PROXMOX_VE,
                         VaultProtocolType.HYPER_V, VaultProtocolType.AWS_EC2,
                         VaultProtocolType.AZURE_VM, VaultProtocolType.WINDOWS_TERMINAL_SERVICES ->
-                            (initialConnection?.settings as? ProtocolSpecificSettings.CloudVirtualization)
-                                ?: ProtocolSpecificSettings.CloudVirtualization(
-                                    apiEndpointUrl = if (host.startsWith("http")) host else "https://$host"
-                                )
+                            ((initialConnection?.settings as? ProtocolSpecificSettings.CloudVirtualization)
+                                ?: ProtocolSpecificSettings.CloudVirtualization())
+                                .copy(apiEndpointUrl = if (host.startsWith("http")) host.trim() else "https://${host.trim()}")
 
                         VaultProtocolType.UTILITY_PING, VaultProtocolType.UTILITY_TRACEROUTE,
                         VaultProtocolType.UTILITY_PORT_SCANNER, VaultProtocolType.UTILITY_WAKE_ON_LAN ->
@@ -1324,6 +1447,12 @@ fun NewOrEditConnectionDialog(
                         credentialMode = credentialMode,
                         explicitCredentialId = if (credentialMode == InheritanceMode.OVERRIDE_EXPLICIT) {
                             explicitCredentialId
+                        } else {
+                            null
+                        },
+                        gatewayMode = gatewayMode,
+                        explicitGatewayId = if (gatewayMode == InheritanceMode.OVERRIDE_EXPLICIT) {
+                            explicitGatewayId
                         } else {
                             null
                         }
@@ -1397,23 +1526,52 @@ fun CredentialVaultStudioView(
     strings: WorkspaceLocalizedStrings,
     onGenerateEd25519Key: () -> Unit,
     onCreateCredential: (VaultCredential) -> Unit,
+    onUpdateCredential: (VaultCredential) -> Unit = {},
+    onDeleteCredential: (String) -> Unit = {},
     onRequestImportVaultFile: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val clipboard = LocalClipboardManager.current
-    var showAddDialog by remember { mutableStateOf(false) }
+    var showCredDialog by remember { mutableStateOf(false) }
+    var editingCredential by remember { mutableStateOf<VaultCredential?>(null) }
     var credName by remember { mutableStateOf("") }
+    var credDomain by remember { mutableStateOf("") }
     var credUser by remember { mutableStateOf("") }
     var credSecret by remember { mutableStateOf("") }
     var credTotpSecret by remember { mutableStateOf("") }
     var credKind by remember { mutableStateOf(CredentialSourceKind.VAULT_INTERNAL) }
 
-    if (showAddDialog) {
+    fun openForCreate() {
+        editingCredential = null
+        credName = ""
+        credDomain = ""
+        credUser = ""
+        credSecret = ""
+        credTotpSecret = ""
+        credKind = CredentialSourceKind.VAULT_INTERNAL
+        showCredDialog = true
+    }
+
+    fun openForEdit(cred: VaultCredential) {
+        editingCredential = cred
+        credName = cred.name
+        credDomain = cred.domain
+        credUser = cred.username
+        credSecret = cred.secretPassword
+        credTotpSecret = cred.totpSecretBase32
+        credKind = cred.sourceKind
+        showCredDialog = true
+    }
+
+    if (showCredDialog) {
         AlertDialog(
-            onDismissRequest = { showAddDialog = false },
-            title = { Text(strings.studioActionAddCredential) },
+            onDismissRequest = { showCredDialog = false },
+            title = { Text(if (editingCredential != null) strings.dialogActionSave else strings.studioActionAddCredential) },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(
+                    modifier = Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
                     Row(
                         modifier = Modifier.horizontalScroll(rememberScrollState()),
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -1436,6 +1594,13 @@ fun CredentialVaultStudioView(
                         value = credName,
                         onValueChange = { credName = it },
                         label = { Text(strings.dialogFieldName) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = credDomain,
+                        onValueChange = { credDomain = it },
+                        label = { Text(strings.dialogFieldDomain) },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -1467,28 +1632,40 @@ fun CredentialVaultStudioView(
                 Button(
                     enabled = credName.isNotBlank(),
                     onClick = {
-                        onCreateCredential(
-                            VaultCredential(
-                                name = credName.trim(),
-                                sourceKind = credKind,
-                                username = credUser.trim(),
-                                secretPassword = credSecret,
-                                totpSecretBase32 = credTotpSecret.trim(),
-                                externalReferenceUri = if (credKind != CredentialSourceKind.VAULT_INTERNAL) credUser.trim() else ""
+                        val existing = editingCredential
+                        if (existing != null) {
+                            onUpdateCredential(
+                                existing.copy(
+                                    name = credName.trim(),
+                                    sourceKind = credKind,
+                                    domain = credDomain.trim(),
+                                    username = credUser.trim(),
+                                    secretPassword = credSecret,
+                                    totpSecretBase32 = credTotpSecret.trim(),
+                                    externalReferenceUri = if (credKind != CredentialSourceKind.VAULT_INTERNAL) credUser.trim() else existing.externalReferenceUri
+                                )
                             )
-                        )
-                        credName = ""
-                        credUser = ""
-                        credSecret = ""
-                        credTotpSecret = ""
-                        showAddDialog = false
+                        } else {
+                            onCreateCredential(
+                                VaultCredential(
+                                    name = credName.trim(),
+                                    sourceKind = credKind,
+                                    domain = credDomain.trim(),
+                                    username = credUser.trim(),
+                                    secretPassword = credSecret,
+                                    totpSecretBase32 = credTotpSecret.trim(),
+                                    externalReferenceUri = if (credKind != CredentialSourceKind.VAULT_INTERNAL) credUser.trim() else ""
+                                )
+                            )
+                        }
+                        showCredDialog = false
                     }
                 ) {
                     Text(strings.dialogActionSave)
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showAddDialog = false }) { Text(strings.dialogActionCancel) }
+                TextButton(onClick = { showCredDialog = false }) { Text(strings.dialogActionCancel) }
             }
         )
     }
@@ -1533,7 +1710,7 @@ fun CredentialVaultStudioView(
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(strings.inspectorGenerateSshKey)
                 }
-                Button(onClick = { showAddDialog = true }) {
+                Button(onClick = { openForCreate() }) {
                     Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(strings.studioActionAddCredential)
@@ -1545,6 +1722,11 @@ fun CredentialVaultStudioView(
 
         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             items(credentials, key = { it.id }) { cred ->
+                val userDisplay = if (cred.domain.isNotBlank()) {
+                    "${cred.domain}\\${cred.username.ifBlank { "-" }}"
+                } else {
+                    cred.username.ifBlank { "-" }
+                }
                 Surface(
                     shape = MaterialTheme.shapes.large,
                     color = MaterialTheme.colorScheme.surfaceContainer,
@@ -1564,17 +1746,46 @@ fun CredentialVaultStudioView(
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(cred.name, style = MaterialTheme.typography.titleSmall)
                                 Text(
-                                    text = "${cred.sourceKind.name} • ${cred.username.ifBlank { "-" }}" +
+                                    text = "${cred.sourceKind.name} • $userDisplay" +
                                         if (cred.keyFingerprintSha256.isNotBlank()) " • ${cred.keyFingerprintSha256}" else "",
                                     style = NexusTheme.monospace.keycapShortcut,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
-                            if (cred.publicKeyOpenSsh.isNotBlank()) {
-                                IconButton(
-                                    onClick = { clipboard.setText(AnnotatedString(cred.publicKeyOpenSsh)) }
-                                ) {
-                                    Icon(Icons.Outlined.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                if (cred.username.isNotBlank()) {
+                                    AssistChip(
+                                        onClick = { clipboard.setText(AnnotatedString(cred.username)) },
+                                        label = { Text("User", style = MaterialTheme.typography.labelSmall) },
+                                        leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null, modifier = Modifier.size(13.dp)) }
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                }
+                                if (cred.secretPassword.isNotBlank()) {
+                                    AssistChip(
+                                        onClick = { clipboard.setText(AnnotatedString(cred.secretPassword)) },
+                                        label = { Text("Secret", style = MaterialTheme.typography.labelSmall) },
+                                        leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null, modifier = Modifier.size(13.dp)) }
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                }
+                                if (cred.publicKeyOpenSsh.isNotBlank()) {
+                                    IconButton(
+                                        onClick = { clipboard.setText(AnnotatedString(cred.publicKeyOpenSsh)) }
+                                    ) {
+                                        Icon(Icons.Outlined.ContentCopy, contentDescription = "Copy SSH Public Key", modifier = Modifier.size(18.dp))
+                                    }
+                                }
+                                IconButton(onClick = { openForEdit(cred) }) {
+                                    Icon(Icons.Outlined.Edit, contentDescription = "Edit Credential", modifier = Modifier.size(18.dp))
+                                }
+                                IconButton(onClick = { onDeleteCredential(cred.id) }) {
+                                    Icon(
+                                        Icons.Outlined.Delete,
+                                        contentDescription = "Delete Credential",
+                                        tint = MaterialTheme.colorScheme.error,
+                                        modifier = Modifier.size(18.dp)
+                                    )
                                 }
                             }
                         }
@@ -1601,21 +1812,53 @@ fun SecureGatewayStudioView(
     strings: WorkspaceLocalizedStrings,
     onProbeGateway: (SecureGatewayConfig) -> Unit,
     onAddGateway: (SecureGatewayConfig) -> Unit,
+    activeLeases: List<ActiveTunnelLease> = emptyList(),
+    credentials: List<VaultCredential> = emptyList(),
+    onUpdateGateway: (SecureGatewayConfig) -> Unit = {},
+    onDeleteGateway: (String) -> Unit = {},
+    onOpenGatewayLease: (SecureGatewayConfig) -> Unit = {},
+    onCloseGatewayLease: (String) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
-    var showAddModal by remember { mutableStateOf(false) }
+    var showGwModal by remember { mutableStateOf(false) }
+    var editingGw by remember { mutableStateOf<SecureGatewayConfig?>(null) }
     var gwName by remember { mutableStateOf("") }
     var gwHost by remember { mutableStateOf("") }
     var gwPort by remember { mutableStateOf("1080") }
     var gwKind by remember { mutableStateOf(GatewayTransportKind.SOCKS5_PROXY) }
+    var gwCredentialId by remember { mutableStateOf<String?>(null) }
+    var gwCredMenuOpen by remember { mutableStateOf(false) }
 
-    if (showAddModal) {
+    fun openAddGateway() {
+        editingGw = null
+        gwName = ""
+        gwHost = ""
+        gwPort = "1080"
+        gwKind = GatewayTransportKind.SOCKS5_PROXY
+        gwCredentialId = null
+        showGwModal = true
+    }
+
+    fun openEditGateway(gw: SecureGatewayConfig) {
+        editingGw = gw
+        gwName = gw.name
+        gwHost = gw.host
+        gwPort = gw.port.toString()
+        gwKind = gw.kind
+        gwCredentialId = gw.credentialId
+        showGwModal = true
+    }
+
+    if (showGwModal) {
         AlertDialog(
-            onDismissRequest = { showAddModal = false },
-            title = { Text(strings.studioActionAddGateway) },
+            onDismissRequest = { showGwModal = false },
+            title = { Text(if (editingGw != null) strings.dialogActionSave else strings.studioActionAddGateway) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
                         GatewayTransportKind.entries.forEach { kind ->
                             FilterChip(
                                 selected = gwKind == kind,
@@ -1653,30 +1896,69 @@ fun SecureGatewayStudioView(
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
+                    if (credentials.isNotEmpty()) {
+                        val selectedCredName = credentials.firstOrNull { it.id == gwCredentialId }?.name ?: "-"
+                        Box(modifier = Modifier.fillMaxWidth()) {
+                            OutlinedButton(
+                                onClick = { gwCredMenuOpen = true },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Icon(Icons.Outlined.Key, contentDescription = null, modifier = Modifier.size(15.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("${strings.inspectorEffectiveCredential}: $selectedCredName")
+                            }
+                            DropdownMenu(
+                                expanded = gwCredMenuOpen,
+                                onDismissRequest = { gwCredMenuOpen = false }
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("-") },
+                                    onClick = {
+                                        gwCredentialId = null
+                                        gwCredMenuOpen = false
+                                    }
+                                )
+                                credentials.forEach { c ->
+                                    DropdownMenuItem(
+                                        text = { Text(c.name) },
+                                        onClick = {
+                                            gwCredentialId = c.id
+                                            gwCredMenuOpen = false
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
             },
             confirmButton = {
                 Button(
                     enabled = gwName.isNotBlank() && gwHost.isNotBlank(),
                     onClick = {
-                        onAddGateway(
-                            SecureGatewayConfig(
-                                name = gwName.trim(),
-                                kind = gwKind,
-                                host = gwHost.trim(),
-                                port = gwPort.toIntOrNull() ?: 443
-                            )
-                        )
-                        gwName = ""
-                        gwHost = ""
-                        showAddModal = false
+                        val existing = editingGw
+                        val saved = (existing?.copy(
+                            name = gwName.trim(),
+                            kind = gwKind,
+                            host = gwHost.trim(),
+                            port = gwPort.toIntOrNull()?.takeIf { it in 1..65535 } ?: 443,
+                            credentialId = gwCredentialId
+                        ) ?: SecureGatewayConfig(
+                            name = gwName.trim(),
+                            kind = gwKind,
+                            host = gwHost.trim(),
+                            port = gwPort.toIntOrNull()?.takeIf { it in 1..65535 } ?: 443,
+                            credentialId = gwCredentialId
+                        ))
+                        if (existing != null) onUpdateGateway(saved) else onAddGateway(saved)
+                        showGwModal = false
                     }
                 ) {
                     Text(strings.dialogActionSave)
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showAddModal = false }) { Text(strings.dialogActionCancel) }
+                TextButton(onClick = { showGwModal = false }) { Text(strings.dialogActionCancel) }
             }
         )
     }
@@ -1710,7 +1992,7 @@ fun SecureGatewayStudioView(
                     )
                 }
             }
-            Button(onClick = { showAddModal = true }) {
+            Button(onClick = { openAddGateway() }) {
                 Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(16.dp))
                 Spacer(modifier = Modifier.width(6.dp))
                 Text(strings.studioActionAddGateway)
@@ -1718,6 +2000,34 @@ fun SecureGatewayStudioView(
         }
 
         HorizontalDivider()
+
+        if (activeLeases.isNotEmpty()) {
+            Surface(
+                shape = MaterialTheme.shapes.large,
+                color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.45f),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("Active Loopback Relay Leases (${activeLeases.size})", style = MaterialTheme.typography.labelLarge)
+                    activeLeases.forEach { lease ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = "${lease.localBindHost}:${lease.localBindPort} -> ${lease.remoteTargetHost}:${lease.remoteTargetPort} (${lease.kind.name})",
+                                style = NexusTheme.monospace.keycapShortcut,
+                                color = NexusTheme.extendedColors.statusConnected
+                            )
+                            TextButton(onClick = { onCloseGatewayLease(lease.leaseId) }) {
+                                Text("Close Lease")
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             items(gateways, key = { it.id }) { gw ->
@@ -1747,10 +2057,26 @@ fun SecureGatewayStudioView(
                                 }
                             )
                         }
-                        FilledTonalButton(onClick = { onProbeGateway(gw) }) {
-                            Icon(Icons.Outlined.NetworkCheck, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(strings.studioActionProbeGateway)
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            OutlinedButton(onClick = { onOpenGatewayLease(gw) }) {
+                                Text("Bind Loopback")
+                            }
+                            FilledTonalButton(onClick = { onProbeGateway(gw) }) {
+                                Icon(Icons.Outlined.NetworkCheck, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(strings.studioActionProbeGateway)
+                            }
+                            IconButton(onClick = { openEditGateway(gw) }) {
+                                Icon(Icons.Outlined.Edit, contentDescription = "Edit Gateway", modifier = Modifier.size(18.dp))
+                            }
+                            IconButton(onClick = { onDeleteGateway(gw.id) }) {
+                                Icon(
+                                    Icons.Outlined.Delete,
+                                    contentDescription = "Delete Gateway",
+                                    tint = MaterialTheme.colorScheme.error,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
                         }
                     }
                 }
@@ -1770,11 +2096,19 @@ fun AutomationTasksStudioView(
     onRunCommandTask: (CommandTask) -> Unit,
     onRunKeySequenceTask: (KeySequenceTask) -> Unit,
     onAddCommandTask: (CommandTask) -> Unit,
+    onAddKeySequenceTask: (KeySequenceTask) -> Unit = {},
+    onDeleteCommandTask: (String) -> Unit = {},
+    onDeleteKeySequenceTask: (String) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var showNewTaskModal by remember { mutableStateOf(false) }
     var taskName by remember { mutableStateOf("") }
     var taskCmd by remember { mutableStateOf("") }
+    var taskBroadcast by remember { mutableStateOf(false) }
+
+    var showNewMacroModal by remember { mutableStateOf(false) }
+    var macroName by remember { mutableStateOf("") }
+    var macroSequence by remember { mutableStateOf("\$EffectiveUsername\${TAB}\$EffectivePassword\${ENTER}") }
 
     if (showNewTaskModal) {
         AlertDialog(
@@ -1795,6 +2129,11 @@ fun AutomationTasksStudioView(
                         label = { Text(strings.drawerBroadcastPrompt) },
                         modifier = Modifier.fillMaxWidth()
                     )
+                    RdpOptionSwitchRow(
+                        label = strings.actionBroadcastInput,
+                        checked = taskBroadcast,
+                        onCheckedChange = { taskBroadcast = it }
+                    )
                 }
             },
             confirmButton = {
@@ -1805,11 +2144,12 @@ fun AutomationTasksStudioView(
                             CommandTask(
                                 name = taskName.trim(),
                                 commandTemplate = taskCmd.trim(),
-                                broadcastToAllSelectedSessions = true
+                                broadcastToAllSelectedSessions = taskBroadcast
                             )
                         )
                         taskName = ""
                         taskCmd = ""
+                        taskBroadcast = false
                         showNewTaskModal = false
                     }
                 ) {
@@ -1818,6 +2158,50 @@ fun AutomationTasksStudioView(
             },
             dismissButton = {
                 TextButton(onClick = { showNewTaskModal = false }) { Text(strings.dialogActionCancel) }
+            }
+        )
+    }
+
+    if (showNewMacroModal) {
+        AlertDialog(
+            onDismissRequest = { showNewMacroModal = false },
+            title = { Text("Add Key Sequence Macro") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = macroName,
+                        onValueChange = { macroName = it },
+                        label = { Text(strings.dialogFieldName) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = macroSequence,
+                        onValueChange = { macroSequence = it },
+                        label = { Text("Macro ({ENTER}, {TAB}, {WAIT:250}, \$EffectivePassword\$)") },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    enabled = macroName.isNotBlank() && macroSequence.isNotBlank(),
+                    onClick = {
+                        onAddKeySequenceTask(
+                            KeySequenceTask(
+                                name = macroName.trim(),
+                                macroSequence = macroSequence
+                            )
+                        )
+                        macroName = ""
+                        showNewMacroModal = false
+                    }
+                ) {
+                    Text(strings.dialogActionSave)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showNewMacroModal = false }) { Text(strings.dialogActionCancel) }
             }
         )
     }
@@ -1851,10 +2235,17 @@ fun AutomationTasksStudioView(
                     )
                 }
             }
-            Button(onClick = { showNewTaskModal = true }) {
-                Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                Spacer(modifier = Modifier.width(6.dp))
-                Text(strings.studioActionAddTask)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilledTonalButton(onClick = { showNewMacroModal = true }) {
+                    Icon(Icons.Outlined.Key, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Add Key Sequence")
+                }
+                Button(onClick = { showNewTaskModal = true }) {
+                    Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(strings.studioActionAddTask)
+                }
             }
         }
 
@@ -1877,15 +2268,25 @@ fun AutomationTasksStudioView(
                         Column(modifier = Modifier.weight(1f)) {
                             Text(task.name, style = MaterialTheme.typography.titleSmall)
                             Text(
-                                text = task.commandTemplate,
+                                text = task.commandTemplate + if (task.broadcastToAllSelectedSessions) " • [Broadcast]" else "",
                                 style = NexusTheme.monospace.keycapShortcut,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
-                        FilledTonalButton(onClick = { onRunCommandTask(task) }) {
-                            Icon(Icons.Outlined.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(strings.studioActionRunTask)
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            FilledTonalButton(onClick = { onRunCommandTask(task) }) {
+                                Icon(Icons.Outlined.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(strings.studioActionRunTask)
+                            }
+                            IconButton(onClick = { onDeleteCommandTask(task.id) }) {
+                                Icon(
+                                    Icons.Outlined.Delete,
+                                    contentDescription = "Delete Task",
+                                    tint = MaterialTheme.colorScheme.error,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
                         }
                     }
                 }
@@ -1911,10 +2312,20 @@ fun AutomationTasksStudioView(
                                 color = MaterialTheme.colorScheme.tertiary
                             )
                         }
-                        FilledTonalButton(onClick = { onRunKeySequenceTask(macro) }) {
-                            Icon(Icons.Outlined.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(strings.studioActionRunTask)
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            FilledTonalButton(onClick = { onRunKeySequenceTask(macro) }) {
+                                Icon(Icons.Outlined.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(strings.studioActionRunTask)
+                            }
+                            IconButton(onClick = { onDeleteKeySequenceTask(macro.id) }) {
+                                Icon(
+                                    Icons.Outlined.Delete,
+                                    contentDescription = "Delete Macro",
+                                    tint = MaterialTheme.colorScheme.error,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
                         }
                     }
                 }
@@ -1925,7 +2336,7 @@ fun AutomationTasksStudioView(
 
 /**
  * 5. Dual-Engine Live Google Drive Sync (Direct Persistent SAF + Drive REST API v3 OAuth 2.0),
- *    3-Way Vector Clock Conflict Merge, & Play-Protect-Safe GitHub Releases Update Studio (`v1.1`).
+ *    3-Way Vector Clock Conflict Merge, & Play-Protect-Safe GitHub Releases Update Studio (`v1.1.1`).
  */
 @Composable
 fun DriveSyncAndConflictStudioView(
@@ -1943,6 +2354,9 @@ fun DriveSyncAndConflictStudioView(
     driveIsSyncing: Boolean = false,
     driveAutoSyncOnSave: Boolean = true,
     onToggleAutoSyncOnSave: (Boolean) -> Unit = {},
+    rememberVaultPassphrase: Boolean = false,
+    onSaveVaultSyncPassphrase: (String, Boolean) -> Unit = { _, _ -> },
+    onClearVaultSyncPassphrase: () -> Unit = {},
     onCreateLiveSafDriveVault: () -> Unit = {},
     onLinkExistingSafDriveVault: () -> Unit = {},
     onUnlinkSafDriveVault: () -> Unit = {},
@@ -1960,6 +2374,9 @@ fun DriveSyncAndConflictStudioView(
         mutableStateOf(initialSharedFolderId.ifBlank { "17C98pGqQUAoQwQ-OSLUHPj4_dtb4_wtS" })
     }
     var savedBanner by remember { mutableStateOf(false) }
+    var syncPassInput by remember { mutableStateOf("") }
+    var rememberPassToggle by remember(rememberVaultPassphrase) { mutableStateOf(rememberVaultPassphrase) }
+    var passSavedBanner by remember { mutableStateOf(false) }
 
     Column(
         modifier = modifier
@@ -2037,6 +2454,72 @@ fun DriveSyncAndConflictStudioView(
                     style = NexusTheme.monospace.keycapShortcut,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+            }
+        }
+
+        // Card 0: Zero-Knowledge Vault Encryption Passphrase (Android Keystore Backed)
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            color = MaterialTheme.colorScheme.surfaceContainerLow,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    text = "Zero-Knowledge Vault Encryption Passphrase (Local + Live Drive Sync)",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                OutlinedTextField(
+                    value = syncPassInput,
+                    onValueChange = {
+                        syncPassInput = it
+                        passSavedBanner = false
+                    },
+                    label = { Text(strings.vaultPassphraseLabel) },
+                    visualTransformation = PasswordVisualTransformation(),
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                RdpOptionSwitchRow(
+                    label = "Store Vault Passphrase in Hardware-Backed Android Keystore (AES-256-GCM)",
+                    checked = rememberPassToggle,
+                    onCheckedChange = { rememberPassToggle = it }
+                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    FilledTonalButton(
+                        enabled = syncPassInput.length >= 6,
+                        onClick = {
+                            onSaveVaultSyncPassphrase(syncPassInput, rememberPassToggle)
+                            syncPassInput = ""
+                            passSavedBanner = true
+                        }
+                    ) {
+                        Icon(Icons.Outlined.VpnKey, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Apply Vault Passphrase")
+                    }
+                    if (rememberVaultPassphrase) {
+                        OutlinedButton(
+                            onClick = {
+                                onClearVaultSyncPassphrase()
+                                rememberPassToggle = false
+                                passSavedBanner = false
+                            }
+                        ) {
+                            Text("Clear Keystore Passphrase")
+                        }
+                    }
+                    if (passSavedBanner || rememberVaultPassphrase) {
+                        Text(
+                            text = if (rememberVaultPassphrase) "Keystore Protected" else "Session Active",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = NexusTheme.extendedColors.statusConnected
+                        )
+                    }
+                }
             }
         }
 
@@ -2241,4 +2724,5 @@ fun DriveSyncAndConflictStudioView(
         }
     }
 }
+
 

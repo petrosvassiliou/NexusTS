@@ -1,0 +1,5 @@
+NexusTS 1.1.1 — Umfassender Qualitäts-Sweep & Enterprise-Härtung:
+• Vollbild-Tresorsperre (Zero-Knowledge), verschlüsselte lokale Persistenz & eigenes Google-Drive-Sync-Passwort.
+• Aktive RDP/SSH-Sitzungen bleiben bei Tresoränderungen und beim Ab-/Andocken von Fenstern erhalten.
+• Vollständige Hardware-Tastatur-Weiterleitung (ANSI/VT), verschachtelte Unterordner & CRUD in allen Studios.
+• Gehärtetes FreeRDP 3.12, SSH/SFTP, USB-C-UART, K8s/Docker, R8-Regeln & Android-15-FGS-Konformität.

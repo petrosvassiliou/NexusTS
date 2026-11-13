@@ -6,6 +6,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #ifdef __ANDROID__
@@ -15,6 +16,16 @@ struct ANativeWindow;
 #endif
 
 namespace nexusts::rdp {
+
+constexpr uint32_t map_device_scale_factor(uint32_t desktop_scale_percent) noexcept {
+    if (desktop_scale_percent >= 175u) {
+        return 180u;
+    }
+    if (desktop_scale_percent >= 125u) {
+        return 140u;
+    }
+    return 100u;
+}
 
 struct RdpMonitorLayout {
     int32_t monitor_id{0};
@@ -135,6 +146,7 @@ public:
 
     void attach_native_window(ANativeWindow* window);
     void detach_native_window();
+    bool has_bound_surface() const noexcept;
 
     void resize_shadow_framebuffer(uint32_t width, uint32_t height);
     void update_dirty_region(
@@ -146,12 +158,20 @@ public:
         uint32_t src_stride
     );
     void present_frame();
+    void present_frame(
+        const uint8_t* src_rgba,
+        uint32_t width,
+        uint32_t height,
+        uint32_t src_stride
+    );
 
     uint32_t width() const noexcept { return width_.load(); }
     uint32_t height() const noexcept { return height_.load(); }
 
 private:
-    std::mutex surface_mutex_;
+    void present_locked();
+
+    mutable std::mutex surface_mutex_;
     ANativeWindow* native_window_{nullptr};
     std::atomic<uint32_t> width_{1920};
     std::atomic<uint32_t> height_{1080};
@@ -166,6 +186,8 @@ public:
     bool connect();
     void disconnect();
     bool is_connected() const noexcept { return connected_.load(); }
+
+    void on_surface_bound();
 
     /**
      * Sends MS-RDPEDI (`DISP_DVC`) Display Control PDU to dynamically resize remote desktop
@@ -192,18 +214,22 @@ public:
         uint16_t y
     );
 
-    RdpGdiSurfacePresenter& presenter() noexcept { return presenter_; }
+    RdpGdiSurfacePresenter& presenter() noexcept { return *gdi_presenter_; }
     RdpVirtualChannelHub& channels() noexcept { return channels_; }
     RdpHardwareH264Decoder& decoder() noexcept { return h264_decoder_; }
 
 private:
+    void render_diagnostic_surface_frame(uint32_t width, uint32_t height);
+
     RdpConnectParams params_;
     std::atomic<bool> connected_{false};
+    std::atomic<bool> stop_requested_{false};
     std::atomic<uint32_t> active_scale_percent_{100};
     std::mutex state_mutex_;
-    RdpGdiSurfacePresenter presenter_;
+    std::unique_ptr<RdpGdiSurfacePresenter> gdi_presenter_;
     RdpVirtualChannelHub channels_;
     RdpHardwareH264Decoder h264_decoder_;
+    std::thread event_loop_thread_;
     [[maybe_unused]] void* freerdp_instance_{nullptr};
 };
 

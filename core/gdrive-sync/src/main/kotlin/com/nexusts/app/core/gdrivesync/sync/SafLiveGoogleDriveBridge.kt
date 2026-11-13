@@ -12,12 +12,13 @@ import java.io.FileNotFoundException
 import java.security.MessageDigest
 import kotlin.math.max
 
-data class LinkedSafDriveVault(
+data class LinkedSafDriveVault @JvmOverloads constructor(
     val uriString: String,
     val displayName: String,
     val lastSyncedRevision: Long,
     val lastSyncedRemoteSha256: String,
-    val lastSyncedEpochMs: Long
+    val lastSyncedEpochMs: Long,
+    val linkedDocumentId: String? = null
 )
 
 sealed interface SafDriveSyncOutcome {
@@ -81,7 +82,7 @@ class ContentResolverSafByteTransport(
 }
 
 /**
- * Zero-Cloud-Console Live Google Drive SAF Synchronization Bridge (`v1.1`).
+ * Zero-Cloud-Console Live Google Drive SAF Synchronization Bridge (`v1.2`).
  *
  * Enables direct-installed APKs on Googlebook OS & Android Tablets to synchronize Argon2id + AES-256-GCM
  * `.nxts` vaults directly with Personal Google Drive & Shared Team Drives (`com.google.android.apps.docs.storage`)
@@ -97,7 +98,12 @@ class SafLiveGoogleDriveBridge(
         appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     }
 
-    fun linkPersistentVaultUri(uri: Uri, takePersistable: Boolean = true): LinkedSafDriveVault {
+    @JvmOverloads
+    fun linkPersistentVaultUri(
+        uri: Uri,
+        takePersistable: Boolean = true,
+        documentId: String? = null
+    ): LinkedSafDriveVault {
         if (takePersistable) {
             runCatching {
                 val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
@@ -112,6 +118,7 @@ class SafLiveGoogleDriveBridge(
             .putLong(KEY_LAST_SYNCED_REV, 0L)
             .putString(KEY_LAST_REMOTE_SHA256, "")
             .putLong(KEY_LAST_SYNCED_EPOCH_MS, 0L)
+            .putString(KEY_LAST_SYNCED_DOC_ID, documentId.orEmpty())
             .apply()
 
         return LinkedSafDriveVault(
@@ -119,7 +126,8 @@ class SafLiveGoogleDriveBridge(
             displayName = displayName,
             lastSyncedRevision = 0L,
             lastSyncedRemoteSha256 = "",
-            lastSyncedEpochMs = 0L
+            lastSyncedEpochMs = 0L,
+            linkedDocumentId = documentId?.takeIf { it.isNotBlank() }
         )
     }
 
@@ -141,14 +149,17 @@ class SafLiveGoogleDriveBridge(
             displayName = prefs.getString(KEY_DISPLAY_NAME, "NexusTS-Vault.nxts").orEmpty(),
             lastSyncedRevision = prefs.getLong(KEY_LAST_SYNCED_REV, 0L),
             lastSyncedRemoteSha256 = prefs.getString(KEY_LAST_REMOTE_SHA256, "").orEmpty(),
-            lastSyncedEpochMs = prefs.getLong(KEY_LAST_SYNCED_EPOCH_MS, 0L)
+            lastSyncedEpochMs = prefs.getLong(KEY_LAST_SYNCED_EPOCH_MS, 0L),
+            linkedDocumentId = prefs.getString(KEY_LAST_SYNCED_DOC_ID, null)?.takeIf { it.isNotBlank() }
         )
     }
 
+    @JvmOverloads
     suspend fun synchronizeLinkedSafVault(
         currentDocument: NxtsVaultDocument,
         vaultPassphrase: CharArray,
-        localDeviceId: String = "Googlebook-OS"
+        localDeviceId: String = "Googlebook-OS",
+        localIsUninitializedStarter: Boolean = false
     ): SafDriveSyncOutcome = withContext(Dispatchers.IO) {
         val linked = getLinkedVaultInfo()
             ?: error("No persistent Google Drive .nxts file is linked yet.")
@@ -157,23 +168,28 @@ class SafLiveGoogleDriveBridge(
 
         // Case 1: Newly created empty .nxts document in Google Drive
         if (remoteBytes.isEmpty()) {
-            val bumpedDoc = bumpLocalVectorClock(currentDocument, localDeviceId)
-            val sealed = serializer.sealDocument(bumpedDoc, vaultPassphrase.copyOf())
+            val docToSeal = alignLocalClockWithoutExtraRevisionBump(currentDocument, localDeviceId)
+            val sealed = serializer.sealDocument(docToSeal, vaultPassphrase.copyOf())
             byteTransport.writeBytes(linked.uriString, sealed)
-            recordSyncSuccess(bumpedDoc.revision, sha256Hex(sealed))
-            return@withContext SafDriveSyncOutcome.PushedToDrive(bumpedDoc, sealed.size)
+            recordSyncSuccess(docToSeal.revision, sha256Hex(sealed), docToSeal.documentId)
+            return@withContext SafDriveSyncOutcome.PushedToDrive(docToSeal, sealed.size)
         }
 
         val remoteSha = sha256Hex(remoteBytes)
 
-        // Case 2: Remote file matches last synced hash — check if local edits need pushing
-        if (linked.lastSyncedRemoteSha256.isNotBlank() && remoteSha == linked.lastSyncedRemoteSha256) {
+        // Case 2: Fast-path when remote file matches last synced hash AND local vault is the active synced document
+        // (Never take this fast-path on a cold-started starter vault — always unseal and pull the real Drive vault!)
+        val sameKnownDocId = !localIsUninitializedStarter &&
+            !linked.linkedDocumentId.isNullOrBlank() &&
+            currentDocument.documentId == linked.linkedDocumentId
+
+        if (sameKnownDocId && linked.lastSyncedRemoteSha256.isNotBlank() && remoteSha == linked.lastSyncedRemoteSha256) {
             return@withContext if (currentDocument.revision > linked.lastSyncedRevision) {
-                val bumpedDoc = bumpLocalVectorClock(currentDocument, localDeviceId)
-                val sealed = serializer.sealDocument(bumpedDoc, vaultPassphrase.copyOf())
+                val docToSeal = alignLocalClockWithoutExtraRevisionBump(currentDocument, localDeviceId)
+                val sealed = serializer.sealDocument(docToSeal, vaultPassphrase.copyOf())
                 byteTransport.writeBytes(linked.uriString, sealed)
-                recordSyncSuccess(bumpedDoc.revision, sha256Hex(sealed))
-                SafDriveSyncOutcome.PushedToDrive(bumpedDoc, sealed.size)
+                recordSyncSuccess(docToSeal.revision, sha256Hex(sealed), docToSeal.documentId)
+                SafDriveSyncOutcome.PushedToDrive(docToSeal, sealed.size)
             } else {
                 SafDriveSyncOutcome.AlreadyUpToDate(currentDocument.revision)
             }
@@ -182,10 +198,30 @@ class SafLiveGoogleDriveBridge(
         // Unseal remote Google Drive .nxts container
         val remoteDoc = serializer.unsealDocument(remoteBytes, vaultPassphrase.copyOf())
 
-        // Case 3: Initial link to an existing Google Drive .nxts vault
+        // Cold-start / uninitialized starter guard: never overwrite or pollute an existing remote Drive vault!
+        if (localIsUninitializedStarter || currentDocument.documentId != remoteDoc.documentId) {
+            recordSyncSuccess(remoteDoc.revision, remoteSha, remoteDoc.documentId)
+            return@withContext SafDriveSyncOutcome.PulledFromDrive(remoteDoc)
+        }
+
+        // If remote SHA matched lastSyncedRemoteSha256 (e.g. linkedDocumentId was migrated from legacy prefs)
+        if (linked.lastSyncedRemoteSha256.isNotBlank() && remoteSha == linked.lastSyncedRemoteSha256) {
+            return@withContext if (currentDocument.revision > linked.lastSyncedRevision) {
+                val docToSeal = alignLocalClockWithoutExtraRevisionBump(currentDocument, localDeviceId)
+                val sealed = serializer.sealDocument(docToSeal, vaultPassphrase.copyOf())
+                byteTransport.writeBytes(linked.uriString, sealed)
+                recordSyncSuccess(docToSeal.revision, sha256Hex(sealed), docToSeal.documentId)
+                SafDriveSyncOutcome.PushedToDrive(docToSeal, sealed.size)
+            } else {
+                recordSyncSuccess(remoteDoc.revision, remoteSha, remoteDoc.documentId)
+                SafDriveSyncOutcome.AlreadyUpToDate(currentDocument.revision)
+            }
+        }
+
+        // Case 3: Initial link to an existing Google Drive .nxts vault with the same documentId
         if (linked.lastSyncedRemoteSha256.isBlank()) {
-            if (currentDocument.documentId != remoteDoc.documentId || currentDocument == remoteDoc) {
-                recordSyncSuccess(remoteDoc.revision, remoteSha)
+            if (currentDocument == remoteDoc) {
+                recordSyncSuccess(remoteDoc.revision, remoteSha, remoteDoc.documentId)
                 return@withContext SafDriveSyncOutcome.PulledFromDrive(remoteDoc)
             }
             val relation = VaultDeltaConflictResolver.compareVectorClocks(
@@ -194,20 +230,21 @@ class SafLiveGoogleDriveBridge(
             )
             return@withContext when (relation) {
                 VectorClockRelation.IDENTICAL, VectorClockRelation.REMOTE_AHEAD -> {
-                    recordSyncSuccess(remoteDoc.revision, remoteSha)
+                    recordSyncSuccess(remoteDoc.revision, remoteSha, remoteDoc.documentId)
                     SafDriveSyncOutcome.PulledFromDrive(remoteDoc)
                 }
                 VectorClockRelation.LOCAL_AHEAD -> {
-                    val sealed = serializer.sealDocument(currentDocument, vaultPassphrase.copyOf())
+                    val docToSeal = alignLocalClockWithoutExtraRevisionBump(currentDocument, localDeviceId)
+                    val sealed = serializer.sealDocument(docToSeal, vaultPassphrase.copyOf())
                     byteTransport.writeBytes(linked.uriString, sealed)
-                    recordSyncSuccess(currentDocument.revision, sha256Hex(sealed))
-                    SafDriveSyncOutcome.PushedToDrive(currentDocument, sealed.size)
+                    recordSyncSuccess(docToSeal.revision, sha256Hex(sealed), docToSeal.documentId)
+                    SafDriveSyncOutcome.PushedToDrive(docToSeal, sealed.size)
                 }
                 VectorClockRelation.CONCURRENT_DIVERGENCE -> {
                     val merge = VaultDeltaConflictResolver.mergeDocuments(currentDocument, remoteDoc, localDeviceId)
                     val sealed = serializer.sealDocument(merge.mergedDocument, vaultPassphrase.copyOf())
                     byteTransport.writeBytes(linked.uriString, sealed)
-                    recordSyncSuccess(merge.mergedDocument.revision, sha256Hex(sealed))
+                    recordSyncSuccess(merge.mergedDocument.revision, sha256Hex(sealed), merge.mergedDocument.documentId)
                     SafDriveSyncOutcome.ThreeWayMerged(merge.mergedDocument, merge.detectedConflicts)
                 }
             }
@@ -216,22 +253,30 @@ class SafLiveGoogleDriveBridge(
         // Case 4: Remote changed since last sync — pull cleanly if local unchanged, else 3-way merge!
         val localHasEdits = currentDocument.revision > linked.lastSyncedRevision
         if (!localHasEdits) {
-            recordSyncSuccess(remoteDoc.revision, remoteSha)
+            recordSyncSuccess(remoteDoc.revision, remoteSha, remoteDoc.documentId)
             return@withContext SafDriveSyncOutcome.PulledFromDrive(remoteDoc)
         }
 
         val mergeOutcome = VaultDeltaConflictResolver.mergeDocuments(currentDocument, remoteDoc, localDeviceId)
         val mergedBytes = serializer.sealDocument(mergeOutcome.mergedDocument, vaultPassphrase.copyOf())
         byteTransport.writeBytes(linked.uriString, mergedBytes)
-        recordSyncSuccess(mergeOutcome.mergedDocument.revision, sha256Hex(mergedBytes))
+        recordSyncSuccess(mergeOutcome.mergedDocument.revision, sha256Hex(mergedBytes), mergeOutcome.mergedDocument.documentId)
         SafDriveSyncOutcome.ThreeWayMerged(mergeOutcome.mergedDocument, mergeOutcome.detectedConflicts)
     }
 
+    @JvmOverloads
     suspend fun pushPreSealedSnapshotIfRemoteUnchanged(
         sealedBytes: ByteArray,
-        revision: Long
+        revision: Long,
+        documentId: String? = null
     ): Boolean = withContext(Dispatchers.IO) {
         val linked = getLinkedVaultInfo() ?: return@withContext false
+        if (!linked.linkedDocumentId.isNullOrBlank() &&
+            !documentId.isNullOrBlank() &&
+            linked.linkedDocumentId != documentId
+        ) {
+            return@withContext false
+        }
         val remoteBytes = byteTransport.readBytes(linked.uriString)
         val remoteUnchanged = remoteBytes.isEmpty() ||
             linked.lastSyncedRemoteSha256.isBlank() ||
@@ -239,27 +284,40 @@ class SafLiveGoogleDriveBridge(
         if (!remoteUnchanged) return@withContext false
 
         byteTransport.writeBytes(linked.uriString, sealedBytes)
-        recordSyncSuccess(revision, sha256Hex(sealedBytes))
+        recordSyncSuccess(revision, sha256Hex(sealedBytes), documentId ?: linked.linkedDocumentId)
         true
     }
 
-    private fun bumpLocalVectorClock(doc: NxtsVaultDocument, deviceId: String): NxtsVaultDocument {
-        val prev = doc.vectorClock[deviceId] ?: 0L
-        val nextRev = max(doc.revision, 1L) + 1L
+    /**
+     * Aligns the local vector clock at `doc.revision` WITHOUT incrementing `revision` a second time,
+     * preventing `R+1 -> R+2` auto-sync loops when callers already incremented `doc.revision` on save.
+     */
+    private fun alignLocalClockWithoutExtraRevisionBump(
+        doc: NxtsVaultDocument,
+        deviceId: String
+    ): NxtsVaultDocument {
+        val targetRev = max(doc.revision, 1L)
+        val updatedClock = doc.vectorClock.toMutableMap()
+        updatedClock[deviceId] = max(updatedClock[deviceId] ?: 0L, targetRev)
+        if (deviceId.equals("Googlebook-OS", ignoreCase = true) || deviceId.equals("googlebook", ignoreCase = true)) {
+            updatedClock["googlebook"] = max(updatedClock["googlebook"] ?: 0L, targetRev)
+        }
         return doc.copy(
-            revision = nextRev,
+            revision = targetRev,
             lastModifiedByDevice = deviceId,
-            updatedAtEpochMs = System.currentTimeMillis(),
-            vectorClock = doc.vectorClock + (deviceId to (prev + 1L))
+            vectorClock = updatedClock
         )
     }
 
-    private fun recordSyncSuccess(revision: Long, remoteSha256: String) {
-        prefs.edit()
+    private fun recordSyncSuccess(revision: Long, remoteSha256: String, documentId: String? = null) {
+        val editor = prefs.edit()
             .putLong(KEY_LAST_SYNCED_REV, revision)
             .putString(KEY_LAST_REMOTE_SHA256, remoteSha256)
             .putLong(KEY_LAST_SYNCED_EPOCH_MS, System.currentTimeMillis())
-            .apply()
+        if (!documentId.isNullOrBlank()) {
+            editor.putString(KEY_LAST_SYNCED_DOC_ID, documentId)
+        }
+        editor.apply()
     }
 
     private fun sha256Hex(bytes: ByteArray): String =
@@ -274,5 +332,6 @@ class SafLiveGoogleDriveBridge(
         private const val KEY_LAST_SYNCED_REV = "last_synced_revision"
         private const val KEY_LAST_REMOTE_SHA256 = "last_remote_sha256"
         private const val KEY_LAST_SYNCED_EPOCH_MS = "last_synced_epoch_ms"
+        private const val KEY_LAST_SYNCED_DOC_ID = "last_synced_doc_id"
     }
 }

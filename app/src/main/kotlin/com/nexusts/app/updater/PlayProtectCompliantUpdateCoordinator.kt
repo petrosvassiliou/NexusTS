@@ -155,12 +155,17 @@ class PlayProtectCompliantUpdateCoordinator(
      */
     suspend fun stageVerifiedEnterpriseMdmPackage(apkArchiveFile: File) = withContext(Dispatchers.IO) {
         val pm = appContext.packageManager
-        val flags = PackageManager.GET_SIGNING_CERTIFICATES
         val archiveInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            pm.getPackageArchiveInfo(apkArchiveFile.absolutePath, PackageManager.PackageInfoFlags.of(flags.toLong()))
+            pm.getPackageArchiveInfo(
+                apkArchiveFile.absolutePath,
+                PackageManager.PackageInfoFlags.of(PackageManager.GET_SIGNING_CERTIFICATES.toLong())
+            )
         } else {
             @Suppress("DEPRECATION")
-            pm.getPackageArchiveInfo(apkArchiveFile.absolutePath, flags)
+            pm.getPackageArchiveInfo(
+                apkArchiveFile.absolutePath,
+                PackageManager.GET_SIGNING_CERTIFICATES or PackageManager.GET_SIGNATURES
+            )
         } ?: run {
             _updateState.value = PlayUpdateUiState.VerificationError("Invalid APK archive structure")
             return@withContext
@@ -172,12 +177,16 @@ class PlayProtectCompliantUpdateCoordinator(
         }
 
         val signingInfo = archiveInfo.signingInfo
-        if (signingInfo == null || signingInfo.hasMultipleSigners()) {
+        @Suppress("DEPRECATION")
+        val legacySignatures = archiveInfo.signatures
+        if (signingInfo?.hasMultipleSigners() == true || (signingInfo == null && (legacySignatures == null || legacySignatures.size != 1))) {
             _updateState.value = PlayUpdateUiState.VerificationError("Rejected unsigned or multi-signer APK")
             return@withContext
         }
 
-        val candidateSigners = signingInfo.apkContentsSigners ?: signingInfo.signingCertificateHistory
+        val candidateSigners = signingInfo?.apkContentsSigners
+            ?: signingInfo?.signingCertificateHistory
+            ?: legacySignatures
         val candidateSha256 = candidateSigners?.firstOrNull()?.toByteArray()?.let(::sha256Hex)
         val expectedSha256 = resolveExpectedEnterpriseSignerSha256(pm)
 
@@ -197,17 +206,22 @@ class PlayProtectCompliantUpdateCoordinator(
         }
 
         val sessionId = installer.createSession(params)
-        installer.openSession(sessionId).use { session ->
-            apkArchiveFile.inputStream().use { input ->
-                session.openWrite("nexusts_verified_enterprise.apk", 0, apkArchiveFile.length()).use { out ->
-                    input.copyTo(out)
-                    session.fsync(out)
+        try {
+            installer.openSession(sessionId).use { session ->
+                apkArchiveFile.inputStream().use { input ->
+                    session.openWrite("nexusts_verified_enterprise.apk", 0, apkArchiveFile.length()).use { out ->
+                        input.copyTo(out)
+                        session.fsync(out)
+                    }
                 }
+                val callbackIntent = Intent(appContext, EnterpriseInstallStatusReceiver::class.java)
+                val pendingFlags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
+                val pending = PendingIntent.getBroadcast(appContext, sessionId, callbackIntent, pendingFlags)
+                session.commit(pending.intentSender)
             }
-            val callbackIntent = Intent(appContext, EnterpriseInstallStatusReceiver::class.java)
-            val pendingFlags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
-            val pending = PendingIntent.getBroadcast(appContext, sessionId, callbackIntent, pendingFlags)
-            session.commit(pending.intentSender)
+        } catch (t: Throwable) {
+            runCatching { installer.abandonSession(sessionId) }
+            throw t
         }
     }
 

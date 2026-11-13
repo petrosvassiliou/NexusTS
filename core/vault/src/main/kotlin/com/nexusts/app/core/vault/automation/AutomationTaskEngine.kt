@@ -1,5 +1,6 @@
 package com.nexusts.app.core.vault.automation
 
+import com.nexusts.app.core.vault.credentials.TotpCodeGenerator
 import com.nexusts.app.core.vault.inheritance.EffectiveConnectionProfile
 import com.nexusts.app.core.vault.model.CommandTask
 import com.nexusts.app.core.vault.model.KeySequenceTask
@@ -33,7 +34,7 @@ class AutomationTaskEngine {
     }
 
     /**
-     * Expands Royal TS & NexusTS replacement tokens (`$URI$`, `$Name$`, `$EffectiveUsername$`, `$OS$`).
+     * Expands Royal TS & NexusTS replacement tokens (`$URI$`, `$Name$`, `$EffectiveUsername$`, `$OS$`, `$CustomProperty.<Key>$`).
      */
     fun renderCommandTask(task: CommandTask, profile: EffectiveConnectionProfile): String {
         val expanded = expandVariables(task.commandTemplate, profile)
@@ -42,30 +43,58 @@ class AutomationTaskEngine {
 
     /**
      * Parses a Key Sequence macro into executable steps supporting `{WAIT:300}`, `{ENTER}`, `{TAB}`, `{ESC}`, `{CTRL+C}`.
+     *
+     * Tokenizes `{SPECIAL_KEY}` and `{WAIT:ms}` segments BEFORE expanding `$EffectivePassword$`, `$EffectiveUsername$`,
+     * and `$CustomProperty.*$` so literal `{...}` characters inside passwords or custom property values are never
+     * misinterpreted as special key tokens or stripped.
      */
     fun parseKeySequence(task: KeySequenceTask, profile: EffectiveConnectionProfile): List<MacroStep> {
-        val expanded = expandVariables(task.macroSequence, profile)
-        val regex = Regex("\\{([A-Z0-9+_]+)(?::(\\d+))?\\}")
-        val steps = mutableListOf<MacroStep>()
+        val rawTemplate = task.macroSequence
+        val tokenRegex = Regex("\\{([A-Z0-9+_]+)(?::(\\d+))?\\}")
+        val rawSteps = mutableListOf<MacroStep>()
         var cursor = 0
 
-        for (match in regex.findAll(expanded)) {
+        for (match in tokenRegex.findAll(rawTemplate)) {
             if (match.range.first > cursor) {
-                steps += MacroStep.TextPayload(expanded.substring(cursor, match.range.first))
+                val textSegment = expandVariables(rawTemplate.substring(cursor, match.range.first), profile)
+                if (textSegment.isNotEmpty()) {
+                    rawSteps.appendCoalescedText(textSegment)
+                }
             }
             val token = match.groupValues[1]
             val arg = match.groupValues[2]
-            if (token == "WAIT") {
-                steps += MacroStep.PauseDelay(arg.toLongOrNull() ?: 250L)
-            } else {
-                steps += MacroStep.SpecialKey(token)
+            when {
+                token == "URI" && arg.isEmpty() -> {
+                    if (profile.connection.host.isNotEmpty()) {
+                        rawSteps.appendCoalescedText(profile.connection.host)
+                    }
+                }
+                token == "WAIT" -> {
+                    rawSteps += MacroStep.PauseDelay(arg.toLongOrNull() ?: 250L)
+                }
+                else -> {
+                    rawSteps += MacroStep.SpecialKey(token)
+                }
             }
             cursor = match.range.last + 1
         }
-        if (cursor < expanded.length) {
-            steps += MacroStep.TextPayload(expanded.substring(cursor))
+
+        if (cursor < rawTemplate.length) {
+            val trailingText = expandVariables(rawTemplate.substring(cursor), profile)
+            if (trailingText.isNotEmpty()) {
+                rawSteps.appendCoalescedText(trailingText)
+            }
         }
-        return steps
+        return rawSteps
+    }
+
+    private fun MutableList<MacroStep>.appendCoalescedText(chunk: String) {
+        val lastStep = lastOrNull()
+        if (lastStep is MacroStep.TextPayload) {
+            this[lastIndex] = MacroStep.TextPayload(lastStep.text + chunk)
+        } else {
+            this += MacroStep.TextPayload(chunk)
+        }
     }
 
     suspend fun executeKeySequence(
@@ -95,25 +124,40 @@ class AutomationTaskEngine {
     private fun expandVariables(template: String, profile: EffectiveConnectionProfile): String {
         val totpCode = profile.effectiveCredential?.totpSecretBase32
             ?.takeIf { it.isNotBlank() }
-            ?.let { com.nexusts.app.core.vault.credentials.TotpCodeGenerator.generateTotp(it)?.code }
+            ?.let { TotpCodeGenerator.generateTotp(it)?.code }
             .orEmpty()
 
-        var result = template
-            .replace("\$URI\$", profile.connection.host)
-            .replace("{URI}", profile.connection.host)
-            .replace("\$Name\$", profile.connection.name)
-            .replace("\$OS\$", profile.connection.osFamily)
-            .replace("\$Notes\$", profile.connection.notes)
-            .replace("\$EffectiveUsername\$", profile.effectiveCredential?.username.orEmpty())
-            .replace("\$EffectiveDomain\$", profile.effectiveCredential?.domain.orEmpty())
-            .replace("\$EffectivePassword\$", profile.effectiveCredential?.secretPassword.orEmpty())
-            .replace("\$EffectiveTOTP\$", totpCode)
+        // Use Regex.escapeReplacement or literal single-pass token replacement so '$' or '{...}' in secrets never cross-contaminate
+        val tokenPattern = Regex(
+            "\\$(URI|Name|OS|Notes|EffectiveUsername|EffectiveDomain|EffectivePassword|EffectiveTOTP|CustomProperty\\.[A-Za-z0-9_.-]+)\\$|\\{URI\\}",
+            RegexOption.IGNORE_CASE
+        )
 
-        val customPropRegex = Regex("\\\$CustomProperty\\.([A-Za-z0-9_.-]+)\\\$")
-        result = customPropRegex.replace(result) { match ->
-            val propKey = match.groupValues[1]
-            profile.effectiveCustomProperties[propKey]?.value.orEmpty()
+        return tokenPattern.replace(template) { match ->
+            val full = match.value
+            if (full.equals("{URI}", ignoreCase = true)) {
+                return@replace profile.connection.host
+            }
+            val inner = match.groupValues[1]
+            when {
+                inner.equals("URI", ignoreCase = true) -> profile.connection.host
+                inner.equals("Name", ignoreCase = true) -> profile.connection.name
+                inner.equals("OS", ignoreCase = true) -> profile.connection.osFamily
+                inner.equals("Notes", ignoreCase = true) -> profile.connection.notes
+                inner.equals("EffectiveUsername", ignoreCase = true) -> profile.effectiveCredential?.username.orEmpty()
+                inner.equals("EffectiveDomain", ignoreCase = true) -> profile.effectiveCredential?.domain.orEmpty()
+                inner.equals("EffectivePassword", ignoreCase = true) -> profile.effectiveCredential?.secretPassword.orEmpty()
+                inner.equals("EffectiveTOTP", ignoreCase = true) -> totpCode
+                inner.startsWith("CustomProperty.", ignoreCase = true) -> {
+                    val propKey = inner.substringAfter('.')
+                    val exact = profile.effectiveCustomProperties[propKey]
+                    val resolved = exact ?: profile.effectiveCustomProperties.entries
+                        .lastOrNull { it.key.equals(propKey, ignoreCase = true) }
+                        ?.value
+                    resolved?.value.orEmpty()
+                }
+                else -> full
+            }
         }
-        return result
     }
 }

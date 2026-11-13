@@ -1,0 +1,5 @@
+NexusTS 1.1.1 — Revisión de Calidad Completa y Endurecimiento Empresarial:
+• Escudo de bloqueo de bóveda a pantalla completa, persistencia local cifrada y frase de sincronización de Google Drive.
+• Sesiones RDP/SSH activas preservadas al editar la bóveda o desacoplar/reacoplar ventanas.
+• Teclado físico ANSI/VT completo, subcarpetas anidadas recursivas y CRUD completo en todos los Estudios.
+• FreeRDP 3.12, SSH/SFTP, UART USB-C, K8s/Docker, reglas R8 y Android 15 FGS endurecidos.

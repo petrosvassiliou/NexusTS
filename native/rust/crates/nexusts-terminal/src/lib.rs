@@ -54,8 +54,12 @@ pub struct TerminalViewportSnapshot {
     pub bracketed_paste_mode: bool,
     pub title: String,
     pub visible_lines: Vec<String>,
+    #[serde(default)]
+    pub scrollback_lines: Vec<String>,
     pub packed_rgba_attrs: Vec<u64>,
 }
+
+pub type TerminalSnapshot = TerminalViewportSnapshot;
 
 enum ParserState {
     Ground,
@@ -85,6 +89,7 @@ pub struct VtTerminalBuffer {
     parser_state: ParserState,
     csi_buf: String,
     osc_buf: String,
+    pending_utf8: Vec<u8>,
 }
 
 impl VtTerminalBuffer {
@@ -111,6 +116,7 @@ impl VtTerminalBuffer {
             parser_state: ParserState::Ground,
             csi_buf: String::with_capacity(32),
             osc_buf: String::with_capacity(64),
+            pending_utf8: Vec::with_capacity(4),
         }
     }
 
@@ -135,9 +141,52 @@ impl VtTerminalBuffer {
     }
 
     pub fn feed_bytes(&mut self, bytes: &[u8]) {
-        let text = String::from_utf8_lossy(bytes);
-        for ch in text.chars() {
-            self.advance_char(ch);
+        if bytes.is_empty() {
+            return;
+        }
+        let combined_storage: Vec<u8>;
+        let mut slice: &[u8] = if self.pending_utf8.is_empty() {
+            bytes
+        } else {
+            let mut buf = std::mem::take(&mut self.pending_utf8);
+            buf.extend_from_slice(bytes);
+            combined_storage = buf;
+            &combined_storage
+        };
+
+        loop {
+            match std::str::from_utf8(slice) {
+                Ok(valid) => {
+                    for ch in valid.chars() {
+                        self.advance_char(ch);
+                    }
+                    break;
+                }
+                Err(err) => {
+                    let valid_up_to = err.valid_up_to();
+                    if valid_up_to > 0 {
+                        if let Ok(valid_prefix) = std::str::from_utf8(&slice[..valid_up_to]) {
+                            for ch in valid_prefix.chars() {
+                                self.advance_char(ch);
+                            }
+                        }
+                    }
+                    match err.error_len() {
+                        None => {
+                            // Trailing incomplete UTF-8 sequence split across read boundary
+                            self.pending_utf8.extend_from_slice(&slice[valid_up_to..]);
+                            break;
+                        }
+                        Some(invalid_len) => {
+                            self.advance_char('\u{FFFD}');
+                            slice = &slice[valid_up_to + invalid_len..];
+                            if slice.is_empty() {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -458,6 +507,15 @@ impl VtTerminalBuffer {
             visible_lines.push(s);
         }
 
+        let scrollback_lines = if self.using_alt_screen {
+            Vec::new()
+        } else {
+            self.scrollback
+                .iter()
+                .map(|row| row.iter().map(|cell| cell.ch).collect::<String>())
+                .collect()
+        };
+
         TerminalViewportSnapshot {
             cols: self.cols,
             rows: self.rows,
@@ -467,6 +525,7 @@ impl VtTerminalBuffer {
             bracketed_paste_mode: self.bracketed_paste,
             title: self.window_title.clone(),
             visible_lines,
+            scrollback_lines,
             packed_rgba_attrs,
         }
     }
@@ -574,6 +633,30 @@ mod tests {
         assert!(vt.snapshot().visible_lines[0].starts_with("ALT_VIM"));
         vt.feed_bytes(b"\x1b[?1049l");
         assert!(vt.snapshot().visible_lines[0].starts_with("NEXUS"));
+    }
+
+    #[test]
+    fn vt_buffer_preserves_split_multibyte_utf8_and_scrollback() {
+        let mut vt = VtTerminalBuffer::new(20, 4, 100);
+        // Split 3-byte box-drawing '─' (E2 94 80) and 4-byte emoji '🚀' (F0 9F 9A 80) across single-byte reads
+        for &b in "─🚀OK".as_bytes() {
+            vt.feed_bytes(&[b]);
+        }
+        let snap = vt.snapshot();
+        assert!(
+            snap.visible_lines[0].starts_with("─🚀OK"),
+            "Expected clean UTF-8 without U+FFFD, got {:?}",
+            snap.visible_lines[0]
+        );
+        assert!(!snap.visible_lines[0].contains('\u{FFFD}'));
+
+        // Feed 6 lines into a 4-row terminal so 2 lines scroll into scrollback_lines
+        vt.feed_bytes(b"\r\nL2\r\nL3\r\nL4\r\nL5\r\nL6");
+        let scrolled = vt.snapshot();
+        assert_eq!(scrolled.scrollback_lines.len(), 2);
+        assert!(scrolled.scrollback_lines[0].starts_with("─🚀OK"));
+        assert!(scrolled.scrollback_lines[1].starts_with("L2"));
+        assert!(scrolled.visible_lines[0].starts_with("L3"));
     }
 
     #[test]

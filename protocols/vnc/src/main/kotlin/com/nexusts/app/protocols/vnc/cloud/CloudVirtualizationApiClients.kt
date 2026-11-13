@@ -8,6 +8,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -22,6 +23,7 @@ import java.util.Base64
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
+import java.util.UUID
 import java.util.concurrent.TimeUnit
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
@@ -50,9 +52,9 @@ data class CloudManagedResource(
  * - **Proxmox VE** (`/api2/json/cluster/resources` + `/status/{start|stop|reboot}`)
  * - **VMware vSphere / ESXi** (`/api/session` + `/api/vcenter/vm` + `/power?action=...`)
  * - **AWS EC2** (`DescribeInstances` / `StartInstances` / `StopInstances` / `RebootInstances` signed via **AWS SigV4 `AWS4-HMAC-SHA256`**)
- * - **Microsoft Azure ARM** (`Microsoft.Compute/virtualMachines?api-version=2024-03-01`)
+ * - **Microsoft Azure ARM** (`Microsoft.Compute/virtualMachines?api-version=2024-03-01&$expand=instanceView`)
  * - **Microsoft Hyper-V** (WinRM HTTPS `5986` `Msvm_ComputerSystem` CIM enumeration & `RequestStateChange`)
- * - **Windows Terminal Services / RDS** (WinRM `Win32_TerminalServicesSession` active session listing & logoff)
+ * - **Windows Terminal Services / RDS** (WinRM `Win32_TerminalServicesSession` active session listing & `Win32_Process/Create` logoff/disconnect)
  */
 object CloudVirtualizationHubClient {
 
@@ -107,12 +109,25 @@ object CloudVirtualizationHubClient {
     // 1. Proxmox VE REST API v2
     // =========================================================================
 
+    internal fun normalizeProxmoxBaseUrl(host: String, apiEndpointUrl: String): String {
+        val raw = apiEndpointUrl.trim().ifBlank { "https://${host.trim()}:8006" }
+        val withScheme = if (raw.startsWith("http://", ignoreCase = true) || raw.startsWith("https://", ignoreCase = true)) {
+            raw
+        } else {
+            "https://$raw"
+        }
+        return withScheme
+            .trimEnd('/')
+            .removeSuffix("/api2/json")
+            .trimEnd('/')
+    }
+
     private fun fetchProxmoxInventory(
         host: String,
         settings: ProtocolSpecificSettings.CloudVirtualization,
         secret: ResolvedSessionSecret
     ): List<CloudManagedResource> {
-        val base = settings.apiEndpointUrl.ifBlank { "https://$host:8006" }.trimEnd('/')
+        val base = normalizeProxmoxBaseUrl(host, settings.apiEndpointUrl)
         val req = Request.Builder()
             .url("$base/api2/json/cluster/resources?type=vm")
             .header("Authorization", buildProxmoxAuthHeader(secret))
@@ -133,8 +148,9 @@ object CloudVirtualizationHubClient {
                 val maxMemBytes = obj["maxmem"]?.jsonPrimitive?.content?.toLongOrNull() ?: 0L
                 val ramGb = (maxMemBytes / (1024L * 1024L * 1024L)).coerceAtLeast(1L)
                 val vmType = obj["type"]?.jsonPrimitive?.content ?: "qemu"
+                val normalizedId = if ('/' in vmid) vmid else "$vmType/$vmid"
                 CloudManagedResource(
-                    id = "$vmType/$vmid",
+                    id = normalizedId,
                     name = name,
                     nodeOrZone = node,
                     powerState = status,
@@ -153,14 +169,15 @@ object CloudVirtualizationHubClient {
         resource: CloudManagedResource,
         action: VmPowerAction
     ): String {
-        val base = settings.apiEndpointUrl.ifBlank { "https://$host:8006" }.trimEnd('/')
+        val base = normalizeProxmoxBaseUrl(host, settings.apiEndpointUrl)
         val verb = when (action) {
             VmPowerAction.START -> "start"
             VmPowerAction.STOP -> "stop"
             VmPowerAction.REBOOT -> "reboot"
         }
+        val vmPath = if ('/' in resource.id) resource.id else "qemu/${resource.id.removePrefix("vm-")}"
         val req = Request.Builder()
-            .url("$base/api2/json/nodes/${resource.nodeOrZone}/${resource.id}/status/$verb")
+            .url("$base/api2/json/nodes/${resource.nodeOrZone}/$vmPath/status/$verb")
             .header("Authorization", buildProxmoxAuthHeader(secret))
             .post("".toRequestBody("application/x-www-form-urlencoded".toMediaType()))
             .build()
@@ -183,6 +200,16 @@ object CloudVirtualizationHubClient {
     // 2. VMware vSphere / ESXi Cis Session + vCenter REST API
     // =========================================================================
 
+    private fun normalizeHttpsEndpoint(host: String, apiEndpointUrl: String): String {
+        val raw = apiEndpointUrl.trim().ifBlank { "https://${host.trim()}" }
+        val withScheme = if (raw.startsWith("http://", ignoreCase = true) || raw.startsWith("https://", ignoreCase = true)) {
+            raw
+        } else {
+            "https://$raw"
+        }
+        return withScheme.trimEnd('/')
+    }
+
     private fun acquireVsphereSessionToken(base: String, secret: ResolvedSessionSecret): String {
         val basic = Base64.getEncoder()
             .encodeToString("${secret.username}:${secret.password}".toByteArray(StandardCharsets.UTF_8))
@@ -203,7 +230,7 @@ object CloudVirtualizationHubClient {
         settings: ProtocolSpecificSettings.CloudVirtualization,
         secret: ResolvedSessionSecret
     ): List<CloudManagedResource> {
-        val base = settings.apiEndpointUrl.ifBlank { "https://$host" }.trimEnd('/')
+        val base = normalizeHttpsEndpoint(host, settings.apiEndpointUrl)
         val token = acquireVsphereSessionToken(base, secret)
         val req = Request.Builder()
             .url("$base/api/vcenter/vm")
@@ -241,7 +268,7 @@ object CloudVirtualizationHubClient {
         resource: CloudManagedResource,
         action: VmPowerAction
     ): String {
-        val base = settings.apiEndpointUrl.ifBlank { "https://$host" }.trimEnd('/')
+        val base = normalizeHttpsEndpoint(host, settings.apiEndpointUrl)
         val token = acquireVsphereSessionToken(base, secret)
         val act = when (action) {
             VmPowerAction.START -> "start"
@@ -356,48 +383,112 @@ object CloudVirtualizationHubClient {
         }
     }
 
-    private fun parseEc2DescribeInstancesXml(xml: String, region: String): List<CloudManagedResource> {
-        val itemRegex = Regex("<item>(.*?)</item>", setOf(RegexOption.DOT_MATCHES_ALL))
-        val idRegex = Regex("<instanceId>(i-[a-z0-9]+)</instanceId>")
+    /**
+     * Depth-balanced EC2 `DescribeInstancesResponse` XML parser that extracts top-level `<item>` blocks
+     * inside `<instancesSet>` without truncating on nested `<groupSet><item>`, `<networkInterfaceSet><item>`,
+     * or `<tagSet><item>` elements.
+     */
+    internal fun parseEc2DescribeInstancesXml(xml: String, region: String): List<CloudManagedResource> {
+        val instancesSetRegex = Regex("<instancesSet>(.*?)</instancesSet>", setOf(RegexOption.DOT_MATCHES_ALL))
+        val idRegex = Regex("<instanceId>(i-[a-zA-Z0-9]+)</instanceId>")
         val typeRegex = Regex("<instanceType>([^<]+)</instanceType>")
-        val ipRegex = Regex("<privateIpAddress>([^<]+)</privateIpAddress>")
+        val pubIpRegex = Regex("<ipAddress>([^<]+)</ipAddress>")
+        val privIpRegex = Regex("<privateIpAddress>([^<]+)</privateIpAddress>")
+        val dnsRegex = Regex("<dnsName>([^<]+)</dnsName>")
+        val azRegex = Regex("<placement>.*?<availabilityZone>([^<]+)</availabilityZone>.*?</placement>", setOf(RegexOption.DOT_MATCHES_ALL))
         val stateRegex = Regex("<instanceState>.*?<name>([^<]+)</name>.*?</instanceState>", setOf(RegexOption.DOT_MATCHES_ALL))
         val platformRegex = Regex("<platform>([^<]+)</platform>")
+        val tagSetRegex = Regex("<tagSet>(.*?)</tagSet>", setOf(RegexOption.DOT_MATCHES_ALL))
+        val tagItemRegex = Regex("<item>(.*?)</item>", setOf(RegexOption.DOT_MATCHES_ALL))
+        val tagKeyRegex = Regex("<key>([^<]*)</key>")
+        val tagValueRegex = Regex("<value>([^<]*)</value>")
+
+        val instanceBlocks = mutableListOf<String>()
+        val instancesSets = instancesSetRegex.findAll(xml).toList()
+        if (instancesSets.isNotEmpty()) {
+            for (setMatch in instancesSets) {
+                instanceBlocks += extractBalancedXmlItems(setMatch.groupValues[1])
+            }
+        } else {
+            instanceBlocks += extractBalancedXmlItems(xml)
+        }
 
         val results = mutableListOf<CloudManagedResource>()
         val seenIds = mutableSetOf<String>()
-        for (match in itemRegex.findAll(xml)) {
-            val block = match.groupValues[1]
+        for (block in instanceBlocks) {
             val instId = idRegex.find(block)?.groupValues?.get(1) ?: continue
             if (!seenIds.add(instId)) continue
+
+            var displayName = instId
+            val tagSetBody = tagSetRegex.find(block)?.groupValues?.get(1)
+            if (tagSetBody != null) {
+                for (tMatch in tagItemRegex.findAll(tagSetBody)) {
+                    val tBlock = tMatch.groupValues[1]
+                    val k = tagKeyRegex.find(tBlock)?.groupValues?.get(1)?.trim()
+                    val v = tagValueRegex.find(tBlock)?.groupValues?.get(1)?.trim()
+                    if (k == "Name" && !v.isNullOrBlank()) {
+                        displayName = unescapeXml(v)
+                        break
+                    }
+                }
+            }
+
             val instType = typeRegex.find(block)?.groupValues?.get(1) ?: "m6i.large"
-            val privIp = ipRegex.find(block)?.groupValues?.get(1) ?: "0.0.0.0"
+            val hostAddr = pubIpRegex.find(block)?.groupValues?.get(1)?.takeIf { it.isNotBlank() }
+                ?: privIpRegex.find(block)?.groupValues?.get(1)?.takeIf { it.isNotBlank() }
+                ?: dnsRegex.find(block)?.groupValues?.get(1)?.takeIf { it.isNotBlank() }
+                ?: "0.0.0.0"
+            val az = azRegex.find(block)?.groupValues?.get(1)?.takeIf { it.isNotBlank() } ?: region
             val state = (stateRegex.find(block)?.groupValues?.get(1) ?: "running").uppercase(Locale.ROOT)
             val isWindows = platformRegex.find(block)?.groupValues?.get(1)?.contains("windows", ignoreCase = true) == true
+
             results += CloudManagedResource(
                 id = instId,
-                name = instId,
-                nodeOrZone = region,
+                name = displayName,
+                nodeOrZone = az,
                 powerState = state,
                 cpuRamSummary = instType,
-                addressOrSessionHost = privIp,
+                addressOrSessionHost = hostAddr,
                 preferredConsoleProtocol = if (isWindows) VaultProtocolType.RDP else VaultProtocolType.SSH
             )
         }
         return results
     }
 
+    private fun extractBalancedXmlItems(section: String): List<String> {
+        val items = mutableListOf<String>()
+        val tokenRegex = Regex("<(/?)item(?:\\s[^>]*)?>")
+        var depth = 0
+        var blockStart = -1
+        for (m in tokenRegex.findAll(section)) {
+            val isClosing = m.groupValues[1] == "/"
+            if (!isClosing) {
+                if (depth == 0) {
+                    blockStart = m.range.last + 1
+                }
+                depth++
+            } else if (depth > 0) {
+                depth--
+                if (depth == 0 && blockStart >= 0 && blockStart <= m.range.first) {
+                    items += section.substring(blockStart, m.range.first)
+                    blockStart = -1
+                }
+            }
+        }
+        return items
+    }
+
     // =========================================================================
-    // 4. Microsoft Azure Compute ARM REST API (`2024-03-01`)
+    // 4. Microsoft Azure Compute ARM REST API (`2024-03-01` + `$expand=instanceView`)
     // =========================================================================
 
     private fun fetchAzureVmInventory(
         settings: ProtocolSpecificSettings.CloudVirtualization,
         secret: ResolvedSessionSecret
     ): List<CloudManagedResource> {
-        val subId = settings.subscriptionOrAccountId
+        val subId = settings.subscriptionOrAccountId.trim()
         require(subId.isNotBlank()) { "Azure Subscription ID required" }
-        val url = "https://management.azure.com/subscriptions/$subId/providers/Microsoft.Compute/virtualMachines?api-version=2024-03-01"
+        val url = "https://management.azure.com/subscriptions/$subId/providers/Microsoft.Compute/virtualMachines?api-version=2024-03-01&\$expand=instanceView"
         val req = Request.Builder()
             .url(url)
             .header("Authorization", "Bearer ${secret.password}")
@@ -419,13 +510,30 @@ object CloudVirtualizationHubClient {
                 val storageProfile = props?.get("storageProfile") as? JsonObject
                 val osDisk = storageProfile?.get("osDisk") as? JsonObject
                 val osType = osDisk?.get("osType")?.jsonPrimitive?.content ?: "Linux"
+                val osProfile = props?.get("osProfile") as? JsonObject
+                val computerName = osProfile?.get("computerName")?.jsonPrimitive?.contentOrNull?.ifBlank { null } ?: name
+
+                val statuses = (props?.get("instanceView") as? JsonObject)?.get("statuses")?.jsonArray
+                val powerCode = statuses
+                    ?.mapNotNull { st -> st.jsonObject["code"]?.jsonPrimitive?.contentOrNull }
+                    ?.firstOrNull { code -> code.startsWith("PowerState/", ignoreCase = true) }
+                    ?.substringAfter('/')
+                    ?.lowercase(Locale.ROOT)
+                val normalizedPowerState = when (powerCode) {
+                    "running" -> "RUNNING"
+                    "deallocated", "deallocating", "stopped", "stopping" -> "STOPPED"
+                    "starting" -> "STARTING"
+                    null -> (props?.get("provisioningState")?.jsonPrimitive?.contentOrNull ?: "UNKNOWN").uppercase(Locale.ROOT)
+                    else -> powerCode.uppercase(Locale.ROOT)
+                }
+
                 CloudManagedResource(
                     id = id,
                     name = name,
                     nodeOrZone = location,
-                    powerState = "RUNNING",
+                    powerState = normalizedPowerState,
                     cpuRamSummary = "$vmSize ($osType)",
-                    addressOrSessionHost = name,
+                    addressOrSessionHost = computerName,
                     preferredConsoleProtocol = if (osType.equals("Windows", ignoreCase = true)) {
                         VaultProtocolType.RDP
                     } else {
@@ -447,7 +555,14 @@ object CloudVirtualizationHubClient {
             VmPowerAction.STOP -> "powerOff"
             VmPowerAction.REBOOT -> "restart"
         }
-        val url = "https://management.azure.com${resource.id}/$armAction?api-version=2024-03-01"
+        val resourcePath = if (resource.id.startsWith("/")) {
+            resource.id
+        } else {
+            val subId = settings.subscriptionOrAccountId.trim()
+            val rg = settings.regionOrCluster.ifBlank { "default" }
+            "/subscriptions/$subId/resourceGroups/$rg/providers/Microsoft.Compute/virtualMachines/${resource.id}"
+        }
+        val url = "https://management.azure.com$resourcePath/$armAction?api-version=2024-03-01"
         val req = Request.Builder()
             .url(url)
             .header("Authorization", "Bearer ${secret.password}")
@@ -464,13 +579,25 @@ object CloudVirtualizationHubClient {
     // 5. Microsoft Hyper-V & 6. Windows Terminal Services (WinRM HTTPS 5986)
     // =========================================================================
 
+    private fun normalizeWinRmUrl(host: String, apiEndpointUrl: String): String {
+        val raw = apiEndpointUrl.trim().ifBlank { "https://${host.trim()}:5986/wsman" }
+        val withScheme = if (raw.startsWith("http://", ignoreCase = true) || raw.startsWith("https://", ignoreCase = true)) {
+            raw
+        } else {
+            "https://$raw"
+        }
+        val trimmed = withScheme.trimEnd('/')
+        return if (trimmed.endsWith("/wsman", ignoreCase = true)) trimmed else "$trimmed/wsman"
+    }
+
     private fun fetchHyperVInventory(
         host: String,
         settings: ProtocolSpecificSettings.CloudVirtualization,
         secret: ResolvedSessionSecret
     ): List<CloudManagedResource> {
-        val url = settings.apiEndpointUrl.ifBlank { "https://$host:5986/wsman" }
-        val soap = buildWinRmEnumerateSoap("http://schemas.microsoft.com/wbem/wsman/1/wmi/root/virtualization/v2/Msvm_ComputerSystem")
+        val url = normalizeWinRmUrl(host, settings.apiEndpointUrl)
+        val resourceUri = "http://schemas.microsoft.com/wbem/wsman/1/wmi/root/virtualization/v2/Msvm_ComputerSystem"
+        val soap = buildWinRmEnumerateSoap(toUrl = url, resourceUri = resourceUri)
         val basic = Base64.getEncoder()
             .encodeToString("${secret.username}:${secret.password}".toByteArray(StandardCharsets.UTF_8))
 
@@ -483,14 +610,47 @@ object CloudVirtualizationHubClient {
         httpClient.newCall(req).execute().use { resp ->
             if (!resp.isSuccessful) error("Hyper-V WinRM HTTP ${resp.code}")
             val body = resp.body?.string().orEmpty()
-            val elemRegex = Regex("<p:ElementName>([^<]+)</p:ElementName>")
-            val nameRegex = Regex("<p:Name>([^<]+)</p:Name>")
+            val systemBlockRegex = Regex("<(?:\\w+:)?Msvm_ComputerSystem[^>]*>(.*?)</(?:\\w+:)?Msvm_ComputerSystem>", setOf(RegexOption.DOT_MATCHES_ALL))
+            val elemRegex = Regex("<(?:\\w+:)?ElementName>([^<]+)</(?:\\w+:)?ElementName>")
+            val nameRegex = Regex("<(?:\\w+:)?Name>([^<]+)</(?:\\w+:)?Name>")
+            val captionRegex = Regex("<(?:\\w+:)?Caption>([^<]+)</(?:\\w+:)?Caption>")
+            val stateRegex = Regex("<(?:\\w+:)?EnabledState>(\\d+)</(?:\\w+:)?EnabledState>")
+
+            val blocks = systemBlockRegex.findAll(body).map { it.groupValues[1] }.toList()
+            if (blocks.isNotEmpty()) {
+                return blocks.mapNotNull { block ->
+                    val caption = captionRegex.find(block)?.groupValues?.get(1)?.trim().orEmpty()
+                    if (caption.equals("Hosting Computer System", ignoreCase = true)) {
+                        return@mapNotNull null
+                    }
+                    val vmName = elemRegex.find(block)?.groupValues?.get(1)?.trim() ?: return@mapNotNull null
+                    val vmGuid = nameRegex.find(block)?.groupValues?.get(1)?.trim() ?: vmName
+                    val stateCode = stateRegex.find(block)?.groupValues?.get(1)?.toIntOrNull() ?: 2
+                    val power = when (stateCode) {
+                        2 -> "RUNNING"
+                        3, 6 -> "STOPPED"
+                        32768 -> "PAUSED"
+                        32769 -> "SAVED"
+                        else -> "UNKNOWN"
+                    }
+                    CloudManagedResource(
+                        id = unescapeXml(vmGuid),
+                        name = unescapeXml(vmName),
+                        nodeOrZone = host,
+                        powerState = power,
+                        cpuRamSummary = "Hyper-V Gen2 VM",
+                        addressOrSessionHost = host,
+                        preferredConsoleProtocol = VaultProtocolType.RDP
+                    )
+                }
+            }
+
             val names = elemRegex.findAll(body).map { it.groupValues[1] }.toList()
             val guids = nameRegex.findAll(body).map { it.groupValues[1] }.toList()
             return names.mapIndexed { index, vmName ->
                 CloudManagedResource(
                     id = guids.getOrElse(index) { "hv-$index" },
-                    name = vmName,
+                    name = unescapeXml(vmName),
                     nodeOrZone = host,
                     powerState = "RUNNING",
                     cpuRamSummary = "Hyper-V Gen2 VM",
@@ -513,13 +673,31 @@ object CloudVirtualizationHubClient {
             VmPowerAction.STOP -> 3  // Disabled
             VmPowerAction.REBOOT -> 10 // Reboot
         }
-        val url = settings.apiEndpointUrl.ifBlank { "https://$host:5986/wsman" }
+        val url = normalizeWinRmUrl(host, settings.apiEndpointUrl)
+        val resourceUri = "http://schemas.microsoft.com/wbem/wsman/1/wmi/root/virtualization/v2/Msvm_ComputerSystem"
         val basic = Base64.getEncoder()
             .encodeToString("${secret.username}:${secret.password}".toByteArray(StandardCharsets.UTF_8))
         val invokeXml = """
-            <s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope">
+            <s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"
+                        xmlns:wsa="http://schemas.xmlsoap.org/ws/2004/08/addressing"
+                        xmlns:wsman="http://schemas.dmtf.org/wbem/wsman/1/wsman.xsd"
+                        xmlns:p="$resourceUri">
+              <s:Header>
+                <wsa:To>${escapeXml(url)}</wsa:To>
+                <wsman:ResourceURI s:mustUnderstand="true">$resourceUri</wsman:ResourceURI>
+                <wsa:Action s:mustUnderstand="true">$resourceUri/RequestStateChange</wsa:Action>
+                <wsman:MaxEnvelopeSize s:mustUnderstand="true">153600</wsman:MaxEnvelopeSize>
+                <wsa:MessageID>uuid:${UUID.randomUUID()}</wsa:MessageID>
+                <wsa:ReplyTo>
+                  <wsa:Address s:mustUnderstand="true">http://schemas.xmlsoap.org/ws/2004/08/addressing/role/anonymous</wsa:Address>
+                </wsa:ReplyTo>
+                <wsman:SelectorSet>
+                  <wsman:Selector Name="Name">${escapeXml(resource.id)}</wsman:Selector>
+                </wsman:SelectorSet>
+                <wsman:OperationTimeout>PT60.000S</wsman:OperationTimeout>
+              </s:Header>
               <s:Body>
-                <p:RequestStateChange_INPUT xmlns:p="http://schemas.microsoft.com/wbem/wsman/1/wmi/root/virtualization/v2/Msvm_ComputerSystem">
+                <p:RequestStateChange_INPUT>
                   <p:RequestedState>$stateCode</p:RequestedState>
                 </p:RequestStateChange_INPUT>
               </s:Body>
@@ -543,8 +721,9 @@ object CloudVirtualizationHubClient {
         settings: ProtocolSpecificSettings.CloudVirtualization,
         secret: ResolvedSessionSecret
     ): List<CloudManagedResource> {
-        val url = settings.apiEndpointUrl.ifBlank { "https://$host:5986/wsman" }
-        val soap = buildWinRmEnumerateSoap("http://schemas.microsoft.com/wbem/wsman/1/wmi/root/cimv2/TerminalServices/Win32_TerminalServicesSession")
+        val url = normalizeWinRmUrl(host, settings.apiEndpointUrl)
+        val resourceUri = "http://schemas.microsoft.com/wbem/wsman/1/wmi/root/cimv2/TerminalServices/Win32_TerminalServicesSession"
+        val soap = buildWinRmEnumerateSoap(toUrl = url, resourceUri = resourceUri)
         val basic = Base64.getEncoder()
             .encodeToString("${secret.username}:${secret.password}".toByteArray(StandardCharsets.UTF_8))
 
@@ -557,15 +736,15 @@ object CloudVirtualizationHubClient {
         httpClient.newCall(req).execute().use { resp ->
             if (!resp.isSuccessful) error("Windows TS WinRM HTTP ${resp.code}")
             val body = resp.body?.string().orEmpty()
-            val sidRegex = Regex("<p:SessionId>(\\d+)</p:SessionId>")
-            val userRegex = Regex("<p:UserName>([^<]+)</p:UserName>")
+            val sidRegex = Regex("<(?:\\w+:)?SessionId>(\\d+)</(?:\\w+:)?SessionId>")
+            val userRegex = Regex("<(?:\\w+:)?UserName>([^<]+)</(?:\\w+:)?UserName>")
             val sids = sidRegex.findAll(body).map { it.groupValues[1] }.toList()
             val users = userRegex.findAll(body).map { it.groupValues[1] }.toList()
             return sids.mapIndexed { idx, sid ->
                 val u = users.getOrElse(idx) { "Session-$sid" }
                 CloudManagedResource(
                     id = sid,
-                    name = "$u (Session #$sid)",
+                    name = "${unescapeXml(u)} (Session #$sid)",
                     nodeOrZone = host,
                     powerState = "ACTIVE",
                     cpuRamSummary = "RDP-Tcp#$sid",
@@ -584,14 +763,41 @@ object CloudVirtualizationHubClient {
         resource: CloudManagedResource,
         action: VmPowerAction
     ): String {
-        val url = settings.apiEndpointUrl.ifBlank { "https://$host:5986/wsman" }
+        val url = normalizeWinRmUrl(host, settings.apiEndpointUrl)
         val basic = Base64.getEncoder()
             .encodeToString("${secret.username}:${secret.password}".toByteArray(StandardCharsets.UTF_8))
-        val cmd = if (action == VmPowerAction.STOP) "logoff ${resource.id}" else "tsdiscon ${resource.id}"
+        val numericSessionId = resource.id.filter { it.isDigit() }
+            .ifBlank { error("Invalid RDS Session ID: ${resource.id}") }
+        val cmd = if (action == VmPowerAction.STOP) "logoff $numericSessionId" else "tsdiscon $numericSessionId"
+        val resourceUri = "http://schemas.microsoft.com/wbem/wsman/1/wmi/root/cimv2/Win32_Process"
+        val soap = """
+            <s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"
+                        xmlns:wsa="http://schemas.xmlsoap.org/ws/2004/08/addressing"
+                        xmlns:wsman="http://schemas.dmtf.org/wbem/wsman/1/wsman.xsd"
+                        xmlns:p="$resourceUri">
+              <s:Header>
+                <wsa:To>${escapeXml(url)}</wsa:To>
+                <wsman:ResourceURI s:mustUnderstand="true">$resourceUri</wsman:ResourceURI>
+                <wsa:Action s:mustUnderstand="true">$resourceUri/Create</wsa:Action>
+                <wsman:MaxEnvelopeSize s:mustUnderstand="true">153600</wsman:MaxEnvelopeSize>
+                <wsa:MessageID>uuid:${UUID.randomUUID()}</wsa:MessageID>
+                <wsa:ReplyTo>
+                  <wsa:Address s:mustUnderstand="true">http://schemas.xmlsoap.org/ws/2004/08/addressing/role/anonymous</wsa:Address>
+                </wsa:ReplyTo>
+                <wsman:OperationTimeout>PT60.000S</wsman:OperationTimeout>
+              </s:Header>
+              <s:Body>
+                <p:Create_INPUT>
+                  <p:CommandLine>${escapeXml(cmd)}</p:CommandLine>
+                </p:Create_INPUT>
+              </s:Body>
+            </s:Envelope>
+        """.trimIndent()
+
         val req = Request.Builder()
             .url(url)
             .header("Authorization", "Basic $basic")
-            .post("<CommandLine>$cmd</CommandLine>".toRequestBody("application/soap+xml;charset=UTF-8".toMediaType()))
+            .post(soap.toRequestBody("application/soap+xml;charset=UTF-8".toMediaType()))
             .build()
 
         httpClient.newCall(req).execute().use { resp ->
@@ -600,18 +806,50 @@ object CloudVirtualizationHubClient {
         }
     }
 
-    private fun buildWinRmEnumerateSoap(resourceUri: String): String = """
+    private fun buildWinRmEnumerateSoap(toUrl: String, resourceUri: String): String = """
         <s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"
                     xmlns:wsa="http://schemas.xmlsoap.org/ws/2004/08/addressing"
                     xmlns:wsman="http://schemas.dmtf.org/wbem/wsman/1/wsman.xsd"
                     xmlns:wsen="http://schemas.xmlsoap.org/ws/2004/09/enumeration">
           <s:Header>
-            <wsa:Action s:mustUnderstand="true">http://schemas.xmlsoap.org/ws/2004/09/enumeration/Enumerate</wsa:Action>
+            <wsa:To>${escapeXml(toUrl)}</wsa:To>
             <wsman:ResourceURI s:mustUnderstand="true">$resourceUri</wsman:ResourceURI>
+            <wsa:Action s:mustUnderstand="true">http://schemas.xmlsoap.org/ws/2004/09/enumeration/Enumerate</wsa:Action>
+            <wsman:MaxEnvelopeSize s:mustUnderstand="true">512000</wsman:MaxEnvelopeSize>
+            <wsa:MessageID>uuid:${UUID.randomUUID()}</wsa:MessageID>
+            <wsa:ReplyTo>
+              <wsa:Address s:mustUnderstand="true">http://schemas.xmlsoap.org/ws/2004/08/addressing/role/anonymous</wsa:Address>
+            </wsa:ReplyTo>
+            <wsman:OperationTimeout>PT60.000S</wsman:OperationTimeout>
           </s:Header>
-          <s:Body><wsen:Enumerate/></s:Body>
+          <s:Body>
+            <wsen:Enumerate>
+              <wsman:OptimizeEnumeration/>
+              <wsman:MaxElements>200</wsman:MaxElements>
+            </wsen:Enumerate>
+          </s:Body>
         </s:Envelope>
     """.trimIndent()
+
+    private fun escapeXml(input: String): String = buildString(input.length + 8) {
+        for (ch in input) {
+            when (ch) {
+                '&' -> append("&amp;")
+                '<' -> append("&lt;")
+                '>' -> append("&gt;")
+                '"' -> append("&quot;")
+                '\'' -> append("&apos;")
+                else -> append(ch)
+            }
+        }
+    }
+
+    private fun unescapeXml(input: String): String = input
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
 
     private fun sha256Hex(bytes: ByteArray): String =
         MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
@@ -622,3 +860,4 @@ object CloudVirtualizationHubClient {
         return mac.doFinal(data.toByteArray(StandardCharsets.UTF_8))
     }
 }
+

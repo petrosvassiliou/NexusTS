@@ -6,4 +6,13 @@
             <certificates src="user" />
         </trust-anchors>
     </base-config>
+    <!-- Allow optional HTTP BMC/router/switch management pages on internal/loopback domains -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">localhost</domain>
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="true">local</domain>
+        <domain includeSubdomains="true">internal</domain>
+        <domain includeSubdomains="true">lan</domain>
+        <domain includeSubdomains="true">corp</domain>
+    </domain-config>
 </network-security-config>

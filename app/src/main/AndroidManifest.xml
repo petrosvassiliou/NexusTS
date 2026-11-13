@@ -32,6 +32,7 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!-- Visibility for external password manager / credential provider integrations -->
@@ -115,7 +116,7 @@
                 <data android:pathSuffix=".1pux" />
             </intent-filter>
 
-            <!-- URI Scheme Support for ssh://, rdp://, vnc://, sftp://, serial://, k8s://, docker:// Enterprise Launch Links -->
+            <!-- URI Scheme Support for ssh://, rdp://, vnc://, sftp://, scp://, ftp://, ftps://, telnet://, serial://, k8s://, docker:// Enterprise Launch Links -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -124,6 +125,10 @@
                 <data android:scheme="rdp" />
                 <data android:scheme="vnc" />
                 <data android:scheme="sftp" />
+                <data android:scheme="scp" />
+                <data android:scheme="ftp" />
+                <data android:scheme="ftps" />
+                <data android:scheme="telnet" />
                 <data android:scheme="serial" />
                 <data android:scheme="k8s" />
                 <data android:scheme="kubectl" />
@@ -172,7 +177,11 @@
         <service
             android:name=".service.ActiveSessionsForegroundService"
             android:exported="false"
-            android:foregroundServiceType="connectedDevice|dataSync" />
+            android:foregroundServiceType="specialUse|connectedDevice|dataSync">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Persistent SSHv2, RDP, SFTP, and Port-Forwarding remote management sessions across Googlebook OS workspaces" />
+        </service>
 
         <!-- WorkManager Hilt Custom Initializer -->
         <provider

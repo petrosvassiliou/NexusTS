@@ -28,6 +28,8 @@ import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Bookmarks
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.DynamicFeed
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.outlined.PlayArrow
@@ -83,6 +85,8 @@ import com.nexusts.app.core.vault.credentials.TotpCodeGenerator
 import com.nexusts.app.core.vault.inheritance.EffectiveConnectionProfile
 import com.nexusts.app.core.vault.model.ConnectionTemplate
 import com.nexusts.app.core.vault.model.CustomPropertyEntry
+import com.nexusts.app.core.vault.model.DynamicFolder
+import com.nexusts.app.core.vault.model.DynamicScriptInterpreter
 import com.nexusts.app.core.vault.model.InheritableProperties
 import com.nexusts.app.core.vault.model.NxtsVaultDocument
 import com.nexusts.app.core.vault.model.ProtocolSpecificSettings
@@ -90,6 +94,7 @@ import com.nexusts.app.core.vault.model.SmartFolder
 import com.nexusts.app.core.vault.model.SmartFolderFilter
 import com.nexusts.app.core.vault.model.VaultConnection
 import com.nexusts.app.core.vault.model.VaultCredential
+import com.nexusts.app.core.vault.model.VaultFolder
 import com.nexusts.app.core.vault.model.VaultProtocolType
 import com.nexusts.app.core.vault.model.VaultTodoItem
 import com.nexusts.app.feature.workspace.AdHocLaunchOverride
@@ -290,14 +295,24 @@ fun ExpressiveVaultOverviewDashboard(
     onConnectAllInFolder: (String) -> Unit,
     onAddTodo: (String) -> Unit,
     onToggleTodo: (String) -> Unit,
+    onDeleteTodo: (String) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var newTodoTitle by remember { mutableStateOf("") }
-    val favorites = remember(vaultDocument.connections) {
-        vaultDocument.connections.filter { it.favorite && it.id !in vaultDocument.tombstonedObjectIds }
+    val activeFolders = remember(vaultDocument.folders, vaultDocument.tombstonedObjectIds) {
+        vaultDocument.folders.filterNot { it.id in vaultDocument.tombstonedObjectIds }
     }
-    val pendingTodos = remember(vaultDocument.todoItems) {
-        vaultDocument.todoItems.count { !it.completed }
+    val activeConnections = remember(vaultDocument.connections, vaultDocument.tombstonedObjectIds) {
+        vaultDocument.connections.filterNot { it.id in vaultDocument.tombstonedObjectIds }
+    }
+    val activeTodos = remember(vaultDocument.todoItems, vaultDocument.tombstonedObjectIds) {
+        vaultDocument.todoItems.filterNot { it.id in vaultDocument.tombstonedObjectIds }
+    }
+    val favorites = remember(activeConnections) {
+        activeConnections.filter { it.favorite }
+    }
+    val pendingTodos = remember(activeTodos) {
+        activeTodos.count { !it.completed }
     }
 
     Column(
@@ -360,8 +375,8 @@ fun ExpressiveVaultOverviewDashboard(
         ) {
             ExpressiveMetricCard(
                 label = strings.navConnections,
-                value = vaultDocument.connections.size.toString(),
-                subtitle = "${vaultDocument.folders.size} ${strings.vaultSectionFolders}",
+                value = activeConnections.size.toString(),
+                subtitle = "${activeFolders.size} ${strings.vaultSectionFolders}",
                 icon = Icons.Outlined.Terminal,
                 accentColor = MaterialTheme.colorScheme.primary,
                 onClick = onNewConnection,
@@ -388,7 +403,7 @@ fun ExpressiveVaultOverviewDashboard(
             ExpressiveMetricCard(
                 label = strings.inspectorTodoItems,
                 value = pendingTodos.toString(),
-                subtitle = "${vaultDocument.todoItems.size} total tasks",
+                subtitle = "${activeTodos.size} total tasks",
                 icon = Icons.Outlined.CheckCircle,
                 accentColor = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.weight(1f)
@@ -484,8 +499,8 @@ fun ExpressiveVaultOverviewDashboard(
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     Text(strings.vaultSectionFolders, style = MaterialTheme.typography.titleMedium)
-                    vaultDocument.folders.forEach { folder ->
-                        val childCount = vaultDocument.connections.count { it.parentFolderId == folder.id }
+                    activeFolders.forEach { folder ->
+                        val childCount = activeConnections.count { it.parentFolderId == folder.id }
                         val folderAccent = parseHexColorOrNull(folder.inheritable.displayColorAccentHex)
                             ?: MaterialTheme.colorScheme.primary
                         Surface(
@@ -568,7 +583,7 @@ fun ExpressiveVaultOverviewDashboard(
                             Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(16.dp))
                         }
                     }
-                    vaultDocument.todoItems.take(6).forEach { todo ->
+                    activeTodos.forEach { todo ->
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -598,11 +613,24 @@ fun ExpressiveVaultOverviewDashboard(
                                     overflow = TextOverflow.Ellipsis
                                 )
                             }
-                            Text(
-                                text = todo.priority,
-                                style = NexusTheme.monospace.keycapShortcut,
-                                color = if (todo.priority == "HIGH") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text(
+                                    text = todo.priority,
+                                    style = NexusTheme.monospace.keycapShortcut,
+                                    color = if (todo.priority == "HIGH") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                IconButton(
+                                    onClick = { onDeleteTodo(todo.id) },
+                                    modifier = Modifier.size(24.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Outlined.Delete,
+                                        contentDescription = "Delete To-Do",
+                                        tint = MaterialTheme.colorScheme.error,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -620,6 +648,7 @@ fun ConnectionTemplatesStudioView(
     strings: WorkspaceLocalizedStrings,
     onCreateConnectionFromTemplate: (ConnectionTemplate) -> Unit,
     onOpenNewTemplateDialog: () -> Unit,
+    onDeleteTemplate: (String) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     Column(
@@ -706,10 +735,20 @@ fun ConnectionTemplatesStudioView(
                             }
                         }
                         Spacer(modifier = Modifier.width(12.dp))
-                        FilledTonalButton(onClick = { onCreateConnectionFromTemplate(tpl) }) {
-                            Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(strings.actionNewConnection)
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            FilledTonalButton(onClick = { onCreateConnectionFromTemplate(tpl) }) {
+                                Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(strings.actionNewConnection)
+                            }
+                            IconButton(onClick = { onDeleteTemplate(tpl.id) }) {
+                                Icon(
+                                    Icons.Outlined.Delete,
+                                    contentDescription = "Delete Template",
+                                    tint = MaterialTheme.colorScheme.error,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
                         }
                     }
                 }
@@ -770,17 +809,7 @@ fun NewTemplateDialog(
                         expanded = protoMenuOpen,
                         onDismissRequest = { protoMenuOpen = false }
                     ) {
-                        listOf(
-                            VaultProtocolType.RDP,
-                            VaultProtocolType.SSH,
-                            VaultProtocolType.SERIAL,
-                            VaultProtocolType.KUBERNETES_POD,
-                            VaultProtocolType.DOCKER_CONTAINER,
-                            VaultProtocolType.SFTP,
-                            VaultProtocolType.VNC,
-                            VaultProtocolType.PROXMOX_VE,
-                            VaultProtocolType.WEB_PAGE
-                        ).forEach { candidate ->
+                        VaultProtocolType.entries.forEach { candidate ->
                             DropdownMenuItem(
                                 text = { Text(candidate.name) },
                                 onClick = {
@@ -828,12 +857,20 @@ fun NewTemplateDialog(
                             desktopScaleFactorPercent = rdpScalePercent
                         )
                         VaultProtocolType.SSH -> ProtocolSpecificSettings.Ssh()
+                        VaultProtocolType.TELNET -> ProtocolSpecificSettings.Ssh(port = 23)
                         VaultProtocolType.SERIAL -> ProtocolSpecificSettings.SerialUart()
                         VaultProtocolType.KUBERNETES_POD,
                         VaultProtocolType.DOCKER_CONTAINER -> ProtocolSpecificSettings.ContainerExec()
-                        VaultProtocolType.SFTP -> ProtocolSpecificSettings.FileTransfer()
+                        VaultProtocolType.SFTP, VaultProtocolType.SCP -> ProtocolSpecificSettings.FileTransfer(port = 22)
+                        VaultProtocolType.FTP -> ProtocolSpecificSettings.FileTransfer(port = 21)
+                        VaultProtocolType.FTPS -> ProtocolSpecificSettings.FileTransfer(port = 990)
                         VaultProtocolType.VNC -> ProtocolSpecificSettings.Vnc()
+                        VaultProtocolType.APPLE_SCREEN_SHARING -> ProtocolSpecificSettings.Vnc(appleArdDiffieHellmanAuth = true)
                         VaultProtocolType.WEB_PAGE -> ProtocolSpecificSettings.WebPage(url = "https://")
+                        VaultProtocolType.UTILITY_PING,
+                        VaultProtocolType.UTILITY_TRACEROUTE,
+                        VaultProtocolType.UTILITY_PORT_SCANNER,
+                        VaultProtocolType.UTILITY_WAKE_ON_LAN -> ProtocolSpecificSettings.NetUtility()
                         else -> ProtocolSpecificSettings.CloudVirtualization(apiEndpointUrl = "https://")
                     }
                     onSaveTemplate(
@@ -1165,6 +1202,115 @@ fun NewSmartFolderDialog(
 }
 
 /**
+ * Interactive Creator for Royal TS [DynamicFolder] Inventory (`JSON_HTTP_API` JSON array or HTTPS URL).
+ */
+@Composable
+fun NewDynamicFolderDialog(
+    visible: Boolean,
+    folders: List<VaultFolder> = emptyList(),
+    strings: WorkspaceLocalizedStrings,
+    onDismiss: () -> Unit,
+    onSaveDynamicFolder: (DynamicFolder) -> Unit
+) {
+    if (!visible) return
+    var name by remember { mutableStateOf("") }
+    var selectedParentId by remember { mutableStateOf<String?>(null) }
+    var parentMenuOpen by remember { mutableStateOf(false) }
+    var scriptPayload by remember {
+        mutableStateOf(
+            """
+            [
+              { "name": "k8s-edge-01", "host": "10.90.0.11", "protocol": "SSH" },
+              { "name": "win-hyperv-01", "host": "10.90.0.25", "protocol": "RDP" }
+            ]
+            """.trimIndent()
+        )
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = {
+            Icon(Icons.Outlined.DynamicFeed, contentDescription = null, tint = MaterialTheme.colorScheme.secondary)
+        },
+        title = { Text(strings.vaultSectionDynamicFolders) },
+        text = {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text(strings.dialogFieldName) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                if (folders.isNotEmpty()) {
+                    val parentLabel = folders.firstOrNull { it.id == selectedParentId }?.name ?: "-"
+                    Box(modifier = Modifier.fillMaxWidth()) {
+                        OutlinedButton(
+                            onClick = { parentMenuOpen = true },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("${strings.dialogFieldFolder}: $parentLabel")
+                        }
+                        DropdownMenu(
+                            expanded = parentMenuOpen,
+                            onDismissRequest = { parentMenuOpen = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("-") },
+                                onClick = {
+                                    selectedParentId = null
+                                    parentMenuOpen = false
+                                }
+                            )
+                            folders.forEach { folder ->
+                                DropdownMenuItem(
+                                    text = { Text(folder.name) },
+                                    onClick = {
+                                        selectedParentId = folder.id
+                                        parentMenuOpen = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+                OutlinedTextField(
+                    value = scriptPayload,
+                    onValueChange = { scriptPayload = it },
+                    label = { Text("JSON Inventory Array or https:// Inventory Endpoint") },
+                    minLines = 4,
+                    maxLines = 8,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                enabled = name.isNotBlank() && scriptPayload.isNotBlank(),
+                onClick = {
+                    onSaveDynamicFolder(
+                        DynamicFolder(
+                            parentFolderId = selectedParentId,
+                            name = name.trim(),
+                            interpreter = DynamicScriptInterpreter.JSON_HTTP_API,
+                            scriptOrEndpointPayload = scriptPayload.trim()
+                        )
+                    )
+                }
+            ) {
+                Text(strings.dialogActionSave)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text(strings.dialogActionCancel) }
+        }
+    )
+}
+
+/**
  * Extended Royal TS Property Inspector Cards:
  * 1. Live RFC 6238 6-digit TOTP Authenticator (when effective credential defines `totpSecretBase32`)
  * 2. Effective Custom Properties (`$CustomProperty.<Key>$` cascade from Folder + Connection)
@@ -1178,7 +1324,9 @@ fun InspectorExtendedRoyalCards(
     strings: WorkspaceLocalizedStrings,
     onSaveNotesAndCustomProps: (String, List<CustomPropertyEntry>, String?) -> Unit,
     onAddTodo: (String) -> Unit,
-    onToggleTodo: (String) -> Unit
+    onToggleTodo: (String) -> Unit,
+    onDeleteCustomProperty: (String) -> Unit = {},
+    onDeleteTodo: (String) -> Unit = {}
 ) {
     val conn = profile.connection
     var notesDraft by remember(conn.id, conn.notes) { mutableStateOf(conn.notes) }
@@ -1196,6 +1344,9 @@ fun InspectorExtendedRoyalCards(
     }
 
     // 2. Effective Custom Properties (`$CustomProperty.<Key>$`)
+    val ownedPropKeys = remember(conn.inheritable.customProperties) {
+        conn.inheritable.customProperties.map { it.key.lowercase() }.toSet()
+    }
     Surface(
         shape = MaterialTheme.shapes.medium,
         color = MaterialTheme.colorScheme.surfaceContainer,
@@ -1211,20 +1362,40 @@ fun InspectorExtendedRoyalCards(
                 )
             } else {
                 profile.effectiveCustomProperties.values.forEach { prop ->
+                    val isOwnedByConn = prop.key.lowercase() in ownedPropKeys
                     Row(
                         modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Text(
                             text = "\$CustomProperty.${prop.key}\$",
                             style = NexusTheme.monospace.keycapShortcut,
-                            color = MaterialTheme.colorScheme.secondary
+                            color = MaterialTheme.colorScheme.secondary,
+                            modifier = Modifier.weight(1f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
-                        Text(
-                            text = if (prop.isProtected) "••••••••" else prop.value,
-                            style = NexusTheme.monospace.keycapShortcut,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(
+                                text = if (prop.isProtected) "••••••••" else prop.value,
+                                style = NexusTheme.monospace.keycapShortcut,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            if (isOwnedByConn) {
+                                IconButton(
+                                    onClick = { onDeleteCustomProperty(prop.key) },
+                                    modifier = Modifier.size(22.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Outlined.Delete,
+                                        contentDescription = "Delete Custom Property",
+                                        tint = MaterialTheme.colorScheme.error,
+                                        modifier = Modifier.size(13.dp)
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -1304,24 +1475,41 @@ fun InspectorExtendedRoyalCards(
     ) {
         Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(strings.inspectorTodoItems, style = MaterialTheme.typography.labelMedium)
-            scopedTodos.take(4).forEach { todo ->
+            scopedTodos.forEach { todo ->
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clickable { onToggleTodo(todo.id) },
-                    verticalAlignment = Alignment.CenterVertically
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Checkbox(
-                        checked = todo.completed,
-                        onCheckedChange = { onToggleTodo(todo.id) }
-                    )
-                    Text(
-                        text = todo.title,
-                        style = MaterialTheme.typography.bodySmall,
-                        textDecoration = if (todo.completed) TextDecoration.LineThrough else TextDecoration.None,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Checkbox(
+                            checked = todo.completed,
+                            onCheckedChange = { onToggleTodo(todo.id) }
+                        )
+                        Text(
+                            text = todo.title,
+                            style = MaterialTheme.typography.bodySmall,
+                            textDecoration = if (todo.completed) TextDecoration.LineThrough else TextDecoration.None,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    IconButton(
+                        onClick = { onDeleteTodo(todo.id) },
+                        modifier = Modifier.size(22.dp)
+                    ) {
+                        Icon(
+                            Icons.Outlined.Delete,
+                            contentDescription = "Delete To-Do",
+                            tint = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(13.dp)
+                        )
+                    }
                 }
             }
             Row(
@@ -1350,3 +1538,4 @@ fun InspectorExtendedRoyalCards(
         }
     }
 }
+

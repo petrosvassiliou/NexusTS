@@ -17,23 +17,24 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
 import org.bouncycastle.crypto.engines.ChaCha7539Engine
 import org.bouncycastle.crypto.generators.Argon2BytesGenerator
 import org.bouncycastle.crypto.params.Argon2Parameters
+import org.bouncycastle.crypto.params.Ed25519PrivateKeyParameters
 import org.bouncycastle.crypto.params.KeyParameter
 import org.bouncycastle.crypto.params.ParametersWithIV
-import org.bouncycastle.crypto.params.Ed25519PrivateKeyParameters
 import org.w3c.dom.Element
+import org.w3c.dom.Node
 import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.Base64
+import java.util.IdentityHashMap
 import java.util.zip.GZIPInputStream
 import javax.crypto.Cipher
 import javax.crypto.Mac
@@ -73,7 +74,7 @@ class EnterpriseCredentialHub(
     private val json = Json { ignoreUnknownKeys = true }
 
     /**
-     * Generates a fresh OpenSSH Ed25519 keypair using Rust `nexusts-crypto` (or BouncyCastle fallback).
+     * Generates a fresh OpenSSH Ed25519 keypair using Rust `nexusts-crypto` (or RFC-compliant `openssh-key-v1\0` BouncyCastle fallback).
      */
     fun generateEd25519SshKeyPair(comment: String): GeneratedSshKeyInfo {
         if (NativeVaultCryptoBridge.isNativeLoaded) {
@@ -82,14 +83,14 @@ class EnterpriseCredentialHub(
         }
         val random = SecureRandom()
         val privParams = Ed25519PrivateKeyParameters(random)
+        val seedBytes = privParams.encoded
         val pubBytes = privParams.generatePublicKey().encoded
+        val keyTypeBytes = "ssh-ed25519".toByteArray(Charsets.US_ASCII)
 
-        val wirePub = ByteBuffer.allocate(4 + 11 + 4 + 32).order(ByteOrder.BIG_ENDIAN).apply {
-            putInt(11)
-            put("ssh-ed25519".toByteArray(Charsets.US_ASCII))
-            putInt(32)
-            put(pubBytes)
-        }.array()
+        val wirePub = ByteArrayOutputStream(4 + keyTypeBytes.size + 4 + pubBytes.size).apply {
+            writeSshString(keyTypeBytes)
+            writeSshString(pubBytes)
+        }.toByteArray()
 
         val pubB64 = Base64.getEncoder().encodeToString(wirePub)
         val sha256B64 = Base64.getEncoder()
@@ -97,8 +98,39 @@ class EnterpriseCredentialHub(
             .encodeToString(MessageDigest.getInstance("SHA-256").digest(wirePub))
         val fingerprint = "SHA256:$sha256B64"
         val publicOpenSsh = if (comment.isBlank()) "ssh-ed25519 $pubB64" else "ssh-ed25519 $pubB64 $comment"
-        val seedB64 = Base64.getEncoder().encodeToString(privParams.encoded + pubBytes)
-        val pem = "-----BEGIN OPENSSH PRIVATE KEY-----\n$seedB64\n-----END OPENSSH PRIVATE KEY-----\n"
+
+        // Build standard OpenSSH PROTOCOL.key ("openssh-key-v1\0") unencrypted private key structure
+        val privateSection = ByteArrayOutputStream().apply {
+            val checkInt = random.nextInt()
+            writeU32Be(checkInt)
+            writeU32Be(checkInt)
+            writeSshString(keyTypeBytes)
+            writeSshString(pubBytes)
+            writeSshString(seedBytes + pubBytes)
+            writeSshString(comment.toByteArray(Charsets.UTF_8))
+            var padByte = 1
+            while (size() % 8 != 0) {
+                write(padByte and 0xFF)
+                padByte++
+            }
+        }.toByteArray()
+
+        val noneBytes = "none".toByteArray(Charsets.US_ASCII)
+        val opensshKeyBlob = ByteArrayOutputStream().apply {
+            write("openssh-key-v1\u0000".toByteArray(Charsets.US_ASCII))
+            writeSshString(noneBytes) // ciphername
+            writeSshString(noneBytes) // kdfname
+            writeSshString(ByteArray(0)) // kdfoptions
+            writeU32Be(1) // number of keys
+            writeSshString(wirePub)
+            writeSshString(privateSection)
+        }.toByteArray()
+
+        val wrappedB64 = Base64.getEncoder()
+            .encodeToString(opensshKeyBlob)
+            .chunked(70)
+            .joinToString("\n")
+        val pem = "-----BEGIN OPENSSH PRIVATE KEY-----\n$wrappedB64\n-----END OPENSSH PRIVATE KEY-----\n"
 
         return GeneratedSshKeyInfo(
             key_id = fingerprint,
@@ -106,6 +138,18 @@ class EnterpriseCredentialHub(
             private_key_openssh_pem = pem,
             sha256_fingerprint = fingerprint
         )
+    }
+
+    private fun ByteArrayOutputStream.writeU32Be(value: Int) {
+        write((value ushr 24) and 0xFF)
+        write((value ushr 16) and 0xFF)
+        write((value ushr 8) and 0xFF)
+        write(value and 0xFF)
+    }
+
+    private fun ByteArrayOutputStream.writeSshString(bytes: ByteArray) {
+        writeU32Be(bytes.size)
+        write(bytes)
     }
 
     /**
@@ -179,8 +223,10 @@ class EnterpriseCredentialHub(
                     "KeePass .kdbx file provider required"
                 }.invoke(credential.externalReferenceUri)
                 val entries = KeePassKdbx4Reader.readEntries(kdbxBytes, masterPass)
+                val normalizedRef = credential.externalReferenceUri.replace("-", "").trim()
                 val matched = entries.firstOrNull {
-                    it.uuidHex.equals(credential.externalReferenceUri, ignoreCase = true) ||
+                    it.uuidHex.equals(normalizedRef, ignoreCase = true) ||
+                        it.uuidHex.equals(credential.externalReferenceUri, ignoreCase = true) ||
                         it.title.equals(credential.name, ignoreCase = true)
                 } ?: error("Entry '${credential.name}' not found in .kdbx database")
                 ResolvedSessionSecret(
@@ -342,12 +388,18 @@ object KeePassKdbx4Reader {
         val title: String,
         val username: String,
         val password: String,
-        val sshPrivateKeyPem: String = ""
+        val sshPrivateKeyPem: String = "",
+        val url: String = "",
+        val notes: String = "",
+        val totpSecret: String = "",
+        val groupPath: List<String> = emptyList()
     )
 
     fun readEntries(kdbxBytes: ByteArray, masterPassword: CharArray): List<KdbxEntry> {
         val buf = ByteBuffer.wrap(kdbxBytes).order(ByteOrder.LITTLE_ENDIAN)
-        require(buf.int == KDBX_SIG_1 && buf.int == KDBX_SIG_2) { "Invalid .kdbx file signature" }
+        require(buf.remaining() >= 12 && buf.int == KDBX_SIG_1 && buf.int == KDBX_SIG_2) {
+            "Invalid .kdbx file signature"
+        }
         val versionMinor = buf.short.toInt() and 0xFFFF
         val versionMajor = buf.short.toInt() and 0xFFFF
         require(versionMajor == 4) { "Expected KDBX 4.x database (got $versionMajor.$versionMinor)" }
@@ -433,7 +485,7 @@ object KeePassKdbx4Reader {
     }
 
     private fun readHmacBlockStream(buf: ByteBuffer): ByteArray {
-        val out = java.io.ByteArrayOutputStream()
+        val out = ByteArrayOutputStream()
         while (buf.remaining() >= 36) {
             val blockHmac = ByteArray(32).also { buf.get(it) }
             val blockSize = buf.int
@@ -467,7 +519,7 @@ object KeePassKdbx4Reader {
         return map
     }
 
-    private fun parseKeePassXml(xmlBytes: ByteArray, innerStreamKey: ByteArray): List<KdbxEntry> {
+    internal fun parseKeePassXml(xmlBytes: ByteArray, innerStreamKey: ByteArray): List<KdbxEntry> {
         val sha512 = MessageDigest.getInstance("SHA-512").digest(innerStreamKey)
         val chacha = ChaCha7539Engine()
         if (innerStreamKey.isNotEmpty()) {
@@ -482,44 +534,126 @@ object KeePassKdbx4Reader {
 
         val factory = DocumentBuilderFactory.newInstance().apply {
             setFeature("http://apache.org/xml/features/disallow-doctype-decl", true)
+            setFeature("http://xml.org/sax/features/external-general-entities", false)
+            setFeature("http://xml.org/sax/features/external-parameter-entities", false)
         }
         val doc = factory.newDocumentBuilder().parse(ByteArrayInputStream(xmlBytes))
+
+        // Pass 1: Advance ChaCha7539Engine across EVERY Protected="True" <Value> node in exact XML document order
+        // (including <History> entries and Recycle Bin groups) so the stream cipher never desynchronizes!
+        val decryptedValues = IdentityHashMap<Element, String>()
+        if (innerStreamKey.isNotEmpty()) {
+            val allValues = doc.getElementsByTagName("Value")
+            for (vIdx in 0 until allValues.length) {
+                val valElem = allValues.item(vIdx) as? Element ?: continue
+                if (valElem.getAttribute("Protected").equals("True", ignoreCase = true)) {
+                    val rawB64 = valElem.textContent?.trim().orEmpty()
+                    if (rawB64.isNotEmpty()) {
+                        val cipherBytes = Base64.getDecoder().decode(rawB64)
+                        val plainBytes = ByteArray(cipherBytes.size)
+                        if (cipherBytes.isNotEmpty()) {
+                            chacha.processBytes(cipherBytes, 0, cipherBytes.size, plainBytes, 0)
+                        }
+                        decryptedValues[valElem] = plainBytes.toString(Charsets.UTF_8)
+                    } else {
+                        decryptedValues[valElem] = ""
+                    }
+                }
+            }
+        }
+
+        // Pass 2: Materialize active <Entry> nodes (skipping <History> children and reading ONLY direct <String> children)
         val entryNodes = doc.getElementsByTagName("Entry")
         val entries = mutableListOf<KdbxEntry>()
 
         for (i in 0 until entryNodes.length) {
             val entryElem = entryNodes.item(i) as Element
             if ((entryElem.parentNode as? Element)?.tagName == "History") continue
-            val uuidB64 = entryElem.getElementsByTagName("UUID").item(0)?.textContent.orEmpty()
+
+            val uuidRaw = entryElem.directChildElement("UUID")?.textContent.orEmpty()
+            val uuidHex = decodeKdbxUuidToHex(uuidRaw)
+
             var title = ""
             var user = ""
             var pass = ""
             var sshPem = ""
+            var url = ""
+            var notes = ""
+            var totp = ""
 
-            val strings = entryElem.getElementsByTagName("String")
-            for (s in 0 until strings.length) {
-                val strElem = strings.item(s) as Element
-                val key = strElem.getElementsByTagName("Key").item(0)?.textContent.orEmpty()
-                val valElem = strElem.getElementsByTagName("Value").item(0) as? Element ?: continue
-                val isProtected = valElem.getAttribute("Protected").equals("True", true)
-                val rawText = valElem.textContent.orEmpty()
-                val decoded = if (isProtected && innerStreamKey.isNotEmpty() && rawText.isNotBlank()) {
-                    val cipherBytes = Base64.getDecoder().decode(rawText)
-                    val plainBytes = ByteArray(cipherBytes.size)
-                    chacha.processBytes(cipherBytes, 0, cipherBytes.size, plainBytes, 0)
-                    plainBytes.toString(Charsets.UTF_8)
-                } else {
-                    rawText
-                }
+            val childNodes = entryElem.childNodes
+            for (cIdx in 0 until childNodes.length) {
+                val child = childNodes.item(cIdx)
+                if (child.nodeType != Node.ELEMENT_NODE) continue
+                val strElem = child as Element
+                if (strElem.tagName != "String") continue
+
+                val key = strElem.directChildElement("Key")?.textContent.orEmpty()
+                val valElem = strElem.directChildElement("Value") ?: continue
+                val decoded = decryptedValues[valElem] ?: valElem.textContent.orEmpty()
+
                 when (key) {
                     "Title" -> title = decoded
                     "UserName" -> user = decoded
                     "Password" -> pass = decoded
+                    "URL" -> url = decoded
+                    "Notes" -> notes = decoded
+                    "otp", "TOTP Seed", "TimeOtp-Secret-Base32" -> if (totp.isBlank()) totp = decoded
                     "SSHKey", "PrivateKey" -> sshPem = decoded
+                    else -> if (sshPem.isBlank() &&
+                        (decoded.contains("BEGIN OPENSSH PRIVATE KEY") || decoded.contains("BEGIN RSA PRIVATE KEY"))
+                    ) {
+                        sshPem = decoded
+                    }
                 }
             }
-            entries += KdbxEntry(uuidHex = uuidB64, title = title, username = user, password = pass, sshPrivateKeyPem = sshPem)
+
+            val groupSegments = mutableListOf<String>()
+            var parentCursor = entryElem.parentNode
+            while (parentCursor is Element) {
+                if (parentCursor.tagName == "Group") {
+                    val gName = parentCursor.directChildElement("Name")?.textContent?.trim().orEmpty()
+                    val isRootGroup = (parentCursor.parentNode as? Element)?.tagName == "Root"
+                    if (!isRootGroup && gName.isNotEmpty()) {
+                        groupSegments.add(0, gName)
+                    }
+                }
+                parentCursor = parentCursor.parentNode
+            }
+
+            entries += KdbxEntry(
+                uuidHex = uuidHex,
+                title = title,
+                username = user,
+                password = pass,
+                sshPrivateKeyPem = sshPem,
+                url = url,
+                notes = notes,
+                totpSecret = totp,
+                groupPath = groupSegments
+            )
         }
         return entries
+    }
+
+    internal fun decodeKdbxUuidToHex(uuidRaw: String): String {
+        val trimmed = uuidRaw.trim()
+        if (trimmed.isEmpty()) return ""
+        val decoded = runCatching { Base64.getDecoder().decode(trimmed) }.getOrNull()
+        if (decoded != null && decoded.size == 16) {
+            return decoded.joinToString("") { "%02x".format(it) }
+        }
+        return trimmed.replace("-", "").lowercase()
+    }
+
+    private fun Element.directChildElement(tagName: String): Element? {
+        val children = childNodes
+        for (idx in 0 until children.length) {
+            val child = children.item(idx)
+            if (child.nodeType == Node.ELEMENT_NODE && (child as Element).tagName == tagName) {
+                return child
+            }
+        }
+        return null
     }
 }

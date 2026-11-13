@@ -5,6 +5,8 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentSender
 import android.content.RestrictionsManager
+import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyProperties
 import androidx.credentials.CredentialManager
 import androidx.credentials.CustomCredential
 import androidx.credentials.GetCredentialRequest
@@ -22,6 +24,16 @@ import com.google.api.services.drive.DriveScopes
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
+import java.nio.CharBuffer
+import java.security.KeyStore
+import java.security.SecureRandom
+import java.util.Arrays
+import java.util.Base64
+import javax.crypto.Cipher
+import javax.crypto.KeyGenerator
+import javax.crypto.SecretKey
+import javax.crypto.spec.GCMParameterSpec
+import javax.crypto.spec.SecretKeySpec
 
 data class AuthenticatedGoogleIdentity(
     val email: String,
@@ -36,7 +48,7 @@ class GoogleDriveConsentResolutionRequiredException(
 ) : IllegalStateException(message)
 
 /**
- * Native Google Identity Services & Android Credential Manager OAuth 2.0 Authenticator (`v1.1`).
+ * Native Google Identity Services & Android Credential Manager OAuth 2.0 Authenticator (`v1.2`).
  *
  * Supports two seamless authorization paths:
  * 1. **Direct Android OAuth 2.0 (`AuthorizationClient`)**: Works with an Android OAuth Client (package
@@ -88,6 +100,88 @@ class GoogleDriveAuthManager(
         prefs.edit().putBoolean(KEY_AUTO_SYNC_ON_SAVE, enabled).apply()
     }
 
+    fun isRememberVaultPassphraseEnabled(): Boolean =
+        prefs.getBoolean(KEY_REMEMBER_VAULT_PASSPHRASE, false)
+
+    /**
+     * Encrypts and stores the user's vault passphrase in Android Keystore-backed AES-256-GCM preferences
+     * when the user opts in (enabling seamless cold-start unlock & background 3-way Drive merges),
+     * or purges it immediately when opted out.
+     */
+    @JvmOverloads
+    fun saveVaultPassphrasePreference(
+        passphrase: CharArray?,
+        rememberPassphrase: Boolean = passphrase != null && passphrase.isNotEmpty(),
+        documentId: String? = null
+    ) {
+        if (!rememberPassphrase || passphrase == null || passphrase.isEmpty()) {
+            clearSavedVaultPassphrase(documentId)
+            return
+        }
+
+        val utf8Buf = Charsets.UTF_8.encode(CharBuffer.wrap(passphrase))
+        val plainBytes = ByteArray(utf8Buf.remaining())
+        utf8Buf.get(plainBytes)
+        if (utf8Buf.hasArray()) {
+            Arrays.fill(utf8Buf.array(), 0)
+        }
+
+        try {
+            val sealedToken = sealPassphraseBytes(plainBytes)
+            val editor = prefs.edit()
+                .putBoolean(KEY_REMEMBER_VAULT_PASSPHRASE, true)
+                .putString(KEY_SEALED_DEFAULT_PASSPHRASE, sealedToken)
+            if (!documentId.isNullOrBlank()) {
+                editor.putString("$KEY_SEALED_DOC_PASSPHRASE_PREFIX$documentId", sealedToken)
+            }
+            editor.apply()
+        } finally {
+            Arrays.fill(plainBytes, 0)
+        }
+    }
+
+    /**
+     * Decrypts and returns the opted-in local vault passphrase if saved, or `null` if not configured.
+     */
+    @JvmOverloads
+    fun readVaultPassphraseOrNull(documentId: String? = null): CharArray? {
+        if (!isRememberVaultPassphraseEnabled()) return null
+        val sealedToken = if (!documentId.isNullOrBlank()) {
+            prefs.getString("$KEY_SEALED_DOC_PASSPHRASE_PREFIX$documentId", null)
+                ?: prefs.getString(KEY_SEALED_DEFAULT_PASSPHRASE, null)
+        } else {
+            prefs.getString(KEY_SEALED_DEFAULT_PASSPHRASE, null)
+        } ?: return null
+
+        val plainBytes = runCatching { unsealPassphraseBytes(sealedToken) }.getOrNull() ?: return null
+        return try {
+            val charBuf = Charsets.UTF_8.decode(java.nio.ByteBuffer.wrap(plainBytes))
+            val out = CharArray(charBuf.remaining())
+            charBuf.get(out)
+            if (charBuf.hasArray()) {
+                Arrays.fill(charBuf.array(), '\u0000')
+            }
+            out.takeIf { it.isNotEmpty() }
+        } finally {
+            Arrays.fill(plainBytes, 0)
+        }
+    }
+
+    @JvmOverloads
+    fun clearSavedVaultPassphrase(documentId: String? = null) {
+        val editor = prefs.edit()
+        if (!documentId.isNullOrBlank()) {
+            editor.remove("$KEY_SEALED_DOC_PASSPHRASE_PREFIX$documentId")
+        } else {
+            editor.putBoolean(KEY_REMEMBER_VAULT_PASSPHRASE, false)
+                .remove(KEY_SEALED_DEFAULT_PASSPHRASE)
+            prefs.all.keys
+                .filter { it.startsWith(KEY_SEALED_DOC_PASSPHRASE_PREFIX) }
+                .forEach { editor.remove(it) }
+        }
+        editor.apply()
+    }
+
     fun signOut() {
         prefs.edit()
             .remove(KEY_SIGNED_IN_EMAIL)
@@ -114,8 +208,11 @@ class GoogleDriveAuthManager(
     fun resolveConfiguredSharedFolderId(): String {
         val restrictions = appContext.getSystemService(RestrictionsManager::class.java)
             ?.applicationRestrictions
-        val mdmFolderId = restrictions?.getString("managed_shared_drive_id")?.trim().orEmpty()
-        if (mdmFolderId.isNotBlank()) return mdmFolderId
+        val mdmFolderId = restrictions?.getString("managed_team_drive_id")?.trim()
+            ?.takeIf { it.isNotBlank() }
+            ?: restrictions?.getString("managed_shared_drive_id")?.trim()
+                ?.takeIf { it.isNotBlank() }
+        if (!mdmFolderId.isNullOrBlank()) return mdmFolderId
         return readRuntimeOAuthConfiguration().second
     }
 
@@ -255,8 +352,73 @@ class GoogleDriveAuthManager(
             GsonFactory.getDefaultInstance(),
             bearerInitializer
         )
-            .setApplicationName("NexusTS/1.1 (Googlebook OS)")
+            .setApplicationName("NexusTS/1.2 (Googlebook OS)")
             .build()
+    }
+
+    private fun sealPassphraseBytes(plainBytes: ByteArray): String {
+        val keystoreKey = getOrCreateAndroidKeystoreKeyOrNull()
+        return if (keystoreKey != null) {
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.ENCRYPT_MODE, keystoreKey)
+            val iv = cipher.iv
+            val ciphertext = cipher.doFinal(plainBytes)
+            "v1:aks:${Base64.getEncoder().encodeToString(iv)}:${Base64.getEncoder().encodeToString(ciphertext)}"
+        } else {
+            val wrapKey = getOrCreateFallbackWrapKey()
+            val iv = ByteArray(12).also { SecureRandom().nextBytes(it) }
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.ENCRYPT_MODE, wrapKey, GCMParameterSpec(128, iv))
+            val ciphertext = cipher.doFinal(plainBytes)
+            "v1:jce:${Base64.getEncoder().encodeToString(iv)}:${Base64.getEncoder().encodeToString(ciphertext)}"
+        }
+    }
+
+    private fun unsealPassphraseBytes(sealedToken: String): ByteArray? {
+        val parts = sealedToken.split(':')
+        if (parts.size != 4 || parts[0] != "v1") return null
+        val mode = parts[1]
+        val iv = Base64.getDecoder().decode(parts[2])
+        val ciphertext = Base64.getDecoder().decode(parts[3])
+        val secretKey: SecretKey = when (mode) {
+            "aks" -> getOrCreateAndroidKeystoreKeyOrNull() ?: return null
+            "jce" -> getOrCreateFallbackWrapKey()
+            else -> return null
+        }
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.DECRYPT_MODE, secretKey, GCMParameterSpec(128, iv))
+        return cipher.doFinal(ciphertext)
+    }
+
+    private fun getOrCreateAndroidKeystoreKeyOrNull(): SecretKey? = runCatching {
+        val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+        val existing = (ks.getEntry(KEYSTORE_PASSPHRASE_ALIAS, null) as? KeyStore.SecretKeyEntry)?.secretKey
+        if (existing != null) return@runCatching existing
+
+        val keyGen = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")
+        val spec = KeyGenParameterSpec.Builder(
+            KEYSTORE_PASSPHRASE_ALIAS,
+            KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
+        )
+            .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+            .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+            .setKeySize(256)
+            .build()
+        keyGen.init(spec)
+        keyGen.generateKey()
+    }.getOrNull()
+
+    private fun getOrCreateFallbackWrapKey(): SecretKey {
+        val existingB64 = prefs.getString(KEY_FALLBACK_WRAP_KEY, null)
+        val rawBytes = if (!existingB64.isNullOrBlank()) {
+            Base64.getDecoder().decode(existingB64)
+        } else {
+            ByteArray(32).also { bytes ->
+                SecureRandom().nextBytes(bytes)
+                prefs.edit().putString(KEY_FALLBACK_WRAP_KEY, Base64.getEncoder().encodeToString(bytes)).apply()
+            }
+        }
+        return SecretKeySpec(rawBytes, "AES")
     }
 
     companion object {
@@ -268,5 +430,10 @@ class GoogleDriveAuthManager(
         private const val KEY_SIGNED_IN_EMAIL = "signed_in_email"
         private const val KEY_SIGNED_IN_DISPLAY_NAME = "signed_in_display_name"
         private const val KEY_AUTO_SYNC_ON_SAVE = "auto_sync_on_save"
+        private const val KEY_REMEMBER_VAULT_PASSPHRASE = "remember_vault_passphrase"
+        private const val KEY_SEALED_DEFAULT_PASSPHRASE = "sealed_vault_passphrase_default"
+        private const val KEY_SEALED_DOC_PASSPHRASE_PREFIX = "sealed_vault_passphrase_doc_"
+        private const val KEY_FALLBACK_WRAP_KEY = "sealed_vault_fallback_wrap_key"
+        private const val KEYSTORE_PASSPHRASE_ALIAS = "nexusts_vault_passphrase_aes256_v1"
     }
 }

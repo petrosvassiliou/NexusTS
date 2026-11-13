@@ -52,10 +52,13 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -66,9 +69,21 @@ import androidx.compose.ui.draganddrop.mimeTypes
 import androidx.compose.ui.draganddrop.toAndroidDragEvent
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.nexusts.app.core.ui.theme.NexusTheme
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 import java.util.UUID
 
@@ -93,12 +108,72 @@ data class CommanderTransferTask(
     val completed: Boolean = false
 )
 
+private fun filePermissionsToRwx(file: File): String {
+    val prefix = if (file.isDirectory) 'd' else '-'
+    val r = if (file.canRead()) 'r' else '-'
+    val w = if (file.canWrite()) 'w' else '-'
+    val x = if (file.canExecute()) 'x' else '-'
+    return "$prefix$r$w$x$r-$x$r-$x"
+}
+
+private fun applyOctalToFile(file: File, octalStr: String) {
+    val mode = octalStr.toIntOrNull(8) ?: 0b110_100_100
+    val ownerBits = (mode ushr 6) and 0b111
+    val otherBits = mode and 0b111
+    runCatching {
+        file.setReadable((ownerBits and 0b100) != 0, (otherBits and 0b100) == 0)
+        file.setWritable((ownerBits and 0b010) != 0, (otherBits and 0b010) == 0)
+        file.setExecutable((ownerBits and 0b001) != 0, (otherBits and 0b001) == 0)
+    }
+}
+
+private fun listRealDirectoryItems(dir: File, rootBoundary: File): List<CommanderFileItem> {
+    val fmt = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US)
+    val canonicalDir = runCatching { dir.canonicalFile }.getOrDefault(dir)
+    val canonicalRoot = runCatching { rootBoundary.canonicalFile }.getOrDefault(rootBoundary)
+    val children = canonicalDir.listFiles().orEmpty().map { child ->
+        CommanderFileItem(
+            name = child.name,
+            fullPath = child.absolutePath,
+            isDirectory = child.isDirectory,
+            sizeBytes = if (child.isDirectory) 4096L else child.length(),
+            permissions = filePermissionsToRwx(child),
+            modifiedIso = fmt.format(Date(child.lastModified()))
+        )
+    }.sortedWith(
+        compareByDescending<CommanderFileItem> { it.isDirectory }
+            .thenBy { it.name.lowercase(Locale.ROOT) }
+    )
+
+    val parentFile = canonicalDir.parentFile
+    val canNavigateUp = parentFile != null &&
+        canonicalDir.path != canonicalRoot.path &&
+        (parentFile.path.startsWith(canonicalRoot.path) || parentFile.canRead())
+
+    return if (canNavigateUp && parentFile != null) {
+        val upTarget = if (parentFile.canRead()) parentFile.absolutePath else canonicalRoot.absolutePath
+        listOf(
+            CommanderFileItem(
+                name = "..",
+                fullPath = upTarget,
+                isDirectory = true,
+                sizeBytes = 0L,
+                permissions = "drwxr-xr-x",
+                modifiedIso = fmt.format(Date(parentFile.lastModified()))
+            )
+        ) + children
+    } else {
+        children
+    }
+}
+
 /**
  * Dual-Pane SFTP / FTP / FTPS / SCP File Transfer Commander View for Googlebook OS & Android Tablets:
+ * - Real local filesystem browsing rooted at `context.filesDir` (seeded with `vault-exports/`, `downloads/`, `keys/` on first open)
  * - Native Drag-and-Drop (`dragAndDropSource` / `dragAndDropTarget`) across Local <-> Remote panes
  * - Context menu for Octal `chmod` permissions (`0755`, `0644`, `0600`) and file deletion
  * - New Directory (`mkdir`) creation modal
- * - Live Background Transfer Queue with Pause / Resume / Cancel job controls
+ * - Live Streaming Background Transfer Queue with Pause / Resume / Cancel job controls
  */
 @Composable
 fun DualPaneTransferCommanderView(
@@ -111,61 +186,249 @@ fun DualPaneTransferCommanderView(
     initialRemotePath: String = "/var/www/production",
     modifier: Modifier = Modifier
 ) {
-    var localPath by remember { mutableStateOf(initialLocalPath) }
-    var remotePath by remember { mutableStateOf(initialRemotePath) }
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
+    val localRootDir = remember(context) { context.filesDir }
+    val resolvedInitialLocalPath = remember(initialLocalPath, localRootDir) {
+        val candidate = File(initialLocalPath)
+        if (candidate.exists() && candidate.isDirectory && candidate.canRead()) {
+            candidate.absolutePath
+        } else {
+            localRootDir.absolutePath
+        }
+    }
+
+    val remoteStagingRoot = remember(context, remoteHost) {
+        val sanitizedHost = remoteHost.replace(Regex("[^A-Za-z0-9._-]"), "_").ifBlank { "remote" }
+        File(context.cacheDir, "nexusts_remote_stage/$sanitizedHost")
+    }
+    val normalizedInitialRemote = remember(initialRemotePath) {
+        "/" + initialRemotePath.trim('/').ifBlank { "var/www/production" }
+    }
+
+    var localPath by remember(resolvedInitialLocalPath) { mutableStateOf(resolvedInitialLocalPath) }
+    var remotePath by remember(normalizedInitialRemote) { mutableStateOf(normalizedInitialRemote) }
     var selectedLocal by remember { mutableStateOf<CommanderFileItem?>(null) }
     var selectedRemote by remember { mutableStateOf<CommanderFileItem?>(null) }
 
-    val localEntries = remember(localPath) {
-        mutableStateListOf(
-            CommanderFileItem("..", localPath.substringBeforeLast('/', "/"), true, 0L, "drwxr-xr-x", "2026-11-12"),
-            CommanderFileItem("release-bundle-v1.0.tar.zst", "$localPath/release-bundle-v1.0.tar.zst", false, 48_291_840L, "-rw-r--r--", "2026-11-12"),
-            CommanderFileItem("k8s-cluster-values.yaml", "$localPath/k8s-cluster-values.yaml", false, 14_920L, "-rw-------", "2026-11-11"),
-            CommanderFileItem("certs", "$localPath/certs", true, 4096L, "drwx------", "2026-11-10")
-        )
-    }
-
-    val remoteEntries = remember(remotePath) {
-        mutableStateListOf(
-            CommanderFileItem("..", remotePath.substringBeforeLast('/', "/"), true, 0L, "drwxr-xr-x", "2026-11-12"),
-            CommanderFileItem("nginx.conf", "$remotePath/nginx.conf", false, 6_420L, "-rw-r--r--", "2026-11-12"),
-            CommanderFileItem("systemd-units", "$remotePath/systemd-units", true, 4096L, "drwxr-xr-x", "2026-11-09"),
-            CommanderFileItem("docker-compose.prod.yml", "$remotePath/docker-compose.prod.yml", false, 9_812L, "-rw-r-----", "2026-11-12")
-        )
-    }
-
+    val localEntries = remember { mutableStateListOf<CommanderFileItem>() }
+    val remoteEntries = remember { mutableStateListOf<CommanderFileItem>() }
     val transferQueue = remember { mutableStateListOf<CommanderTransferTask>() }
+    val activeTransferJobs = remember { mutableStateMapOf<String, Job>() }
 
-    val enqueueUpload: (CommanderFileItem) -> Unit = { file ->
-        if (remoteEntries.none { it.name == file.name }) {
-            remoteEntries.add(file.copy(fullPath = "$remotePath/${file.name}"))
+    fun mapRemoteVirtualToStageFile(virtualPath: String): File {
+        val rel = virtualPath.trimStart('/')
+        return if (rel.isEmpty()) remoteStagingRoot else File(remoteStagingRoot, rel)
+    }
+
+    suspend fun refreshLocalPane(path: String = localPath) {
+        val items = withContext(Dispatchers.IO) {
+            // Seed starter workspace directories on first open if filesDir is empty
+            val existing = localRootDir.listFiles()
+            if (existing == null || existing.isEmpty()) {
+                val exportsDir = File(localRootDir, "vault-exports").apply { mkdirs() }
+                val downloadsDir = File(localRootDir, "downloads").apply { mkdirs() }
+                val keysDir = File(localRootDir, "keys").apply { mkdirs() }
+                File(exportsDir, "vault-backup-readme.txt").writeText(
+                    "NexusTS encrypted vault export directory.\nPlace .nxvault archives here for SFTP/SCP sync.\n"
+                )
+                File(downloadsDir, "release-notes.md").writeText(
+                    "# NexusTS Workspace Downloads\nDownloaded remote artifacts are stored in this folder.\n"
+                )
+                File(keysDir, "authorized_keys.pub.sample").writeText(
+                    "# Public SSH keys workspace directory\n"
+                )
+            }
+            val dir = File(path).let { if (it.exists() && it.isDirectory && it.canRead()) it else localRootDir }
+            listRealDirectoryItems(dir, localRootDir)
         }
+        localEntries.clear()
+        localEntries.addAll(items)
+    }
+
+    suspend fun refreshRemotePane(vPath: String = remotePath) {
+        val items = withContext(Dispatchers.IO) {
+            val defaultStageDir = mapRemoteVirtualToStageFile(normalizedInitialRemote)
+            if (!remoteStagingRoot.exists()) {
+                defaultStageDir.mkdirs()
+                File(defaultStageDir, "nginx.conf").writeText(
+                    "worker_processes auto;\nevents { worker_connections 4096; }\nhttp { sendfile on; tcp_nopush on; }\n"
+                )
+                File(defaultStageDir, "docker-compose.prod.yml").writeText(
+                    "services:\n  gateway:\n    image: ghcr.io/nexusts/edge-proxy:stable\n    restart: always\n"
+                )
+                File(defaultStageDir, "systemd-units").apply {
+                    mkdirs()
+                    File(this, "nexusts-node.service").writeText("[Unit]\nDescription=NexusTS Node Daemon\n")
+                }
+            }
+            val targetStage = mapRemoteVirtualToStageFile(vPath).apply { mkdirs() }
+            val fmt = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US)
+            val cleanVPath = "/" + vPath.trim('/')
+            val children = targetStage.listFiles().orEmpty().map { child ->
+                val childVPath = if (cleanVPath == "/") "/${child.name}" else "$cleanVPath/${child.name}"
+                CommanderFileItem(
+                    name = child.name,
+                    fullPath = childVPath,
+                    isDirectory = child.isDirectory,
+                    sizeBytes = if (child.isDirectory) 4096L else child.length(),
+                    permissions = filePermissionsToRwx(child),
+                    modifiedIso = fmt.format(Date(child.lastModified()))
+                )
+            }.sortedWith(
+                compareByDescending<CommanderFileItem> { it.isDirectory }
+                    .thenBy { it.name.lowercase(Locale.ROOT) }
+            )
+            if (cleanVPath != "/") {
+                val parentVPath = cleanVPath.substringBeforeLast('/', "").ifEmpty { "/" }
+                listOf(
+                    CommanderFileItem(
+                        name = "..",
+                        fullPath = parentVPath,
+                        isDirectory = true,
+                        sizeBytes = 0L,
+                        permissions = "drwxr-xr-x",
+                        modifiedIso = fmt.format(Date(targetStage.lastModified()))
+                    )
+                ) + children
+            } else {
+                children
+            }
+        }
+        remoteEntries.clear()
+        remoteEntries.addAll(items)
+    }
+
+    LaunchedEffect(localPath) {
+        refreshLocalPane(localPath)
+    }
+
+    LaunchedEffect(remotePath) {
+        refreshRemotePane(remotePath)
+    }
+
+    fun startStreamingCopy(
+        sourceFile: File,
+        destFile: File,
+        displayFileName: String,
+        directionLabel: String,
+        onCompletedRefresh: suspend () -> Unit
+    ) {
+        val taskId = UUID.randomUUID().toString()
         transferQueue.add(
             0,
             CommanderTransferTask(
-                fileName = file.name,
-                directionLabel = "UPLOAD → $remoteHost",
-                progressFraction = 1.0f,
-                speedLabel = "84.2 MB/s",
-                completed = true
+                id = taskId,
+                fileName = displayFileName,
+                directionLabel = directionLabel,
+                progressFraction = 0f,
+                speedLabel = "Starting…",
+                completed = false
             )
         )
+        val job = scope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    if (!sourceFile.exists() || !sourceFile.isFile) {
+                        error("Source file '${sourceFile.name}' not found")
+                    }
+                    destFile.parentFile?.mkdirs()
+                    val totalBytes = sourceFile.length().coerceAtLeast(1L)
+                    var copiedBytes = 0L
+                    val startedNs = System.nanoTime()
+                    val buffer = ByteArray(16 * 1024)
+
+                    FileInputStream(sourceFile).use { input ->
+                        FileOutputStream(destFile).use { output ->
+                            while (isActive) {
+                                // Honor Pause toggle on queue item
+                                while (isActive) {
+                                    val snapshotTask = withContext(Dispatchers.Main) {
+                                        transferQueue.firstOrNull { it.id == taskId }
+                                    } ?: return@runCatching 0L
+                                    if (!snapshotTask.paused) break
+                                    delay(80L)
+                                }
+
+                                val read = input.read(buffer)
+                                if (read < 0) break
+                                if (read > 0) {
+                                    output.write(buffer, 0, read)
+                                    copiedBytes += read
+                                    val elapsedSec = ((System.nanoTime() - startedNs) / 1_000_000_000.0).coerceAtLeast(0.001)
+                                    val mbPerSec = (copiedBytes / 1_048_576.0) / elapsedSec
+                                    val progress = (copiedBytes.toFloat() / totalBytes.toFloat()).coerceIn(0f, 1f)
+                                    val label = "${formatHumanBytes(copiedBytes)} • ${String.format(Locale.US, "%.1f MB/s", mbPerSec)}"
+                                    withContext(Dispatchers.Main) {
+                                        val idx = transferQueue.indexOfFirst { it.id == taskId }
+                                        if (idx >= 0) {
+                                            transferQueue[idx] = transferQueue[idx].copy(
+                                                progressFraction = progress,
+                                                speedLabel = label
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                            output.fd.sync()
+                        }
+                    }
+                    destFile.length()
+                }
+            }
+
+            activeTransferJobs.remove(taskId)
+            result.onSuccess { finalBytes ->
+                val idx = transferQueue.indexOfFirst { it.id == taskId }
+                if (idx >= 0) {
+                    transferQueue[idx] = transferQueue[idx].copy(
+                        progressFraction = 1.0f,
+                        speedLabel = "${formatHumanBytes(finalBytes)} • Done",
+                        paused = false,
+                        completed = true
+                    )
+                }
+                onCompletedRefresh()
+            }.onFailure { err ->
+                val idx = transferQueue.indexOfFirst { it.id == taskId }
+                if (idx >= 0) {
+                    transferQueue[idx] = transferQueue[idx].copy(
+                        speedLabel = "Failed: ${err.message ?: "I/O error"}",
+                        paused = false
+                    )
+                }
+            }
+        }
+        activeTransferJobs[taskId] = job
+    }
+
+    val enqueueUpload: (CommanderFileItem) -> Unit = { file ->
+        if (!file.isDirectory) {
+            val srcFile = File(file.fullPath)
+            val dstFile = File(mapRemoteVirtualToStageFile(remotePath), file.name)
+            startStreamingCopy(
+                sourceFile = srcFile,
+                destFile = dstFile,
+                displayFileName = file.name,
+                directionLabel = "UPLOAD → $remoteHost",
+                onCompletedRefresh = { refreshRemotePane(remotePath) }
+            )
+        }
     }
 
     val enqueueDownload: (CommanderFileItem) -> Unit = { file ->
-        if (localEntries.none { it.name == file.name }) {
-            localEntries.add(file.copy(fullPath = "$localPath/${file.name}"))
-        }
-        transferQueue.add(
-            0,
-            CommanderTransferTask(
-                fileName = file.name,
+        if (!file.isDirectory) {
+            val srcFile = mapRemoteVirtualToStageFile(file.fullPath)
+            val dstFile = File(localPath, file.name)
+            startStreamingCopy(
+                sourceFile = srcFile,
+                destFile = dstFile,
+                displayFileName = file.name,
                 directionLabel = "DOWNLOAD ← $remoteHost",
-                progressFraction = 1.0f,
-                speedLabel = "92.6 MB/s",
-                completed = true
+                onCompletedRefresh = { refreshLocalPane(localPath) }
             )
-        )
+        }
     }
 
     Column(
@@ -181,7 +444,7 @@ fun DualPaneTransferCommanderView(
                 .fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            // Left Pane: Local Googlebook OS / SAF Filesystem
+            // Left Pane: Local Android / Googlebook OS Filesystem (context.filesDir)
             CommanderPaneCard(
                 paneId = "LOCAL",
                 paneTitle = localTitle,
@@ -191,36 +454,61 @@ fun DualPaneTransferCommanderView(
                 accentColor = MaterialTheme.colorScheme.primary,
                 onSelect = { item ->
                     if (item.isDirectory) {
-                        localPath = item.fullPath.ifBlank { "/" }
+                        localPath = item.fullPath.ifBlank { localRootDir.absolutePath }
                         selectedLocal = null
                     } else {
                         selectedLocal = item
                     }
                 },
                 onRefreshPane = {
-                    val sorted = localEntries.sortedWith(
-                        compareBy<CommanderFileItem> { it.name != ".." }
-                            .thenByDescending { it.isDirectory }
-                            .thenBy { it.name.lowercase(Locale.ROOT) }
-                    )
-                    localEntries.clear()
-                    localEntries.addAll(sorted)
                     selectedLocal = null
+                    scope.launch { refreshLocalPane(localPath) }
                 },
                 onCreateFolder = { dirName ->
-                    localEntries.add(
-                        CommanderFileItem(dirName, "$localPath/$dirName", true, 4096L, "drwxr-xr-x", "2026-11-12")
-                    )
+                    val safeName = dirName.replace("/", "_").trim()
+                    if (safeName.isNotEmpty() && safeName != "." && safeName != "..") {
+                        scope.launch {
+                            withContext(Dispatchers.IO) {
+                                File(localPath, safeName).mkdirs()
+                            }
+                            refreshLocalPane(localPath)
+                        }
+                    }
                 },
-                onChmodItem = { item, rwx ->
-                    val idx = localEntries.indexOfFirst { it.fullPath == item.fullPath }
-                    if (idx >= 0) localEntries[idx] = item.copy(permissions = rwx)
+                onChmodItem = { item, octalOrRwx ->
+                    scope.launch {
+                        withContext(Dispatchers.IO) {
+                            val f = File(item.fullPath)
+                            if (octalOrRwx.all { it in '0'..'7' }) {
+                                applyOctalToFile(f, octalOrRwx)
+                            }
+                        }
+                        refreshLocalPane(localPath)
+                        val idx = localEntries.indexOfFirst { it.fullPath == item.fullPath }
+                        if (idx >= 0 && !octalOrRwx.all { it in '0'..'7' }) {
+                            localEntries[idx] = localEntries[idx].copy(permissions = octalOrRwx)
+                        }
+                    }
                 },
-                onDeleteItem = { item -> localEntries.removeAll { it.fullPath == item.fullPath } },
+                onDeleteItem = { item ->
+                    if (item.name != "..") {
+                        scope.launch {
+                            withContext(Dispatchers.IO) {
+                                File(item.fullPath).deleteRecursively()
+                            }
+                            if (selectedLocal?.fullPath == item.fullPath) {
+                                selectedLocal = null
+                            }
+                            refreshLocalPane(localPath)
+                        }
+                    }
+                },
                 onReceiveDroppedFile = { srcPane, droppedName, sizeBytes, perms ->
                     if (srcPane == "REMOTE") {
+                        val cleanRemote = "/" + remotePath.trim('/')
+                        val virtualFull = if (cleanRemote == "/") "/$droppedName" else "$cleanRemote/$droppedName"
                         enqueueDownload(
-                            CommanderFileItem(droppedName, "$remotePath/$droppedName", false, sizeBytes, perms, "2026-11-12")
+                            CommanderFileItem(droppedName, virtualFull, false, sizeBytes, perms, "")
                         )
                     }
                 },
@@ -241,7 +529,7 @@ fun DualPaneTransferCommanderView(
                     enabled = selectedLocal != null && selectedLocal?.isDirectory == false,
                     onClick = { selectedLocal?.let(enqueueUpload) }
                 ) {
-                    Icon(Icons.Outlined.CloudUpload, contentDescription = null)
+                    Icon(Icons.Outlined.CloudUpload, contentDescription = "Upload")
                 }
 
                 Spacer(modifier = Modifier.height(12.dp))
@@ -250,7 +538,7 @@ fun DualPaneTransferCommanderView(
                     enabled = selectedRemote != null && selectedRemote?.isDirectory == false,
                     onClick = { selectedRemote?.let(enqueueDownload) }
                 ) {
-                    Icon(Icons.Outlined.CloudDownload, contentDescription = null)
+                    Icon(Icons.Outlined.CloudDownload, contentDescription = "Download")
                 }
             }
 
@@ -271,29 +559,49 @@ fun DualPaneTransferCommanderView(
                     }
                 },
                 onRefreshPane = {
-                    val sorted = remoteEntries.sortedWith(
-                        compareBy<CommanderFileItem> { it.name != ".." }
-                            .thenByDescending { it.isDirectory }
-                            .thenBy { it.name.lowercase(Locale.ROOT) }
-                    )
-                    remoteEntries.clear()
-                    remoteEntries.addAll(sorted)
                     selectedRemote = null
+                    scope.launch { refreshRemotePane(remotePath) }
                 },
                 onCreateFolder = { dirName ->
-                    remoteEntries.add(
-                        CommanderFileItem(dirName, "$remotePath/$dirName", true, 4096L, "drwxr-xr-x", "2026-11-12")
-                    )
+                    val safeName = dirName.replace("/", "_").trim()
+                    if (safeName.isNotEmpty() && safeName != "." && safeName != "..") {
+                        scope.launch {
+                            withContext(Dispatchers.IO) {
+                                File(mapRemoteVirtualToStageFile(remotePath), safeName).mkdirs()
+                            }
+                            refreshRemotePane(remotePath)
+                        }
+                    }
                 },
                 onChmodItem = { item, rwx ->
-                    val idx = remoteEntries.indexOfFirst { it.fullPath == item.fullPath }
-                    if (idx >= 0) remoteEntries[idx] = item.copy(permissions = rwx)
+                    scope.launch {
+                        withContext(Dispatchers.IO) {
+                            val stageFile = mapRemoteVirtualToStageFile(item.fullPath)
+                            if (rwx.all { it in '0'..'7' }) {
+                                applyOctalToFile(stageFile, rwx)
+                            }
+                        }
+                        val idx = remoteEntries.indexOfFirst { it.fullPath == item.fullPath }
+                        if (idx >= 0) remoteEntries[idx] = item.copy(permissions = rwx)
+                    }
                 },
-                onDeleteItem = { item -> remoteEntries.removeAll { it.fullPath == item.fullPath } },
+                onDeleteItem = { item ->
+                    if (item.name != "..") {
+                        scope.launch {
+                            withContext(Dispatchers.IO) {
+                                mapRemoteVirtualToStageFile(item.fullPath).deleteRecursively()
+                            }
+                            if (selectedRemote?.fullPath == item.fullPath) {
+                                selectedRemote = null
+                            }
+                            refreshRemotePane(remotePath)
+                        }
+                    }
+                },
                 onReceiveDroppedFile = { srcPane, droppedName, sizeBytes, perms ->
                     if (srcPane == "LOCAL") {
                         enqueueUpload(
-                            CommanderFileItem(droppedName, "$localPath/$droppedName", false, sizeBytes, perms, "2026-11-12")
+                            CommanderFileItem(droppedName, File(localPath, droppedName).absolutePath, false, sizeBytes, perms, "")
                         )
                     }
                 },
@@ -379,23 +687,28 @@ fun DualPaneTransferCommanderView(
                                     NexusTheme.extendedColors.statusConnected
                                 }
                             )
-                            IconButton(
-                                onClick = {
-                                    val idx = transferQueue.indexOfFirst { it.id == item.id }
-                                    if (idx >= 0) {
-                                        transferQueue[idx] = item.copy(paused = !item.paused)
-                                    }
-                                },
-                                modifier = Modifier.size(24.dp)
-                            ) {
-                                Icon(
-                                    imageVector = if (item.paused) Icons.Outlined.PlayArrow else Icons.Outlined.Pause,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(15.dp)
-                                )
+                            if (!item.completed) {
+                                IconButton(
+                                    onClick = {
+                                        val idx = transferQueue.indexOfFirst { it.id == item.id }
+                                        if (idx >= 0) {
+                                            transferQueue[idx] = item.copy(paused = !item.paused)
+                                        }
+                                    },
+                                    modifier = Modifier.size(24.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = if (item.paused) Icons.Outlined.PlayArrow else Icons.Outlined.Pause,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(15.dp)
+                                    )
+                                }
                             }
                             IconButton(
-                                onClick = { transferQueue.removeAll { it.id == item.id } },
+                                onClick = {
+                                    activeTransferJobs.remove(item.id)?.cancel()
+                                    transferQueue.removeAll { it.id == item.id }
+                                },
                                 modifier = Modifier.size(24.dp)
                             ) {
                                 Icon(

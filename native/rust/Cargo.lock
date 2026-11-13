@@ -911,6 +911,7 @@ name = "nexusts-terminal"
 version = "1.0.0"
 dependencies = [
  "async-trait",
+ "base64",
  "bytes",
  "russh",
  "russh-keys",
