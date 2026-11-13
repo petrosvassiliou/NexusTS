@@ -3,6 +3,7 @@ package com.nexusts.app
 import android.app.Application
 import android.content.Context
 import android.content.res.Configuration
+import android.os.Looper
 import android.view.KeyEvent
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
@@ -55,6 +56,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows
 import org.robolectric.annotation.Config
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
@@ -382,7 +384,10 @@ class NexusWorkspaceComposeE2ETest {
             )
             vm.lockVaultWithPassphrase("MasterSecret#2026".toCharArray())
         }
-        composeRule.waitUntil(timeoutMillis = 8_000) { vm.uiState.value.isVaultLocked }
+        composeRule.waitUntil(timeoutMillis = 8_000) {
+            Shadows.shadowOf(Looper.getMainLooper()).idle()
+            vm.uiState.value.isVaultLocked
+        }
         composeRule.waitForIdle()
 
         assertTextRendered(strings.vaultLockedBanner)
@@ -395,6 +400,7 @@ class NexusWorkspaceComposeE2ETest {
             vm.unlockVaultWithPassphrase("WrongPassphrase!".toCharArray())
         }
         composeRule.waitUntil(timeoutMillis = 8_000) {
+            Shadows.shadowOf(Looper.getMainLooper()).idle()
             !vm.uiState.value.vaultUnlockError.isNullOrBlank()
         }
         composeRule.waitForIdle()
@@ -405,7 +411,10 @@ class NexusWorkspaceComposeE2ETest {
         composeRule.runOnIdle {
             vm.unlockVaultWithPassphrase("MasterSecret#2026".toCharArray())
         }
-        composeRule.waitUntil(timeoutMillis = 8_000) { !vm.uiState.value.isVaultLocked }
+        composeRule.waitUntil(timeoutMillis = 8_000) {
+            Shadows.shadowOf(Looper.getMainLooper()).idle()
+            !vm.uiState.value.isVaultLocked
+        }
         composeRule.waitForIdle()
         assertTextRendered("WinServer-2025-DC01")
         assertTextRendered("Persisted-ZeroKnowledge-Node")
