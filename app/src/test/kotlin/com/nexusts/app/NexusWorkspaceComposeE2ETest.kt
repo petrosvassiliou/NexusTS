@@ -376,7 +376,8 @@ class NexusWorkspaceComposeE2ETest {
                     id = "conn-persisted-host",
                     name = "Persisted-ZeroKnowledge-Node",
                     host = "zk01.nexusts.internal",
-                    protocol = VaultProtocolType.SSH
+                    protocol = VaultProtocolType.SSH,
+                    settings = ProtocolSpecificSettings.Ssh()
                 )
             )
             vm.lockVaultWithPassphrase("MasterSecret#2026".toCharArray())
@@ -567,7 +568,8 @@ class NexusWorkspaceComposeE2ETest {
                     parentFolderId = "folder-az-fra1",
                     name = "FRA1-Core-Router",
                     host = "10.49.1.1",
-                    protocol = VaultProtocolType.SSH
+                    protocol = VaultProtocolType.SSH,
+                    settings = ProtocolSpecificSettings.Ssh()
                 )
             )
         }
