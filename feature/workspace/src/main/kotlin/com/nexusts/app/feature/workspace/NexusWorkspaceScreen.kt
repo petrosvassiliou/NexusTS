@@ -30,6 +30,7 @@ import androidx.compose.material.icons.outlined.CloudSync
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.DeviceHub
+import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.DynamicFeed
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Folder
@@ -97,6 +98,7 @@ import com.nexusts.app.core.ui.workspace.SplitWorkspaceLabels
 import com.nexusts.app.core.ui.workspace.WorkspaceSessionTab
 import com.nexusts.app.core.ui.workspace.protocolAccentColor
 import com.nexusts.app.core.ui.workspace.protocolIcon
+import com.nexusts.app.core.vault.exporter.VaultExportFormat
 import com.nexusts.app.core.vault.inheritance.EffectiveConnectionProfile
 import com.nexusts.app.core.vault.model.CustomPropertyEntry
 import com.nexusts.app.core.vault.model.DynamicFolder
@@ -145,6 +147,7 @@ fun NexusWorkspaceScreen(
     onRequestImportFilePicker: () -> Unit,
     onRequestGoogleDriveSync: () -> Unit,
     onDetachTabToNativeWindow: (WorkspaceSessionTab, Int?) -> Unit,
+    onRequestExportVault: (VaultExportFormat) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val uiState by viewModel.uiState.collectAsState()
@@ -228,6 +231,7 @@ fun NexusWorkspaceScreen(
                 onNewTemplate = viewModel::openNewTemplateDialog,
                 onNewLocalShell = viewModel::launchLocalShellTab,
                 onImportRtsz = onRequestImportFilePicker,
+                onExportVault = onRequestExportVault,
                 onSyncGoogleDrive = onRequestGoogleDriveSync,
                 onToggleBroadcast = viewModel::toggleGlobalBroadcast,
                 onLockVault = viewModel::openLockVaultDialog,
@@ -427,7 +431,10 @@ fun NexusWorkspaceScreen(
                 resolveFolderPreview = viewModel::resolveFolderInheritedPreview,
                 strings = strings,
                 onDismiss = viewModel::dismissNewConnectionDialog,
-                onSaveConnection = viewModel::saveConnectionToVault
+                onSaveConnection = viewModel::saveConnectionToVault,
+                sshConnections = remember(uiState.vaultDocument.connections) {
+                    uiState.vaultDocument.connections.filter { it.protocol == VaultProtocolType.SSH }
+                }
             )
             val folderChildCount = uiState.editingFolder?.let { f ->
                 uiState.vaultDocument.connections.count { it.parentFolderId == f.id }
@@ -618,6 +625,7 @@ private fun DesktopTopWindowChrome(
     onNewTemplate: () -> Unit,
     onNewLocalShell: () -> Unit,
     onImportRtsz: () -> Unit,
+    onExportVault: (VaultExportFormat) -> Unit,
     onSyncGoogleDrive: () -> Unit,
     onToggleBroadcast: () -> Unit,
     onLockVault: () -> Unit,
@@ -801,6 +809,31 @@ private fun DesktopTopWindowChrome(
                             onClick = {
                                 createMenuExpanded = false
                                 onImportRtsz()
+                            }
+                        )
+                        HorizontalDivider()
+                        DropdownMenuItem(
+                            text = { Text(strings.actionExportNxts) },
+                            leadingIcon = { Icon(Icons.Outlined.Download, contentDescription = null) },
+                            onClick = {
+                                createMenuExpanded = false
+                                onExportVault(VaultExportFormat.NXTS_VAULT)
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text(strings.actionExportRtsz) },
+                            leadingIcon = { Icon(Icons.Outlined.Download, contentDescription = null) },
+                            onClick = {
+                                createMenuExpanded = false
+                                onExportVault(VaultExportFormat.RTSZ_ROYAL_ARCHIVE)
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text(strings.actionExportCsv) },
+                            leadingIcon = { Icon(Icons.Outlined.Download, contentDescription = null) },
+                            onClick = {
+                                createMenuExpanded = false
+                                onExportVault(VaultExportFormat.ENTERPRISE_CSV)
                             }
                         )
                     }

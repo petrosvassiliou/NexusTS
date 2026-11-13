@@ -18,4 +18,10 @@
         android:key="managed_team_drive_id"
         android:restrictionType="string"
         android:title="@string/mdm_shared_drive_id_title" />
+    <restriction
+        android:defaultValue=""
+        android:description="@string/mdm_google_web_client_id_desc"
+        android:key="google_oauth_web_client_id"
+        android:restrictionType="string"
+        android:title="@string/mdm_google_web_client_id_title" />
 </restrictions>

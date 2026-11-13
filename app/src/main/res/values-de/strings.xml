@@ -164,6 +164,12 @@
     <string name="dialog_field_template">Verbindungsvorlage anwenden</string>
     <string name="dialog_field_color_accent">Akzentfarbe</string>
     <string name="overview_active_sessions">Aktive Sitzungen</string>
+    <string name="action_export_nxts">Verschlüsselten Tresor exportieren (.nxts)</string>
+    <string name="action_export_rtsz">Royal TS exportieren (.rtsz)</string>
+    <string name="action_export_csv">Inventar exportieren (.csv)</string>
+    <string name="ssh_section_tunnels">SSH-Portweiterleitung (-L / -R / -D) &amp; Bastion</string>
+    <string name="mdm_google_web_client_id_title">Google OAuth 2.0 Web-Client-ID</string>
+    <string name="mdm_google_web_client_id_desc">Enterprise Google Cloud OAuth 2.0 Web-Client-ID für Credential Manager und Google Drive API v3 Synchronisierung.</string>
 
     <!-- Language Names -->
     <string name="lang_en">English</string>

@@ -138,6 +138,10 @@ fun rememberLocalizedWorkspaceStrings(): WorkspaceLocalizedStrings {
         dialogFieldTemplate = stringResource(R.string.dialog_field_template),
         dialogFieldColorAccent = stringResource(R.string.dialog_field_color_accent),
         overviewActiveSessions = stringResource(R.string.overview_active_sessions),
+        actionExportNxts = stringResource(R.string.action_export_nxts),
+        actionExportRtsz = stringResource(R.string.action_export_rtsz),
+        actionExportCsv = stringResource(R.string.action_export_csv),
+        sshSectionTunnels = stringResource(R.string.ssh_section_tunnels),
         languageLabels = mapOf(
             SupportedNexusLocale.ENGLISH to stringResource(R.string.lang_en),
             SupportedNexusLocale.GERMAN to stringResource(R.string.lang_de),

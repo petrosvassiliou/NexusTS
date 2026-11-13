@@ -1,0 +1,196 @@
+name: NexusTS Native NDK & Android Release CI
+
+on:
+  push:
+    branches: [ "main" ]
+    tags: [ "v*" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+    inputs:
+      compile_full_freerdp3:
+        description: "Cross-compile full OpenSSL + libusb + FreeRDP 3.x NDK shared libraries"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nexusts-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ANDROID_NDK_VERSION: "28.0.13004108"
+  CMAKE_VERSION: "3.22.1"
+  GRADLE_VERSION: "8.13"
+
+jobs:
+  rust-ndk-protocols:
+    name: Rust Crypto & SSH/SFTP NDK (arm64-v8a, x86_64)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout NexusTS
+        uses: actions/checkout@v4
+
+      - name: Install Rust Stable Toolchain & Android Targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,x86_64-linux-android
+
+      - name: Cache Cargo Registry & Target Build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "native/rust -> target"
+
+      - name: Run Rust Unit Tests (Argon2id + AES-256-GCM + SSH/SFTP/NetUtils)
+        working-directory: native/rust
+        run: cargo test --workspace --locked
+
+      - name: Setup Android SDK & NDK r28
+        uses: android-actions/setup-android@v3
+
+      - name: Install NDK ${{ env.ANDROID_NDK_VERSION }}
+        run: sdkmanager --install "ndk;${ANDROID_NDK_VERSION}"
+
+      - name: Install cargo-ndk
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-ndk
+
+      - name: Build 16 KB Page-Aligned libnexusts_jni.so (arm64-v8a & x86_64)
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/${{ env.ANDROID_NDK_VERSION }}
+          CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS: "-C link-arg=-Wl,-z,max-page-size=16384"
+          CARGO_TARGET_X86_64_LINUX_ANDROID_RUSTFLAGS: "-C link-arg=-Wl,-z,max-page-size=16384"
+        run: |
+          cargo ndk \
+            -t arm64-v8a \
+            -t x86_64 \
+            --platform 29 \
+            -o app/src/main/jniLibs \
+            build --release --locked --manifest-path native/rust/Cargo.toml
+
+      - name: Upload Rust JNI Shared Libraries
+        uses: actions/upload-artifact@v4
+        with:
+          name: nexusts-rust-jnilibs
+          path: app/src/main/jniLibs/
+          if-no-files-found: error
+
+  cpp-freerdp-bridge:
+    name: C++20 FreeRDP NDK Bridge Verification
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout NexusTS
+        uses: actions/checkout@v4
+
+      - name: Strict C++20 Host Syntax & Warning Audit
+        run: |
+          clang++ -std=c++20 -Wall -Wextra -Werror -pedantic -fsyntax-only \
+            -I native/cpp/include \
+            native/cpp/rdp/rdp_session_context.cpp \
+            native/cpp/rdp/rdp_gdi_surface.cpp \
+            native/cpp/rdp/rdp_channels.cpp \
+            native/cpp/rdp/rdp_h264_decoder.cpp
+
+      - name: Validate NDK & Provisioning Shell Scripts
+        run: |
+          bash -n scripts/build-freerdp3-ndk.sh
+          bash -n scripts/provision-signing-and-oauth.sh
+          ./scripts/build-freerdp3-ndk.sh --dry-run
+
+      - name: Optional Full FreeRDP 3.x NDK Cross-Compilation
+        if: ${{ inputs.compile_full_freerdp3 == true }}
+        uses: android-actions/setup-android@v3
+
+      - name: Build & Stage OpenSSL + libusb + FreeRDP 3.x (16 KB Page Aligned)
+        if: ${{ inputs.compile_full_freerdp3 == true }}
+        run: |
+          sdkmanager --install "ndk;${ANDROID_NDK_VERSION}" "cmake;${CMAKE_VERSION}"
+          export ANDROID_NDK_HOME="${ANDROID_HOME}/ndk/${ANDROID_NDK_VERSION}"
+          ./scripts/build-freerdp3-ndk.sh --abis arm64-v8a,x86_64
+
+      - name: Upload Prebuilt FreeRDP 3.x SDK
+        if: ${{ inputs.compile_full_freerdp3 == true }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: nexusts-freerdp3-prebuilt
+          path: |
+            native/third_party/freerdp3/
+            protocols/rdp/src/main/jniLibs/
+
+  android-bundle-release:
+    name: Android APK & Play Store AAB Bundle
+    needs: [ rust-ndk-protocols, cpp-freerdp-bridge ]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout NexusTS
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Android SDK, NDK r28 & CMake
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK Platform 36, NDK & CMake
+        run: |
+          sdkmanager --install \
+            "platforms;android-36" \
+            "build-tools;36.0.0" \
+            "ndk;${ANDROID_NDK_VERSION}" \
+            "cmake;${CMAKE_VERSION}"
+
+      - name: Download Rust JNI Shared Libraries
+        uses: actions/download-artifact@v4
+        with:
+          name: nexusts-rust-jnilibs
+          path: app/src/main/jniLibs/
+
+      - name: Download Prebuilt FreeRDP 3.x Libraries (if built)
+        if: ${{ inputs.compile_full_freerdp3 == true }}
+        uses: actions/download-artifact@v4
+        with:
+          name: nexusts-freerdp3-prebuilt
+          path: .
+
+      - name: Decode Optional Production Release Keystore
+        env:
+          KEYSTORE_B64: ${{ secrets.NEXUSTS_KEYSTORE_BASE64 }}
+        run: |
+          if [[ -n "${KEYSTORE_B64}" ]]; then
+            mkdir -p "${RUNNER_TEMP}/signing"
+            printf '%s' "${KEYSTORE_B64}" | base64 --decode > "${RUNNER_TEMP}/signing/nexusts-release.p12"
+            echo "NEXUSTS_KEYSTORE_PATH=${RUNNER_TEMP}/signing/nexusts-release.p12" >> "${GITHUB_ENV}"
+          fi
+
+      - name: Setup Gradle ${{ env.GRADLE_VERSION }}
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: ${{ env.GRADLE_VERSION }}
+
+      - name: Execute JVM Unit Tests (.nxts Crypto, Inheritance, TOTP, .rtsz/.csv Export)
+        run: gradle testDebugUnitTest --stacktrace
+
+      - name: Build Debug APK & Signed Release Android App Bundle (.aab)
+        env:
+          NEXUSTS_KEYSTORE_PASSWORD: ${{ secrets.NEXUSTS_KEYSTORE_PASSWORD }}
+          NEXUSTS_KEY_ALIAS: ${{ secrets.NEXUSTS_KEY_ALIAS }}
+          NEXUSTS_KEY_PASSWORD: ${{ secrets.NEXUSTS_KEY_PASSWORD }}
+          NEXUSTS_GOOGLE_WEB_CLIENT_ID: ${{ secrets.NEXUSTS_GOOGLE_WEB_CLIENT_ID }}
+        run: gradle assembleDebug bundleRelease assembleRelease --stacktrace
+
+      - name: Upload NexusTS Release Bundle (.aab) & APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: nexusts-googlebook-android-artifacts
+          path: |
+            app/build/outputs/bundle/release/*.aab
+            app/build/outputs/apk/release/*.apk
+            app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error

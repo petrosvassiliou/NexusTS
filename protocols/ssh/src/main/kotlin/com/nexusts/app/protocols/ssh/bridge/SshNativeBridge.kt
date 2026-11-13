@@ -2,6 +2,7 @@ package com.nexusts.app.protocols.ssh.bridge
 
 import com.nexusts.app.core.vault.model.PortForwardKind
 import com.nexusts.app.core.vault.model.SshPortForwardRule
+import com.nexusts.app.protocols.ssh.recording.AsciicastSessionRecorder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -84,6 +85,8 @@ class SshTerminalSessionController(
     private var transportJob: Job? = null
     private var remoteOutputStream: OutputStream? = null
 
+    val asciicastRecorder = AsciicastSessionRecorder(sessionTitle = "$title ($username@$host:$port)")
+
     private val _viewport = MutableStateFlow(
         TerminalSnapshotDto(
             title = "$username@$host:$port",
@@ -97,6 +100,15 @@ class SshTerminalSessionController(
         onBytesReceived(bannerBytes)
         startConfiguredLocalTunnels()
     }
+
+    fun startRecordingCast() {
+        val snap = _viewport.value
+        asciicastRecorder.startRecording(cols = snap.cols, rows = snap.rows)
+        val initialText = snap.visible_lines.joinToString("\r\n") + "\r\n"
+        asciicastRecorder.recordOutputChunk(initialText)
+    }
+
+    fun stopRecordingCast(): String = asciicastRecorder.stopAndBuildCastDocument()
 
     private fun buildInitialBanner(): List<String> = buildList {
         add("\u001B[1;36mNexusTS Enterprise SSHv2 / xterm-256color Engine\u001B[0m")
@@ -116,6 +128,7 @@ class SshTerminalSessionController(
     }
 
     fun resizePty(cols: Int, rows: Int) {
+        asciicastRecorder.recordResize(cols, rows)
         if (vtHandle != 0L && SshNativeBridge.isNativeLoaded) {
             SshNativeBridge.nativeResizeTerminalBuffer(vtHandle, cols, rows)
             val refreshed = SshNativeBridge.nativeFeedTerminalBytes(vtHandle, ByteArray(0))
@@ -174,6 +187,7 @@ class SshTerminalSessionController(
     }
 
     fun onBytesReceived(bytes: ByteArray) {
+        asciicastRecorder.recordOutputChunk(bytes.decodeToString())
         if (vtHandle != 0L && SshNativeBridge.isNativeLoaded) {
             val snapJson = SshNativeBridge.nativeFeedTerminalBytes(vtHandle, bytes)
             if (snapJson.isNotBlank()) {

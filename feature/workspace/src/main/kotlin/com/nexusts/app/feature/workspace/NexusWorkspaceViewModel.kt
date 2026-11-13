@@ -15,6 +15,8 @@ import com.nexusts.app.core.vault.automation.AutomationTaskEngine
 import com.nexusts.app.core.vault.credentials.EnterpriseCredentialHub
 import com.nexusts.app.core.vault.credentials.ResolvedSessionSecret
 import com.nexusts.app.core.vault.crypto.NxtsVaultSerializer
+import com.nexusts.app.core.vault.exporter.VaultDocumentExporter
+import com.nexusts.app.core.vault.exporter.VaultExportFormat
 import com.nexusts.app.core.vault.gateway.GatewayHealthReport
 import com.nexusts.app.core.vault.gateway.SecureGatewayTunnelManager
 import com.nexusts.app.core.vault.importer.RtszDocumentImporter
@@ -108,6 +110,7 @@ class NexusWorkspaceViewModel @Inject constructor(
 
     val tilingController = WorkspaceTilingController()
     private val rtszImporter = RtszDocumentImporter()
+    private val vaultExporter = VaultDocumentExporter()
 
     private val _uiState = MutableStateFlow(
         WorkspaceUiState(
@@ -1086,6 +1089,33 @@ class NexusWorkspaceViewModel @Inject constructor(
                 appendLog("[Import Error] ${err.message}")
             }
         }
+    }
+
+    fun buildVaultExportPayload(
+        format: VaultExportFormat,
+        exportPassphrase: CharArray = "NexusTS-Vault-Export".toCharArray()
+    ): Pair<String, ByteArray> {
+        val doc = _uiState.value.vaultDocument
+        val baseStem = doc.name
+            .substringBeforeLast('.')
+            .replace(Regex("[^A-Za-z0-9._ -]"), "_")
+            .ifBlank { "NexusTS-Vault" }
+        val suggestedName = "$baseStem.${format.extension}"
+
+        val bytes = when (format) {
+            VaultExportFormat.NXTS_VAULT -> {
+                activeVaultStore.snapshot.value.sealedLockedVaultSnapshot
+                    ?: vaultSerializer.sealDocument(doc, exportPassphrase.copyOf())
+            }
+            VaultExportFormat.RTSZ_ROYAL_ARCHIVE -> {
+                vaultExporter.exportToRtszBytes(doc, includeSecrets = false)
+            }
+            VaultExportFormat.ENTERPRISE_CSV -> {
+                vaultExporter.exportToEnterpriseCsv(doc).encodeToByteArray()
+            }
+        }
+        appendLog("[Export] Prepared '${suggestedName}' (${bytes.size} bytes, format=${format.name})")
+        return suggestedName to bytes
     }
 
     fun buildQuickConnectCandidates(): List<QuickConnectCandidate> {

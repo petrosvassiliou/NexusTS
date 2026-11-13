@@ -9,3 +9,7 @@ native/rust/target/
 **/.cxx/
 *.keystore
 *.jks
+*.p12
+.signing/
+native/third_party/freerdp3/
+.freerdp-ndk-work/

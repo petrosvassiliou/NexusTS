@@ -23,6 +23,7 @@ import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.CloudSync
 import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.DeviceHub
 import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.outlined.NetworkCheck
@@ -68,10 +69,12 @@ import com.nexusts.app.core.vault.model.InheritableProperties
 import com.nexusts.app.core.vault.model.InheritanceMode
 import com.nexusts.app.core.vault.model.KeySequenceTask
 import com.nexusts.app.core.vault.model.NxtsVaultDocument
+import com.nexusts.app.core.vault.model.PortForwardKind
 import com.nexusts.app.core.vault.model.ProtocolSpecificSettings
 import com.nexusts.app.core.vault.model.RdpAudioRedirectionMode
 import com.nexusts.app.core.vault.model.RdpResizeBehavior
 import com.nexusts.app.core.vault.model.SecureGatewayConfig
+import com.nexusts.app.core.vault.model.SshPortForwardRule
 import com.nexusts.app.core.vault.model.VaultConnection
 import com.nexusts.app.core.vault.model.VaultCredential
 import com.nexusts.app.core.vault.model.VaultFolder
@@ -425,11 +428,13 @@ fun NewOrEditConnectionDialog(
     resolveFolderPreview: (String?) -> Pair<VaultCredential?, String>,
     strings: WorkspaceLocalizedStrings,
     onDismiss: () -> Unit,
-    onSaveConnection: (VaultConnection) -> Unit
+    onSaveConnection: (VaultConnection) -> Unit,
+    sshConnections: List<VaultConnection> = emptyList()
 ) {
     if (!visible) return
 
     val initialRdp = (initialConnection?.settings as? ProtocolSpecificSettings.Rdp) ?: ProtocolSpecificSettings.Rdp()
+    val initialSsh = (initialConnection?.settings as? ProtocolSpecificSettings.Ssh) ?: ProtocolSpecificSettings.Ssh()
 
     var name by remember(initialConnection) { mutableStateOf(initialConnection?.name.orEmpty()) }
     var host by remember(initialConnection) { mutableStateOf(initialConnection?.host.orEmpty()) }
@@ -449,7 +454,20 @@ fun NewOrEditConnectionDialog(
     var protoMenuOpen by remember { mutableStateOf(false) }
     var folderMenuOpen by remember { mutableStateOf(false) }
     var credMenuOpen by remember { mutableStateOf(false) }
+    var bastionMenuOpen by remember { mutableStateOf(false) }
     var activeRdpTab by remember(initialConnection) { mutableIntStateOf(0) }
+
+    // SSH Port-Forwarding (-L / -R / -D), X11 & Bastion Jump state
+    var sshPortText by remember(initialConnection) { mutableStateOf(initialSsh.port.toString()) }
+    var sshAgentForward by remember(initialConnection) { mutableStateOf(initialSsh.enableAgentForwarding) }
+    var sshX11Forward by remember(initialConnection) { mutableStateOf(initialSsh.enableX11Forwarding) }
+    var sshBastionConnId by remember(initialConnection) { mutableStateOf(initialSsh.bastionJumpConnectionId) }
+    var sshStartupCommand by remember(initialConnection) { mutableStateOf(initialSsh.startupCommand) }
+    var sshPortForwards by remember(initialConnection) { mutableStateOf(initialSsh.portForwards) }
+    var newTunnelKind by remember { mutableStateOf(PortForwardKind.LOCAL) }
+    var newTunnelBindPort by remember { mutableStateOf("8080") }
+    var newTunnelTargetHost by remember { mutableStateOf("127.0.0.1") }
+    var newTunnelTargetPort by remember { mutableStateOf("80") }
 
     // Classic Royal TS RDP state
     var rdpPortText by remember(initialConnection) { mutableStateOf(initialRdp.port.toString()) }
@@ -880,6 +898,198 @@ fun NewOrEditConnectionDialog(
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
+
+                // ── Visual SSH Port-Forwarding (-L / -R / -D), X11 & Bastion Studio ──
+                if (selectedProto == VaultProtocolType.SSH) {
+                    HorizontalDivider()
+                    Text(
+                        text = strings.sshSectionTunnels,
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                        OutlinedTextField(
+                            value = sshPortText,
+                            onValueChange = { sshPortText = it.filter(Char::isDigit) },
+                            label = { Text("SSH Port") },
+                            singleLine = true,
+                            modifier = Modifier.width(110.dp)
+                        )
+                        OutlinedTextField(
+                            value = sshStartupCommand,
+                            onValueChange = { sshStartupCommand = it },
+                            label = { Text("Startup Command (Optional)") },
+                            singleLine = true,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                    RdpOptionSwitchRow(
+                        label = "SSH Agent Forwarding (ssh-agent / Ed25519)",
+                        checked = sshAgentForward,
+                        onCheckedChange = { sshAgentForward = it }
+                    )
+                    RdpOptionSwitchRow(
+                        label = "X11 Display Forwarding (127.0.0.1:0)",
+                        checked = sshX11Forward,
+                        onCheckedChange = { sshX11Forward = it }
+                    )
+
+                    // Bastion Jump Host Picker
+                    val candidateBastions = sshConnections.filter { it.id != initialConnection?.id }
+                    Box(modifier = Modifier.fillMaxWidth()) {
+                        val selectedBastionName = candidateBastions.firstOrNull { it.id == sshBastionConnId }
+                            ?.let { "${it.name} (${it.host})" }
+                            ?: "Direct (No Bastion Jump Host)"
+                        OutlinedButton(
+                            onClick = { bastionMenuOpen = true },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(Icons.Outlined.DeviceHub, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("ProxyJump: $selectedBastionName")
+                        }
+                        DropdownMenu(
+                            expanded = bastionMenuOpen,
+                            onDismissRequest = { bastionMenuOpen = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Direct (No Bastion Jump Host)") },
+                                onClick = {
+                                    sshBastionConnId = null
+                                    bastionMenuOpen = false
+                                }
+                            )
+                            candidateBastions.forEach { bastion ->
+                                DropdownMenuItem(
+                                    text = { Text("${bastion.name} (${bastion.host})") },
+                                    onClick = {
+                                        sshBastionConnId = bastion.id
+                                        bastionMenuOpen = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+
+                    // Existing Port-Forwarding Rules List
+                    sshPortForwards.forEach { rule ->
+                        val cliFlag = when (rule.kind) {
+                            PortForwardKind.LOCAL -> "-L ${rule.bindAddress}:${rule.bindPort}:${rule.targetHost}:${rule.targetPort}"
+                            PortForwardKind.REMOTE -> "-R ${rule.bindAddress}:${rule.bindPort}:${rule.targetHost}:${rule.targetPort}"
+                            PortForwardKind.DYNAMIC_SOCKS5 -> "-D ${rule.bindAddress}:${rule.bindPort} (SOCKS5)"
+                        }
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = cliFlag,
+                                    style = NexusTheme.monospace.codeSnippet,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Switch(
+                                    checked = rule.enabled,
+                                    onCheckedChange = { enabled ->
+                                        sshPortForwards = sshPortForwards.map {
+                                            if (it.id == rule.id) it.copy(enabled = enabled) else it
+                                        }
+                                    }
+                                )
+                                IconButton(
+                                    onClick = {
+                                        sshPortForwards = sshPortForwards.filterNot { it.id == rule.id }
+                                    }
+                                ) {
+                                    Icon(Icons.Outlined.Delete, contentDescription = strings.actionDeleteItem)
+                                }
+                            }
+                        }
+                    }
+
+                    // Visual Tunnel Rule Builder (-L / -R / -D)
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surfaceContainerLow,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                listOf(
+                                    PortForwardKind.LOCAL to "-L Local",
+                                    PortForwardKind.REMOTE to "-R Remote",
+                                    PortForwardKind.DYNAMIC_SOCKS5 to "-D SOCKS5"
+                                ).forEach { (kind, label) ->
+                                    FilterChip(
+                                        selected = newTunnelKind == kind,
+                                        onClick = { newTunnelKind = kind },
+                                        label = { Text(label) }
+                                    )
+                                }
+                            }
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                OutlinedTextField(
+                                    value = newTunnelBindPort,
+                                    onValueChange = { newTunnelBindPort = it.filter(Char::isDigit) },
+                                    label = { Text("Bind Port") },
+                                    singleLine = true,
+                                    modifier = Modifier.width(96.dp)
+                                )
+                                if (newTunnelKind != PortForwardKind.DYNAMIC_SOCKS5) {
+                                    OutlinedTextField(
+                                        value = newTunnelTargetHost,
+                                        onValueChange = { newTunnelTargetHost = it },
+                                        label = { Text("Target Host") },
+                                        singleLine = true,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    OutlinedTextField(
+                                        value = newTunnelTargetPort,
+                                        onValueChange = { newTunnelTargetPort = it.filter(Char::isDigit) },
+                                        label = { Text("Target Port") },
+                                        singleLine = true,
+                                        modifier = Modifier.width(96.dp)
+                                    )
+                                }
+                            }
+                            FilledTonalButton(
+                                onClick = {
+                                    val bindPort = newTunnelBindPort.toIntOrNull()?.takeIf { it in 1..65535 } ?: return@FilledTonalButton
+                                    val targetPort = if (newTunnelKind == PortForwardKind.DYNAMIC_SOCKS5) {
+                                        0
+                                    } else {
+                                        newTunnelTargetPort.toIntOrNull()?.takeIf { it in 1..65535 } ?: return@FilledTonalButton
+                                    }
+                                    sshPortForwards = sshPortForwards + SshPortForwardRule(
+                                        kind = newTunnelKind,
+                                        bindAddress = "127.0.0.1",
+                                        bindPort = bindPort,
+                                        targetHost = newTunnelTargetHost.trim().ifBlank { "127.0.0.1" },
+                                        targetPort = targetPort,
+                                        enabled = true
+                                    )
+                                }
+                            ) {
+                                Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Add SSH Tunnel Rule")
+                            }
+                        }
+                    }
+                }
             }
         },
         confirmButton = {
@@ -916,7 +1126,16 @@ fun NewOrEditConnectionDialog(
                             rdGatewayHostname = rdGatewayHost.trim()
                         )
 
-                        VaultProtocolType.SSH, VaultProtocolType.TELNET, VaultProtocolType.SERIAL ->
+                        VaultProtocolType.SSH -> initialSsh.copy(
+                            port = sshPortText.toIntOrNull()?.takeIf { it in 1..65535 } ?: 22,
+                            bastionJumpConnectionId = sshBastionConnId,
+                            enableAgentForwarding = sshAgentForward,
+                            enableX11Forwarding = sshX11Forward,
+                            portForwards = sshPortForwards,
+                            startupCommand = sshStartupCommand.trim()
+                        )
+
+                        VaultProtocolType.TELNET, VaultProtocolType.SERIAL ->
                             (initialConnection?.settings as? ProtocolSpecificSettings.Ssh)
                                 ?: ProtocolSpecificSettings.Ssh()
 

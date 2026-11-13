@@ -203,4 +203,61 @@ class VaultCryptoAndInheritanceTest {
         )
         assertEquals("echo CORP/ops rack=EU-RACK-04 tier=Platinum", rendered)
     }
+
+    @Test
+    fun `rtsz zip export round-trips cleanly through RtszDocumentImporter and csv export escapes fields`() {
+        val exporter = com.nexusts.app.core.vault.exporter.VaultDocumentExporter()
+        val cred = VaultCredential(
+            id = "cred-ad-1",
+            name = "Domain Admin",
+            username = "svc_rdp",
+            domain = "CORP"
+        )
+        val folder = VaultFolder(
+            id = "folder-ad",
+            name = "AD Tier, 0",
+            inheritable = InheritableProperties(
+                credentialMode = InheritanceMode.OVERRIDE_EXPLICIT,
+                explicitCredentialId = "cred-ad-1"
+            )
+        )
+        val rdpConn = VaultConnection(
+            id = "conn-rdp-1",
+            parentFolderId = "folder-ad",
+            name = "DC01 \"Primary\"",
+            host = "dc01.corp.internal",
+            protocol = VaultProtocolType.RDP,
+            tags = listOf("tier-0", "ad"),
+            settings = ProtocolSpecificSettings.Rdp(port = 3390)
+        )
+        val sshConn = VaultConnection(
+            id = "conn-ssh-1",
+            parentFolderId = "folder-ad",
+            name = "K8s-Bastion",
+            host = "10.20.0.5",
+            protocol = VaultProtocolType.SSH,
+            settings = ProtocolSpecificSettings.Ssh(port = 2222)
+        )
+        val sourceDoc = NxtsVaultDocument(
+            name = "RoundTripExportVault",
+            folders = listOf(folder),
+            credentials = listOf(cred),
+            connections = listOf(rdpConn, sshConn)
+        )
+
+        val rtszZipBytes = exporter.exportToRtszBytes(sourceDoc, includeSecrets = false)
+        val reimported = RtszDocumentImporter().importRtszBytes(rtszZipBytes)
+        assertEquals("RoundTripExportVault", reimported.name)
+        assertEquals(1, reimported.folders.size)
+        assertEquals(1, reimported.credentials.size)
+        assertEquals(2, reimported.connections.size)
+        assertEquals(VaultProtocolType.RDP, reimported.connections[0].protocol)
+        assertEquals(VaultProtocolType.SSH, reimported.connections[1].protocol)
+
+        val csv = exporter.exportToEnterpriseCsv(sourceDoc)
+        val lines = csv.trim().split("\r\n")
+        assertEquals(3, lines.size)
+        org.junit.Assert.assertTrue(lines[1].contains("\"DC01 \"\"Primary\"\"\""))
+        org.junit.Assert.assertTrue(lines[1].contains("\"AD Tier, 0\""))
+    }
 }

@@ -164,6 +164,12 @@
     <string name="dialog_field_template">Apply Connection Template</string>
     <string name="dialog_field_color_accent">Accent Color</string>
     <string name="overview_active_sessions">Active Sessions</string>
+    <string name="action_export_nxts">Export Encrypted Vault (.nxts)</string>
+    <string name="action_export_rtsz">Export Royal TS (.rtsz)</string>
+    <string name="action_export_csv">Export Inventory (.csv)</string>
+    <string name="ssh_section_tunnels">SSH Port Forwarding (-L / -R / -D) &amp; Bastion</string>
+    <string name="mdm_google_web_client_id_title">Google OAuth 2.0 Web Client ID</string>
+    <string name="mdm_google_web_client_id_desc">Enterprise Google Cloud OAuth 2.0 Web Client ID for Credential Manager and Google Drive API v3 synchronization.</string>
 
     <!-- Language Names -->
     <string name="lang_en">English</string>

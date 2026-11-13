@@ -12,6 +12,9 @@ import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.lifecycle.lifecycleScope
 import com.nexusts.app.core.gdrivesync.sync.GoogleDriveVaultSyncEngine
 import com.nexusts.app.core.ui.theme.NexusTSTheme
@@ -32,6 +35,7 @@ import javax.inject.Inject
  * Primary Adaptive Googlebook OS & Android Tablet Desktop Window Activity.
  * Handles:
  * - Direct `.nxts` & `.rtsz` Vault file opening via `ACTION_VIEW` / `ACTION_EDIT`
+ * - Vault & Inventory export to `.nxts`, `.rtsz`, and `.csv` via SAF `CreateDocument`
  * - URI scheme launches (`ssh://`, `rdp://`, `vnc://`, `sftp://`, `nexusts://`)
  * - Multi-monitor & freeform tab detachment into `DetachedSessionActivity`
  * - Play Protect Compliant `AppUpdateManager` Flexible & Immediate update flows
@@ -69,11 +73,28 @@ class MainActivity : AppCompatActivity() {
             val updateState by updateCoordinator.updateState.collectAsState()
             val localizedStrings = rememberLocalizedWorkspaceStrings()
 
+            var pendingExportBytes by remember { mutableStateOf<ByteArray?>(null) }
+
             val fileImportLauncher = rememberLauncherForActivityResult(
                 contract = ActivityResultContracts.OpenDocument()
             ) { uri: Uri? ->
                 if (uri != null) {
                     importVaultUri(uri)
+                }
+            }
+
+            val fileExportLauncher = rememberLauncherForActivityResult(
+                contract = ActivityResultContracts.CreateDocument("*/*")
+            ) { uri: Uri? ->
+                val payload = pendingExportBytes
+                pendingExportBytes = null
+                if (uri != null && payload != null) {
+                    runCatching {
+                        contentResolver.openOutputStream(uri)?.use { stream ->
+                            stream.write(payload)
+                            stream.flush()
+                        }
+                    }
                 }
             }
 
@@ -98,6 +119,11 @@ class MainActivity : AppCompatActivity() {
                             serializedTabJson = payloadJson,
                             targetDisplayId = targetDisplayId
                         )
+                    },
+                    onRequestExportVault = { format ->
+                        val (suggestedFileName, payloadBytes) = workspaceViewModel.buildVaultExportPayload(format)
+                        pendingExportBytes = payloadBytes
+                        fileExportLauncher.launch(suggestedFileName)
                     }
                 )
             }

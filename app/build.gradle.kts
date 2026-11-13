@@ -29,6 +29,12 @@ android {
         // Restrict resource packaging strictly to our 6 supported enterprise locales
         resourceConfigurations += listOf("en", "de", "it", "es", "el", "fr")
 
+        val resolvedWebClientId = (
+            System.getenv("NEXUSTS_GOOGLE_WEB_CLIENT_ID")?.takeIf { it.isNotBlank() }
+                ?: providers.gradleProperty("nexusts.google.webClientId").orNull.orEmpty()
+            ).replace("\"", "")
+        buildConfigField("String", "GOOGLE_OAUTH_WEB_CLIENT_ID", "\"$resolvedWebClientId\"")
+
         ndk {
             abiFilters += providers.gradleProperty("nexusts.ndk.abis")
                 .get()
@@ -36,6 +42,9 @@ android {
                 .map { it.trim() }
         }
     }
+
+    val resolvedKeystorePath = System.getenv("NEXUSTS_KEYSTORE_PATH")?.takeIf { it.isNotBlank() }
+        ?: providers.gradleProperty("nexusts.signing.storeFile").orNull?.takeIf { it.isNotBlank() }
 
     signingConfigs {
         getByName("debug") {
@@ -45,13 +54,15 @@ android {
             enableV4Signing = true
         }
         create("release") {
-            // Production signing key injected from CI/Enterprise keystore environment variables
-            val keystorePath = System.getenv("NEXUSTS_KEYSTORE_PATH")
-            if (!keystorePath.isNullOrBlank()) {
-                storeFile = file(keystorePath)
+            // Production signing key injected from CI/Enterprise keystore env vars or Gradle properties
+            if (!resolvedKeystorePath.isNullOrBlank()) {
+                storeFile = file(resolvedKeystorePath)
                 storePassword = System.getenv("NEXUSTS_KEYSTORE_PASSWORD")
+                    ?: providers.gradleProperty("nexusts.signing.storePassword").orNull
                 keyAlias = System.getenv("NEXUSTS_KEY_ALIAS")
+                    ?: providers.gradleProperty("nexusts.signing.keyAlias").orNull
                 keyPassword = System.getenv("NEXUSTS_KEY_PASSWORD")
+                    ?: providers.gradleProperty("nexusts.signing.keyPassword").orNull
             }
             // Enforce APK Signature Scheme v3/v4 for Play Protect & Enterprise PackageInstaller compliance
             enableV1Signing = false
@@ -70,7 +81,7 @@ android {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
-            val hasReleaseKey = !System.getenv("NEXUSTS_KEYSTORE_PATH").isNullOrBlank()
+            val hasReleaseKey = !resolvedKeystorePath.isNullOrBlank()
             signingConfig = if (hasReleaseKey) {
                 signingConfigs.getByName("release")
             } else {

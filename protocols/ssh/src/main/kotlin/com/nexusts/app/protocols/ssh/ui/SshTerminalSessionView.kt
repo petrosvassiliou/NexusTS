@@ -13,22 +13,35 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.ContentPaste
 import androidx.compose.material.icons.outlined.DeviceHub
+import androidx.compose.material.icons.outlined.FiberManualRecord
+import androidx.compose.material.icons.outlined.Pause
+import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Podcasts
+import androidx.compose.material.icons.outlined.Stop
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
+import androidx.compose.material3.Button
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -47,12 +60,14 @@ import com.nexusts.app.core.ui.input.nexusDesktopPointerButtons
 import com.nexusts.app.core.ui.input.nexusMouseWheelHandler
 import com.nexusts.app.core.ui.theme.NexusTheme
 import com.nexusts.app.protocols.ssh.bridge.SshTerminalSessionController
+import com.nexusts.app.protocols.ssh.recording.AsciicastSessionRecorder
+import kotlinx.coroutines.delay
 import kotlin.math.max
 
 /**
  * GPU-accelerated `xterm-256color` & 24-bit TrueColor Jetpack Compose Terminal Canvas
  * supporting right-click paste, Ctrl+Wheel font zoom, dynamic PTY resize, port-forward badges,
- * and simultaneous multi-session Broadcast Input.
+ * simultaneous multi-session Broadcast Input, and **asciicast v2 (`.cast`) Session Recording & Playback**.
  */
 @Composable
 fun SshTerminalSessionView(
@@ -66,6 +81,11 @@ fun SshTerminalSessionView(
     modifier: Modifier = Modifier
 ) {
     val snapshot by controller.viewport.collectAsState()
+    val isRecording by controller.asciicastRecorder.isRecording.collectAsState()
+    val recordedFrames by controller.asciicastRecorder.frameCount.collectAsState()
+    val lastCastPayload by controller.asciicastRecorder.lastExportedCast.collectAsState()
+    var replayModalVisible by remember { mutableStateOf(false) }
+
     val textMeasurer = rememberTextMeasurer()
     val clipboard = LocalClipboardManager.current
     val baseMonoStyle = NexusTheme.monospace.terminalDefault
@@ -85,15 +105,20 @@ fun SshTerminalSessionView(
     val cellWidthPx = sampleLayout.size.width.toFloat().coerceAtLeast(7f)
     val cellHeightPx = sampleLayout.size.height.toFloat().coerceAtLeast(14f)
 
-    // Session lifecycle is owned by NexusWorkspaceViewModel (closed explicitly on tab close or ViewModel clear)
-    // so switching tabs or Navigation Rail destinations preserves the live SSH PTY & scrollback buffer.
+    if (replayModalVisible && !lastCastPayload.isNullOrBlank()) {
+        AsciicastPlaybackDialog(
+            castPayload = lastCastPayload.orEmpty(),
+            onCopyCast = { clipboard.setText(AnnotatedString(lastCastPayload.orEmpty())) },
+            onDismiss = { replayModalVisible = false }
+        )
+    }
 
     Column(
         modifier = modifier
             .fillMaxSize()
             .background(NexusTheme.extendedColors.terminalCanvasBackground)
     ) {
-        // Compact Terminal Session Status Strip (Port Forwards, X11, Broadcast, Paste)
+        // Compact Terminal Session Status Strip (Port Forwards, Broadcast, Asciicast .cast Recorder, Paste)
         Surface(
             color = MaterialTheme.colorScheme.surfaceContainerLowest,
             modifier = Modifier.fillMaxWidth()
@@ -148,26 +173,77 @@ fun SshTerminalSessionView(
                     }
                 }
 
-                AssistChip(
-                    onClick = {
-                        clipboard.getText()?.text?.let { controller.pasteClipboardText(it) }
-                    },
-                    label = {
-                        Text(
-                            text = pasteActionLabel,
-                            style = MaterialTheme.typography.labelSmall
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    // Asciicast v2 (.cast) Record / Stop Toggle Chip
+                    AssistChip(
+                        onClick = {
+                            if (isRecording) {
+                                val castText = controller.stopRecordingCast()
+                                clipboard.setText(AnnotatedString(castText))
+                            } else {
+                                controller.startRecordingCast()
+                            }
+                        },
+                        label = {
+                            Text(
+                                text = if (isRecording) "REC ($recordedFrames)" else "REC .cast",
+                                style = MaterialTheme.typography.labelSmall
+                            )
+                        },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = if (isRecording) Icons.Outlined.Stop else Icons.Outlined.FiberManualRecord,
+                                contentDescription = null,
+                                tint = if (isRecording) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.secondary,
+                                modifier = Modifier.size(13.dp)
+                            )
+                        },
+                        shape = RoundedCornerShape(99.dp),
+                        modifier = Modifier.height(26.dp)
+                    )
+
+                    if (!lastCastPayload.isNullOrBlank() && !isRecording) {
+                        AssistChip(
+                            onClick = { replayModalVisible = true },
+                            label = {
+                                Text("Replay .cast", style = MaterialTheme.typography.labelSmall)
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Outlined.PlayArrow,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                            },
+                            shape = RoundedCornerShape(99.dp),
+                            modifier = Modifier.height(26.dp)
                         )
-                    },
-                    leadingIcon = {
-                        Icon(
-                            imageVector = Icons.Outlined.ContentPaste,
-                            contentDescription = null,
-                            modifier = Modifier.size(13.dp)
-                        )
-                    },
-                    shape = RoundedCornerShape(99.dp),
-                    modifier = Modifier.height(26.dp)
-                )
+                    }
+
+                    AssistChip(
+                        onClick = {
+                            clipboard.getText()?.text?.let { controller.pasteClipboardText(it) }
+                        },
+                        label = {
+                            Text(
+                                text = pasteActionLabel,
+                                style = MaterialTheme.typography.labelSmall
+                            )
+                        },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = Icons.Outlined.ContentPaste,
+                                contentDescription = null,
+                                modifier = Modifier.size(13.dp)
+                            )
+                        },
+                        shape = RoundedCornerShape(99.dp),
+                        modifier = Modifier.height(26.dp)
+                    )
+                }
             }
         }
 
@@ -237,4 +313,117 @@ fun SshTerminalSessionView(
             }
         }
     }
+}
+
+/**
+ * Interactive Asciicast v2 (`.cast`) Session Audit Playback Player with `1x` / `2x` / `4x` speed & timeline scrubber.
+ */
+@Composable
+private fun AsciicastPlaybackDialog(
+    castPayload: String,
+    onCopyCast: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val parsed = remember(castPayload) { AsciicastSessionRecorder.parseCastDocument(castPayload) }
+    val frames = parsed?.frames.orEmpty()
+    var currentIndex by remember(frames) { mutableIntStateOf(frames.size) }
+    var isPlaying by remember { mutableStateOf(false) }
+    var speedMultiplier by remember { mutableFloatStateOf(1f) }
+
+    LaunchedEffect(isPlaying, speedMultiplier, frames) {
+        if (!isPlaying || frames.isEmpty()) return@LaunchedEffect
+        if (currentIndex >= frames.size) currentIndex = 0
+        while (isPlaying && currentIndex < frames.size) {
+            val prevSec = if (currentIndex == 0) 0.0 else frames[currentIndex - 1].elapsedSeconds
+            val nextSec = frames[currentIndex].elapsedSeconds
+            val waitMs = (((nextSec - prevSec).coerceIn(0.03, 1.5) * 1000.0) / speedMultiplier).toLong()
+            delay(waitMs.coerceAtLeast(25L))
+            currentIndex++
+        }
+        isPlaying = false
+    }
+
+    val renderedOutput = remember(frames, currentIndex) {
+        buildString {
+            frames.take(currentIndex).filter { it.eventType == "o" }.forEach { f ->
+                append(f.data.replace(Regex("\u001B\\[[0-9;?]*[A-Za-z]"), ""))
+            }
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text("Asciicast v2 Audit Replay • ${parsed?.header?.title ?: "Session.cast"}")
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Button(onClick = { isPlaying = !isPlaying }) {
+                        Icon(
+                            imageVector = if (isPlaying) Icons.Outlined.Pause else Icons.Outlined.PlayArrow,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(if (isPlaying) "Pause" else "Play")
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        listOf(1f to "1x", 2f to "2x", 4f to "4x").forEach { (spd, lbl) ->
+                            FilterChip(
+                                selected = speedMultiplier == spd,
+                                onClick = { speedMultiplier = spd },
+                                label = { Text(lbl, style = MaterialTheme.typography.labelSmall) }
+                            )
+                        }
+                    }
+                }
+
+                if (frames.isNotEmpty()) {
+                    Slider(
+                        value = currentIndex.toFloat(),
+                        onValueChange = {
+                            isPlaying = false
+                            currentIndex = it.toInt().coerceIn(0, frames.size)
+                        },
+                        valueRange = 0f..frames.size.toFloat()
+                    )
+                }
+
+                Surface(
+                    shape = MaterialTheme.shapes.medium,
+                    color = NexusTheme.extendedColors.terminalCanvasBackground,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(210.dp)
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .padding(12.dp)
+                            .verticalScroll(rememberScrollState())
+                    ) {
+                        Text(
+                            text = renderedOutput.ifBlank { "[Empty frame buffer]" },
+                            style = NexusTheme.monospace.logEntry,
+                            color = Color(0xFFE2E6F3)
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = onCopyCast) {
+                Icon(Icons.Outlined.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("Copy .cast JSONL")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Close") }
+        }
+    )
 }

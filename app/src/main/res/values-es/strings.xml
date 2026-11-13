@@ -164,6 +164,12 @@
     <string name="dialog_field_template">Aplicar plantilla de conexión</string>
     <string name="dialog_field_color_accent">Color de acento</string>
     <string name="overview_active_sessions">Sesiones activas</string>
+    <string name="action_export_nxts">Exportar bóveda cifrada (.nxts)</string>
+    <string name="action_export_rtsz">Exportar Royal TS (.rtsz)</string>
+    <string name="action_export_csv">Exportar inventario (.csv)</string>
+    <string name="ssh_section_tunnels">Reenvío de puertos SSH (-L / -R / -D) y Bastion</string>
+    <string name="mdm_google_web_client_id_title">ID de cliente web OAuth 2.0 de Google</string>
+    <string name="mdm_google_web_client_id_desc">ID de cliente web empresarial de Google Cloud OAuth 2.0 para Credential Manager y sincronización con Google Drive API v3.</string>
 
     <!-- Language Names -->
     <string name="lang_en">English</string>

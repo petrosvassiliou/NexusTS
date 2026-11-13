@@ -169,5 +169,9 @@ data class WorkspaceLocalizedStrings(
     val dialogFieldTemplate: String = "Apply Connection Template",
     val dialogFieldColorAccent: String = "Accent Color",
     val overviewActiveSessions: String = "Active Sessions",
+    val actionExportNxts: String = "Export Encrypted Vault (.nxts)",
+    val actionExportRtsz: String = "Export Royal TS (.rtsz)",
+    val actionExportCsv: String = "Export Inventory (.csv)",
+    val sshSectionTunnels: String = "SSH Port Forwarding (-L / -R / -D) & Bastion",
     val languageLabels: Map<SupportedNexusLocale, String>
 )

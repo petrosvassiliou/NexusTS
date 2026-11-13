@@ -164,6 +164,12 @@
     <string name="dialog_field_template">Εφαρμογή προτύπου σύνδεσης</string>
     <string name="dialog_field_color_accent">Χρώμα έμφασης</string>
     <string name="overview_active_sessions">Ενεργές συνεδρίες</string>
+    <string name="action_export_nxts">Εξαγωγή κρυπτογραφημένου θησαυροφυλακίου (.nxts)</string>
+    <string name="action_export_rtsz">Εξαγωγή Royal TS (.rtsz)</string>
+    <string name="action_export_csv">Εξαγωγή καταλόγου (.csv)</string>
+    <string name="ssh_section_tunnels">Προώθηση θυρών SSH (-L / -R / -D) &amp; Bastion</string>
+    <string name="mdm_google_web_client_id_title">Αναγνωριστικό πελάτη Web Google OAuth 2.0</string>
+    <string name="mdm_google_web_client_id_desc">Εταιρικό Google Cloud OAuth 2.0 Web Client ID για το Credential Manager και τον συγχρονισμό Google Drive API v3.</string>
 
     <!-- Language Names -->
     <string name="lang_en">English</string>

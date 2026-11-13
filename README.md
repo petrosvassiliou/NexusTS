@@ -37,8 +37,28 @@ NexusTS/
    - Distinct Spatial vs Effects spring physics (`NexusMotionScheme`) and morphing container/tab geometry (`rememberMorphingContainerShape`).
 3. **Zero-Knowledge `.nxts` Vault & `.rtsz` Compatibility**:
    - Binary `.nxts` v2 envelope (`NXTS\x00\x02`) sealed with **Argon2id** (`64 MiB, t=3, p=4`), **HKDF-SHA256**, and **AES-256-GCM** with authenticated header AAD.
-   - Native Royal TS `.rtsz` / `.rtsx` importer, Smart Folders, Dynamic Folders, and cascading Property Inheritance.
-4. **Google Play Protect Compliant Auto-Updates**:
+   - Bidirectional Royal TS `.rtsz` / `.rtsx` import & export, RFC 4180 `.csv` inventory export, Connection Templates, Smart Folders, Dynamic Folders, RFC 6238 TOTP (`$EffectiveTOTP$`), Custom Properties (`$CustomProperty.*$`), and cascading Property Inheritance.
+4. **Power-User SSH & RDP Engines**:
+   - **RDP (`FreeRDP 3.x` NDK)**: Folder-level credential inheritance, `/admin` Console session, HiDPI scaling (`100%–200%`), `DISP_DVC` dynamic resize, H.264/AVC444 `AMediaCodec`, bidirectional clipboard, 3-mode audio, drives, printers, serial ports, and USB CCID YubiKey PIV redirection.
+   - **SSH (`russh` / NDK)**: Visual `-L` Local, `-R` Remote, and `-D` Dynamic SOCKS5 port-forwarding studio, ProxyJump Bastion host chaining, X11/Agent forwarding, and **asciicast v2 (`.cast`)** session recording & variable-speed playback.
+5. **Google Play Protect Compliant Auto-Updates**:
    - Uses official Google Play In-App Updates (`AppUpdateManager` Immediate & Flexible flows) and Managed Google Play `RestrictionsManager` + APK Signature Scheme v3/v4 verified `PackageInstaller` sessions. Zero `REQUEST_INSTALL_PACKAGES` sideloading or untrusted `DexClassLoader` usage.
-5. **6 Built-in Languages (Zero Hardcoded UI Strings)**:
+6. **6 Built-in Languages (Zero Hardcoded UI Strings)**:
    - English (`en`), German (`de`), Italian (`it`), Spanish (`es`), Greek (`el`), and French (`fr`) wired to Android 13+ Per-App Language Preferences (`locales_config.xml` + `AppCompatDelegate.setApplicationLocales`).
+
+## Build, NDK Cross-Compilation & Release Quickstart
+
+See [`docs/PRODUCTION_DEPLOYMENT.md`](docs/PRODUCTION_DEPLOYMENT.md) for the full runbook:
+
+```bash
+# 1. Generate 4096-bit PKCS#12 release keystore + Google Cloud OAuth 2.0 & MDM config
+./scripts/provision-signing-and-oauth.sh .signing/nexusts-release.p12 nexusts-upload
+
+# 2. (Optional) Cross-compile OpenSSL 3.4 + libusb 1.0 + FreeRDP 3.12 for NDK r28 (16 KB page aligned)
+./scripts/build-freerdp3-ndk.sh --abis arm64-v8a,x86_64
+
+# 3. Run Rust Cargo tests & Gradle unit tests + build signed Release .aab/.apk
+cargo test --manifest-path native/rust/Cargo.toml
+./gradlew testDebugUnitTest assembleDebug bundleRelease
+```
+
