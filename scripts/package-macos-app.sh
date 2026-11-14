@@ -134,11 +134,11 @@ fi
 
 if [[ -d "${APP_BUNDLE}/Contents/Frameworks" ]]; then
     while IFS= read -r -d '' dylib_file; do
-        codesign --force "${SIGN_EXTRA_FLAGS[@]}" --sign "${SIGN_IDENTITY}" "${dylib_file}"
+        codesign --force ${SIGN_EXTRA_FLAGS[@]+"${SIGN_EXTRA_FLAGS[@]}"} --sign "${SIGN_IDENTITY}" "${dylib_file}"
     done < <(find "${APP_BUNDLE}/Contents/Frameworks" -type f -name "*.dylib" -print0)
 fi
 
-codesign --force "${SIGN_EXTRA_FLAGS[@]}" --entitlements "${MACOS_DIR}/NexusTS.entitlements" --sign "${SIGN_IDENTITY}" "${APP_BUNDLE}"
+codesign --force ${SIGN_EXTRA_FLAGS[@]+"${SIGN_EXTRA_FLAGS[@]}"} --entitlements "${MACOS_DIR}/NexusTS.entitlements" --sign "${SIGN_IDENTITY}" "${APP_BUNDLE}"
 codesign --verify --deep --strict "${APP_BUNDLE}"
 
 ARCHIVE_SUFFIX="Host"

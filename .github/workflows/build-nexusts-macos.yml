@@ -50,7 +50,7 @@ jobs:
           ./scripts/build-freerdp3-macos.sh --dry-run
 
       - name: Cache Prebuilt Universal2 OpenSSL 3.4 + FreeRDP 3.12 macOS SDK
-        if: ${{ inputs.compile_full_freerdp3 != false }}
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.compile_full_freerdp3 == true }}
         id: freerdp-macos-cache
         uses: actions/cache@v4
         with:
@@ -58,7 +58,7 @@ jobs:
           key: freerdp3-macos-universal2-v1-${{ hashFiles('scripts/build-freerdp3-macos.sh') }}
 
       - name: Build & Stage Universal2 OpenSSL 3.4.1 + FreeRDP 3.12.0 (arm64 + x86_64)
-        if: ${{ inputs.compile_full_freerdp3 != false && steps.freerdp-macos-cache.outputs.cache-hit != 'true' }}
+        if: ${{ (github.event_name != 'workflow_dispatch' || inputs.compile_full_freerdp3 == true) && steps.freerdp-macos-cache.outputs.cache-hit != 'true' }}
         run: |
           command -v ninja >/dev/null 2>&1 || brew install ninja pkg-config
           ./scripts/build-freerdp3-macos.sh --archs arm64,x86_64

@@ -122,6 +122,7 @@ for ARCH in "${TARGET_ARCHS[@]}"; do
       "-mmacosx-version-min=${MACOS_MIN_VERSION}" \
       -fPIC \
       no-shared \
+      no-apps \
       no-tests \
       no-docs \
       --prefix="$ARCH_PREFIX" \
@@ -134,16 +135,18 @@ for ARCH in "${TARGET_ARCHS[@]}"; do
   echo "======================================================================"
   echo "==> [2/2] Building FreeRDP ${FREERDP_VERSION} (${ARCH}, @rpath Universal Slice)"
   echo "======================================================================"
+  PKG_CONFIG_PATH="" \
   PKG_CONFIG_LIBDIR="$ARCH_PREFIX/lib/pkgconfig" \
   cmake -S "$WORK_DIR/src/freerdp-${FREERDP_VERSION}" \
     -B "$ARCH_BUILD/freerdp" \
-    "${CMAKE_GEN_ARGS[@]}" \
+    ${CMAKE_GEN_ARGS[@]+"${CMAKE_GEN_ARGS[@]}"} \
     -DCMAKE_OSX_ARCHITECTURES="$ARCH" \
     -DCMAKE_OSX_DEPLOYMENT_TARGET="${MACOS_MIN_VERSION}" \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_INSTALL_PREFIX="$ARCH_PREFIX" \
     -DCMAKE_INSTALL_LIBDIR=lib \
     -DCMAKE_PREFIX_PATH="$ARCH_PREFIX" \
+    -DCMAKE_IGNORE_PREFIX_PATH="/opt/homebrew;/usr/local" \
     -DCMAKE_INSTALL_NAME_DIR="@rpath" \
     -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
     -DUSE_VERSION_FROM_GIT_TAG=OFF \
@@ -179,12 +182,23 @@ for ARCH in "${TARGET_ARCHS[@]}"; do
     -DWITH_PKCS11=OFF \
     -DWITH_AAD=OFF \
     -DWITH_CJSON_REQUIRED=OFF \
+    -DWITH_WINPR_JSON=OFF \
+    -DWITH_URIPARSER=OFF \
+    -DWITH_ZSTD=OFF \
+    -DWITH_JPEG=OFF \
+    -DWITH_WEBP=OFF \
     -DWITH_CAIRO=OFF \
     -DWITH_OPENH264=OFF \
     -DWITH_FFMPEG=OFF \
     -DWITH_VIDEO_FFMPEG=OFF \
     -DWITH_DSP_FFMPEG=OFF \
     -DWITH_SWSCALE=OFF \
+    -DWITH_OPUS=OFF \
+    -DWITH_LAME=OFF \
+    -DWITH_FAAD2=OFF \
+    -DWITH_FAAC=OFF \
+    -DWITH_SOXR=OFF \
+    -DWITH_GSM=OFF \
     -DWITH_WEBVIEW=OFF \
     -DWITH_CHANNELS=ON \
     -DCHANNEL_URBDRC=OFF \
@@ -235,6 +249,11 @@ for required_dylib in libfreerdp3.dylib libfreerdp-client3.dylib libwinpr3.dylib
     exit 1
   fi
   echo "  Verified $(basename "$required_dylib"): $(lipo -archs "$STAGE_ROOT/lib/$required_dylib")"
+  otool -L "$STAGE_ROOT/lib/$required_dylib"
+  if otool -L "$STAGE_ROOT/lib/$required_dylib" | tail -n +2 | grep -E '(/opt/homebrew|/usr/local)' >/dev/null 2>&1; then
+    echo "ERROR: Non-portable Homebrew/local dylib dependency leaked into $required_dylib!" >&2
+    exit 1
+  fi
 done
 
 rm -rf "$WORK_DIR/build"
