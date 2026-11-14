@@ -884,6 +884,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "nexusts-ffi"
+version = "1.0.0"
+dependencies = [
+ "nexusts-crypto",
+ "nexusts-netutils",
+ "nexusts-terminal",
+ "nexusts-transfer",
+ "nexusts-vnc",
+ "russh",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "nexusts-jni"
 version = "1.0.0"
 dependencies = [

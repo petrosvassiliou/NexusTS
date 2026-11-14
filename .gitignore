@@ -15,3 +15,9 @@ native/third_party/freerdp3/
 .freerdp-ndk-work/
 **/.kotlin/
 gradle/wrapper/gradle-wrapper.jar
+.DS_Store
+macos/.build/
+macos/.swiftpm/
+macos/Vendor/
+macos/dist/
+native/build-macos-*/

@@ -169,6 +169,14 @@ public:
 
     uint32_t width() const noexcept { return width_.load(); }
     uint32_t height() const noexcept { return height_.load(); }
+    uint64_t frame_sequence() const noexcept { return frame_seq_.load(std::memory_order_acquire); }
+
+    size_t copy_shadow_rgba(
+        uint8_t* dst_rgba,
+        size_t dst_capacity,
+        uint32_t* out_width,
+        uint32_t* out_height
+    ) const;
 
 private:
     void present_locked();
@@ -177,6 +185,7 @@ private:
     ANativeWindow* native_window_{nullptr};
     std::atomic<uint32_t> width_{1920};
     std::atomic<uint32_t> height_{1080};
+    std::atomic<uint64_t> frame_seq_{0};
     std::vector<uint8_t> shadow_rgba_;
 };
 

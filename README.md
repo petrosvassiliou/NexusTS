@@ -67,3 +67,30 @@ cargo test --manifest-path native/rust/Cargo.toml
 ./gradlew testDebugUnitTest assembleDebugAndroidTest assembleRelease bundleRelease
 ```
 
+---
+
+## Native macOS Edition (`macos/` — SwiftUI & AppKit, macOS 14 Sonoma+)
+
+On the `macos` branch, **NexusTS for Mac** (`com.nexusts.app.macos`) delivers a 100% native Swift + SwiftUI / AppKit desktop experience built strictly to modern **Apple Human Interface Guidelines (HIG)** while sharing the exact same Rust & C++20 engines and binary-compatible `.nxts` v2 vaults:
+
+- **Modern Apple HIG Workspace**:
+  - Three-column `NavigationSplitView` with vibrancy sidebar (`.listStyle(.sidebar)`), recursive BSP split-pane workspace (`HSplitView` / `VSplitView`), Safari/Xcode-style tab strips with lossless multi-window tear-off & re-dock (`WindowGroup("Detached Session")`), and trailing property inspector (`.inspector` `⌥⌘I`).
+  - Unified macOS window toolbar (`.windowToolbarStyle(.unified)`), Spotlight-style `⌘K` Quick Connect overlay, native `Settings` window (`⌘,`), `MenuBarExtra` status bar quick-connect agent, full macOS menu bar `Commands`, and `CoreSpotlight` system-wide connection indexing.
+- **Native Apple Security & Cloud Sync**:
+  - **Touch ID & Apple Watch** (`LocalAuthentication`) + macOS Keychain integration for zero-knowledge Argon2id + AES-256-GCM `.nxts` v2 vault unlock.
+  - Live 3-way vector-clock delta sync (`VaultDeltaConflictResolver`) across **iCloud Drive**, **Google Drive for Desktop** (security-scoped bookmarks), and **Google Drive REST API v3** — 100% interoperable with NexusTS on Android & Googlebook OS.
+- **Full Protocol & Studio Parity**:
+  - Local macOS `/bin/zsh` login shells (`forkpty`), `russh` SSHv2 + Bastion ProxyJump + `-L`/`-D` SOCKS5 tunnels + Asciicast `.cast` recorder, Dual-Pane Finder/SFTP v3 Commander, FreeRDP 3.x (`DISP_DVC` Retina dynamic resize), VNC & 1-click native macOS `Screen Sharing.app` (`ARD`) handoff, IOKit `/dev/cu.*` hardware USB-Serial UART (`IOSSIOSPEED`), isolated `WKWebView` (`WKWebsiteDataStore(forIdentifier:)`), Kubernetes/Docker (`/var/run/docker.sock`), Cloud Hypervisors (Proxmox, vSphere, AWS EC2 SigV4, Azure), and 6-tool Network Diagnostics.
+
+### macOS Build, Test & Universal2 DMG Packaging
+
+```bash
+# 1. Build Universal2 (arm64 + x86_64) Rust FFI + C++20 FreeRDP static libraries & run XCTests
+./scripts/build-macos-native.sh --universal
+swift test --package-path macos
+
+# 2. Package Universal2 NexusTS.app + NexusTS-macOS-Universal.dmg
+./scripts/package-macos-app.sh --universal
+```
+
+

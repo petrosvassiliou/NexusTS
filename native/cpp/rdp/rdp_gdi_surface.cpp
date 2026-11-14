@@ -148,7 +148,31 @@ void RdpGdiSurfacePresenter::present_frame(
     present_locked();
 }
 
+size_t RdpGdiSurfacePresenter::copy_shadow_rgba(
+    uint8_t* dst_rgba,
+    size_t dst_capacity,
+    uint32_t* out_width,
+    uint32_t* out_height
+) const {
+    std::lock_guard<std::mutex> lock(surface_mutex_);
+    const uint32_t w = width_.load();
+    const uint32_t h = height_.load();
+    if (out_width) {
+        *out_width = w;
+    }
+    if (out_height) {
+        *out_height = h;
+    }
+    if (!dst_rgba || dst_capacity == 0 || shadow_rgba_.empty()) {
+        return shadow_rgba_.size();
+    }
+    const size_t n = std::min(dst_capacity, shadow_rgba_.size());
+    std::memcpy(dst_rgba, shadow_rgba_.data(), n);
+    return n;
+}
+
 void RdpGdiSurfacePresenter::present_locked() {
+    frame_seq_.fetch_add(1, std::memory_order_release);
 #ifdef __ANDROID__
     if (!native_window_ || shadow_rgba_.empty()) {
         return;

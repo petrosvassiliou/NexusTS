@@ -1,0 +1,22 @@
+[package]
+name = "nexusts-ffi"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lib]
+name = "nexusts_ffi"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[dependencies]
+nexusts-crypto = { path = "../nexusts-crypto" }
+nexusts-terminal = { path = "../nexusts-terminal" }
+nexusts-transfer = { path = "../nexusts-transfer" }
+nexusts-vnc = { path = "../nexusts-vnc" }
+nexusts-netutils = { path = "../nexusts-netutils" }
+russh.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
