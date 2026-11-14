@@ -453,7 +453,8 @@ fun NewOrEditConnectionDialog(
     sshConnections: List<VaultConnection> = emptyList(),
     gateways: List<SecureGatewayConfig> = emptyList(),
     defaultFolderId: String? = null,
-    defaultProtocol: VaultProtocolType = VaultProtocolType.RDP
+    defaultProtocol: VaultProtocolType = VaultProtocolType.RDP,
+    onPickSafSharedFolder: (((String) -> Unit) -> Unit)? = null
 ) {
     if (!visible) return
 
@@ -550,7 +551,12 @@ fun NewOrEditConnectionDialog(
     var redirectClipboard by remember(initialConnection) { mutableStateOf(initialRdp.redirectClipboard) }
     var audioRedirectionMode by remember(initialConnection) { mutableStateOf(initialRdp.audioRedirectionMode) }
     var redirectMicrophone by remember(initialConnection) { mutableStateOf(initialRdp.redirectMicrophone) }
-    var redirectDrives by remember(initialConnection) { mutableStateOf(initialRdp.redirectDrives) }
+    var redirectDrives by remember(initialConnection) {
+        mutableStateOf(initialRdp.redirectDrives || initialRdp.redirectedDriveSafUris.isNotEmpty())
+    }
+    var redirectedDriveSafUris by remember(initialConnection) {
+        mutableStateOf(initialRdp.redirectedDriveSafUris)
+    }
     var redirectPrinters by remember(initialConnection) { mutableStateOf(initialRdp.redirectPrinters) }
     var redirectPorts by remember(initialConnection) { mutableStateOf(initialRdp.redirectPorts) }
     var redirectSmartcard by remember(initialConnection) { mutableStateOf(initialRdp.redirectSmartcardYubiKey) }
@@ -999,6 +1005,97 @@ fun NewOrEditConnectionDialog(
                         checked = redirectDrives,
                         onCheckedChange = { redirectDrives = it }
                     )
+                    if (redirectDrives || redirectedDriveSafUris.isNotEmpty()) {
+                        Surface(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.surfaceContainer,
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(10.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Text(
+                                    text = "RDPDR Shared Folders (\\\\tsclient\\<Folder>)",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                if (redirectedDriveSafUris.isEmpty()) {
+                                    Text(
+                                        text = "Using sandboxed NexusTS exchange drive (\\\\tsclient\\NexusTS), or choose a local Googlebook OS / Android folder:",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                } else {
+                                    redirectedDriveSafUris.forEach { safUri ->
+                                        val decodedLabel = remember(safUri) {
+                                            java.net.URLDecoder.decode(safUri, Charsets.UTF_8.name())
+                                                .substringAfterLast(':')
+                                                .substringAfterLast('/')
+                                                .ifBlank { safUri.takeLast(32) }
+                                        }
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.SpaceBetween
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.weight(1f),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Outlined.Folder,
+                                                    contentDescription = null,
+                                                    modifier = Modifier.size(16.dp),
+                                                    tint = MaterialTheme.colorScheme.primary
+                                                )
+                                                Text(
+                                                    text = decodedLabel,
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = MaterialTheme.colorScheme.onSurface
+                                                )
+                                            }
+                                            IconButton(
+                                                onClick = {
+                                                    redirectedDriveSafUris = redirectedDriveSafUris - safUri
+                                                },
+                                                modifier = Modifier.size(26.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Outlined.Delete,
+                                                    contentDescription = "Remove shared folder",
+                                                    modifier = Modifier.size(15.dp),
+                                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                                if (onPickSafSharedFolder != null) {
+                                    OutlinedButton(
+                                        onClick = {
+                                            onPickSafSharedFolder { pickedUri ->
+                                                redirectDrives = true
+                                                if (pickedUri.isNotBlank() && pickedUri !in redirectedDriveSafUris) {
+                                                    redirectedDriveSafUris = redirectedDriveSafUris + pickedUri
+                                                }
+                                            }
+                                        }
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Outlined.Add,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text("Select Shared Folder (SAF)…")
+                                    }
+                                }
+                            }
+                        }
+                    }
                     RdpOptionSwitchRow(
                         label = strings.rdpOptPrinterRedirection,
                         checked = redirectPrinters,
@@ -1392,7 +1489,8 @@ fun NewOrEditConnectionDialog(
                             audioRedirectionMode = audioRedirectionMode,
                             redirectAudioPlayback = audioRedirectionMode == RdpAudioRedirectionMode.PLAY_ON_THIS_DEVICE,
                             redirectMicrophone = redirectMicrophone,
-                            redirectDrives = redirectDrives,
+                            redirectDrives = redirectDrives || redirectedDriveSafUris.isNotEmpty(),
+                            redirectedDriveSafUris = if (redirectDrives) redirectedDriveSafUris else emptyList(),
                             redirectPrinters = redirectPrinters,
                             redirectPorts = redirectPorts,
                             redirectSmartcardYubiKey = redirectSmartcard,

@@ -1,0 +1,5 @@
+NexusTS v1.1.7:
+• Biometrie-/Passkey-Tresorentsperrung via Android Keystore (AES-256-GCM), Schnell-Sperre & Auto-Sperre bei Inaktivität (1–30 Min.)
+• Drag & Drop für verschachtelte Ordner, manuelle Sortierung sowie Sitzungs-Tab-Sortierung & Freeform-Fenster-Ablösung
+• Dynamische FreeRDP-3.12-Fenstergröße (DISP-Kanal) + Live-Skalierungsschalter
+• Google Play Protect–konforme SAF-Ordnerfreigabe (\tsclient\Share) über RDPDR

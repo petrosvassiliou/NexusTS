@@ -1,0 +1,5 @@
+NexusTS v1.1.7:
+• Déverrouillage biométrique/passkey via Android Keystore AES-256-GCM, verrouillage rapide & auto-verrouillage d'inactivité (1–30 min)
+• Glisser-déposer de dossiers imbriqués, tri manuel et réorganisation/détachement d'onglets en fenêtre libre
+• Redimensionnement dynamique FreeRDP 3.12 (canal DISP) en direct
+• Redirection de dossiers SAF compatible Google Play Protect (\tsclient\Share) via RDPDR

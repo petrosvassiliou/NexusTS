@@ -18,12 +18,13 @@ import com.nexusts.app.core.vault.model.ProtocolSpecificSettings
 import com.nexusts.app.core.vault.model.RdpAudioRedirectionMode
 import com.nexusts.app.core.vault.model.RdpResizeBehavior
 import com.nexusts.app.core.vault.model.VaultConnection
+import com.nexusts.app.protocols.rdp.storage.SafRdpSharedDriveSynchronizer
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 /**
- * JNI Bridge to `libnexusts_rdp_jni.so` (FreeRDP 3.x + AMediaCodec H.264/AVC444 + AAudio + DISP_DVC).
+ * JNI Bridge to `libnexusts_rdp_jni.so` (FreeRDP 3.x + AMediaCodec H.264/AVC444 + AAudio + DISP_DVC + RDPDR).
  */
 object FreeRdpNativeBridge {
     val isNativeLoaded: Boolean = runCatching {
@@ -89,7 +90,9 @@ object FreeRdpNativeBridge {
         ignoreCertificate: Boolean,
         remoteAppMode: Boolean,
         remoteAppProgram: String,
-        remoteAppArgs: String
+        remoteAppArgs: String,
+        sharedDriveName: String,
+        sharedDriveLocalPath: String
     ): Long
 
     @JvmStatic
@@ -356,13 +359,35 @@ class RdpManagedSession(
     private var nativeHandle: Long = 0L
     private val started = java.util.concurrent.atomic.AtomicBoolean(false)
     private val surfaceLock = Any()
+    private val driveSyncLock = Any()
     private var pendingSurface: Surface? = null
+
+    @Volatile
+    private var appContext: Context? = null
+
+    @Volatile
+    private var preparedSharedDrive: SafRdpSharedDriveSynchronizer.PreparedRdpSharedDrive? = null
+
+    @Volatile
+    private var sharedDriveBaseline: Map<String, SafRdpSharedDriveSynchronizer.StagedFileStamp> = emptyMap()
 
     private val _isConnecting = MutableStateFlow(false)
     val isConnecting: StateFlow<Boolean> = _isConnecting.asStateFlow()
 
     private val _isConnected = MutableStateFlow(false)
     val isConnected: StateFlow<Boolean> = _isConnected.asStateFlow()
+
+    private val _liveResizeBehavior = MutableStateFlow(settings.resizeBehavior)
+    val liveResizeBehavior: StateFlow<RdpResizeBehavior> = _liveResizeBehavior.asStateFlow()
+
+    private val _sharedDriveUncLabel = MutableStateFlow<String?>(
+        if (settings.redirectDrives || settings.redirectedDriveSafUris.isNotEmpty()) {
+            "\\\\tsclient\\${SafRdpSharedDriveSynchronizer.DEFAULT_SHARE_NAME}"
+        } else {
+            null
+        }
+    )
+    val sharedDriveUncLabel: StateFlow<String?> = _sharedDriveUncLabel.asStateFlow()
 
     private val _remoteDesktopDimensions = MutableStateFlow(
         (settings.customDesktopWidth.coerceAtLeast(320) and -2) to
@@ -383,6 +408,25 @@ class RdpManagedSession(
             ContextCompat.checkSelfPermission(it, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
         } ?: false
     ): Boolean {
+        context?.applicationContext?.let { appContext = it }
+        val wantsSharedDrive = settings.redirectDrives || settings.redirectedDriveSafUris.isNotEmpty()
+        val stagedDrive = if (wantsSharedDrive) {
+            SafRdpSharedDriveSynchronizer.prepareSessionDrive(
+                context = appContext ?: context,
+                connectionId = connection.id,
+                redirectDrivesEnabled = wantsSharedDrive,
+                safUriStrings = settings.redirectedDriveSafUris
+            )?.also { prepared ->
+                synchronized(driveSyncLock) {
+                    preparedSharedDrive = prepared
+                    sharedDriveBaseline = prepared.initialSnapshot
+                }
+                _sharedDriveUncLabel.value = prepared.uncDisplayPath
+            }
+        } else {
+            null
+        }
+
         if (!FreeRdpNativeBridge.isNativeLoaded) {
             _isConnecting.value = false
             return false
@@ -392,7 +436,7 @@ class RdpManagedSession(
         }
         _isConnecting.value = true
         return try {
-            val useFixedSize = settings.resizeBehavior == RdpResizeBehavior.FIXED_SERVER_RESOLUTION
+            val useFixedSize = _liveResizeBehavior.value == RdpResizeBehavior.FIXED_SERVER_RESOLUTION
             val startW = (if (useFixedSize) settings.customDesktopWidth else initialWidthPx).coerceAtLeast(320) and -2
             val startH = (if (useFixedSize) settings.customDesktopHeight else initialHeightPx).coerceAtLeast(240) and -2
             _remoteDesktopDimensions.value = startW to startH
@@ -405,6 +449,7 @@ class RdpManagedSession(
             val effectiveMicRedirect = settings.redirectMicrophone && micPermissionGranted
             isMicrophoneRedirected = effectiveMicRedirect
 
+            // Negotiate DISP_DVC channel capability at connect time so live resize mode toggles work without reconnecting
             val createdHandle = FreeRdpNativeBridge.nativeCreateSession(
                 host = connection.host,
                 port = settings.port,
@@ -421,12 +466,12 @@ class RdpManagedSession(
                 colorDepthBits = settings.colorDepthBits,
                 enableH264Avc444 = settings.enableH264Avc444,
                 enableRemoteFx = settings.enableRemoteFx,
-                enableDynamicResize = settings.resizeBehavior == RdpResizeBehavior.DYNAMIC_DISP_DVC,
+                enableDynamicResize = true,
                 multiMonitor = settings.multiMonitorSpanning,
                 redirectClipboard = settings.redirectClipboard,
                 audioRedirectionMode = audioModeCode,
                 redirectMic = effectiveMicRedirect,
-                redirectDrives = settings.redirectDrives || settings.redirectedDriveSafUris.isNotEmpty(),
+                redirectDrives = wantsSharedDrive,
                 redirectPrinters = settings.redirectPrinters,
                 redirectPorts = settings.redirectPorts,
                 redirectSmartcard = settings.redirectSmartcardYubiKey,
@@ -439,7 +484,9 @@ class RdpManagedSession(
                 ignoreCertificate = settings.ignoreCertificateWarnings,
                 remoteAppMode = settings.remoteAppMode,
                 remoteAppProgram = settings.remoteAppProgram,
-                remoteAppArgs = settings.remoteAppArguments
+                remoteAppArgs = settings.remoteAppArguments,
+                sharedDriveName = stagedDrive?.shareName.orEmpty(),
+                sharedDriveLocalPath = stagedDrive?.localPosixDirectory?.absolutePath.orEmpty()
             )
             nativeHandle = createdHandle
             synchronized(surfaceLock) {
@@ -452,6 +499,49 @@ class RdpManagedSession(
             connected
         } finally {
             _isConnecting.value = false
+        }
+    }
+
+    fun setLiveResizeBehavior(
+        mode: RdpResizeBehavior,
+        viewportWidthPx: Int = 0,
+        viewportHeightPx: Int = 0,
+        scalePercent: Int = settings.desktopScaleFactorPercent
+    ) {
+        _liveResizeBehavior.value = mode
+        when (mode) {
+            RdpResizeBehavior.DYNAMIC_DISP_DVC -> {
+                if (viewportWidthPx >= 320 && viewportHeightPx >= 240) {
+                    onViewportResized(viewportWidthPx, viewportHeightPx, scalePercent, forceDynamic = true)
+                }
+            }
+            RdpResizeBehavior.FIXED_SERVER_RESOLUTION -> {
+                onViewportResized(
+                    widthPx = settings.customDesktopWidth,
+                    heightPx = settings.customDesktopHeight,
+                    scalePercent = scalePercent,
+                    forceDynamic = true
+                )
+            }
+            RdpResizeBehavior.SMART_SCALE_VIEWPORT -> Unit
+        }
+    }
+
+    fun syncSharedDrivesNow(
+        context: Context? = appContext,
+        pullInboundFromSaf: Boolean = true
+    ): SafRdpSharedDriveSynchronizer.SharedDriveSyncReport? {
+        val ctx = context ?: appContext ?: return null
+        synchronized(driveSyncLock) {
+            val prepared = preparedSharedDrive ?: return null
+            val report = SafRdpSharedDriveSynchronizer.syncSessionDriveWithSaf(
+                context = ctx,
+                preparedDrive = prepared,
+                baselineSnapshot = sharedDriveBaseline,
+                pullInboundFromSaf = pullInboundFromSaf
+            )
+            sharedDriveBaseline = report.updatedSnapshot
+            return report
         }
     }
 
@@ -471,17 +561,19 @@ class RdpManagedSession(
         scalePercent: Int = settings.desktopScaleFactorPercent,
         forceDynamic: Boolean = false
     ) {
+        val alignedW = widthPx.coerceAtLeast(320) and -2
+        val alignedH = heightPx.coerceAtLeast(240) and -2
+        val shouldApplyDisp = _liveResizeBehavior.value == RdpResizeBehavior.DYNAMIC_DISP_DVC || forceDynamic
+        if (!shouldApplyDisp) return
+
         val handle = nativeHandle
-        if (handle != 0L &&
-            FreeRdpNativeBridge.isNativeLoaded &&
-            (settings.resizeBehavior == RdpResizeBehavior.DYNAMIC_DISP_DVC || forceDynamic)
-        ) {
-            val alignedW = widthPx.coerceAtLeast(320) and -2
-            val alignedH = heightPx.coerceAtLeast(240) and -2
+        if (handle != 0L && FreeRdpNativeBridge.isNativeLoaded) {
             val effectiveScale = if (settings.hiDpiEnabled || forceDynamic) scalePercent.coerceIn(100, 200) else 100
             if (FreeRdpNativeBridge.nativeRequestDynamicResize(handle, alignedW, alignedH, effectiveScale)) {
                 _remoteDesktopDimensions.value = alignedW to alignedH
             }
+        } else {
+            _remoteDesktopDimensions.value = alignedW to alignedH
         }
     }
 
@@ -582,5 +674,6 @@ class RdpManagedSession(
         if (handle != 0L && FreeRdpNativeBridge.isNativeLoaded) {
             FreeRdpNativeBridge.nativeDestroySession(handle)
         }
+        runCatching { syncSharedDrivesNow(pullInboundFromSaf = false) }
     }
 }

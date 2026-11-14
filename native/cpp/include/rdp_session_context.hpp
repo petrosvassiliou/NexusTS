@@ -83,6 +83,8 @@ struct RdpConnectParams {
     bool remote_app_mode{false};
     std::string remote_app_program;
     std::string remote_app_args;
+    std::string shared_drive_name;
+    std::string shared_drive_local_path;
     std::vector<RdpMonitorLayout> monitors;
 };
 
@@ -188,6 +190,7 @@ public:
     bool is_connected() const noexcept { return connected_.load(); }
 
     void on_surface_bound();
+    void set_disp_context(void* disp_context) noexcept;
 
     /**
      * Sends MS-RDPEDI (`DISP_DVC`) Display Control PDU to dynamically resize remote desktop
@@ -231,6 +234,7 @@ private:
     RdpHardwareH264Decoder h264_decoder_;
     std::thread event_loop_thread_;
     [[maybe_unused]] void* freerdp_instance_{nullptr};
+    std::atomic<void*> disp_context_{nullptr};
 };
 
 } // namespace nexusts::rdp

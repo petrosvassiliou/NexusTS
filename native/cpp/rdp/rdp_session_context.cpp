@@ -15,7 +15,12 @@
 
 #if defined(NEXUSTS_HAS_FREERDP3_BINARY) && NEXUSTS_HAS_FREERDP3_BINARY == 1
 #include <freerdp/freerdp.h>
+#include <freerdp/event.h>
 #include <freerdp/gdi/gdi.h>
+#include <freerdp/channels/channels.h>
+#include <freerdp/channels/rdpdr.h>
+#include <freerdp/client/channels.h>
+#include <freerdp/client/cmdline.h>
 #include <freerdp/client/disp.h>
 #include <freerdp/input.h>
 #include <freerdp/settings.h>
@@ -55,6 +60,57 @@ FreeRdpCallbackState lookup_freerdp_callbacks(freerdp* instance) {
     return (it != g_freerdp_callbacks.end()) ? it->second : FreeRdpCallbackState{};
 }
 
+void freerdp_on_channel_connected(void* context, const ChannelConnectedEventArgs* e) {
+    if (!context || !e || !e->name) {
+        return;
+    }
+    auto* rdp_ctx = static_cast<rdpContext*>(context);
+    if (!rdp_ctx->instance) {
+        return;
+    }
+    if (std::strcmp(e->name, DISP_DVC_CHANNEL_NAME) == 0) {
+        const auto cb = lookup_freerdp_callbacks(rdp_ctx->instance);
+        if (cb.owner) {
+            cb.owner->set_disp_context(e->pInterface);
+            NX_RDP_LOGI("Attached FreeRDP DISP_DVC dynamic display channel (%s)", e->name);
+        }
+    }
+}
+
+void freerdp_on_channel_disconnected(void* context, const ChannelDisconnectedEventArgs* e) {
+    if (!context || !e || !e->name) {
+        return;
+    }
+    auto* rdp_ctx = static_cast<rdpContext*>(context);
+    if (!rdp_ctx->instance) {
+        return;
+    }
+    if (std::strcmp(e->name, DISP_DVC_CHANNEL_NAME) == 0) {
+        const auto cb = lookup_freerdp_callbacks(rdp_ctx->instance);
+        if (cb.owner) {
+            cb.owner->set_disp_context(nullptr);
+        }
+    }
+}
+
+BOOL freerdp_on_desktop_resize(rdpContext* context) {
+    if (!context || !context->gdi || !context->settings) {
+        return FALSE;
+    }
+    const UINT32 new_w = freerdp_settings_get_uint32(context->settings, FreeRDP_DesktopWidth);
+    const UINT32 new_h = freerdp_settings_get_uint32(context->settings, FreeRDP_DesktopHeight);
+    if (!gdi_resize(context->gdi, new_w, new_h)) {
+        NX_RDP_LOGE("FreeRDP gdi_resize(%u, %u) failed", new_w, new_h);
+        return FALSE;
+    }
+    const auto cb = lookup_freerdp_callbacks(context->instance);
+    if (cb.owner && new_w > 0 && new_h > 0) {
+        cb.owner->presenter().resize_shadow_framebuffer(new_w, new_h);
+        cb.owner->decoder().reconfigure_resolution(new_w, new_h);
+    }
+    return TRUE;
+}
+
 BOOL freerdp_on_end_paint(rdpContext* context) {
     if (!context || !context->gdi || !context->gdi->primary_buffer) {
         return FALSE;
@@ -78,6 +134,15 @@ BOOL freerdp_on_pre_connect(freerdp* instance) {
     if (!instance || !instance->context || !instance->context->settings) {
         return FALSE;
     }
+    if (instance->context->pubSub) {
+        PubSub_SubscribeChannelConnected(instance->context->pubSub, &freerdp_on_channel_connected);
+        PubSub_SubscribeChannelDisconnected(instance->context->pubSub, &freerdp_on_channel_disconnected);
+    }
+    if (instance->context->channels) {
+        if (!freerdp_client_load_addins(instance->context->channels, instance->context->settings)) {
+            NX_RDP_LOGE("freerdp_client_load_addins failed; continuing with core channels");
+        }
+    }
     return TRUE;
 }
 
@@ -91,6 +156,7 @@ BOOL freerdp_on_post_connect(freerdp* instance) {
     }
     if (instance->context->update) {
         instance->context->update->EndPaint = &freerdp_on_end_paint;
+        instance->context->update->DesktopResize = &freerdp_on_desktop_resize;
     }
     if (instance->context->gdi && instance->context->gdi->primary_buffer) {
         freerdp_on_end_paint(instance->context);
@@ -100,6 +166,14 @@ BOOL freerdp_on_post_connect(freerdp* instance) {
 
 void freerdp_on_post_disconnect(freerdp* instance) {
     if (instance) {
+        if (instance->context && instance->context->pubSub) {
+            PubSub_UnsubscribeChannelConnected(instance->context->pubSub, &freerdp_on_channel_connected);
+            PubSub_UnsubscribeChannelDisconnected(instance->context->pubSub, &freerdp_on_channel_disconnected);
+        }
+        const auto cb = lookup_freerdp_callbacks(instance);
+        if (cb.owner) {
+            cb.owner->set_disp_context(nullptr);
+        }
         gdi_free(instance);
     }
 }
@@ -158,6 +232,10 @@ void RdpSessionContext::on_surface_bound() {
         gdi_presenter_->present_frame();
     }
 #endif
+}
+
+void RdpSessionContext::set_disp_context(void* disp_context) noexcept {
+    disp_context_.store(disp_context, std::memory_order_release);
 }
 
 void RdpSessionContext::render_diagnostic_surface_frame(uint32_t width, uint32_t height) {
@@ -271,16 +349,33 @@ bool RdpSessionContext::connect() {
     freerdp_settings_set_bool(settings, FreeRDP_GfxH264, params_.enable_h264_avc444);
     freerdp_settings_set_bool(settings, FreeRDP_GfxAVC444, params_.enable_h264_avc444);
     freerdp_settings_set_bool(settings, FreeRDP_RemoteFxCodec, params_.enable_remotefx);
-    freerdp_settings_set_bool(
-        settings,
-        FreeRDP_DynamicResolutionUpdate,
-        params_.enable_dynamic_resize || params_.hidpi_enabled
-    );
+    const bool enable_disp_channel =
+        params_.enable_dynamic_resize || params_.hidpi_enabled || params_.multi_monitor_spanning;
+    freerdp_settings_set_bool(settings, FreeRDP_SupportDisplayControl, enable_disp_channel);
+    freerdp_settings_set_bool(settings, FreeRDP_DynamicResolutionUpdate, enable_disp_channel);
     freerdp_settings_set_bool(settings, FreeRDP_UseMultimon, params_.multi_monitor_spanning);
 
     freerdp_settings_set_bool(settings, FreeRDP_RedirectClipboard, params_.redirect_clipboard);
     freerdp_settings_set_bool(settings, FreeRDP_RedirectSmartCards, params_.redirect_smartcard);
     freerdp_settings_set_bool(settings, FreeRDP_RedirectDrives, params_.redirect_drives);
+    if (params_.redirect_drives && !params_.shared_drive_local_path.empty()) {
+        const std::string drive_name =
+            params_.shared_drive_name.empty() ? "NexusTS" : params_.shared_drive_name;
+        const char* drive_args[2] = {
+            drive_name.c_str(),
+            params_.shared_drive_local_path.c_str()
+        };
+        RDPDR_DEVICE* drive_device = freerdp_device_new(RDPDR_DTYP_FILESYSTEM, 2, drive_args);
+        if (drive_device) {
+            if (!freerdp_device_collection_add(settings, drive_device)) {
+                freerdp_device_free(drive_device);
+                NX_RDP_LOGE("freerdp_device_collection_add failed for drive '%s'", drive_name.c_str());
+            } else {
+                NX_RDP_LOGI("Registered RDPDR shared filesystem drive '\\\\tsclient\\%s' -> '%s'",
+                            drive_name.c_str(), params_.shared_drive_local_path.c_str());
+            }
+        }
+    }
     freerdp_settings_set_bool(settings, FreeRDP_RedirectPrinters, params_.redirect_printers);
     freerdp_settings_set_bool(settings, FreeRDP_RedirectSerialPorts, params_.redirect_serial_ports);
     freerdp_settings_set_bool(settings, FreeRDP_AudioPlayback, local_audio_out);
@@ -320,8 +415,10 @@ bool RdpSessionContext::connect() {
         freerdp_settings_set_string(settings, FreeRDP_RemoteApplicationCmdLine, params_.remote_app_args.c_str());
     }
 
+    disp_context_.store(nullptr, std::memory_order_release);
     if (!freerdp_connect(instance)) {
         NX_RDP_LOGE("FreeRDP 3.x connection failed to %s:%u", params_.host.c_str(), params_.port);
+        disp_context_.store(nullptr, std::memory_order_release);
         unregister_freerdp_callbacks(instance);
         freerdp_context_free(instance);
         freerdp_free(instance);
@@ -359,9 +456,9 @@ bool RdpSessionContext::connect() {
     connected_.store(true, std::memory_order_release);
 #endif
 
-    NX_RDP_LOGI("NexusTS RDP session active (%ux%u @ %u%% HiDPI, Console=%d, H264=%d, DISP_DVC=%d)",
+    NX_RDP_LOGI("NexusTS RDP session active (%ux%u @ %u%% HiDPI, Console=%d, H264=%d, DISP_DVC=%d, Drive=%d)",
                 w, h, active_scale_percent_.load(), params_.connect_to_console,
-                params_.enable_h264_avc444, params_.enable_dynamic_resize);
+                params_.enable_h264_avc444, params_.enable_dynamic_resize, params_.redirect_drives);
     return true;
 }
 
@@ -385,6 +482,7 @@ void RdpSessionContext::disconnect() {
 
     std::lock_guard<std::mutex> lock(state_mutex_);
     const bool was_connected = connected_.exchange(false);
+    disp_context_.store(nullptr, std::memory_order_release);
     if (!was_connected && !freerdp_instance_) {
         return;
     }
@@ -453,10 +551,67 @@ bool RdpSessionContext::update_multi_monitor_topology(
     params_.monitors = monitors;
 
 #if defined(NEXUSTS_HAS_FREERDP3_BINARY) && NEXUSTS_HAS_FREERDP3_BINARY == 1
-    if (freerdp_instance_) {
+    void* raw_disp = disp_context_.load(std::memory_order_acquire);
+    if (freerdp_instance_ && raw_disp) {
         auto* instance = static_cast<freerdp*>(freerdp_instance_);
-        (void)instance;
-        // Dispatches DISPLAY_CONTROL_MONITOR_LAYOUT_PDU over MS-RDPEDI dynamic virtual channel
+        auto* disp = static_cast<DispClientContext*>(raw_disp);
+        if (disp->SendMonitorLayout) {
+            UINT32 orientation = ORIENTATION_LANDSCAPE;
+            if (instance->context && instance->context->settings) {
+                orientation = freerdp_settings_get_uint16(
+                    instance->context->settings,
+                    FreeRDP_DesktopOrientation
+                );
+            }
+            std::vector<DISPLAY_CONTROL_MONITOR_LAYOUT> layouts;
+            layouts.reserve(monitors.size());
+            for (const auto& m : monitors) {
+                const uint32_t w = align_even_h264_dimension(
+                    m.width,
+                    DISPLAY_CONTROL_MIN_MONITOR_WIDTH,
+                    DISPLAY_CONTROL_MAX_MONITOR_WIDTH
+                );
+                const uint32_t h = align_even_h264_dimension(
+                    m.height,
+                    DISPLAY_CONTROL_MIN_MONITOR_HEIGHT,
+                    DISPLAY_CONTROL_MAX_MONITOR_HEIGHT
+                );
+                const uint32_t phys_w = std::clamp<uint32_t>(
+                    m.physical_width_mm > 0 ? m.physical_width_mm : ((w * 254u) / 960u),
+                    DISPLAY_CONTROL_MIN_PHYSICAL_MONITOR_WIDTH,
+                    DISPLAY_CONTROL_MAX_PHYSICAL_MONITOR_WIDTH
+                );
+                const uint32_t phys_h = std::clamp<uint32_t>(
+                    m.physical_height_mm > 0 ? m.physical_height_mm : ((h * 254u) / 960u),
+                    DISPLAY_CONTROL_MIN_PHYSICAL_MONITOR_HEIGHT,
+                    DISPLAY_CONTROL_MAX_PHYSICAL_MONITOR_HEIGHT
+                );
+                const uint32_t desk_scale = std::clamp(m.desktop_scale_factor, 100u, 500u);
+                const uint32_t dev_scale = map_device_scale_factor(desk_scale);
+
+                DISPLAY_CONTROL_MONITOR_LAYOUT layout{};
+                layout.Flags = m.is_primary ? DISPLAY_CONTROL_MONITOR_PRIMARY : 0u;
+                layout.Left = m.left;
+                layout.Top = m.top;
+                layout.Width = w;
+                layout.Height = h;
+                layout.PhysicalWidth = phys_w;
+                layout.PhysicalHeight = phys_h;
+                layout.Orientation = orientation;
+                layout.DesktopScaleFactor = desk_scale;
+                layout.DeviceScaleFactor = dev_scale;
+                layouts.push_back(layout);
+            }
+            const UINT rc = disp->SendMonitorLayout(
+                disp,
+                static_cast<UINT32>(layouts.size()),
+                layouts.data()
+            );
+            if (rc != CHANNEL_RC_OK) {
+                NX_RDP_LOGE("DISP_DVC SendMonitorLayout returned error code %u", rc);
+                return false;
+            }
+        }
     }
 #endif
     NX_RDP_LOGI("DISP_DVC monitor layout updated: %zu monitor(s), primary=%ux%u @ %u%%",

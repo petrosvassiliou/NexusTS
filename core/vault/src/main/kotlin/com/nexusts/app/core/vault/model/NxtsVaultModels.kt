@@ -310,6 +310,7 @@ data class VaultConnection(
     val tags: List<String> = emptyList(),
     val notes: String = "",
     val favorite: Boolean = false,
+    val sortOrder: Int = 0,
     val inheritable: InheritableProperties = InheritableProperties(),
     val settings: ProtocolSpecificSettings,
     val updatedAtEpochMs: Long = System.currentTimeMillis()

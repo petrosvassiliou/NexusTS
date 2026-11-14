@@ -79,6 +79,7 @@ import com.nexusts.app.core.ui.input.nexusMouseWheelHandler
 import com.nexusts.app.core.ui.input.nexusTrackpadCanvasGesture
 import com.nexusts.app.core.ui.theme.NexusTheme
 import com.nexusts.app.core.vault.model.RdpAudioRedirectionMode
+import com.nexusts.app.core.vault.model.RdpResizeBehavior
 import com.nexusts.app.protocols.rdp.bridge.FreeRdpNativeBridge
 import com.nexusts.app.protocols.rdp.bridge.RdpManagedSession
 import kotlinx.coroutines.Dispatchers
@@ -164,9 +165,12 @@ fun RdpSessionSurfaceView(
     var panOffsetY by remember { mutableFloatStateOf(0f) }
     var showKeyboardBar by remember { mutableStateOf(false) }
     var softKeyboardText by remember { mutableStateOf("") }
+    var driveSyncFeedback by remember { mutableStateOf<String?>(null) }
 
     val isConnecting by session.isConnecting.collectAsState()
     val remoteDesktopDimensions by session.remoteDesktopDimensions.collectAsState()
+    val liveResizeBehavior by session.liveResizeBehavior.collectAsState()
+    val sharedDriveUncLabel by session.sharedDriveUncLabel.collectAsState()
     var lastRemoteCursor by remember(remoteDesktopDimensions) {
         mutableStateOf((remoteDesktopDimensions.first / 2) to (remoteDesktopDimensions.second / 2))
     }
@@ -197,8 +201,11 @@ fun RdpSessionSurfaceView(
     }
 
     // Debounce window drag resizing (120ms) and HiDPI scale changes so DISP_DVC cleanly renegotiates H.264 surface geometry
-    LaunchedEffect(viewportSize) {
-        if (viewportSize.width >= 320 && viewportSize.height >= 240) {
+    LaunchedEffect(viewportSize, liveResizeBehavior) {
+        if (liveResizeBehavior == RdpResizeBehavior.DYNAMIC_DISP_DVC &&
+            viewportSize.width >= 320 &&
+            viewportSize.height >= 240
+        ) {
             delay(120L)
             withContext(Dispatchers.IO) {
                 session.onViewportResized(
@@ -455,12 +462,31 @@ fun RdpSessionSurfaceView(
                     )
                 }
 
-                if (session.settings.redirectDrives || session.settings.redirectedDriveSafUris.isNotEmpty()) {
-                    Icon(
-                        imageVector = Icons.Outlined.FolderShared,
-                        contentDescription = null,
-                        modifier = Modifier.size(15.dp),
-                        tint = MaterialTheme.colorScheme.primary
+                if (sharedDriveUncLabel != null ||
+                    session.settings.redirectDrives ||
+                    session.settings.redirectedDriveSafUris.isNotEmpty()
+                ) {
+                    val chipText = driveSyncFeedback ?: (sharedDriveUncLabel ?: "Shared Drive")
+                    NexusActionChip(
+                        onClick = {
+                            coroutineScope.launch(Dispatchers.IO) {
+                                val report = session.syncSharedDrivesNow(context, pullInboundFromSaf = true)
+                                val msg = if (report != null) {
+                                    "Synced ↑${report.uploadedToSafCount} ↓${report.downloadedFromSafCount}"
+                                } else {
+                                    "Drive Ready"
+                                }
+                                withContext(Dispatchers.Main) {
+                                    driveSyncFeedback = msg
+                                }
+                                delay(2200L)
+                                withContext(Dispatchers.Main) {
+                                    driveSyncFeedback = null
+                                }
+                            }
+                        },
+                        label = chipText,
+                        leadingIcon = Icons.Outlined.FolderShared
                     )
                 }
 
@@ -472,6 +498,37 @@ fun RdpSessionSurfaceView(
                         tint = NexusTheme.extendedColors.sshAccent
                     )
                 }
+
+                val resizeChipText = when (liveResizeBehavior) {
+                    RdpResizeBehavior.DYNAMIC_DISP_DVC ->
+                        if (dynamicResizeLabel.isNotBlank()) dynamicResizeLabel else "Auto-Fit DISP"
+                    RdpResizeBehavior.SMART_SCALE_VIEWPORT -> "Smart Scale"
+                    RdpResizeBehavior.FIXED_SERVER_RESOLUTION ->
+                        "Fixed ${session.settings.customDesktopWidth}×${session.settings.customDesktopHeight}"
+                }
+                NexusActionChip(
+                    onClick = {
+                        val nextMode = when (liveResizeBehavior) {
+                            RdpResizeBehavior.DYNAMIC_DISP_DVC -> RdpResizeBehavior.SMART_SCALE_VIEWPORT
+                            RdpResizeBehavior.SMART_SCALE_VIEWPORT -> RdpResizeBehavior.FIXED_SERVER_RESOLUTION
+                            RdpResizeBehavior.FIXED_SERVER_RESOLUTION -> RdpResizeBehavior.DYNAMIC_DISP_DVC
+                        }
+                        zoomScale = 1.0f
+                        panOffsetX = 0f
+                        panOffsetY = 0f
+                        onZoomFactorChanged(1.0f)
+                        coroutineScope.launch(Dispatchers.IO) {
+                            session.setLiveResizeBehavior(
+                                mode = nextMode,
+                                viewportWidthPx = latestViewportSize.width,
+                                viewportHeightPx = latestViewportSize.height,
+                                scalePercent = activeScalePercent
+                            )
+                        }
+                    },
+                    label = resizeChipText,
+                    leadingIcon = Icons.Outlined.AspectRatio
+                )
 
                 if (session.settings.hiDpiEnabled) {
                     NexusActionChip(

@@ -99,6 +99,7 @@ data class WorkspaceUiState(
     val githubLatestReleaseUrl: String = "",
     val isLanguageMenuExpanded: Boolean = false,
     val movingConnectionTarget: VaultConnection? = null,
+    val movingFolderTarget: VaultFolder? = null,
     val isAutoUpdateDialogVisible: Boolean = false,
     val autoCheckUpdatesEnabled: Boolean = true,
     val isCheckingForUpdates: Boolean = false,
@@ -116,6 +117,10 @@ data class WorkspaceUiState(
     val remoteKeyCaptureEnabled: Boolean = false,
     val broadcastModeEnabled: Boolean = false,
     val isVaultLocked: Boolean = false,
+    val biometricHardwareAvailable: Boolean = false,
+    val biometricUnlockEnabled: Boolean = false,
+    val hasSavedVaultLockPassphrase: Boolean = false,
+    val idleAutoLockMinutes: Int = 0,
     val vaultUnlockError: String? = null,
     val hasPreImportBackup: Boolean = false,
     val pendingImportFileName: String? = null,
@@ -848,6 +853,11 @@ class NexusWorkspaceViewModel @Inject constructor(
 
         val movedConn = existing.copy(
             parentFolderId = normalizedTargetId,
+            sortOrder = (sortedSiblingConnections(
+                currentDoc.connections,
+                normalizedTargetId,
+                currentDoc.tombstonedObjectIds
+            ).maxOfOrNull { it.sortOrder } ?: 0) + 10,
             updatedAtEpochMs = System.currentTimeMillis()
         )
         activeVaultStore.updateVaultDocument { doc ->
@@ -881,6 +891,241 @@ class NexusWorkspaceViewModel @Inject constructor(
             )
         }
         appendLog("[Vault] $moveMessage")
+        return true
+    }
+
+    fun openMoveFolderDialog(folder: VaultFolder) {
+        if (_uiState.value.isVaultLocked) return
+        _uiState.update { it.copy(movingFolderTarget = folder) }
+    }
+
+    fun dismissMoveFolderDialog() {
+        _uiState.update { it.copy(movingFolderTarget = null) }
+    }
+
+    /**
+     * Verifies that moving [folderId] under [targetParentFolderId] will not create a cycle
+     * (moving a folder into itself or any of its own nested descendants).
+     */
+    fun canMoveFolderToParent(folderId: String, targetParentFolderId: String?): Boolean {
+        if (_uiState.value.isVaultLocked) return false
+        val doc = _uiState.value.vaultDocument
+        val folder = doc.folders.firstOrNull {
+            it.id == folderId && it.id !in doc.tombstonedObjectIds
+        } ?: return false
+        if (targetParentFolderId == folderId) return false
+        if (targetParentFolderId != null) {
+            val targetExists = doc.folders.any {
+                it.id == targetParentFolderId && it.id !in doc.tombstonedObjectIds
+            }
+            if (!targetExists) return false
+            val descendants = collectDescendantFolderIds(doc.folders, folderId)
+            if (targetParentFolderId in descendants) return false
+        }
+        return folder.parentFolderId != targetParentFolderId
+    }
+
+    /**
+     * Moves [folderId] under [targetParentFolderId] (`null` = top-level root) with strict cycle rejection,
+     * refreshing inherited badges/colors on all active tabs inside the moved folder subtree.
+     */
+    fun moveFolderToParent(folderId: String, targetParentFolderId: String?): Boolean {
+        if (_uiState.value.isVaultLocked) return false
+        val currentDoc = _uiState.value.vaultDocument
+        val existing = currentDoc.folders.firstOrNull {
+            it.id == folderId && it.id !in currentDoc.tombstonedObjectIds
+        } ?: return false
+
+        val normalizedTargetId = targetParentFolderId?.takeIf { fid ->
+            currentDoc.folders.any { it.id == fid && it.id !in currentDoc.tombstonedObjectIds }
+        }
+        if (targetParentFolderId != null && normalizedTargetId == null) return false
+
+        if (normalizedTargetId == folderId ||
+            (normalizedTargetId != null && normalizedTargetId in collectDescendantFolderIds(currentDoc.folders, folderId))
+        ) {
+            val msg = "Cannot move '${existing.name}' into itself or a child folder"
+            _uiState.update { it.copy(movingFolderTarget = null, userSnackbarMessage = msg) }
+            return false
+        }
+        if (existing.parentFolderId == normalizedTargetId) {
+            _uiState.update { it.copy(movingFolderTarget = null) }
+            return false
+        }
+
+        val nextSortOrder = (sortedSiblingFolders(
+            currentDoc.folders,
+            normalizedTargetId,
+            currentDoc.tombstonedObjectIds
+        ).maxOfOrNull { it.sortOrder } ?: 0) + 10
+        val movedFolder = existing.copy(
+            parentFolderId = normalizedTargetId,
+            sortOrder = nextSortOrder
+        )
+
+        activeVaultStore.updateVaultDocument { doc ->
+            bumpDocRevisionAndClock(doc).copy(
+                folders = doc.folders.map { if (it.id == folderId) movedFolder else it }
+            )
+        }
+        val updatedDoc = activeVaultStore.snapshot.value.vaultDocument
+        val subtreeFolderIds = collectDescendantFolderIds(updatedDoc.folders, folderId)
+        val subtreeConns = updatedDoc.connections
+            .filter { it.parentFolderId in subtreeFolderIds && it.id !in updatedDoc.tombstonedObjectIds }
+            .associateBy { it.id }
+
+        tilingController.allActiveTabs().forEach { tab ->
+            val affectedConn = subtreeConns[tab.connectionId] ?: return@forEach
+            val refreshed = inheritanceResolver.resolveEffectiveProfile(updatedDoc, affectedConn)
+            tilingController.updateTab(tab.tabId) {
+                it.copy(
+                    environmentTag = refreshed.effectiveEnvironmentBadge,
+                    customColorHex = refreshed.effectiveColorAccentHex
+                )
+            }
+        }
+
+        val destLabel = normalizedTargetId?.let { fid ->
+            updatedDoc.folders.firstOrNull { it.id == fid }?.name
+        } ?: "Top Level"
+        val moveMessage = "Moved folder '${movedFolder.name}' to '$destLabel'"
+        _uiState.update {
+            it.copy(
+                vaultDocument = updatedDoc,
+                movingFolderTarget = null,
+                userSnackbarMessage = moveMessage
+            )
+        }
+        appendLog("[Vault] $moveMessage")
+        return true
+    }
+
+    /**
+     * Reorders [folderId] up or down among its sibling folders under the same `parentFolderId`.
+     */
+    fun reorderFolder(folderId: String, moveUp: Boolean): Boolean {
+        if (_uiState.value.isVaultLocked) return false
+        val doc = _uiState.value.vaultDocument
+        val target = doc.folders.firstOrNull {
+            it.id == folderId && it.id !in doc.tombstonedObjectIds
+        } ?: return false
+        val siblings = sortedSiblingFolders(doc.folders, target.parentFolderId, doc.tombstonedObjectIds)
+            .toMutableList()
+        val idx = siblings.indexOfFirst { it.id == folderId }
+        val swapIdx = if (moveUp) idx - 1 else idx + 1
+        if (idx < 0 || swapIdx !in siblings.indices) return false
+
+        val tmp = siblings[idx]
+        siblings[idx] = siblings[swapIdx]
+        siblings[swapIdx] = tmp
+
+        val updatedOrders = siblings.mapIndexed { i, f -> f.id to ((i + 1) * 10) }.toMap()
+        activeVaultStore.updateVaultDocument { current ->
+            bumpDocRevisionAndClock(current).copy(
+                folders = current.folders.map { f ->
+                    val newOrder = updatedOrders[f.id]
+                    if (newOrder != null) f.copy(sortOrder = newOrder) else f
+                }
+            )
+        }
+        _uiState.update { it.copy(vaultDocument = activeVaultStore.snapshot.value.vaultDocument) }
+        return true
+    }
+
+    /**
+     * Reorders [connectionId] up or down among its sibling connections in the same folder.
+     */
+    fun reorderConnection(connectionId: String, moveUp: Boolean): Boolean {
+        if (_uiState.value.isVaultLocked) return false
+        val doc = _uiState.value.vaultDocument
+        val target = doc.connections.firstOrNull {
+            it.id == connectionId && it.id !in doc.tombstonedObjectIds
+        } ?: return false
+        val siblings = sortedSiblingConnections(doc.connections, target.parentFolderId, doc.tombstonedObjectIds)
+            .toMutableList()
+        val idx = siblings.indexOfFirst { it.id == connectionId }
+        val swapIdx = if (moveUp) idx - 1 else idx + 1
+        if (idx < 0 || swapIdx !in siblings.indices) return false
+
+        val tmp = siblings[idx]
+        siblings[idx] = siblings[swapIdx]
+        siblings[swapIdx] = tmp
+
+        val now = System.currentTimeMillis()
+        val updatedOrders = siblings.mapIndexed { i, c -> c.id to ((i + 1) * 10) }.toMap()
+        activeVaultStore.updateVaultDocument { current ->
+            bumpDocRevisionAndClock(current).copy(
+                connections = current.connections.map { c ->
+                    val newOrder = updatedOrders[c.id]
+                    if (newOrder != null) c.copy(sortOrder = newOrder, updatedAtEpochMs = now) else c
+                }
+            )
+        }
+        _uiState.update { it.copy(vaultDocument = activeVaultStore.snapshot.value.vaultDocument) }
+        return true
+    }
+
+    /**
+     * Moves & reorders [draggedConnectionId] directly before or after [targetConnectionId]
+     * (moving it into `targetConnection.parentFolderId` if dragged across folders).
+     */
+    fun reorderConnectionRelativeTo(
+        draggedConnectionId: String,
+        targetConnectionId: String,
+        placeAfter: Boolean
+    ): Boolean {
+        if (_uiState.value.isVaultLocked || draggedConnectionId == targetConnectionId) return false
+        val doc = _uiState.value.vaultDocument
+        val dragged = doc.connections.firstOrNull {
+            it.id == draggedConnectionId && it.id !in doc.tombstonedObjectIds
+        } ?: return false
+        val target = doc.connections.firstOrNull {
+            it.id == targetConnectionId && it.id !in doc.tombstonedObjectIds
+        } ?: return false
+
+        val destFolderId = target.parentFolderId
+        val destSiblings = sortedSiblingConnections(doc.connections, destFolderId, doc.tombstonedObjectIds)
+            .filterNot { it.id == draggedConnectionId }
+            .toMutableList()
+        val targetIdx = destSiblings.indexOfFirst { it.id == targetConnectionId }
+        if (targetIdx < 0) return false
+        val insertIdx = if (placeAfter) targetIdx + 1 else targetIdx
+        val now = System.currentTimeMillis()
+        val movedDragged = dragged.copy(parentFolderId = destFolderId, updatedAtEpochMs = now)
+        destSiblings.add(insertIdx.coerceIn(0, destSiblings.size), movedDragged)
+
+        val updatedById = destSiblings.mapIndexed { i, c ->
+            c.id to c.copy(sortOrder = (i + 1) * 10, updatedAtEpochMs = now)
+        }.toMap()
+
+        activeVaultStore.updateVaultDocument { current ->
+            bumpDocRevisionAndClock(current).copy(
+                connections = current.connections.map { c -> updatedById[c.id] ?: c }
+            )
+        }
+        val updatedDoc = activeVaultStore.snapshot.value.vaultDocument
+        if (dragged.parentFolderId != destFolderId) {
+            val refreshed = inheritanceResolver.resolveEffectiveProfile(
+                updatedDoc,
+                updatedById[draggedConnectionId] ?: movedDragged
+            )
+            tilingController.allActiveTabs()
+                .filter { it.connectionId == draggedConnectionId }
+                .forEach { tab ->
+                    tilingController.updateTab(tab.tabId) {
+                        it.copy(
+                            environmentTag = refreshed.effectiveEnvironmentBadge,
+                            customColorHex = refreshed.effectiveColorAccentHex
+                        )
+                    }
+                }
+        }
+        _uiState.update {
+            it.copy(
+                vaultDocument = updatedDoc,
+                selectedConnectionId = draggedConnectionId
+            )
+        }
         return true
     }
 
@@ -1492,10 +1737,21 @@ class NexusWorkspaceViewModel @Inject constructor(
         evictLiveSessionsForConnections(setOf(connection.id))
 
         var wasUpdated = false
-        val stamped = connection.copy(updatedAtEpochMs = System.currentTimeMillis())
+        var finalSavedConn: VaultConnection = connection
         activeVaultStore.updateVaultDocument { doc ->
-            val exists = doc.connections.any { it.id == stamped.id }
+            val exists = doc.connections.any { it.id == connection.id }
             wasUpdated = exists
+            val effectiveSortOrder = if (!exists && connection.sortOrder == 0) {
+                (sortedSiblingConnections(doc.connections, connection.parentFolderId, doc.tombstonedObjectIds)
+                    .maxOfOrNull { it.sortOrder } ?: 0) + 10
+            } else {
+                connection.sortOrder
+            }
+            val stamped = connection.copy(
+                sortOrder = effectiveSortOrder,
+                updatedAtEpochMs = System.currentTimeMillis()
+            )
+            finalSavedConn = stamped
             val updatedConnections = if (exists) {
                 doc.connections.map { if (it.id == stamped.id) stamped else it }
             } else {
@@ -1506,6 +1762,7 @@ class NexusWorkspaceViewModel @Inject constructor(
                 tombstonedObjectIds = doc.tombstonedObjectIds - stamped.id
             )
         }
+        val stamped = finalSavedConn
         _uiState.update { state ->
             state.copy(
                 activeRailId = "connections",
@@ -1539,7 +1796,7 @@ class NexusWorkspaceViewModel @Inject constructor(
     }
 
     fun saveFolderAndCredentialToVault(folder: VaultFolder, inlineNewCredential: VaultCredential? = null) {
-        val finalFolder = if (inlineNewCredential != null) {
+        val baseFolder = if (inlineNewCredential != null) {
             folder.copy(
                 inheritable = folder.inheritable.copy(
                     credentialMode = InheritanceMode.OVERRIDE_EXPLICIT,
@@ -1551,7 +1808,7 @@ class NexusWorkspaceViewModel @Inject constructor(
         }
 
         val currentDoc = _uiState.value.vaultDocument
-        val affectedFolderIds = collectDescendantFolderIds(currentDoc.folders + finalFolder, finalFolder.id)
+        val affectedFolderIds = collectDescendantFolderIds(currentDoc.folders + baseFolder, baseFolder.id)
         val affectedConnIds = currentDoc.connections
             .filter { it.parentFolderId in affectedFolderIds }
             .map { it.id }
@@ -1560,11 +1817,18 @@ class NexusWorkspaceViewModel @Inject constructor(
 
         activeVaultStore.updateVaultDocument { doc ->
             val updatedCredentials = if (inlineNewCredential != null) {
-                doc.credentials + inlineNewCredential.copy(parentFolderId = finalFolder.id)
+                doc.credentials + inlineNewCredential.copy(parentFolderId = baseFolder.id)
             } else {
                 doc.credentials
             }
-            val folderExists = doc.folders.any { it.id == finalFolder.id }
+            val folderExists = doc.folders.any { it.id == baseFolder.id }
+            val finalFolder = if (!folderExists && baseFolder.sortOrder == 0) {
+                val nextOrder = (sortedSiblingFolders(doc.folders, baseFolder.parentFolderId, doc.tombstonedObjectIds)
+                    .maxOfOrNull { it.sortOrder } ?: 0) + 10
+                baseFolder.copy(sortOrder = nextOrder)
+            } else {
+                baseFolder
+            }
             val updatedFolders = if (folderExists) {
                 doc.folders.map { if (it.id == finalFolder.id) finalFolder else it }
             } else {
@@ -1585,7 +1849,7 @@ class NexusWorkspaceViewModel @Inject constructor(
             )
         }
         val credSummary = inlineNewCredential?.let { " + saved folder credential '${it.name}'" }.orEmpty()
-        appendLog("[Folder] Saved folder '${finalFolder.name}' (${finalFolder.inheritable.credentialMode.name})$credSummary")
+        appendLog("[Folder] Saved folder '${baseFolder.name}' (${baseFolder.inheritable.credentialMode.name})$credSummary")
     }
 
     fun addCredentialToVault(credential: VaultCredential) {
@@ -2225,6 +2489,22 @@ class NexusWorkspaceViewModel @Inject constructor(
         appendLog("[SSH Agent] Generated OpenSSH Ed25519 key ${generated.sha256_fingerprint}")
     }
 
+    fun updateBiometricAndAutoLockState(
+        hardwareAvailable: Boolean? = null,
+        biometricEnabled: Boolean? = null,
+        hasSavedPassphrase: Boolean? = null,
+        idleAutoLockMinutes: Int? = null
+    ) {
+        _uiState.update { current ->
+            current.copy(
+                biometricHardwareAvailable = hardwareAvailable ?: current.biometricHardwareAvailable,
+                biometricUnlockEnabled = biometricEnabled ?: current.biometricUnlockEnabled,
+                hasSavedVaultLockPassphrase = hasSavedPassphrase ?: current.hasSavedVaultLockPassphrase,
+                idleAutoLockMinutes = idleAutoLockMinutes ?: current.idleAutoLockMinutes
+            )
+        }
+    }
+
     fun lockVaultWithPassphrase(passphrase: CharArray) {
         val passCopy = passphrase.copyOf()
         Arrays.fill(passphrase, '\u0000')
@@ -2246,6 +2526,7 @@ class NexusWorkspaceViewModel @Inject constructor(
                     isLockVaultDialogVisible = false,
                     isLanguageMenuExpanded = false,
                     movingConnectionTarget = null,
+                    movingFolderTarget = null,
                     isAutoUpdateDialogVisible = false,
                     remoteKeyCaptureEnabled = false,
                     isQuickConnectVisible = false,
@@ -2860,5 +3141,33 @@ class NexusWorkspaceViewModel @Inject constructor(
             name = DEFAULT_VAULT_NAME,
             revision = 1L
         )
+
+        fun sortedSiblingFolders(
+            folders: List<VaultFolder>,
+            parentFolderId: String?,
+            tombstones: Set<String> = emptySet()
+        ): List<VaultFolder> {
+            return folders
+                .filter { it.parentFolderId == parentFolderId && it.id !in tombstones }
+                .sortedWith(
+                    compareBy<VaultFolder> { it.sortOrder }
+                        .thenBy(String.CASE_INSENSITIVE_ORDER) { it.name }
+                        .thenBy { it.id }
+                )
+        }
+
+        fun sortedSiblingConnections(
+            connections: List<VaultConnection>,
+            parentFolderId: String?,
+            tombstones: Set<String> = emptySet()
+        ): List<VaultConnection> {
+            return connections
+                .filter { it.parentFolderId == parentFolderId && it.id !in tombstones }
+                .sortedWith(
+                    compareBy<VaultConnection> { it.sortOrder }
+                        .thenBy(String.CASE_INSENSITIVE_ORDER) { it.name }
+                        .thenBy { it.id }
+                )
+        }
     }
 }
