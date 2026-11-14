@@ -4,13 +4,17 @@ import androidx.appcompat.app.AppCompatDelegate
 import androidx.compose.runtime.Immutable
 import androidx.core.os.LocaleListCompat
 
-enum class SupportedNexusLocale(val bcp47Tag: String) {
-    ENGLISH("en"),
-    GERMAN("de"),
-    ITALIAN("it"),
-    SPANISH("es"),
-    GREEK("el"),
-    FRENCH("fr")
+enum class SupportedNexusLocale(
+    val bcp47Tag: String,
+    val nativeDisplayName: String,
+    val regionSubtitle: String
+) {
+    ENGLISH("en", "English", "United Kingdom / International"),
+    GERMAN("de", "Deutsch", "Deutschland / DACH"),
+    ITALIAN("it", "Italiano", "Italia"),
+    SPANISH("es", "Español", "España / Latinoamérica"),
+    GREEK("el", "Ελληνικά", "Ελλάδα / Κύπρος"),
+    FRENCH("fr", "Français", "France / International")
 }
 
 /**
@@ -25,6 +29,12 @@ object NexusLocaleController {
             return list[0]?.language ?: SupportedNexusLocale.ENGLISH.bcp47Tag
         }
         return java.util.Locale.getDefault().language.lowercase()
+    }
+
+    fun currentSupportedLocale(): SupportedNexusLocale {
+        val code = currentLanguageTag().take(2).lowercase()
+        return SupportedNexusLocale.entries.firstOrNull { it.bcp47Tag == code }
+            ?: SupportedNexusLocale.ENGLISH
     }
 
     fun switchLanguage(locale: SupportedNexusLocale) {
@@ -149,6 +159,17 @@ data class WorkspaceLocalizedStrings(
     val navTemplates: String = "Templates",
     val actionConnectWithOptions: String = "Connect with Options…",
     val actionConnectAllFolder: String = "Connect All in Folder",
+    val actionDisconnectAllFolder: String = "Disconnect All in Folder",
+    val actionDisconnectSession: String = "Disconnect",
+    val actionMoveToFolder: String = "Move to Folder…",
+    val moveToRootFolder: String = "Top Level (No Folder)",
+    val dialogLanguageTitle: String = "Select Language",
+    val autoUpdateTitle: String = "App Updates",
+    val autoUpdateAutoCheckToggle: String = "Automatically check for updates",
+    val autoUpdateAvailableFormat: String = "Update %1\$s",
+    val autoUpdateInstallAction: String = "Download & Update",
+    val autoUpdateUpToDateFormat: String = "NexusTS %1\$s is up to date",
+    val dragDropMoveHintFormat: String = "Drop into %1\$s",
     val actionDuplicateConnection: String = "Duplicate Connection",
     val actionDeleteItem: String = "Delete",
     val actionToggleFavorite: String = "Toggle Favorite",

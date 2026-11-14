@@ -52,6 +52,7 @@ class ActiveVaultSessionStore @Inject constructor() {
     val sshControllers = ConcurrentHashMap<String, SshTerminalSessionController>()
     val rdpSessions = ConcurrentHashMap<String, RdpManagedSession>()
     val adHocOverrides = ConcurrentHashMap<String, AdHocLaunchOverride>()
+    val tabConnectionIds = ConcurrentHashMap<String, String>()
 
     private val _pendingReDockTabs = MutableStateFlow<List<WorkspaceSessionTab>>(emptyList())
     val pendingReDockTabs: StateFlow<List<WorkspaceSessionTab>> = _pendingReDockTabs.asStateFlow()
@@ -209,25 +210,45 @@ class ActiveVaultSessionStore @Inject constructor() {
     }
 
     fun closeTabResources(tabId: String) {
+        tabConnectionIds.remove(tabId)
         adHocOverrides.remove(tabId)
         sshControllers.remove(tabId)?.let { runCatching { it.close() } }
         rdpSessions.remove(tabId)?.let { runCatching { it.close() } }
     }
 
-    fun evictSessionsForConnectionIds(connectionIds: Set<String>, matchingTabIds: Set<String> = emptySet()) {
-        if (connectionIds.isEmpty() && matchingTabIds.isEmpty()) return
-        val rdpToEvict = rdpSessions.entries
+    fun evictSessionsForConnectionIds(
+        connectionIds: Set<String>,
+        matchingTabIds: Set<String> = emptySet()
+    ): Int {
+        if (connectionIds.isEmpty() && matchingTabIds.isEmpty()) return 0
+        val mappedTabs = tabConnectionIds.entries
+            .filter { (_, connId) -> connId in connectionIds }
+            .map { it.key }
+            .toSet()
+        val rdpTabs = rdpSessions.entries
             .filter { (tabId, session) -> session.connection.id in connectionIds || tabId in matchingTabIds }
             .map { it.key }
-        rdpToEvict.forEach { tabId ->
-            rdpSessions.remove(tabId)?.let { runCatching { it.close() } }
+            .toSet()
+        val allTabsToEvict = matchingTabIds + mappedTabs + rdpTabs
+        var closedStoreSessions = 0
+        allTabsToEvict.forEach { tabId ->
+            tabConnectionIds.remove(tabId)
+            adHocOverrides.remove(tabId)
+            val closedSsh = sshControllers.remove(tabId)?.also { runCatching { it.close() } } != null
+            val closedRdp = rdpSessions.remove(tabId)?.also { runCatching { it.close() } } != null
+            if (closedSsh || closedRdp) {
+                closedStoreSessions++
+            }
         }
-        matchingTabIds.forEach { tabId ->
-            sshControllers.remove(tabId)?.let { runCatching { it.close() } }
-        }
+        return closedStoreSessions
+    }
+
+    fun activeStoreConnectionIds(): Set<String> {
+        return tabConnectionIds.values.toSet() + rdpSessions.values.map { it.connection.id }
     }
 
     fun closeAllLiveSessions() {
+        tabConnectionIds.clear()
         adHocOverrides.clear()
         sshControllers.values.forEach { runCatching { it.close() } }
         sshControllers.clear()

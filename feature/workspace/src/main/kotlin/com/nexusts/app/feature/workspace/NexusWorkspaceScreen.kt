@@ -2,16 +2,25 @@ package com.nexusts.app.feature.workspace
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -24,9 +33,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
+import androidx.compose.material.icons.filled.Folder as FilledFolderIcon
+import androidx.compose.material.icons.filled.FolderOpen as FilledFolderOpenIcon
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Bookmarks
+import androidx.compose.material.icons.outlined.CheckCircle
+import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.ClearAll
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.CloudSync
@@ -35,6 +48,8 @@ import androidx.compose.material.icons.outlined.CreateNewFolder
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.DeviceHub
 import androidx.compose.material.icons.outlined.Download
+import androidx.compose.material.icons.outlined.DragIndicator
+import androidx.compose.material.icons.outlined.DriveFileMove
 import androidx.compose.material.icons.outlined.DynamicFeed
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.ErrorOutline
@@ -46,11 +61,14 @@ import androidx.compose.material.icons.outlined.HorizontalSplit
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.outlined.Keyboard
+import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.Language
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.LockOpen
+import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Podcasts
+import androidx.compose.material.icons.outlined.PowerSettingsNew
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Security
@@ -65,6 +83,7 @@ import androidx.compose.material.icons.outlined.ViewSidebar
 import androidx.compose.material.icons.outlined.VpnKey
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilledTonalButton
@@ -77,31 +96,51 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.Stable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.PointerType
+import androidx.compose.ui.input.pointer.isPrimaryPressed
+import androidx.compose.ui.input.pointer.isSecondaryPressed
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import com.nexusts.app.core.ui.components.ExpressiveMorphingIconButton
 import com.nexusts.app.core.ui.components.ExpressiveSplitActionButton
 import com.nexusts.app.core.ui.components.NexusActionChip
 import com.nexusts.app.core.ui.components.NexusBrandEmblem
+import com.nexusts.app.core.ui.components.NexusLanguageFlagBadge
 import com.nexusts.app.core.ui.components.parseHexColorOrNull
 import com.nexusts.app.core.ui.input.LocalNexusShortcutEngine
 import com.nexusts.app.core.ui.input.NexusShortcutAction
@@ -158,10 +197,12 @@ import com.nexusts.app.protocols.vnc.ui.IsolatedWebSessionView
 import com.nexusts.app.protocols.vnc.ui.KubernetesAndContainerTerminalView
 import com.nexusts.app.protocols.vnc.ui.NetworkUtilitiesView
 import com.nexusts.app.protocols.vnc.ui.VncSessionCanvasView
+import kotlinx.coroutines.delay
+import kotlin.math.roundToInt
 
 /**
  * Complete Adaptive Googlebook OS & Android Tablet Enterprise Workspace Screen
- * built on Material Design 3 Expressive with 100% Royal TS feature parity.
+ * built on Google Material Design 3 guidelines with 100% Royal TS feature parity.
  */
 @Composable
 fun NexusWorkspaceScreen(
@@ -187,6 +228,10 @@ fun NexusWorkspaceScreen(
     onToggleAutoSyncOnSave: (Boolean) -> Unit = { viewModel.setDriveAutoSyncOnSave(it) },
     onCheckGitHubReleases: () -> Unit = {},
     onOpenGitHubReleaseUrl: (String) -> Unit = {},
+    onToggleAutoCheckUpdates: (Boolean) -> Unit = { viewModel.setAutoCheckUpdatesState(it) },
+    onTriggerBrowserUpdate: (String) -> Unit = onOpenGitHubReleaseUrl,
+    onDownloadVerifiedUpdateToFiles: () -> Unit = {},
+    onSkipUpdateVersion: (String) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val uiState by viewModel.uiState.collectAsState()
@@ -220,8 +265,30 @@ fun NexusWorkspaceScreen(
         return
     }
 
-    val activeSessionCount = remember(rootPane) {
-        viewModel.tilingController.allActiveTabs().size
+    val activeDockedTabs = remember(rootPane) {
+        viewModel.tilingController.allActiveTabs()
+    }
+    val activeSessionCountByConnectionId = remember(activeDockedTabs, uiState.vaultDocument, uiState.auditLogs.size) {
+        val counts = mutableMapOf<String, Int>()
+        activeDockedTabs.forEach { tab ->
+            counts[tab.connectionId] = (counts[tab.connectionId] ?: 0) + 1
+        }
+        val dockedTabIds = activeDockedTabs.map { it.tabId }.toSet()
+        viewModel.sessionStore.tabConnectionIds.forEach { (tabId, connId) ->
+            if (tabId !in dockedTabIds &&
+                (viewModel.sessionStore.sshControllers.containsKey(tabId) ||
+                    viewModel.sessionStore.rdpSessions.containsKey(tabId))
+            ) {
+                counts[connId] = (counts[connId] ?: 0) + 1
+            }
+        }
+        counts.toMap()
+    }
+    val activeConnectionIds = remember(activeSessionCountByConnectionId) {
+        activeSessionCountByConnectionId.filterValues { it > 0 }.keys
+    }
+    val activeSessionCount = remember(activeSessionCountByConnectionId, activeDockedTabs) {
+        activeSessionCountByConnectionId.values.sum().coerceAtLeast(activeDockedTabs.size)
     }
     val pendingTodoCount = remember(uiState.vaultDocument.todoItems, uiState.vaultDocument.tombstonedObjectIds) {
         uiState.vaultDocument.todoItems.count { !it.completed && it.id !in uiState.vaultDocument.tombstonedObjectIds }
@@ -253,6 +320,9 @@ fun NexusWorkspaceScreen(
     }
 
     val isDriveLinked = uiState.driveLinkedSafLabel.isNotBlank() || uiState.driveSignedInEmail.isNotBlank()
+    val currentSupportedLocale = remember(strings.appName, strings.actionNewConnection) {
+        NexusLocaleController.currentSupportedLocale()
+    }
 
     CompositionLocalProvider(LocalNexusShortcutEngine provides viewModel.shortcutEngine) {
         NexusAdaptiveDesktopScaffold(
@@ -284,6 +354,9 @@ fun NexusWorkspaceScreen(
                     hasActiveSessions = activeSessionCount > 0,
                     broadcastEnabled = uiState.broadcastModeEnabled,
                     flexibleUpdateDownloaded = flexibleUpdateDownloaded,
+                    githubUpdateAvailable = uiState.updateAvailable,
+                    githubUpdateTag = uiState.updateLatestTag,
+                    currentLocale = currentSupportedLocale,
                     strings = strings,
                     onToggleSidebar = {
                         viewModel.handleShortcut(NexusShortcutAction.TOGGLE_SIDEBAR_TREE) {}
@@ -309,6 +382,8 @@ fun NexusWorkspaceScreen(
                     onToggleRemoteKeyCapture = viewModel::toggleRemoteKeyCapture,
                     onToggleBroadcast = viewModel::toggleGlobalBroadcast,
                     onLockVault = viewModel::openLockVaultDialog,
+                    onOpenLanguageDialog = viewModel::openLanguageDialog,
+                    onOpenAutoUpdateDialog = viewModel::openAutoUpdateDialog,
                     onCompleteFlexibleUpdate = onCompleteFlexibleUpdate
                 )
             },
@@ -316,6 +391,7 @@ fun NexusWorkspaceScreen(
                 VaultHierarchySidebarTree(
                     uiState = uiState,
                     strings = strings,
+                    activeSessionCountByConnectionId = activeSessionCountByConnectionId,
                     onFilterQueryChanged = viewModel::updateSidebarFilterQuery,
                     smartFolderConnectionsProvider = viewModel::evaluateSmartFolderConnections,
                     onToggleSmartFolder = viewModel::toggleSmartFolderSelection,
@@ -342,6 +418,9 @@ fun NexusWorkspaceScreen(
                             onDetachTabToNativeWindow(tab, null)
                         }
                     },
+                    onDisconnectAllInFolder = { folderId ->
+                        viewModel.disconnectAllInFolder(folderId)
+                    },
                     onSelectConnection = { id ->
                         viewModel.selectConnectionInTree(id)
                         viewModel.selectRailDestination("connections")
@@ -351,6 +430,13 @@ fun NexusWorkspaceScreen(
                     onToggleFavorite = viewModel::toggleFavoriteConnection,
                     onDuplicateConnection = viewModel::duplicateConnection,
                     onDeleteConnection = viewModel::deleteConnection,
+                    onDisconnectConnection = { connId ->
+                        viewModel.disconnectConnectionSessions(connId)
+                    },
+                    onOpenMoveConnectionDialog = viewModel::openMoveConnectionDialog,
+                    onMoveConnectionToFolder = { connId, targetFolderId ->
+                        viewModel.moveConnectionToFolder(connId, targetFolderId)
+                    },
                     onLaunchConnection = { conn, placement ->
                         viewModel.selectRailDestination("connections")
                         viewModel.launchConnection(conn, placement) { detachedTab ->
@@ -503,6 +589,9 @@ fun NexusWorkspaceScreen(
                                 onEditFolder = viewModel::openEditFolderDialog,
                                 onDuplicateFolder = viewModel::duplicateFolder,
                                 onDeleteFolder = viewModel::deleteFolder,
+                                onDisconnectAllInFolder = { folderId ->
+                                    viewModel.disconnectAllInFolder(folderId)
+                                },
                                 onLaunchConnectionInSplitRight = { conn ->
                                     viewModel.launchConnection(conn, QuickLaunchPlacement.SPLIT_RIGHT_PANE)
                                 },
@@ -516,7 +605,12 @@ fun NexusWorkspaceScreen(
                                 onDuplicateConnection = viewModel::duplicateConnection,
                                 onToggleFavorite = viewModel::toggleFavoriteConnection,
                                 onDeleteConnection = viewModel::deleteConnection,
-                                onLaunchLocalShell = viewModel::launchLocalShellTab
+                                onDisconnectConnection = { connId ->
+                                    viewModel.disconnectConnectionSessions(connId)
+                                },
+                                onMoveConnectionToFolder = viewModel::openMoveConnectionDialog,
+                                onLaunchLocalShell = viewModel::launchLocalShellTab,
+                                activeConnectionIds = activeConnectionIds
                             )
                         },
                         sessionRenderer = { tab, isFocused ->
@@ -642,6 +736,46 @@ fun NexusWorkspaceScreen(
                     strings = strings,
                     onDismiss = viewModel::dismissNewTemplateDialog,
                     onSaveTemplate = viewModel::saveTemplateToVault
+                )
+                LanguageSelectionDialog(
+                    visible = uiState.isLanguageDialogVisible,
+                    currentLocale = currentSupportedLocale,
+                    strings = strings,
+                    onSelectLocale = { locale ->
+                        NexusLocaleController.switchLanguage(locale)
+                        viewModel.dismissLanguageDialog()
+                    },
+                    onDismiss = viewModel::dismissLanguageDialog
+                )
+                MoveConnectionToFolderDialog(
+                    targetConnection = uiState.movingConnectionTarget,
+                    folders = uiState.vaultDocument.folders.filterNot { it.id in uiState.vaultDocument.tombstonedObjectIds },
+                    strings = strings,
+                    onMoveToFolder = { connId, targetFolderId ->
+                        viewModel.moveConnectionToFolder(connId, targetFolderId)
+                    },
+                    onDismiss = viewModel::dismissMoveConnectionDialog
+                )
+                PlayProtectAutoUpdateDialog(
+                    visible = uiState.isAutoUpdateDialogVisible,
+                    uiState = uiState,
+                    strings = strings,
+                    onToggleAutoCheck = onToggleAutoCheckUpdates,
+                    onCheckNow = onCheckGitHubReleases,
+                    onTriggerBrowserUpdate = {
+                        val targetUrl = uiState.updateApkDownloadUrl.ifBlank { uiState.updateReleaseHtmlUrl }
+                        if (targetUrl.isNotBlank()) {
+                            onTriggerBrowserUpdate(targetUrl)
+                        }
+                    },
+                    onDownloadVerifiedToFiles = onDownloadVerifiedUpdateToFiles,
+                    onSkipVersion = {
+                        if (uiState.updateLatestTag.isNotBlank()) {
+                            onSkipUpdateVersion(uiState.updateLatestTag)
+                        }
+                        viewModel.dismissAutoUpdateDialog()
+                    },
+                    onDismiss = viewModel::dismissAutoUpdateDialog
                 )
                 LockVaultPassphraseDialog(
                     visible = uiState.isLockVaultDialogVisible,
@@ -835,6 +969,9 @@ private fun DesktopTopWindowChrome(
     hasActiveSessions: Boolean,
     broadcastEnabled: Boolean,
     flexibleUpdateDownloaded: Boolean,
+    githubUpdateAvailable: Boolean,
+    githubUpdateTag: String,
+    currentLocale: SupportedNexusLocale,
     strings: WorkspaceLocalizedStrings,
     onToggleSidebar: () -> Unit,
     onToggleInspector: () -> Unit,
@@ -852,28 +989,30 @@ private fun DesktopTopWindowChrome(
     onToggleRemoteKeyCapture: () -> Unit,
     onToggleBroadcast: () -> Unit,
     onLockVault: () -> Unit,
+    onOpenLanguageDialog: () -> Unit,
+    onOpenAutoUpdateDialog: () -> Unit,
     onCompleteFlexibleUpdate: () -> Unit
 ) {
-    var langMenuExpanded by remember { mutableStateOf(false) }
     var createMenuExpanded by remember { mutableStateOf(false) }
+    var toolsMenuExpanded by remember { mutableStateOf(false) }
 
     Surface(
         color = MaterialTheme.colorScheme.surfaceContainerLowest,
         modifier = Modifier
             .fillMaxWidth()
-            .height(56.dp)
+            .height(64.dp)
     ) {
         Row(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(horizontal = 14.dp),
+                .padding(horizontal = 18.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             // Left Window Identity Cluster
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 ExpressiveMorphingIconButton(
                     icon = Icons.Outlined.ViewSidebar,
@@ -881,17 +1020,17 @@ private fun DesktopTopWindowChrome(
                     isActive = isSidebarVisible,
                     onClick = onToggleSidebar
                 )
-                NexusBrandEmblem(size = 32.dp, cornerRadius = 10.dp)
+                NexusBrandEmblem(size = 36.dp, cornerRadius = 11.dp)
                 Text(
                     text = strings.appName,
-                    style = MaterialTheme.typography.titleMedium,
+                    style = MaterialTheme.typography.titleLarge,
                     color = MaterialTheme.colorScheme.onSurface
                 )
                 if (vaultName.isNotBlank() && vaultName != NexusWorkspaceViewModel.DEFAULT_VAULT_NAME) {
                     Surface(
                         shape = RoundedCornerShape(99.dp),
                         color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                        modifier = Modifier.widthIn(max = 170.dp)
+                        modifier = Modifier.widthIn(max = 190.dp)
                     ) {
                         Text(
                             text = vaultName,
@@ -899,22 +1038,22 @@ private fun DesktopTopWindowChrome(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp)
                         )
                     }
                 }
             }
 
-            // Center Expressive Quick-Connect Command Bar Trigger (`Ctrl + K`) — flexible width, zero-artifact hover
+            // Center Google M3 Quick-Connect Omnibox (`Ctrl + K`) — generous 44dp pill
             val quickConnectHover = rememberDesktopHoverState()
             val quickConnectInteraction = remember { MutableInteractionSource() }
             val isQuickConnectHovered = quickConnectHover.value.isHovered
             Surface(
                 modifier = Modifier
                     .weight(1f, fill = false)
-                    .widthIn(min = 180.dp, max = 330.dp)
-                    .padding(horizontal = 12.dp)
-                    .height(38.dp)
+                    .widthIn(min = 210.dp, max = 380.dp)
+                    .padding(horizontal = 14.dp)
+                    .height(44.dp)
                     .nexusHoverTracker(quickConnectHover, PointerIcon.Hand)
                     .clip(RoundedCornerShape(99.dp))
                     .clickable(
@@ -931,14 +1070,14 @@ private fun DesktopTopWindowChrome(
                 border = BorderStroke(
                     1.dp,
                     if (isQuickConnectHovered) {
-                        MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
+                        MaterialTheme.colorScheme.primary.copy(alpha = 0.55f)
                     } else {
                         MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
                     }
                 )
             ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 14.dp),
+                    modifier = Modifier.padding(horizontal = 16.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
@@ -949,17 +1088,17 @@ private fun DesktopTopWindowChrome(
                         Icon(
                             imageVector = Icons.Outlined.Search,
                             contentDescription = null,
-                            modifier = Modifier.size(16.dp),
+                            modifier = Modifier.size(18.dp),
                             tint = if (isQuickConnectHovered) {
                                 MaterialTheme.colorScheme.primary
                             } else {
                                 MaterialTheme.colorScheme.secondary
                             }
                         )
-                        Spacer(modifier = Modifier.width(8.dp))
+                        Spacer(modifier = Modifier.width(10.dp))
                         Text(
                             text = strings.quickConnectButton,
-                            style = MaterialTheme.typography.labelLarge,
+                            style = MaterialTheme.typography.bodyMedium,
                             color = if (isQuickConnectHovered) {
                                 MaterialTheme.colorScheme.onSurface
                             } else {
@@ -969,7 +1108,7 @@ private fun DesktopTopWindowChrome(
                             overflow = TextOverflow.Ellipsis
                         )
                     }
-                    Spacer(modifier = Modifier.width(8.dp))
+                    Spacer(modifier = Modifier.width(10.dp))
                     Surface(
                         shape = RoundedCornerShape(99.dp),
                         color = MaterialTheme.colorScheme.surfaceContainerLowest
@@ -978,22 +1117,41 @@ private fun DesktopTopWindowChrome(
                             text = "Ctrl+K",
                             style = NexusTheme.monospace.keycapShortcut,
                             color = MaterialTheme.colorScheme.secondary,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                            modifier = Modifier.padding(horizontal = 9.dp, vertical = 3.dp)
                         )
                     }
                 }
             }
 
-            // Right Expressive Action Cluster (Decluttered: session-only controls hidden until active)
+            // Right Google M3 Action Cluster (Clean & Uncluttered)
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 if (flexibleUpdateDownloaded) {
-                    FilledTonalButton(onClick = onCompleteFlexibleUpdate) {
-                        Icon(Icons.Outlined.SystemUpdateAlt, contentDescription = null, modifier = Modifier.size(16.dp))
+                    FilledTonalButton(
+                        onClick = onCompleteFlexibleUpdate,
+                        modifier = Modifier.height(40.dp)
+                    ) {
+                        Icon(Icons.Outlined.SystemUpdateAlt, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text(strings.updateRestartAction, style = MaterialTheme.typography.labelMedium)
+                        Text(strings.updateRestartAction, style = MaterialTheme.typography.labelLarge)
+                    }
+                } else if (githubUpdateAvailable) {
+                    FilledTonalButton(
+                        onClick = onOpenAutoUpdateDialog,
+                        modifier = Modifier.height(40.dp)
+                    ) {
+                        Icon(Icons.Outlined.SystemUpdateAlt, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = if (githubUpdateTag.isNotBlank()) {
+                                "${strings.autoUpdateAvailableBadge} • $githubUpdateTag"
+                            } else {
+                                strings.autoUpdateAvailableBadge
+                            },
+                            style = MaterialTheme.typography.labelLarge
+                        )
                     }
                 }
 
@@ -1103,24 +1261,66 @@ private fun DesktopTopWindowChrome(
                     )
                 }
 
-                if (hasActiveSessions || remoteKeyCaptureEnabled) {
-                    ExpressiveMorphingIconButton(
-                        icon = Icons.Outlined.Keyboard,
-                        contentDescription = "Remote Key Capture",
-                        isActive = remoteKeyCaptureEnabled,
-                        onClick = onToggleRemoteKeyCapture
-                    )
-                }
-
-                if (hasActiveSessions || broadcastEnabled) {
+                if (broadcastEnabled) {
                     ExpressiveMorphingIconButton(
                         icon = Icons.Outlined.Podcasts,
                         contentDescription = strings.actionBroadcastInput,
-                        isActive = broadcastEnabled,
+                        isActive = true,
                         activeTint = NexusTheme.extendedColors.broadcastActiveBanner,
                         activeContainer = NexusTheme.extendedColors.broadcastActiveBanner.copy(alpha = 0.16f),
                         onClick = onToggleBroadcast
                     )
+                }
+
+                // Language Flag Trigger Pill (opens Material 3 LanguageSelectionDialog with vector flags)
+                val langHover = rememberDesktopHoverState()
+                val langInteraction = remember { MutableInteractionSource() }
+                val isLangHovered = langHover.value.isHovered
+                Surface(
+                    modifier = Modifier
+                        .height(40.dp)
+                        .semantics(mergeDescendants = true) {
+                            contentDescription = strings.actionLanguagePicker
+                        }
+                        .nexusHoverTracker(langHover, PointerIcon.Hand)
+                        .clip(RoundedCornerShape(99.dp))
+                        .clickable(
+                            interactionSource = langInteraction,
+                            indication = null,
+                            onClick = onOpenLanguageDialog
+                        ),
+                    shape = RoundedCornerShape(99.dp),
+                    color = if (isLangHovered) {
+                        MaterialTheme.colorScheme.surfaceContainerHighest
+                    } else {
+                        MaterialTheme.colorScheme.surfaceContainerHigh
+                    },
+                    border = BorderStroke(
+                        1.dp,
+                        if (isLangHovered) {
+                            MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)
+                        } else {
+                            MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
+                        }
+                    )
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        NexusLanguageFlagBadge(
+                            languageCode = currentLocale.bcp47Tag,
+                            width = 24.dp,
+                            height = 16.dp,
+                            cornerRadius = 4.dp
+                        )
+                        Text(
+                            text = currentLocale.bcp47Tag.uppercase(),
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
                 }
 
                 ExpressiveMorphingIconButton(
@@ -1131,38 +1331,80 @@ private fun DesktopTopWindowChrome(
                 )
 
                 ExpressiveMorphingIconButton(
-                    icon = Icons.Outlined.Terminal,
-                    contentDescription = strings.drawerAuditLogs,
-                    isActive = isBottomDrawerVisible,
-                    onClick = onToggleBottomDrawer
-                )
-
-                ExpressiveMorphingIconButton(
                     icon = if (isVaultLocked) Icons.Outlined.Lock else Icons.Outlined.LockOpen,
                     contentDescription = strings.actionLockVault,
                     isActive = isVaultLocked,
                     onClick = onLockVault
                 )
 
+                // Secondary Workspace Tools Menu (declutters top window bar)
                 Box {
                     ExpressiveMorphingIconButton(
-                        icon = Icons.Outlined.Language,
-                        contentDescription = strings.actionLanguagePicker,
-                        isActive = langMenuExpanded,
-                        onClick = { langMenuExpanded = true }
+                        icon = Icons.Outlined.MoreVert,
+                        contentDescription = "Workspace Tools",
+                        isActive = toolsMenuExpanded || isBottomDrawerVisible || remoteKeyCaptureEnabled,
+                        onClick = { toolsMenuExpanded = true }
                     )
                     DropdownMenu(
-                        expanded = langMenuExpanded,
-                        onDismissRequest = { langMenuExpanded = false }
+                        expanded = toolsMenuExpanded,
+                        onDismissRequest = { toolsMenuExpanded = false }
                     ) {
-                        SupportedNexusLocale.entries.forEach { locale ->
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    if (githubUpdateAvailable && githubUpdateTag.isNotBlank()) {
+                                        "${strings.autoUpdateTitle} ($githubUpdateTag)"
+                                    } else {
+                                        strings.autoUpdateTitle
+                                    }
+                                )
+                            },
+                            leadingIcon = { Icon(Icons.Outlined.SystemUpdateAlt, contentDescription = null) },
+                            onClick = {
+                                toolsMenuExpanded = false
+                                onOpenAutoUpdateDialog()
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text(strings.drawerAuditLogs) },
+                            leadingIcon = { Icon(Icons.Outlined.Terminal, contentDescription = null) },
+                            trailingIcon = {
+                                if (isBottomDrawerVisible) {
+                                    Icon(Icons.Outlined.CheckCircle, contentDescription = null, modifier = Modifier.size(18.dp))
+                                }
+                            },
+                            onClick = {
+                                toolsMenuExpanded = false
+                                onToggleBottomDrawer()
+                            }
+                        )
+                        if (hasActiveSessions || remoteKeyCaptureEnabled) {
                             DropdownMenuItem(
-                                text = {
-                                    Text(strings.languageLabels[locale] ?: locale.bcp47Tag.uppercase())
+                                text = { Text("Remote Key Capture") },
+                                leadingIcon = { Icon(Icons.Outlined.Keyboard, contentDescription = null) },
+                                trailingIcon = {
+                                    if (remoteKeyCaptureEnabled) {
+                                        Icon(Icons.Outlined.CheckCircle, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    }
                                 },
                                 onClick = {
-                                    langMenuExpanded = false
-                                    NexusLocaleController.switchLanguage(locale)
+                                    toolsMenuExpanded = false
+                                    onToggleRemoteKeyCapture()
+                                }
+                            )
+                        }
+                        if (hasActiveSessions || broadcastEnabled) {
+                            DropdownMenuItem(
+                                text = { Text(strings.actionBroadcastInput) },
+                                leadingIcon = { Icon(Icons.Outlined.Podcasts, contentDescription = null) },
+                                trailingIcon = {
+                                    if (broadcastEnabled) {
+                                        Icon(Icons.Outlined.CheckCircle, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    }
+                                },
+                                onClick = {
+                                    toolsMenuExpanded = false
+                                    onToggleBroadcast()
                                 }
                             )
                         }
@@ -1173,11 +1415,88 @@ private fun DesktopTopWindowChrome(
     }
 }
 
+private const val ROOT_DROP_TARGET_KEY = "__NEXUSTS_ROOT_LEVEL__"
+
+@Stable
+private class SidebarTreeDragDropState {
+    var draggingConnection by mutableStateOf<VaultConnection?>(null)
+    var pointerPositionInRoot by mutableStateOf(Offset.Zero)
+    var hoveredDropTargetKey by mutableStateOf<String?>(null)
+    private val targetBoundsInRoot = mutableStateMapOf<String, Rect>()
+
+    val isDragging: Boolean
+        get() = draggingConnection != null
+
+    fun registerDropTarget(key: String, bounds: Rect) {
+        targetBoundsInRoot[key] = bounds
+    }
+
+    fun unregisterDropTarget(key: String) {
+        targetBoundsInRoot.remove(key)
+        if (hoveredDropTargetKey == key) {
+            hoveredDropTargetKey = null
+        }
+    }
+
+    fun startDrag(connection: VaultConnection, initialRootPos: Offset) {
+        draggingConnection = connection
+        pointerPositionInRoot = initialRootPos
+        updateHoveredTarget(initialRootPos)
+    }
+
+    fun updateDragByDelta(delta: Offset) {
+        val next = pointerPositionInRoot + delta
+        pointerPositionInRoot = next
+        updateHoveredTarget(next)
+    }
+
+    fun updateDragAtRoot(rootPos: Offset) {
+        pointerPositionInRoot = rootPos
+        updateHoveredTarget(rootPos)
+    }
+
+    private fun updateHoveredTarget(rootPos: Offset) {
+        val conn = draggingConnection ?: run {
+            hoveredDropTargetKey = null
+            return
+        }
+        val matchedKey = targetBoundsInRoot.entries
+            .firstOrNull { (key, rect) ->
+                rect.contains(rootPos) &&
+                    when (key) {
+                        ROOT_DROP_TARGET_KEY -> conn.parentFolderId != null
+                        else -> key != conn.parentFolderId
+                    }
+            }
+            ?.key
+        hoveredDropTargetKey = matchedKey
+    }
+
+    fun finishDrag(onMoveConnectionToFolder: (String, String?) -> Unit) {
+        val conn = draggingConnection
+        val targetKey = hoveredDropTargetKey
+        draggingConnection = null
+        hoveredDropTargetKey = null
+        if (conn != null && targetKey != null) {
+            val destinationFolderId = if (targetKey == ROOT_DROP_TARGET_KEY) null else targetKey
+            if (destinationFolderId != conn.parentFolderId) {
+                onMoveConnectionToFolder(conn.id, destinationFolderId)
+            }
+        }
+    }
+
+    fun cancelDrag() {
+        draggingConnection = null
+        hoveredDropTargetKey = null
+    }
+}
+
 private data class SidebarFolderEntry(
     val folder: VaultFolder,
     val depth: Int,
     val directConnections: List<VaultConnection>,
     val subtreeConnectionCount: Int,
+    val subtreeActiveSessionCount: Int,
     val hasChildFolders: Boolean,
     val isExpanded: Boolean
 )
@@ -1186,6 +1505,7 @@ private data class SidebarFolderEntry(
 private fun VaultHierarchySidebarTree(
     uiState: WorkspaceUiState,
     strings: WorkspaceLocalizedStrings,
+    activeSessionCountByConnectionId: Map<String, Int> = emptyMap(),
     onFilterQueryChanged: (String) -> Unit,
     smartFolderConnectionsProvider: (SmartFolder) -> List<VaultConnection>,
     onToggleSmartFolder: (String) -> Unit,
@@ -1204,12 +1524,16 @@ private fun VaultHierarchySidebarTree(
     onDuplicateFolder: (VaultFolder) -> Unit = {},
     onDeleteFolder: (String) -> Unit,
     onConnectAllInFolder: (String) -> Unit,
+    onDisconnectAllInFolder: (String) -> Unit = {},
     onSelectConnection: (String) -> Unit,
     onEditConnection: (VaultConnection) -> Unit,
     onConnectWithOptions: (VaultConnection) -> Unit,
     onToggleFavorite: (String) -> Unit,
     onDuplicateConnection: (VaultConnection) -> Unit,
     onDeleteConnection: (String) -> Unit,
+    onDisconnectConnection: (String) -> Unit = {},
+    onOpenMoveConnectionDialog: (VaultConnection) -> Unit = {},
+    onMoveConnectionToFolder: (String, String?) -> Unit = { _, _ -> },
     onLaunchConnection: (VaultConnection, QuickLaunchPlacement) -> Unit,
     onLaunchConnectionInSplitDown: (VaultConnection) -> Unit = {},
     onLaunchLocalShell: () -> Unit = {},
@@ -1218,6 +1542,8 @@ private fun VaultHierarchySidebarTree(
     val doc = uiState.vaultDocument
     val query = uiState.sidebarFilterQuery.trim().lowercase()
     var sidebarBgMenuOpen by remember { mutableStateOf(false) }
+    val dragDropState = remember { SidebarTreeDragDropState() }
+    var sidebarOriginInRoot by remember { mutableStateOf(Offset.Zero) }
 
     fun matchesFilter(conn: VaultConnection): Boolean {
         if (conn.id in doc.tombstonedObjectIds) return false
@@ -1249,10 +1575,31 @@ private fun VaultHierarchySidebarTree(
     val activeFolderIds = remember(activeFolders) { activeFolders.map { it.id }.toSet() }
     var collapsedFolderIds by remember { mutableStateOf(emptySet<String>()) }
 
-    val flattenedFolders = remember(activeFolders, doc.connections, doc.tombstonedObjectIds, query, collapsedFolderIds) {
+    // Automatically expand a collapsed folder when hovering a dragged connection over it for 480ms
+    LaunchedEffect(dragDropState.hoveredDropTargetKey) {
+        val hoveredKey = dragDropState.hoveredDropTargetKey
+        if (hoveredKey != null && hoveredKey != ROOT_DROP_TARGET_KEY && hoveredKey in collapsedFolderIds) {
+            delay(480L)
+            if (dragDropState.hoveredDropTargetKey == hoveredKey) {
+                collapsedFolderIds = collapsedFolderIds - hoveredKey
+            }
+        }
+    }
+
+    val flattenedFolders = remember(
+        activeFolders,
+        doc.connections,
+        doc.tombstonedObjectIds,
+        query,
+        collapsedFolderIds,
+        activeSessionCountByConnectionId
+    ) {
         val childrenByParent = activeFolders.groupBy { folder ->
             folder.parentFolderId?.takeIf { it in activeFolderIds && it != folder.id }
         }
+        val allConnectionsByFolder = doc.connections
+            .filterNot { it.id in doc.tombstonedObjectIds }
+            .groupBy { it.parentFolderId }
         val connectionsByFolder = doc.connections
             .filter(::matchesFilter)
             .groupBy { it.parentFolderId }
@@ -1265,6 +1612,18 @@ private fun VaultHierarchySidebarTree(
                 countSubtreeMatches(child.id, nextVisited)
             }
             return direct + childTotal
+        }
+
+        fun countSubtreeActiveSessions(folderId: String, visited: Set<String>): Int {
+            if (folderId in visited) return 0
+            val nextVisited = visited + folderId
+            val directSessions = allConnectionsByFolder[folderId].orEmpty().sumOf { conn ->
+                activeSessionCountByConnectionId[conn.id] ?: 0
+            }
+            val childSessions = childrenByParent[folderId].orEmpty().sumOf { child ->
+                countSubtreeActiveSessions(child.id, nextVisited)
+            }
+            return directSessions + childSessions
         }
 
         fun subtreeMatchesFolderQuery(folder: VaultFolder, visited: Set<String>): Boolean {
@@ -1286,12 +1645,14 @@ private fun VaultHierarchySidebarTree(
             val childFolders = childrenByParent[folder.id].orEmpty()
             val directConns = connectionsByFolder[folder.id].orEmpty()
             val subtreeCount = countSubtreeMatches(folder.id, visited)
+            val subtreeActive = countSubtreeActiveSessions(folder.id, visited)
             val expanded = query.isNotEmpty() || folder.id !in collapsedFolderIds
             result += SidebarFolderEntry(
                 folder = folder,
                 depth = depth,
                 directConnections = directConns,
                 subtreeConnectionCount = subtreeCount,
+                subtreeActiveSessionCount = subtreeActive,
                 hasChildFolders = childFolders.isNotEmpty(),
                 isExpanded = expanded
             )
@@ -1321,26 +1682,29 @@ private fun VaultHierarchySidebarTree(
     Box(
         modifier = Modifier
             .fillMaxSize()
+            .onGloballyPositioned { coords ->
+                sidebarOriginInRoot = coords.positionInRoot()
+            }
             .nexusDesktopPointerButtons(onSecondaryClick = { sidebarBgMenuOpen = true })
     ) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(10.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+                .padding(horizontal = 12.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            // Instant Sidebar Filter Bar
+            // Instant Google M3 Pill Filter Bar
             OutlinedTextField(
                 value = uiState.sidebarFilterQuery,
                 onValueChange = onFilterQueryChanged,
-                placeholder = { Text(strings.sidebarFilterPlaceholder, style = MaterialTheme.typography.bodySmall) },
+                placeholder = { Text(strings.sidebarFilterPlaceholder, style = MaterialTheme.typography.bodyMedium) },
                 leadingIcon = {
-                    Icon(Icons.Outlined.Search, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Icon(Icons.Outlined.Search, contentDescription = null, modifier = Modifier.size(18.dp))
                 },
                 trailingIcon = {
                     if (uiState.sidebarFilterQuery.isNotEmpty()) {
-                        IconButton(onClick = { onFilterQueryChanged("") }, modifier = Modifier.size(24.dp)) {
-                            Icon(Icons.Outlined.Close, contentDescription = null, modifier = Modifier.size(14.dp))
+                        IconButton(onClick = { onFilterQueryChanged("") }, modifier = Modifier.size(26.dp)) {
+                            Icon(Icons.Outlined.Close, contentDescription = null, modifier = Modifier.size(16.dp))
                         }
                     }
                 },
@@ -1351,7 +1715,7 @@ private fun VaultHierarchySidebarTree(
 
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
+                verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 // 1. Pinned Favorites Section
                 if (favorites.isNotEmpty()) {
@@ -1365,11 +1729,11 @@ private fun VaultHierarchySidebarTree(
                                 imageVector = Icons.Outlined.Star,
                                 contentDescription = null,
                                 tint = MaterialTheme.colorScheme.tertiary,
-                                modifier = Modifier.size(14.dp)
+                                modifier = Modifier.size(15.dp)
                             )
                             Text(
                                 text = strings.vaultSectionFavorites,
-                                style = MaterialTheme.typography.labelMedium,
+                                style = MaterialTheme.typography.labelLarge,
                                 color = MaterialTheme.colorScheme.tertiary
                             )
                         }
@@ -1377,14 +1741,21 @@ private fun VaultHierarchySidebarTree(
                     items(favorites, key = { "fav-${it.id}" }) { conn ->
                         ConnectionTreeRow(
                             connection = conn,
+                            indentLevel = 0,
                             isSelected = conn.id == uiState.selectedConnectionId,
                             strings = strings,
+                            activeSessionCount = activeSessionCountByConnectionId[conn.id] ?: 0,
+                            enableDragToFolder = true,
+                            dragDropState = dragDropState,
                             onSelect = { onSelectConnection(conn.id) },
                             onEdit = { onEditConnection(conn) },
                             onConnectWithOptions = { onConnectWithOptions(conn) },
                             onToggleFavorite = { onToggleFavorite(conn.id) },
                             onDuplicate = { onDuplicateConnection(conn) },
                             onDelete = { onDeleteConnection(conn.id) },
+                            onDisconnect = { onDisconnectConnection(conn.id) },
+                            onOpenMoveDialog = { onOpenMoveConnectionDialog(conn) },
+                            onMoveToFolder = { targetFolderId -> onMoveConnectionToFolder(conn.id, targetFolderId) },
                             onLaunch = { placement -> onLaunchConnection(conn, placement) },
                             onLaunchSplitDown = { onLaunchConnectionInSplitDown(conn) }
                         )
@@ -1403,26 +1774,33 @@ private fun VaultHierarchySidebarTree(
                                 imageVector = Icons.Outlined.History,
                                 contentDescription = null,
                                 tint = MaterialTheme.colorScheme.secondary,
-                                modifier = Modifier.size(14.dp)
+                                modifier = Modifier.size(15.dp)
                             )
                             Text(
                                 text = strings.vaultSectionRecents,
-                                style = MaterialTheme.typography.labelMedium,
+                                style = MaterialTheme.typography.labelLarge,
                                 color = MaterialTheme.colorScheme.secondary
                             )
                         }
                     }
-                    items(recentConnections.take(6), key = { "recent-${it.id}" }) { conn ->
+                    items(recentConnections.take(5), key = { "recent-${it.id}" }) { conn ->
                         ConnectionTreeRow(
                             connection = conn,
+                            indentLevel = 0,
                             isSelected = conn.id == uiState.selectedConnectionId,
                             strings = strings,
+                            activeSessionCount = activeSessionCountByConnectionId[conn.id] ?: 0,
+                            enableDragToFolder = true,
+                            dragDropState = dragDropState,
                             onSelect = { onSelectConnection(conn.id) },
                             onEdit = { onEditConnection(conn) },
                             onConnectWithOptions = { onConnectWithOptions(conn) },
                             onToggleFavorite = { onToggleFavorite(conn.id) },
                             onDuplicate = { onDuplicateConnection(conn) },
                             onDelete = { onDeleteConnection(conn.id) },
+                            onDisconnect = { onDisconnectConnection(conn.id) },
+                            onOpenMoveDialog = { onOpenMoveConnectionDialog(conn) },
+                            onMoveToFolder = { targetFolderId -> onMoveConnectionToFolder(conn.id, targetFolderId) },
                             onLaunch = { placement -> onLaunchConnection(conn, placement) },
                             onLaunchSplitDown = { onLaunchConnectionInSplitDown(conn) }
                         )
@@ -1441,14 +1819,14 @@ private fun VaultHierarchySidebarTree(
                         ) {
                             Text(
                                 text = strings.vaultSectionSmartFolders,
-                                style = MaterialTheme.typography.labelMedium,
+                                style = MaterialTheme.typography.labelLarge,
                                 color = MaterialTheme.colorScheme.secondary
                             )
-                            IconButton(onClick = onNewSmartFolder, modifier = Modifier.size(24.dp)) {
+                            IconButton(onClick = onNewSmartFolder, modifier = Modifier.size(26.dp)) {
                                 Icon(
                                     imageVector = Icons.Outlined.Add,
                                     contentDescription = strings.actionNewSmartFolder,
-                                    modifier = Modifier.size(15.dp),
+                                    modifier = Modifier.size(16.dp),
                                     tint = MaterialTheme.colorScheme.secondary
                                 )
                             }
@@ -1477,14 +1855,18 @@ private fun VaultHierarchySidebarTree(
                             items(matchedConnections, key = { "smart-${smart.id}-${it.id}" }) { conn ->
                                 ConnectionTreeRow(
                                     connection = conn,
+                                    indentLevel = 1,
                                     isSelected = conn.id == uiState.selectedConnectionId,
                                     strings = strings,
+                                    activeSessionCount = activeSessionCountByConnectionId[conn.id] ?: 0,
                                     onSelect = { onSelectConnection(conn.id) },
                                     onEdit = { onEditConnection(conn) },
                                     onConnectWithOptions = { onConnectWithOptions(conn) },
                                     onToggleFavorite = { onToggleFavorite(conn.id) },
                                     onDuplicate = { onDuplicateConnection(conn) },
                                     onDelete = { onDeleteConnection(conn.id) },
+                                    onDisconnect = { onDisconnectConnection(conn.id) },
+                                    onOpenMoveDialog = { onOpenMoveConnectionDialog(conn) },
                                     onLaunch = { placement -> onLaunchConnection(conn, placement) },
                                     onLaunchSplitDown = { onLaunchConnectionInSplitDown(conn) }
                                 )
@@ -1505,14 +1887,14 @@ private fun VaultHierarchySidebarTree(
                         ) {
                             Text(
                                 text = strings.vaultSectionDynamicFolders,
-                                style = MaterialTheme.typography.labelMedium,
+                                style = MaterialTheme.typography.labelLarge,
                                 color = MaterialTheme.colorScheme.secondary
                             )
-                            IconButton(onClick = onNewDynamicFolder, modifier = Modifier.size(24.dp)) {
+                            IconButton(onClick = onNewDynamicFolder, modifier = Modifier.size(26.dp)) {
                                 Icon(
                                     imageVector = Icons.Outlined.Add,
                                     contentDescription = strings.vaultSectionDynamicFolders,
-                                    modifier = Modifier.size(15.dp),
+                                    modifier = Modifier.size(16.dp),
                                     tint = MaterialTheme.colorScheme.secondary
                                 )
                             }
@@ -1536,14 +1918,17 @@ private fun VaultHierarchySidebarTree(
                             items(hydrated, key = { "dyn-${dyn.id}-${it.id}" }) { conn ->
                                 ConnectionTreeRow(
                                     connection = conn,
+                                    indentLevel = 1,
                                     isSelected = conn.id == uiState.selectedConnectionId,
                                     strings = strings,
+                                    activeSessionCount = activeSessionCountByConnectionId[conn.id] ?: 0,
                                     onSelect = { onSelectConnection(conn.id) },
                                     onEdit = { onEditConnection(conn) },
                                     onConnectWithOptions = { onConnectWithOptions(conn) },
                                     onToggleFavorite = { onToggleFavorite(conn.id) },
                                     onDuplicate = { onDuplicateConnection(conn) },
                                     onDelete = { onDeleteConnection(conn.id) },
+                                    onDisconnect = { onDisconnectConnection(conn.id) },
                                     onLaunch = { placement -> onLaunchConnection(conn, placement) },
                                     onLaunchSplitDown = { onLaunchConnectionInSplitDown(conn) }
                                 )
@@ -1568,19 +1953,73 @@ private fun VaultHierarchySidebarTree(
                     ) {
                         Text(
                             text = strings.vaultSectionFolders,
-                            style = MaterialTheme.typography.labelMedium,
+                            style = MaterialTheme.typography.labelLarge,
                             color = MaterialTheme.colorScheme.secondary
                         )
                         IconButton(
                             onClick = onNewFolder,
-                            modifier = Modifier.size(26.dp)
+                            modifier = Modifier.size(28.dp)
                         ) {
                             Icon(
                                 imageVector = Icons.Outlined.Add,
                                 contentDescription = strings.actionNewFolder,
-                                modifier = Modifier.size(16.dp),
+                                modifier = Modifier.size(18.dp),
                                 tint = MaterialTheme.colorScheme.secondary
                             )
+                        }
+                    }
+                }
+
+                // Root-Level Drop Zone Banner (appears while dragging a nested connection to move it out of folders)
+                val draggingConn = dragDropState.draggingConnection
+                if (draggingConn != null && draggingConn.parentFolderId != null) {
+                    item(key = "root-drop-target") {
+                        val isRootHovered = dragDropState.hoveredDropTargetKey == ROOT_DROP_TARGET_KEY
+                        DisposableEffect(Unit) {
+                            onDispose {
+                                dragDropState.unregisterDropTarget(ROOT_DROP_TARGET_KEY)
+                            }
+                        }
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .onGloballyPositioned { coords ->
+                                    dragDropState.registerDropTarget(ROOT_DROP_TARGET_KEY, coords.boundsInRoot())
+                                },
+                            shape = RoundedCornerShape(14.dp),
+                            color = if (isRootHovered) {
+                                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.72f)
+                            } else {
+                                MaterialTheme.colorScheme.surfaceContainerLow
+                            },
+                            border = BorderStroke(
+                                width = if (isRootHovered) 2.dp else 1.dp,
+                                color = if (isRootHovered) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.outlineVariant
+                                }
+                            )
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Outlined.DriveFileMove,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Text(
+                                    text = strings.moveToRootFolder,
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
                         }
                     }
                 }
@@ -1602,6 +2041,8 @@ private fun VaultHierarchySidebarTree(
                             hasExpandableChildren = entry.hasChildFolders || entry.directConnections.isNotEmpty(),
                             explicitFolderCredentialName = explicitFolderCred?.name,
                             childCount = entry.subtreeConnectionCount,
+                            activeSessionCountInSubtree = entry.subtreeActiveSessionCount,
+                            dragDropState = dragDropState,
                             strings = strings,
                             onToggleExpand = {
                                 collapsedFolderIds = if (folder.id in collapsedFolderIds) {
@@ -1616,7 +2057,8 @@ private fun VaultHierarchySidebarTree(
                             onEditFolder = { onEditFolder(folder) },
                             onDuplicateFolder = { onDuplicateFolder(folder) },
                             onDeleteFolder = { onDeleteFolder(folder.id) },
-                            onConnectAllInFolder = { onConnectAllInFolder(folder.id) }
+                            onConnectAllInFolder = { onConnectAllInFolder(folder.id) },
+                            onDisconnectAllInFolder = { onDisconnectAllInFolder(folder.id) }
                         )
                     }
                     if (entry.isExpanded) {
@@ -1626,12 +2068,18 @@ private fun VaultHierarchySidebarTree(
                                 indentLevel = entry.depth + 1,
                                 isSelected = conn.id == uiState.selectedConnectionId,
                                 strings = strings,
+                                activeSessionCount = activeSessionCountByConnectionId[conn.id] ?: 0,
+                                enableDragToFolder = true,
+                                dragDropState = dragDropState,
                                 onSelect = { onSelectConnection(conn.id) },
                                 onEdit = { onEditConnection(conn) },
                                 onConnectWithOptions = { onConnectWithOptions(conn) },
                                 onToggleFavorite = { onToggleFavorite(conn.id) },
                                 onDuplicate = { onDuplicateConnection(conn) },
                                 onDelete = { onDeleteConnection(conn.id) },
+                                onDisconnect = { onDisconnectConnection(conn.id) },
+                                onOpenMoveDialog = { onOpenMoveConnectionDialog(conn) },
+                                onMoveToFolder = { targetFolderId -> onMoveConnectionToFolder(conn.id, targetFolderId) },
                                 onLaunch = { placement -> onLaunchConnection(conn, placement) },
                                 onLaunchSplitDown = { onLaunchConnectionInSplitDown(conn) }
                             )
@@ -1645,12 +2093,18 @@ private fun VaultHierarchySidebarTree(
                         indentLevel = 0,
                         isSelected = conn.id == uiState.selectedConnectionId,
                         strings = strings,
+                        activeSessionCount = activeSessionCountByConnectionId[conn.id] ?: 0,
+                        enableDragToFolder = true,
+                        dragDropState = dragDropState,
                         onSelect = { onSelectConnection(conn.id) },
                         onEdit = { onEditConnection(conn) },
                         onConnectWithOptions = { onConnectWithOptions(conn) },
                         onToggleFavorite = { onToggleFavorite(conn.id) },
                         onDuplicate = { onDuplicateConnection(conn) },
                         onDelete = { onDeleteConnection(conn.id) },
+                        onDisconnect = { onDisconnectConnection(conn.id) },
+                        onOpenMoveDialog = { onOpenMoveConnectionDialog(conn) },
+                        onMoveToFolder = { targetFolderId -> onMoveConnectionToFolder(conn.id, targetFolderId) },
                         onLaunch = { placement -> onLaunchConnection(conn, placement) },
                         onLaunchSplitDown = { onLaunchConnectionInSplitDown(conn) }
                     )
@@ -1659,29 +2113,29 @@ private fun VaultHierarchySidebarTree(
                 if (flattenedFolders.isEmpty() && rootConnections.isEmpty()) {
                     item(key = "empty-sidebar-hint") {
                         Surface(
-                            shape = MaterialTheme.shapes.medium,
+                            shape = RoundedCornerShape(16.dp),
                             color = MaterialTheme.colorScheme.surfaceContainerLow,
                             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)),
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(top = 8.dp, start = 4.dp, end = 4.dp)
+                                .padding(top = 8.dp, start = 2.dp, end = 2.dp)
                         ) {
                             Column(
-                                modifier = Modifier.padding(14.dp),
+                                modifier = Modifier.padding(18.dp),
                                 horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.spacedBy(10.dp)
+                                verticalArrangement = Arrangement.spacedBy(12.dp)
                             ) {
                                 Icon(
                                     imageVector = Icons.Outlined.DeviceHub,
                                     contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.8f),
-                                    modifier = Modifier.size(22.dp)
+                                    tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.85f),
+                                    modifier = Modifier.size(26.dp)
                                 )
                                 FilledTonalButton(
                                     onClick = onNewConnection,
                                     modifier = Modifier.fillMaxWidth()
                                 ) {
-                                    Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(18.dp))
                                     Spacer(modifier = Modifier.width(6.dp))
                                     Text(
                                         text = strings.actionNewConnection,
@@ -1690,6 +2144,63 @@ private fun VaultHierarchySidebarTree(
                                     )
                                 }
                             }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Floating Drag Ghost Preview Card while dragging a connection between folders
+        val activeDraggedConn = dragDropState.draggingConnection
+        if (activeDraggedConn != null) {
+            val targetLabel = when (val key = dragDropState.hoveredDropTargetKey) {
+                null -> null
+                ROOT_DROP_TARGET_KEY -> strings.moveToRootFolder
+                else -> activeFolders.firstOrNull { it.id == key }?.name
+            }
+            val uiProto = NexusWorkspaceViewModel.mapProtocolToUiKind(activeDraggedConn.protocol)
+            val localX = (dragDropState.pointerPositionInRoot.x - sidebarOriginInRoot.x + 14f)
+                .roundToInt()
+                .coerceAtLeast(8)
+            val localY = (dragDropState.pointerPositionInRoot.y - sidebarOriginInRoot.y - 22f)
+                .roundToInt()
+                .coerceAtLeast(8)
+
+            Surface(
+                modifier = Modifier
+                    .offset { IntOffset(localX, localY) }
+                    .widthIn(max = 260.dp)
+                    .shadow(10.dp, RoundedCornerShape(14.dp)),
+                shape = RoundedCornerShape(14.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Icon(
+                        imageVector = protocolIcon(uiProto),
+                        contentDescription = null,
+                        tint = protocolAccentColor(uiProto),
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Column {
+                        Text(
+                            text = activeDraggedConn.name,
+                            style = MaterialTheme.typography.titleSmall,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        if (targetLabel != null) {
+                            Text(
+                                text = String.format(strings.dragDropMoveHintFormat, targetLabel),
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.primary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
                         }
                     }
                 }
@@ -2019,6 +2530,8 @@ private fun FolderTreeRow(
     hasExpandableChildren: Boolean,
     explicitFolderCredentialName: String?,
     childCount: Int,
+    activeSessionCountInSubtree: Int,
+    dragDropState: SidebarTreeDragDropState,
     strings: WorkspaceLocalizedStrings,
     onToggleExpand: () -> Unit,
     onNewRdpInFolder: () -> Unit,
@@ -2027,7 +2540,8 @@ private fun FolderTreeRow(
     onEditFolder: () -> Unit,
     onDuplicateFolder: () -> Unit,
     onDeleteFolder: () -> Unit,
-    onConnectAllInFolder: () -> Unit
+    onConnectAllInFolder: () -> Unit,
+    onDisconnectAllInFolder: () -> Unit
 ) {
     var folderMenuOpen by remember { mutableStateOf(false) }
     val hover = rememberDesktopHoverState()
@@ -2035,18 +2549,28 @@ private fun FolderTreeRow(
     val isHovered = hover.value.isHovered
     val folderAccent = parseHexColorOrNull(folder.inheritable.displayColorAccentHex)
         ?: MaterialTheme.colorScheme.primary
+    val isDropTargetHovered = dragDropState.isDragging && dragDropState.hoveredDropTargetKey == folder.id
 
-    Box {
-        Row(
+    DisposableEffect(folder.id) {
+        onDispose {
+            dragDropState.unregisterDropTarget(folder.id)
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = (depth * 18).dp, top = 2.dp, bottom = 2.dp)
+            .onGloballyPositioned { coords ->
+                dragDropState.registerDropTarget(folder.id, coords.boundsInRoot())
+            }
+    ) {
+        Surface(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(start = (depth * 14).dp)
+                .defaultMinSize(minHeight = 48.dp)
                 .nexusHoverTracker(hover, PointerIcon.Hand)
-                .clip(MaterialTheme.shapes.small)
-                .background(
-                    if (isHovered) MaterialTheme.colorScheme.surfaceContainerHigh
-                    else Color.Transparent
-                )
+                .clip(RoundedCornerShape(14.dp))
                 .nexusDesktopPointerButtons(onSecondaryClick = { folderMenuOpen = true })
                 .clickable(
                     interactionSource = interactionSource,
@@ -2058,94 +2582,173 @@ private fun FolderTreeRow(
                             onEditFolder()
                         }
                     }
-                )
-                .padding(horizontal = 6.dp, vertical = 5.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
+                ),
+            shape = RoundedCornerShape(14.dp),
+            color = when {
+                isDropTargetHovered -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.72f)
+                isHovered -> lerp(MaterialTheme.colorScheme.surfaceContainerHigh, folderAccent, 0.11f)
+                else -> lerp(MaterialTheme.colorScheme.surfaceContainerLow, folderAccent, 0.06f)
+            },
+            border = BorderStroke(
+                width = if (isDropTargetHovered) 2.dp else 1.dp,
+                color = when {
+                    isDropTargetHovered -> MaterialTheme.colorScheme.primary
+                    isHovered -> folderAccent.copy(alpha = 0.45f)
+                    else -> MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
+                }
+            )
         ) {
             Row(
-                modifier = Modifier.weight(1f),
-                verticalAlignment = Alignment.CenterVertically
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                if (hasExpandableChildren) {
-                    IconButton(
-                        onClick = onToggleExpand,
-                        modifier = Modifier.size(20.dp)
-                    ) {
-                        Icon(
-                            imageVector = if (isExpanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
-                            contentDescription = null,
-                            modifier = Modifier.size(15.dp),
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                Row(
+                    modifier = Modifier.weight(1f),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (hasExpandableChildren) {
+                        IconButton(
+                            onClick = onToggleExpand,
+                            modifier = Modifier.size(24.dp)
+                        ) {
+                            Icon(
+                                imageVector = if (isExpanded) {
+                                    Icons.Outlined.KeyboardArrowDown
+                                } else {
+                                    Icons.Outlined.ChevronRight
+                                },
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(2.dp))
+                    } else {
+                        Spacer(modifier = Modifier.width(4.dp))
                     }
-                    Spacer(modifier = Modifier.width(2.dp))
-                }
-                Icon(
-                    imageVector = Icons.Outlined.Folder,
-                    contentDescription = null,
-                    tint = folderAccent,
-                    modifier = Modifier.size(17.dp)
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = folder.name,
-                        style = MaterialTheme.typography.titleSmall,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    if (explicitFolderCredentialName != null) {
+
+                    // Distinct Structured Container Badge with Filled Folder Icon
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = folderAccent.copy(alpha = 0.17f),
+                        modifier = Modifier.size(34.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = if (isExpanded && hasExpandableChildren) {
+                                    FilledFolderOpenIcon
+                                } else {
+                                    FilledFolderIcon
+                                },
+                                contentDescription = null,
+                                tint = folderAccent,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = explicitFolderCredentialName,
-                            style = NexusTheme.monospace.keycapShortcut,
-                            color = MaterialTheme.colorScheme.secondary,
+                            text = folder.name,
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.onSurface,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
+                        if (explicitFolderCredentialName != null) {
+                            Text(
+                                text = explicitFolderCredentialName,
+                                style = NexusTheme.monospace.keycapShortcut,
+                                color = MaterialTheme.colorScheme.secondary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
                     }
                 }
-            }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                // Direct `+` icon button to immediately create an RDP connection inside this folder
-                IconButton(
-                    onClick = onNewRdpInFolder,
-                    modifier = Modifier.size(24.dp)
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    Icon(
-                        imageVector = Icons.Outlined.Add,
-                        contentDescription = "New RDP Connection in ${folder.name}",
-                        modifier = Modifier.size(16.dp),
-                        tint = MaterialTheme.colorScheme.primary
-                    )
-                }
-                if (childCount > 0) {
+                    if (activeSessionCountInSubtree > 0) {
+                        Surface(
+                            shape = RoundedCornerShape(99.dp),
+                            color = MaterialTheme.colorScheme.primaryContainer
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(5.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(6.dp)
+                                        .clip(CircleShape)
+                                        .background(MaterialTheme.colorScheme.primary)
+                                )
+                                Text(
+                                    text = activeSessionCountInSubtree.toString(),
+                                    style = NexusTheme.monospace.keycapShortcut,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                                )
+                            }
+                        }
+                        IconButton(
+                            onClick = onDisconnectAllInFolder,
+                            modifier = Modifier.size(28.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.PowerSettingsNew,
+                                contentDescription = "${strings.actionDisconnectAllFolder}: ${folder.name}",
+                                modifier = Modifier.size(16.dp),
+                                tint = MaterialTheme.colorScheme.error
+                            )
+                        }
+                    } else if (childCount > 0) {
+                        Surface(
+                            shape = RoundedCornerShape(99.dp),
+                            color = MaterialTheme.colorScheme.surfaceContainerHighest
+                        ) {
+                            Text(
+                                text = childCount.toString(),
+                                style = NexusTheme.monospace.keycapShortcut,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                            )
+                        }
+                    }
+
+                    // Direct `+` icon button to immediately create an RDP connection inside this folder
                     IconButton(
-                        onClick = onConnectAllInFolder,
-                        modifier = Modifier.size(24.dp)
+                        onClick = onNewRdpInFolder,
+                        modifier = Modifier.size(30.dp)
                     ) {
                         Icon(
-                            imageVector = Icons.Outlined.PlayArrow,
-                            contentDescription = strings.actionConnectAllFolder,
-                            modifier = Modifier.size(15.dp),
-                            tint = folderAccent
+                            imageVector = Icons.Outlined.Add,
+                            contentDescription = "New RDP Connection in ${folder.name}",
+                            modifier = Modifier.size(18.dp),
+                            tint = MaterialTheme.colorScheme.primary
                         )
                     }
-                }
-                IconButton(
-                    onClick = onEditFolder,
-                    modifier = Modifier.size(24.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Outlined.Key,
-                        contentDescription = strings.actionEditFolderCredentials,
-                        modifier = Modifier.size(14.dp),
-                        tint = if (explicitFolderCredentialName != null) {
-                            MaterialTheme.colorScheme.secondary
-                        } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant
+
+                    if (isHovered || folderMenuOpen) {
+                        IconButton(
+                            onClick = { folderMenuOpen = true },
+                            modifier = Modifier.size(28.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.MoreVert,
+                                contentDescription = "Folder Actions",
+                                modifier = Modifier.size(16.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
-                    )
+                    }
                 }
             }
         }
@@ -2186,6 +2789,34 @@ private fun FolderTreeRow(
                     onClick = {
                         folderMenuOpen = false
                         onConnectAllInFolder()
+                    }
+                )
+            }
+            if (activeSessionCountInSubtree > 0 || childCount > 0) {
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            text = if (activeSessionCountInSubtree > 0) {
+                                "${strings.actionDisconnectAllFolder} ($activeSessionCountInSubtree)"
+                            } else {
+                                strings.actionDisconnectAllFolder
+                            }
+                        )
+                    },
+                    leadingIcon = {
+                        Icon(
+                            Icons.Outlined.PowerSettingsNew,
+                            contentDescription = null,
+                            tint = if (activeSessionCountInSubtree > 0) {
+                                MaterialTheme.colorScheme.error
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            }
+                        )
+                    },
+                    onClick = {
+                        folderMenuOpen = false
+                        onDisconnectAllInFolder()
                     }
                 )
             }
@@ -2233,98 +2864,248 @@ private fun ConnectionTreeRow(
     onDelete: () -> Unit,
     onLaunch: (QuickLaunchPlacement) -> Unit,
     onLaunchSplitDown: () -> Unit = {},
+    onDisconnect: () -> Unit = {},
+    onOpenMoveDialog: () -> Unit = {},
+    onMoveToFolder: (String?) -> Unit = {},
+    activeSessionCount: Int = 0,
+    enableDragToFolder: Boolean = false,
+    dragDropState: SidebarTreeDragDropState? = null,
     indentLevel: Int = 1
 ) {
     val clipboard = LocalClipboardManager.current
     var contextMenuOpen by remember { mutableStateOf(false) }
     val hover = rememberDesktopHoverState()
+    val handleHover = rememberDesktopHoverState()
     val interactionSource = remember { MutableInteractionSource() }
     val isHovered = hover.value.isHovered
     val uiProto = NexusWorkspaceViewModel.mapProtocolToUiKind(connection.protocol)
     val customAccent = parseHexColorOrNull(connection.inheritable.displayColorAccentHex)
     val effectiveIconTint = customAccent ?: protocolAccentColor(uiProto)
+    val isBeingDragged = dragDropState?.draggingConnection?.id == connection.id
 
-    Box {
+    var rowOriginInRoot by remember { mutableStateOf(Offset.Zero) }
+    var handleOriginInRoot by remember { mutableStateOf(Offset.Zero) }
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = if (indentLevel > 0) ((indentLevel - 1) * 18 + 12).dp else 0.dp)
+    ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(start = (indentLevel * 14).dp)
-                .nexusHoverTracker(hover, PointerIcon.Hand)
-                .clip(MaterialTheme.shapes.medium)
-                .background(
-                    when {
-                        isSelected -> MaterialTheme.colorScheme.secondaryContainer
-                        isHovered -> MaterialTheme.colorScheme.surfaceContainerHigh
-                        else -> Color.Transparent
-                    }
-                )
-                .nexusDesktopPointerButtons(onSecondaryClick = { contextMenuOpen = true })
-                .clickable(
-                    interactionSource = interactionSource,
-                    indication = null
-                ) {
-                    onSelect()
-                    onLaunch(QuickLaunchPlacement.ACTIVE_PANE_TAB)
-                }
-                .padding(horizontal = 10.dp, vertical = 7.dp),
+                .height(IntrinsicSize.Min),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            if (customAccent != null) {
+            // Vertical Tree Hierarchy Guide Rail when nested inside a Folder
+            if (indentLevel > 0) {
                 Box(
                     modifier = Modifier
-                        .size(6.dp)
-                        .clip(CircleShape)
-                        .background(customAccent)
-                )
-                Spacer(modifier = Modifier.width(6.dp))
+                        .width(12.dp)
+                        .fillMaxHeight(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .width(2.dp)
+                            .fillMaxHeight()
+                            .padding(vertical = 3.dp)
+                            .clip(RoundedCornerShape(99.dp))
+                            .background(
+                                if (isSelected) {
+                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.65f)
+                                } else {
+                                    MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)
+                                }
+                            )
+                    )
+                }
             }
-            Icon(
-                imageVector = protocolIcon(uiProto),
-                contentDescription = null,
-                tint = effectiveIconTint,
-                modifier = Modifier.size(16.dp)
-            )
-            Spacer(modifier = Modifier.width(8.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = connection.name,
-                    style = MaterialTheme.typography.bodyMedium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Text(
-                    text = connection.host,
-                    style = NexusTheme.monospace.keycapShortcut,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-            IconButton(
-                onClick = onToggleFavorite,
-                modifier = Modifier.size(24.dp)
-            ) {
-                Icon(
-                    imageVector = if (connection.favorite) Icons.Outlined.Star else Icons.Outlined.StarBorder,
-                    contentDescription = strings.actionToggleFavorite,
-                    modifier = Modifier.size(14.dp),
-                    tint = if (connection.favorite) {
-                        MaterialTheme.colorScheme.tertiary
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
+
+            Row(
+                modifier = Modifier
+                    .weight(1f)
+                    .defaultMinSize(minHeight = 50.dp)
+                    .onGloballyPositioned { coords ->
+                        rowOriginInRoot = coords.positionInRoot()
                     }
-                )
-            }
-            IconButton(
-                onClick = onEdit,
-                modifier = Modifier.size(24.dp)
+                    .nexusHoverTracker(hover, PointerIcon.Hand)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(
+                        when {
+                            isBeingDragged -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.32f)
+                            isSelected -> MaterialTheme.colorScheme.secondaryContainer
+                            isHovered -> MaterialTheme.colorScheme.surfaceContainerHigh
+                            else -> Color.Transparent
+                        }
+                    )
+                    .pointerInput(connection.id, connection.parentFolderId, enableDragToFolder) {
+                        if (!enableDragToFolder || dragDropState == null) return@pointerInput
+                        awaitEachGesture {
+                            val down = awaitFirstDown(requireUnconsumed = false)
+                            if (down.type != PointerType.Mouse) return@awaitEachGesture
+                            var dragStarted = false
+                            var accumulated = Offset.Zero
+                            val slop = viewConfiguration.touchSlop
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                if (event.buttons.isSecondaryPressed) {
+                                    if (dragStarted) dragDropState.cancelDrag()
+                                    break
+                                }
+                                val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                                if (!change.pressed) {
+                                    if (dragStarted) {
+                                        change.consume()
+                                        dragDropState.finishDrag { _, targetFolderId ->
+                                            onMoveToFolder(targetFolderId)
+                                        }
+                                    }
+                                    break
+                                }
+                                val delta = change.positionChange()
+                                if (!dragStarted) {
+                                    accumulated += delta
+                                    if (event.buttons.isPrimaryPressed && accumulated.getDistance() > slop) {
+                                        dragStarted = true
+                                        dragDropState.startDrag(connection, rowOriginInRoot + change.position)
+                                        change.consume()
+                                    }
+                                } else {
+                                    change.consume()
+                                    dragDropState.updateDragAtRoot(rowOriginInRoot + change.position)
+                                }
+                            }
+                        }
+                    }
+                    .nexusDesktopPointerButtons(onSecondaryClick = { contextMenuOpen = true })
+                    .clickable(
+                        interactionSource = interactionSource,
+                        indication = null
+                    ) {
+                        onSelect()
+                        onLaunch(QuickLaunchPlacement.ACTIVE_PANE_TAB)
+                    }
+                    .padding(horizontal = 10.dp, vertical = 7.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(
-                    imageVector = Icons.Outlined.Edit,
-                    contentDescription = strings.actionEditConnection,
-                    modifier = Modifier.size(14.dp),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                if (enableDragToFolder && dragDropState != null) {
+                    Box(
+                        modifier = Modifier
+                            .size(width = 20.dp, height = 34.dp)
+                            .onGloballyPositioned { coords ->
+                                handleOriginInRoot = coords.positionInRoot()
+                            }
+                            .nexusHoverTracker(handleHover, PointerIcon.Hand)
+                            .pointerInput(connection.id, connection.parentFolderId) {
+                                detectDragGestures(
+                                    onDragStart = { localOffset ->
+                                        dragDropState.startDrag(connection, handleOriginInRoot + localOffset)
+                                    },
+                                    onDrag = { change, dragAmount ->
+                                        change.consume()
+                                        dragDropState.updateDragByDelta(dragAmount)
+                                    },
+                                    onDragEnd = {
+                                        dragDropState.finishDrag { _, targetFolderId ->
+                                            onMoveToFolder(targetFolderId)
+                                        }
+                                    },
+                                    onDragCancel = {
+                                        dragDropState.cancelDrag()
+                                    }
+                                )
+                            },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.DragIndicator,
+                            contentDescription = "Drag ${connection.name}",
+                            modifier = Modifier.size(16.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(
+                                alpha = if (isHovered || isSelected || handleHover.value.isHovered) 0.85f else 0.35f
+                            )
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(4.dp))
+                }
+
+                // Tinted Protocol Squircle Endpoint Badge + Live Session Indicator Dot
+                Box(modifier = Modifier.size(36.dp)) {
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = effectiveIconTint.copy(alpha = 0.14f),
+                        modifier = Modifier.fillMaxSize()
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = protocolIcon(uiProto),
+                                contentDescription = null,
+                                tint = effectiveIconTint,
+                                modifier = Modifier.size(19.dp)
+                            )
+                        }
+                    }
+                    if (activeSessionCount > 0) {
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.BottomEnd)
+                                .size(10.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.surface)
+                                .padding(1.5.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.primary)
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.width(10.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                    ) {
+                        Text(
+                            text = connection.name,
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
+                        )
+                        if (connection.favorite) {
+                            Icon(
+                                imageVector = Icons.Outlined.Star,
+                                contentDescription = null,
+                                modifier = Modifier.size(13.dp),
+                                tint = MaterialTheme.colorScheme.tertiary
+                            )
+                        }
+                    }
+                    Text(
+                        text = "${connection.protocol.name} • ${connection.host}",
+                        style = NexusTheme.monospace.keycapShortcut,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+
+                // Decluttered trailing area: clean single action button only on hover/selection
+                if (isHovered || isSelected || contextMenuOpen) {
+                    IconButton(
+                        onClick = { contextMenuOpen = true },
+                        modifier = Modifier.size(28.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.MoreVert,
+                            contentDescription = strings.actionEditConnection,
+                            modifier = Modifier.size(16.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
             }
         }
 
@@ -2349,6 +3130,22 @@ private fun ConnectionTreeRow(
                     onConnectWithOptions()
                 }
             )
+            if (activeSessionCount > 0) {
+                DropdownMenuItem(
+                    text = { Text("${strings.actionDisconnectSession} ($activeSessionCount)") },
+                    leadingIcon = {
+                        Icon(
+                            Icons.Outlined.PowerSettingsNew,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.error
+                        )
+                    },
+                    onClick = {
+                        contextMenuOpen = false
+                        onDisconnect()
+                    }
+                )
+            }
             HorizontalDivider()
             DropdownMenuItem(
                 text = { Text(strings.splitRight) },
@@ -2375,6 +3172,14 @@ private fun ConnectionTreeRow(
                 }
             )
             HorizontalDivider()
+            DropdownMenuItem(
+                text = { Text(strings.actionMoveToFolder) },
+                leadingIcon = { Icon(Icons.Outlined.DriveFileMove, contentDescription = null) },
+                onClick = {
+                    contextMenuOpen = false
+                    onOpenMoveDialog()
+                }
+            )
             DropdownMenuItem(
                 text = { Text("Copy Host") },
                 leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null) },
@@ -3075,4 +3880,580 @@ private fun ImportErrorAlertDialog(
         }
     )
 }
+
+@Composable
+private fun LanguageSelectionDialog(
+    visible: Boolean,
+    currentLocale: SupportedNexusLocale,
+    strings: WorkspaceLocalizedStrings,
+    onSelectLocale: (SupportedNexusLocale) -> Unit,
+    onDismiss: () -> Unit
+) {
+    if (!visible) return
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        shape = RoundedCornerShape(28.dp),
+        icon = {
+            Icon(
+                imageVector = Icons.Outlined.Language,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(28.dp)
+            )
+        },
+        title = {
+            Text(
+                text = strings.dialogLanguageTitle,
+                style = MaterialTheme.typography.headlineSmall
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                SupportedNexusLocale.entries.forEach { locale ->
+                    val isSelected = locale == currentLocale
+                    val localizedLabel = strings.languageLabels[locale] ?: locale.nativeDisplayName
+                    val rowHover = rememberDesktopHoverState()
+                    val rowInteraction = remember { MutableInteractionSource() }
+                    val isHovered = rowHover.value.isHovered
+
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .nexusHoverTracker(rowHover, PointerIcon.Hand)
+                            .clip(RoundedCornerShape(16.dp))
+                            .clickable(
+                                interactionSource = rowInteraction,
+                                indication = null,
+                                onClick = { onSelectLocale(locale) }
+                            ),
+                        shape = RoundedCornerShape(16.dp),
+                        color = when {
+                            isSelected -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.72f)
+                            isHovered -> MaterialTheme.colorScheme.surfaceContainerHighest
+                            else -> MaterialTheme.colorScheme.surfaceContainerLow
+                        },
+                        border = BorderStroke(
+                            width = if (isSelected) 1.5.dp else 1.dp,
+                            color = if (isSelected) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
+                            }
+                        )
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 13.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(
+                                modifier = Modifier.weight(1f),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(14.dp)
+                            ) {
+                                NexusLanguageFlagBadge(
+                                    languageCode = locale.bcp47Tag,
+                                    width = 38.dp,
+                                    height = 26.dp,
+                                    cornerRadius = 6.dp
+                                )
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = locale.nativeDisplayName,
+                                        style = MaterialTheme.typography.titleSmall,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                    Text(
+                                        text = "$localizedLabel • ${locale.regionSubtitle}",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Surface(
+                                    shape = RoundedCornerShape(99.dp),
+                                    color = MaterialTheme.colorScheme.surfaceContainerHighest
+                                ) {
+                                    Text(
+                                        text = locale.bcp47Tag.uppercase(),
+                                        style = NexusTheme.monospace.keycapShortcut,
+                                        color = MaterialTheme.colorScheme.secondary,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                    )
+                                }
+                                if (isSelected) {
+                                    Icon(
+                                        imageVector = Icons.Outlined.CheckCircle,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text(strings.dialogActionCancel)
+            }
+        }
+    )
+}
+
+@Composable
+private fun MoveConnectionToFolderDialog(
+    targetConnection: VaultConnection?,
+    folders: List<VaultFolder>,
+    strings: WorkspaceLocalizedStrings,
+    onMoveToFolder: (String, String?) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val connection = targetConnection ?: return
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        shape = RoundedCornerShape(28.dp),
+        icon = {
+            Icon(
+                imageVector = Icons.Outlined.DriveFileMove,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(28.dp)
+            )
+        },
+        title = {
+            Text(
+                text = strings.actionMoveToFolder,
+                style = MaterialTheme.typography.headlineSmall
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 420.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = "${connection.name} (${connection.host})",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.secondary
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+
+                val isAtRoot = connection.parentFolderId == null
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(14.dp))
+                        .clickable {
+                            onMoveToFolder(connection.id, null)
+                            onDismiss()
+                        },
+                    shape = RoundedCornerShape(14.dp),
+                    color = if (isAtRoot) {
+                        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f)
+                    } else {
+                        MaterialTheme.colorScheme.surfaceContainerLow
+                    },
+                    border = BorderStroke(
+                        1.dp,
+                        if (isAtRoot) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
+                    )
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.Folder,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.secondary,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Text(
+                                text = strings.moveToRootFolder,
+                                style = MaterialTheme.typography.titleSmall
+                            )
+                        }
+                        if (isAtRoot) {
+                            Icon(
+                                imageVector = Icons.Outlined.CheckCircle,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
+                }
+
+                folders.forEach { folder ->
+                    val isCurrent = connection.parentFolderId == folder.id
+                    val accent = parseHexColorOrNull(folder.inheritable.displayColorAccentHex)
+                        ?: MaterialTheme.colorScheme.primary
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(14.dp))
+                            .clickable {
+                                onMoveToFolder(connection.id, folder.id)
+                                onDismiss()
+                            },
+                        shape = RoundedCornerShape(14.dp),
+                        color = if (isCurrent) {
+                            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f)
+                        } else {
+                            MaterialTheme.colorScheme.surfaceContainerLow
+                        },
+                        border = BorderStroke(
+                            1.dp,
+                            if (isCurrent) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
+                        )
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(
+                                modifier = Modifier.weight(1f),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                Icon(
+                                    imageVector = FilledFolderIcon,
+                                    contentDescription = null,
+                                    tint = accent,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Text(
+                                    text = folder.name,
+                                    style = MaterialTheme.typography.titleSmall,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            if (isCurrent) {
+                                Icon(
+                                    imageVector = Icons.Outlined.CheckCircle,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text(strings.dialogActionCancel)
+            }
+        }
+    )
+}
+
+@Composable
+private fun PlayProtectAutoUpdateDialog(
+    visible: Boolean,
+    uiState: WorkspaceUiState,
+    strings: WorkspaceLocalizedStrings,
+    onToggleAutoCheck: (Boolean) -> Unit,
+    onCheckNow: () -> Unit,
+    onTriggerBrowserUpdate: () -> Unit,
+    onDownloadVerifiedToFiles: () -> Unit,
+    onSkipVersion: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    if (!visible) return
+    val clipboard = LocalClipboardManager.current
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        shape = RoundedCornerShape(28.dp),
+        icon = {
+            Icon(
+                imageVector = Icons.Outlined.SystemUpdateAlt,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(28.dp)
+            )
+        },
+        title = {
+            Text(
+                text = strings.autoUpdateTitle,
+                style = MaterialTheme.typography.headlineSmall
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 460.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                // Google Play Protect Compliance Shield Banner
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.55f),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Security,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "Google Play Protect Verified Architecture",
+                                style = MaterialTheme.typography.labelLarge,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = "Zero REQUEST_INSTALL_PACKAGES • HTTPS GitHub Release + SHA-256 + APK Signature Scheme v3/v4",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+
+                // Auto-check toggle card
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerLow,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = strings.autoUpdateAutoCheck,
+                            style = MaterialTheme.typography.bodyLarge,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Switch(
+                            checked = uiState.autoCheckUpdatesEnabled,
+                            onCheckedChange = onToggleAutoCheck
+                        )
+                    }
+                }
+
+                // Current release status card
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = if (uiState.updateAvailable) {
+                        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
+                    } else {
+                        MaterialTheme.colorScheme.surfaceContainerLow
+                    },
+                    border = BorderStroke(
+                        1.dp,
+                        if (uiState.updateAvailable) MaterialTheme.colorScheme.primary.copy(alpha = 0.6f)
+                        else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
+                    )
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            if (uiState.isCheckingForUpdates) {
+                                CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                            } else {
+                                Icon(
+                                    imageVector = if (uiState.updateAvailable) {
+                                        Icons.Outlined.SystemUpdateAlt
+                                    } else {
+                                        Icons.Outlined.CheckCircle
+                                    },
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                            Text(
+                                text = when {
+                                    uiState.isCheckingForUpdates -> "Checking GitHub Releases over HTTPS…"
+                                    uiState.updateAvailable -> "${strings.autoUpdateAvailableBadge}: ${uiState.updateLatestTag}"
+                                    else -> strings.autoUpdateUpToDate
+                                },
+                                style = MaterialTheme.typography.titleSmall,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+
+                        if (uiState.updateCurrentVersion.isNotBlank() || uiState.updateLatestTag.isNotBlank()) {
+                            val sizeMb = if (uiState.updateApkSizeBytes > 0L) {
+                                String.format(" • %.1f MB", uiState.updateApkSizeBytes / (1024.0 * 1024.0))
+                            } else {
+                                ""
+                            }
+                            Text(
+                                text = "Installed: v${uiState.updateCurrentVersion.ifBlank { "1.1.5" }}  →  Latest: ${uiState.updateLatestTag.ifBlank { "current" }}$sizeMb",
+                                style = NexusTheme.monospace.codeSnippet,
+                                color = MaterialTheme.colorScheme.secondary
+                            )
+                        }
+
+                        if (uiState.updateSha256Hex.isNotBlank()) {
+                            Surface(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .clickable {
+                                        clipboard.setText(AnnotatedString(uiState.updateSha256Hex))
+                                    },
+                                shape = RoundedCornerShape(10.dp),
+                                color = MaterialTheme.colorScheme.surfaceContainerLowest
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(
+                                        text = "SHA-256: ${uiState.updateSha256Hex.take(24)}…",
+                                        style = NexusTheme.monospace.keycapShortcut,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    Icon(
+                                        imageVector = Icons.Outlined.ContentCopy,
+                                        contentDescription = "Copy SHA-256",
+                                        modifier = Modifier.size(15.dp),
+                                        tint = MaterialTheme.colorScheme.secondary
+                                    )
+                                }
+                            }
+                        }
+
+                        if (uiState.updateReleaseNotes.isNotBlank()) {
+                            Text(
+                                text = uiState.updateReleaseNotes.take(420),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+
+                if (uiState.updateVerificationMessage.isNotBlank()) {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surfaceContainerHigh
+                    ) {
+                        Text(
+                            text = uiState.updateVerificationMessage,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.padding(12.dp)
+                        )
+                    }
+                }
+
+                if (uiState.updateAvailable) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        FilledTonalButton(
+                            onClick = onDownloadVerifiedToFiles,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(Icons.Outlined.Download, contentDescription = null, modifier = Modifier.size(17.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Verified APK Download", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                        OutlinedButton(onClick = onSkipVersion) {
+                            Text("Skip")
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            if (uiState.updateAvailable) {
+                Button(onClick = onTriggerBrowserUpdate) {
+                    Icon(Icons.Outlined.SystemUpdateAlt, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(strings.autoUpdateInstallAction)
+                }
+            } else {
+                FilledTonalButton(
+                    onClick = onCheckNow,
+                    enabled = !uiState.isCheckingForUpdates
+                ) {
+                    Icon(Icons.Outlined.Refresh, contentDescription = null, modifier = Modifier.size(17.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(strings.syncCheckGitHubUpdates)
+                }
+            }
+        },
+        dismissButton = {
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                if (uiState.updateAvailable) {
+                    TextButton(
+                        onClick = onCheckNow,
+                        enabled = !uiState.isCheckingForUpdates
+                    ) {
+                        Text("Check Again")
+                    }
+                }
+                TextButton(onClick = onDismiss) {
+                    Text(strings.dialogActionCancel)
+                }
+            }
+        }
+    )
+}
+
 

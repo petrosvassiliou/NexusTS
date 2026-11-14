@@ -28,6 +28,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Folder as FilledFolderIcon
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Bookmarks
@@ -36,12 +37,14 @@ import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.CreateNewFolder
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.DesktopWindows
+import androidx.compose.material.icons.outlined.DriveFileMove
 import androidx.compose.material.icons.outlined.DynamicFeed
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.PlayArrow
+import androidx.compose.material.icons.outlined.PowerSettingsNew
 import androidx.compose.material.icons.outlined.RadioButtonUnchecked
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Shield
@@ -122,7 +125,7 @@ import kotlinx.coroutines.delay
 val ROYAL_EXPRESSIVE_SWATCHES: List<Pair<String?, String>> = listOf(
     null to "Auto",
     "#5B9BFF" to "Cobalt",
-    "#2ED3B7" to "Mint",
+    "#818CF8" to "Indigo",
     "#FFB347" to "Amber",
     "#38BDF8" to "Cyan",
     "#F472B6" to "Coral"
@@ -335,6 +338,7 @@ fun ExpressiveVaultOverviewDashboard(
     onEditFolder: (VaultFolder) -> Unit = {},
     onDuplicateFolder: (VaultFolder) -> Unit = {},
     onDeleteFolder: (String) -> Unit = {},
+    onDisconnectAllInFolder: (String) -> Unit = {},
     onLaunchConnectionInSplitRight: (VaultConnection) -> Unit = {},
     onLaunchConnectionInSplitDown: (VaultConnection) -> Unit = {},
     onLaunchConnectionDetached: (VaultConnection) -> Unit = {},
@@ -342,7 +346,10 @@ fun ExpressiveVaultOverviewDashboard(
     onDuplicateConnection: (VaultConnection) -> Unit = {},
     onToggleFavorite: (String) -> Unit = {},
     onDeleteConnection: (String) -> Unit = {},
+    onDisconnectConnection: (String) -> Unit = {},
+    onMoveConnectionToFolder: (VaultConnection) -> Unit = {},
     onLaunchLocalShell: () -> Unit = {},
+    activeConnectionIds: Set<String> = emptySet(),
     modifier: Modifier = Modifier
 ) {
     val clipboard = LocalClipboardManager.current
@@ -365,16 +372,36 @@ fun ExpressiveVaultOverviewDashboard(
         activeTodos.count { !it.completed }
     }
 
+    val folderSubtreeStats = remember(activeFolders, activeConnections, activeConnectionIds) {
+        val childrenByParent = activeFolders.groupBy { it.parentFolderId }
+        val connsByFolder = activeConnections.groupBy { it.parentFolderId }
+
+        fun collectSubtreeFolderIds(rootId: String, visited: MutableSet<String>) {
+            if (!visited.add(rootId)) return
+            childrenByParent[rootId].orEmpty().forEach { child ->
+                collectSubtreeFolderIds(child.id, visited)
+            }
+        }
+
+        activeFolders.associate { folder ->
+            val subtreeIds = mutableSetOf<String>()
+            collectSubtreeFolderIds(folder.id, subtreeIds)
+            val subtreeConns = subtreeIds.flatMap { fid -> connsByFolder[fid].orEmpty() }
+            val activeInSubtree = subtreeConns.count { it.id in activeConnectionIds }
+            folder.id to (subtreeConns.size to activeInSubtree)
+        }
+    }
+
     val isVaultCleanEmpty = activeConnections.isEmpty() && activeFolders.isEmpty() && activeTodos.isEmpty()
 
     if (isVaultCleanEmpty) {
-        // Serene, spacious Material 3 Expressive Welcome State for a clean empty workspace
+        // Serene, spacious Google Material 3 Welcome State for a clean empty workspace
         Box(
             modifier = modifier
                 .fillMaxSize()
                 .nexusDesktopPointerButtons(onSecondaryClick = { overviewBgMenuOpen = true })
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 28.dp, vertical = 24.dp),
+                .padding(horizontal = 32.dp, vertical = 28.dp),
             contentAlignment = Alignment.Center
         ) {
             val welcomeShape = rememberMorphingContainerShape(
@@ -387,23 +414,23 @@ fun ExpressiveVaultOverviewDashboard(
                 color = MaterialTheme.colorScheme.surfaceContainerLow,
                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)),
                 modifier = Modifier
-                    .widthIn(max = 560.dp)
+                    .widthIn(max = 600.dp)
                     .fillMaxWidth()
             ) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 32.dp, vertical = 36.dp),
+                        .padding(horizontal = 36.dp, vertical = 40.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                    verticalArrangement = Arrangement.spacedBy(18.dp)
                 ) {
-                    NexusBrandEmblem(size = 72.dp, cornerRadius = 20.dp)
+                    NexusBrandEmblem(size = 76.dp, cornerRadius = 22.dp)
 
                     Spacer(modifier = Modifier.height(2.dp))
 
                     Text(
                         text = strings.emptyWorkspaceTitle,
-                        style = MaterialTheme.typography.headlineSmall,
+                        style = MaterialTheme.typography.headlineMedium,
                         color = MaterialTheme.colorScheme.onSurface,
                         textAlign = TextAlign.Center,
                         modifier = Modifier.fillMaxWidth()
@@ -415,7 +442,7 @@ fun ExpressiveVaultOverviewDashboard(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         textAlign = TextAlign.Center,
                         modifier = Modifier
-                            .widthIn(max = 460.dp)
+                            .widthIn(max = 480.dp)
                             .fillMaxWidth()
                     )
 
@@ -423,27 +450,27 @@ fun ExpressiveVaultOverviewDashboard(
 
                     FlowRow(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterHorizontally),
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                        horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
                         Button(onClick = onNewConnection) {
-                            Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(19.dp))
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(strings.actionNewConnection)
                         }
                         FilledTonalButton(onClick = onOpenQuickConnect) {
-                            Icon(Icons.Outlined.Search, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Icon(Icons.Outlined.Search, contentDescription = null, modifier = Modifier.size(19.dp))
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(strings.quickConnectButton)
                         }
                         OutlinedButton(onClick = onNewFolder) {
-                            Icon(Icons.Outlined.CreateNewFolder, contentDescription = null, modifier = Modifier.size(17.dp))
+                            Icon(Icons.Outlined.CreateNewFolder, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(strings.actionNewFolder)
                         }
                         if (onImportVault != null) {
                             OutlinedButton(onClick = onImportVault) {
-                                Icon(Icons.Outlined.UploadFile, contentDescription = null, modifier = Modifier.size(17.dp))
+                                Icon(Icons.Outlined.UploadFile, contentDescription = null, modifier = Modifier.size(18.dp))
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Text(strings.actionImportRtsz)
                             }
@@ -452,24 +479,24 @@ fun ExpressiveVaultOverviewDashboard(
 
                     HorizontalDivider(
                         modifier = Modifier.padding(top = 8.dp),
-                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f)
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.28f)
                     )
 
                     FlowRow(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterHorizontally),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         listOf("RDP", "SSH", "SFTP", "VNC", "HTTPS", "K8s", "Serial").forEach { proto ->
                             Surface(
                                 shape = RoundedCornerShape(99.dp),
-                                color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.7f)
+                                color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.72f)
                             ) {
                                 Text(
                                     text = proto,
                                     style = NexusTheme.monospace.keycapShortcut,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp)
                                 )
                             }
                         }
@@ -529,7 +556,7 @@ fun ExpressiveVaultOverviewDashboard(
         return
     }
 
-    // Populated Vault Overview — responsive layout that never squishes titles or metrics at any width
+    // Populated Vault Overview — spacious modern Google Material 3 layout
     BoxWithConstraints(
         modifier = modifier
             .fillMaxSize()
@@ -541,10 +568,10 @@ fun ExpressiveVaultOverviewDashboard(
             modifier = Modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
-                .padding(24.dp),
-            verticalArrangement = Arrangement.spacedBy(20.dp)
+                .padding(28.dp),
+            verticalArrangement = Arrangement.spacedBy(24.dp)
         ) {
-            // Expressive Hero Banner — stacks text cleanly above FlowRow actions so text always has 100% width
+            // Hero Workspace Header Card
             val heroShape = rememberMorphingContainerShape(
                 MorphContainerState.Resting,
                 restingRadius = 26.dp,
@@ -553,21 +580,21 @@ fun ExpressiveVaultOverviewDashboard(
             Surface(
                 shape = heroShape,
                 color = MaterialTheme.colorScheme.surfaceContainerLow,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.36f)),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 24.dp, vertical = 20.dp),
-                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                        .padding(horizontal = 26.dp, vertical = 22.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(14.dp)
+                        horizontalArrangement = Arrangement.spacedBy(16.dp)
                     ) {
-                        NexusBrandEmblem(size = 44.dp, cornerRadius = 13.dp)
+                        NexusBrandEmblem(size = 50.dp, cornerRadius = 15.dp)
                         Column(
                             modifier = Modifier.weight(1f),
                             verticalArrangement = Arrangement.spacedBy(4.dp)
@@ -587,27 +614,27 @@ fun ExpressiveVaultOverviewDashboard(
 
                     FlowRow(
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
                         Button(onClick = onNewConnection) {
-                            Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(17.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
+                            Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
                             Text(strings.actionNewConnection)
                         }
                         FilledTonalButton(onClick = onOpenQuickConnect) {
-                            Icon(Icons.Outlined.Search, contentDescription = null, modifier = Modifier.size(17.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
+                            Icon(Icons.Outlined.Search, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
                             Text(strings.quickConnectButton)
                         }
                         OutlinedButton(onClick = onNewFolder) {
-                            Icon(Icons.Outlined.CreateNewFolder, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
+                            Icon(Icons.Outlined.CreateNewFolder, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
                             Text(strings.actionNewFolder)
                         }
                         if (onImportVault != null) {
                             OutlinedButton(onClick = onImportVault) {
-                                Icon(Icons.Outlined.UploadFile, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
+                                Icon(Icons.Outlined.UploadFile, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
                                 Text(strings.actionImportRtsz)
                             }
                         }
@@ -615,8 +642,64 @@ fun ExpressiveVaultOverviewDashboard(
                 }
             }
 
-            // Adaptive Material 3 Expressive Metric Grid (4-col on wide windows, 2x2 on compact/medium panes)
+            // Clean, Uncluttered Google M3 Metric Summary Strip (3 balanced cards on wide screens, 4th only if templates/todos exist)
+            val showFourthMetric = vaultDocument.templates.isNotEmpty() || activeTodos.isNotEmpty()
             if (isWide) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    ExpressiveMetricCard(
+                        label = strings.navConnections,
+                        value = activeConnections.size.toString(),
+                        subtitle = strings.actionNewConnection,
+                        icon = Icons.Outlined.Terminal,
+                        accentColor = MaterialTheme.colorScheme.primary,
+                        onClick = onNewConnection,
+                        modifier = Modifier.weight(1f)
+                    )
+                    ExpressiveMetricCard(
+                        label = strings.vaultSectionFolders,
+                        value = activeFolders.size.toString(),
+                        subtitle = strings.actionNewFolder,
+                        icon = FilledFolderIcon,
+                        accentColor = MaterialTheme.colorScheme.secondary,
+                        onClick = onNewFolder,
+                        modifier = Modifier.weight(1f)
+                    )
+                    ExpressiveMetricCard(
+                        label = strings.overviewActiveSessions,
+                        value = activeSessionCount.toString(),
+                        subtitle = strings.quickConnectButton,
+                        icon = Icons.Outlined.PlayArrow,
+                        accentColor = MaterialTheme.colorScheme.tertiary,
+                        onClick = onOpenQuickConnect,
+                        modifier = Modifier.weight(1f)
+                    )
+                    if (showFourthMetric) {
+                        if (vaultDocument.templates.isNotEmpty()) {
+                            ExpressiveMetricCard(
+                                label = strings.navTemplates,
+                                value = vaultDocument.templates.size.toString(),
+                                subtitle = strings.actionNewTemplate,
+                                icon = Icons.Outlined.Bookmarks,
+                                accentColor = MaterialTheme.colorScheme.primary,
+                                onClick = onOpenTemplates,
+                                modifier = Modifier.weight(1f)
+                            )
+                        } else {
+                            ExpressiveMetricCard(
+                                label = strings.inspectorTodoItems,
+                                value = pendingTodos.toString(),
+                                subtitle = "${activeTodos.size}",
+                                icon = Icons.Outlined.CheckCircle,
+                                accentColor = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+                }
+            } else {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(12.dp)
@@ -639,86 +722,21 @@ fun ExpressiveVaultOverviewDashboard(
                         onClick = onOpenQuickConnect,
                         modifier = Modifier.weight(1f)
                     )
-                    ExpressiveMetricCard(
-                        label = strings.navTemplates,
-                        value = vaultDocument.templates.size.toString(),
-                        subtitle = strings.actionNewTemplate,
-                        icon = Icons.Outlined.Bookmarks,
-                        accentColor = MaterialTheme.colorScheme.tertiary,
-                        onClick = onOpenTemplates,
-                        modifier = Modifier.weight(1f)
-                    )
-                    ExpressiveMetricCard(
-                        label = strings.inspectorTodoItems,
-                        value = pendingTodos.toString(),
-                        subtitle = "${activeTodos.size}",
-                        icon = Icons.Outlined.CheckCircle,
-                        accentColor = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.weight(1f)
-                    )
-                }
-            } else {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        ExpressiveMetricCard(
-                            label = strings.navConnections,
-                            value = activeConnections.size.toString(),
-                            subtitle = "${activeFolders.size} ${strings.vaultSectionFolders}",
-                            icon = Icons.Outlined.Terminal,
-                            accentColor = MaterialTheme.colorScheme.primary,
-                            onClick = onNewConnection,
-                            modifier = Modifier.weight(1f)
-                        )
-                        ExpressiveMetricCard(
-                            label = strings.overviewActiveSessions,
-                            value = activeSessionCount.toString(),
-                            subtitle = strings.quickConnectButton,
-                            icon = Icons.Outlined.PlayArrow,
-                            accentColor = MaterialTheme.colorScheme.secondary,
-                            onClick = onOpenQuickConnect,
-                            modifier = Modifier.weight(1f)
-                        )
-                    }
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        ExpressiveMetricCard(
-                            label = strings.navTemplates,
-                            value = vaultDocument.templates.size.toString(),
-                            subtitle = strings.actionNewTemplate,
-                            icon = Icons.Outlined.Bookmarks,
-                            accentColor = MaterialTheme.colorScheme.tertiary,
-                            onClick = onOpenTemplates,
-                            modifier = Modifier.weight(1f)
-                        )
-                        ExpressiveMetricCard(
-                            label = strings.inspectorTodoItems,
-                            value = pendingTodos.toString(),
-                            subtitle = "${activeTodos.size}",
-                            icon = Icons.Outlined.CheckCircle,
-                            accentColor = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.weight(1f)
-                        )
-                    }
                 }
             }
 
             // Pinned Favorites Quick-Launch Strip
             if (favorites.isNotEmpty()) {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Outlined.Star,
                             contentDescription = null,
                             tint = MaterialTheme.colorScheme.tertiary,
-                            modifier = Modifier.size(18.dp)
+                            modifier = Modifier.size(20.dp)
                         )
                         Text(
                             text = strings.vaultSectionFavorites,
@@ -727,11 +745,12 @@ fun ExpressiveVaultOverviewDashboard(
                     }
                     Row(
                         modifier = Modifier.horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        horizontalArrangement = Arrangement.spacedBy(14.dp)
                     ) {
                         favorites.forEach { fav ->
                             val accent = parseHexColorOrNull(fav.inheritable.displayColorAccentHex)
                                 ?: MaterialTheme.colorScheme.primary
+                            val isFavActive = fav.id in activeConnectionIds
                             val favHover = rememberDesktopHoverState()
                             val favInteraction = remember { MutableInteractionSource() }
                             var favMenuOpen by remember(fav.id) { mutableStateOf(false) }
@@ -749,7 +768,7 @@ fun ExpressiveVaultOverviewDashboard(
                                         accent.copy(alpha = if (favHover.value.isHovered) 0.65f else 0.35f)
                                     ),
                                     modifier = Modifier
-                                        .width(250.dp)
+                                        .width(268.dp)
                                         .nexusHoverTracker(favHover, PointerIcon.Hand)
                                         .nexusDesktopPointerButtons(onSecondaryClick = { favMenuOpen = true })
                                         .clip(RoundedCornerShape(20.dp))
@@ -760,19 +779,32 @@ fun ExpressiveVaultOverviewDashboard(
                                         )
                                 ) {
                                     Column(
-                                        modifier = Modifier.padding(14.dp),
-                                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                                        modifier = Modifier.padding(16.dp),
+                                        verticalArrangement = Arrangement.spacedBy(8.dp)
                                     ) {
                                         Row(
                                             modifier = Modifier.fillMaxWidth(),
                                             verticalAlignment = Alignment.CenterVertically,
                                             horizontalArrangement = Arrangement.SpaceBetween
                                         ) {
-                                            Text(
-                                                text = fav.protocol.name,
-                                                style = NexusTheme.monospace.keycapShortcut,
-                                                color = accent
-                                            )
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                            ) {
+                                                if (isFavActive) {
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .size(8.dp)
+                                                            .clip(CircleShape)
+                                                            .background(Color(0xFF38BDF8))
+                                                    )
+                                                }
+                                                Text(
+                                                    text = fav.protocol.name,
+                                                    style = NexusTheme.monospace.keycapShortcut,
+                                                    color = accent
+                                                )
+                                            }
                                             TextButton(onClick = { onConnectWithOptions(fav) }) {
                                                 Text(
                                                     text = strings.actionConnectWithOptions,
@@ -784,7 +816,7 @@ fun ExpressiveVaultOverviewDashboard(
                                         }
                                         Text(
                                             text = fav.name,
-                                            style = MaterialTheme.typography.titleSmall,
+                                            style = MaterialTheme.typography.titleMedium,
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis
                                         )
@@ -818,6 +850,23 @@ fun ExpressiveVaultOverviewDashboard(
                                             onConnectWithOptions(fav)
                                         }
                                     )
+                                    if (isFavActive) {
+                                        DropdownMenuItem(
+                                            text = { Text(strings.actionDisconnectSession, color = MaterialTheme.colorScheme.error) },
+                                            leadingIcon = {
+                                                Icon(
+                                                    Icons.Outlined.PowerSettingsNew,
+                                                    contentDescription = null,
+                                                    tint = MaterialTheme.colorScheme.error,
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                            },
+                                            onClick = {
+                                                favMenuOpen = false
+                                                onDisconnectConnection(fav.id)
+                                            }
+                                        )
+                                    }
                                     DropdownMenuItem(
                                         text = { Text(strings.splitRight) },
                                         leadingIcon = { Icon(Icons.Outlined.Splitscreen, contentDescription = null, modifier = Modifier.size(18.dp)) },
@@ -843,6 +892,14 @@ fun ExpressiveVaultOverviewDashboard(
                                         }
                                     )
                                     HorizontalDivider()
+                                    DropdownMenuItem(
+                                        text = { Text(strings.actionMoveToFolder) },
+                                        leadingIcon = { Icon(Icons.Outlined.DriveFileMove, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                                        onClick = {
+                                            favMenuOpen = false
+                                            onMoveConnectionToFolder(fav)
+                                        }
+                                    )
                                     DropdownMenuItem(
                                         text = { Text("Copy Host (${fav.host})") },
                                         leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp)) },
@@ -898,39 +955,50 @@ fun ExpressiveVaultOverviewDashboard(
                 }
             }
 
-            // Adaptive Bottom Deck: Folders (only when folders exist) + To-Do Checklist (only when todos exist)
+            // Adaptive Bottom Deck: Folders (with unmistakable folder container cards & Disconnect All) + To-Do Checklist
             if (activeFolders.isNotEmpty() || activeTodos.isNotEmpty()) {
                 val foldersCard: @Composable (Modifier) -> Unit = { cardMod ->
                     Surface(
-                        shape = RoundedCornerShape(22.dp),
+                        shape = RoundedCornerShape(24.dp),
                         color = MaterialTheme.colorScheme.surfaceContainerLow,
                         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)),
                         modifier = cardMod
                     ) {
                         Column(
-                            modifier = Modifier.padding(16.dp),
-                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                            modifier = Modifier.padding(20.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
-                                Text(strings.vaultSectionFolders, style = MaterialTheme.typography.titleMedium)
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = FilledFolderIcon,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                    Text(strings.vaultSectionFolders, style = MaterialTheme.typography.titleMedium)
+                                }
                                 IconButton(
                                     onClick = onNewFolder,
-                                    modifier = Modifier.size(30.dp)
+                                    modifier = Modifier.size(36.dp)
                                 ) {
                                     Icon(
                                         Icons.Outlined.CreateNewFolder,
                                         contentDescription = strings.actionNewFolder,
                                         tint = MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.size(18.dp)
+                                        modifier = Modifier.size(20.dp)
                                     )
                                 }
                             }
                             activeFolders.forEach { folder ->
-                                val childCount = activeConnections.count { it.parentFolderId == folder.id }
+                                val (subtreeCount, subtreeActiveCount) = folderSubtreeStats[folder.id] ?: (0 to 0)
                                 val folderAccent = parseHexColorOrNull(folder.inheritable.displayColorAccentHex)
                                     ?: MaterialTheme.colorScheme.primary
                                 val folderHover = rememberDesktopHoverState()
@@ -939,7 +1007,7 @@ fun ExpressiveVaultOverviewDashboard(
 
                                 Box(modifier = Modifier.fillMaxWidth()) {
                                     Surface(
-                                        shape = RoundedCornerShape(14.dp),
+                                        shape = RoundedCornerShape(16.dp),
                                         color = if (folderHover.value.isHovered) {
                                             MaterialTheme.colorScheme.surfaceContainerHigh
                                         } else {
@@ -948,16 +1016,16 @@ fun ExpressiveVaultOverviewDashboard(
                                         border = BorderStroke(
                                             1.dp,
                                             if (folderHover.value.isHovered) {
-                                                folderAccent.copy(alpha = 0.45f)
+                                                folderAccent.copy(alpha = 0.50f)
                                             } else {
-                                                Color.Transparent
+                                                MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.30f)
                                             }
                                         ),
                                         modifier = Modifier
                                             .fillMaxWidth()
                                             .nexusHoverTracker(folderHover, PointerIcon.Hand)
                                             .nexusDesktopPointerButtons(onSecondaryClick = { folderMenuOpen = true })
-                                            .clip(RoundedCornerShape(14.dp))
+                                            .clip(RoundedCornerShape(16.dp))
                                             .clickable(
                                                 interactionSource = folderInteraction,
                                                 indication = null,
@@ -967,56 +1035,104 @@ fun ExpressiveVaultOverviewDashboard(
                                         Row(
                                             modifier = Modifier
                                                 .fillMaxWidth()
-                                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                                                .padding(horizontal = 14.dp, vertical = 12.dp),
                                             verticalAlignment = Alignment.CenterVertically,
                                             horizontalArrangement = Arrangement.SpaceBetween
                                         ) {
                                             Row(
                                                 modifier = Modifier.weight(1f),
                                                 verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                                horizontalArrangement = Arrangement.spacedBy(12.dp)
                                             ) {
-                                                Icon(
-                                                    imageVector = Icons.Outlined.Folder,
-                                                    contentDescription = null,
-                                                    tint = folderAccent,
-                                                    modifier = Modifier.size(18.dp)
-                                                )
-                                                Column(modifier = Modifier.weight(1f)) {
+                                                Surface(
+                                                    shape = RoundedCornerShape(11.dp),
+                                                    color = folderAccent.copy(alpha = 0.16f),
+                                                    modifier = Modifier.size(38.dp)
+                                                ) {
+                                                    Box(contentAlignment = Alignment.Center) {
+                                                        Icon(
+                                                            imageVector = FilledFolderIcon,
+                                                            contentDescription = null,
+                                                            tint = folderAccent,
+                                                            modifier = Modifier.size(21.dp)
+                                                        )
+                                                    }
+                                                }
+                                                Column(
+                                                    modifier = Modifier.weight(1f),
+                                                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                                                ) {
                                                     Text(
                                                         text = folder.name,
-                                                        style = MaterialTheme.typography.titleSmall,
+                                                        style = MaterialTheme.typography.titleMedium,
                                                         maxLines = 1,
                                                         overflow = TextOverflow.Ellipsis
                                                     )
-                                                    Text(
-                                                        text = "$childCount",
-                                                        style = NexusTheme.monospace.keycapShortcut,
-                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                    )
+                                                    Row(
+                                                        verticalAlignment = Alignment.CenterVertically,
+                                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                                    ) {
+                                                        Text(
+                                                            text = "$subtreeCount ${strings.navConnections.lowercase()}",
+                                                            style = NexusTheme.monospace.keycapShortcut,
+                                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                        )
+                                                        if (subtreeActiveCount > 0) {
+                                                            Surface(
+                                                                shape = RoundedCornerShape(99.dp),
+                                                                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f)
+                                                            ) {
+                                                                Text(
+                                                                    text = "● $subtreeActiveCount active",
+                                                                    style = NexusTheme.monospace.keycapShortcut,
+                                                                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                                                                )
+                                                            }
+                                                        }
+                                                    }
                                                 }
                                             }
-                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Spacer(modifier = Modifier.width(10.dp))
                                             Row(
                                                 verticalAlignment = Alignment.CenterVertically,
                                                 horizontalArrangement = Arrangement.spacedBy(6.dp)
                                             ) {
                                                 FilledTonalIconButton(
                                                     onClick = { onNewRdpInFolder(folder.id) },
-                                                    modifier = Modifier.size(30.dp)
+                                                    modifier = Modifier.size(34.dp)
                                                 ) {
                                                     Icon(
                                                         imageVector = Icons.Outlined.Add,
                                                         contentDescription = "New RDP Connection in ${folder.name}",
-                                                        modifier = Modifier.size(16.dp)
+                                                        modifier = Modifier.size(18.dp)
                                                     )
                                                 }
+                                                if (subtreeActiveCount > 0) {
+                                                    OutlinedButton(
+                                                        onClick = { onDisconnectAllInFolder(folder.id) }
+                                                    ) {
+                                                        Icon(
+                                                            Icons.Outlined.PowerSettingsNew,
+                                                            contentDescription = strings.actionDisconnectAllFolder,
+                                                            tint = MaterialTheme.colorScheme.error,
+                                                            modifier = Modifier.size(16.dp)
+                                                        )
+                                                        Spacer(modifier = Modifier.width(6.dp))
+                                                        Text(
+                                                            text = strings.actionDisconnectAllFolder,
+                                                            style = MaterialTheme.typography.labelSmall,
+                                                            color = MaterialTheme.colorScheme.error,
+                                                            maxLines = 1
+                                                        )
+                                                    }
+                                                }
                                                 FilledTonalButton(
-                                                    enabled = childCount > 0,
+                                                    enabled = subtreeCount > 0,
                                                     onClick = { onConnectAllInFolder(folder.id) }
                                                 ) {
-                                                    Icon(Icons.Outlined.PlayArrow, contentDescription = null, modifier = Modifier.size(15.dp))
-                                                    Spacer(modifier = Modifier.width(4.dp))
+                                                    Icon(Icons.Outlined.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
+                                                    Spacer(modifier = Modifier.width(6.dp))
                                                     Text(
                                                         text = strings.actionConnectAllFolder,
                                                         style = MaterialTheme.typography.labelSmall,
@@ -1055,13 +1171,41 @@ fun ExpressiveVaultOverviewDashboard(
                                                 onNewSubfolder(folder.id)
                                             }
                                         )
-                                        if (childCount > 0) {
+                                        if (subtreeCount > 0) {
                                             DropdownMenuItem(
                                                 text = { Text(strings.actionConnectAllFolder) },
                                                 leadingIcon = { Icon(Icons.Outlined.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp)) },
                                                 onClick = {
                                                     folderMenuOpen = false
                                                     onConnectAllInFolder(folder.id)
+                                                }
+                                            )
+                                            DropdownMenuItem(
+                                                text = {
+                                                    Text(
+                                                        text = strings.actionDisconnectAllFolder,
+                                                        color = if (subtreeActiveCount > 0) {
+                                                            MaterialTheme.colorScheme.error
+                                                        } else {
+                                                            MaterialTheme.colorScheme.onSurface
+                                                        }
+                                                    )
+                                                },
+                                                leadingIcon = {
+                                                    Icon(
+                                                        Icons.Outlined.PowerSettingsNew,
+                                                        contentDescription = null,
+                                                        tint = if (subtreeActiveCount > 0) {
+                                                            MaterialTheme.colorScheme.error
+                                                        } else {
+                                                            MaterialTheme.colorScheme.onSurfaceVariant
+                                                        },
+                                                        modifier = Modifier.size(18.dp)
+                                                    )
+                                                },
+                                                onClick = {
+                                                    folderMenuOpen = false
+                                                    onDisconnectAllInFolder(folder.id)
                                                 }
                                             )
                                         }

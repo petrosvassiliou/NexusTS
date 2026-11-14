@@ -88,9 +88,9 @@ fun NexusAdaptiveDesktopScaffold(
     bottomStatusDrawerContent: @Composable () -> Unit,
     floatingOverlayContent: @Composable () -> Unit,
     modifier: Modifier = Modifier,
-    initialSidebarWidth: Dp = 264.dp,
-    initialInspectorWidth: Dp = 304.dp,
-    initialBottomDrawerHeight: Dp = 210.dp
+    initialSidebarWidth: Dp = 324.dp,
+    initialInspectorWidth: Dp = 340.dp,
+    initialBottomDrawerHeight: Dp = 230.dp
 ) {
     val shortcutEngine = LocalNexusShortcutEngine.current
     val density = LocalDensity.current
@@ -135,15 +135,15 @@ fun NexusAdaptiveDesktopScaffold(
                     .weight(1f)
                     .fillMaxWidth()
             ) {
-                // Expressive Navigation Rail with Live Session & Task Badges
+                // Spacious Google Material 3 Navigation Rail with 24.dp Icons & Clear Labels
                 NavigationRail(
                     containerColor = MaterialTheme.colorScheme.surfaceContainerLowest,
                     contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier
                         .fillMaxHeight()
-                        .width(88.dp)
+                        .width(96.dp)
                 ) {
-                    Spacer(modifier = Modifier.height(10.dp))
+                    Spacer(modifier = Modifier.height(14.dp))
                     destinations.forEach { dest ->
                         val selected = dest.id == selectedDestinationId
                         NavigationRailItem(
@@ -154,8 +154,8 @@ fun NexusAdaptiveDesktopScaffold(
                                     androidx.compose.material3.BadgedBox(
                                         badge = {
                                             androidx.compose.material3.Badge(
-                                                containerColor = MaterialTheme.colorScheme.secondary,
-                                                contentColor = MaterialTheme.colorScheme.onSecondary
+                                                containerColor = MaterialTheme.colorScheme.primary,
+                                                contentColor = MaterialTheme.colorScheme.onPrimary
                                             ) {
                                                 Text(dest.badgeCount.toString())
                                             }
@@ -164,14 +164,14 @@ fun NexusAdaptiveDesktopScaffold(
                                         Icon(
                                             imageVector = dest.icon,
                                             contentDescription = dest.label,
-                                            modifier = Modifier.size(22.dp)
+                                            modifier = Modifier.size(24.dp)
                                         )
                                     }
                                 } else {
                                     Icon(
                                         imageVector = dest.icon,
                                         contentDescription = dest.label,
-                                        modifier = Modifier.size(22.dp)
+                                        modifier = Modifier.size(24.dp)
                                     )
                                 }
                             },
@@ -181,14 +181,15 @@ fun NexusAdaptiveDesktopScaffold(
                                     style = MaterialTheme.typography.labelSmall,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.padding(horizontal = 2.dp)
+                                    modifier = Modifier.padding(horizontal = 4.dp)
                                 )
                             },
                             colors = NavigationRailItemDefaults.colors(
                                 selectedIconColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                                selectedTextColor = MaterialTheme.colorScheme.secondary,
+                                selectedTextColor = MaterialTheme.colorScheme.primary,
                                 indicatorColor = MaterialTheme.colorScheme.secondaryContainer
-                            )
+                            ),
+                            modifier = Modifier.padding(vertical = 3.dp)
                         )
                     }
                 }
@@ -204,8 +205,8 @@ fun NexusAdaptiveDesktopScaffold(
                             modifier = Modifier
                                 .width(animatedSidebarWidth)
                                 .fillMaxHeight()
-                                .padding(top = 4.dp, bottom = 4.dp, start = 2.dp),
-                            shape = MaterialTheme.shapes.large,
+                                .padding(top = 6.dp, bottom = 6.dp, start = 4.dp),
+                            shape = RoundedCornerShape(20.dp),
                             color = MaterialTheme.colorScheme.surfaceContainerLow,
                             tonalElevation = 1.dp
                         ) {
@@ -216,7 +217,7 @@ fun NexusAdaptiveDesktopScaffold(
                         PanelResizeHandle(
                             horizontal = true,
                             onDeltaDp = { delta ->
-                                sidebarWidthDp = (sidebarWidthDp + delta).coerceIn(210f, 520f)
+                                sidebarWidthDp = (sidebarWidthDp + delta).coerceIn(250f, 560f)
                             },
                             densityPxPerDp = density.density
                         )
@@ -246,7 +247,7 @@ fun NexusAdaptiveDesktopScaffold(
                             PanelResizeHandle(
                                 horizontal = false,
                                 onDeltaDp = { delta ->
-                                    bottomHeightDp = (bottomHeightDp - delta).coerceIn(130f, 460f)
+                                    bottomHeightDp = (bottomHeightDp - delta).coerceIn(150f, 480f)
                                 },
                                 densityPxPerDp = density.density
                             )
@@ -254,8 +255,8 @@ fun NexusAdaptiveDesktopScaffold(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .height(animatedBottomHeight)
-                                    .padding(horizontal = 4.dp, vertical = 4.dp),
-                                shape = MaterialTheme.shapes.large,
+                                    .padding(horizontal = 6.dp, vertical = 6.dp),
+                                shape = RoundedCornerShape(20.dp),
                                 color = MaterialTheme.colorScheme.surfaceContainer,
                                 tonalElevation = 2.dp
                             ) {
@@ -275,7 +276,7 @@ fun NexusAdaptiveDesktopScaffold(
                         PanelResizeHandle(
                             horizontal = true,
                             onDeltaDp = { delta ->
-                                inspectorWidthDp = (inspectorWidthDp - delta).coerceIn(250f, 500f)
+                                inspectorWidthDp = (inspectorWidthDp - delta).coerceIn(270f, 540f)
                             },
                             densityPxPerDp = density.density
                         )
@@ -283,8 +284,8 @@ fun NexusAdaptiveDesktopScaffold(
                             modifier = Modifier
                                 .width(animatedInspectorWidth)
                                 .fillMaxHeight()
-                                .padding(top = 4.dp, bottom = 4.dp, end = 6.dp),
-                            shape = MaterialTheme.shapes.large,
+                                .padding(top = 6.dp, bottom = 6.dp, end = 8.dp),
+                            shape = RoundedCornerShape(20.dp),
                             color = MaterialTheme.colorScheme.surfaceContainerLow,
                             tonalElevation = 1.dp
                         ) {

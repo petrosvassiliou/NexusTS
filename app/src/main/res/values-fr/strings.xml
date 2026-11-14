@@ -178,6 +178,19 @@
     <string name="serial_section_uart">Console série USB-C / UART (FTDI, CP210x, CDC-ACM)</string>
     <string name="container_section_exec">Pod Kubernetes &amp; runtime conteneur</string>
 
+    <!-- v1.1.5 Modern UI, Folder Disconnect, Drag & Drop, Flags & Play Protect Auto-Update -->
+    <string name="action_disconnect_all_folder">Tout déconnecter dans le dossier</string>
+    <string name="action_disconnect_session">Déconnecter</string>
+    <string name="action_move_to_folder">Déplacer vers le dossier…</string>
+    <string name="move_to_root_folder">Niveau supérieur (Aucun dossier)</string>
+    <string name="dialog_language_title">Choisir la langue</string>
+    <string name="auto_update_title">Mises à jour de l’application</string>
+    <string name="auto_update_auto_check">Vérifier automatiquement les mises à jour</string>
+    <string name="auto_update_available_badge">Mise à jour %1$s</string>
+    <string name="auto_update_install_action">Télécharger et mettre à jour</string>
+    <string name="auto_update_up_to_date">NexusTS %1$s est à jour</string>
+    <string name="drag_drop_move_hint">Déposer dans %1$s</string>
+
     <!-- Language Names -->
     <string name="lang_en">English</string>
     <string name="lang_de">Deutsch</string>

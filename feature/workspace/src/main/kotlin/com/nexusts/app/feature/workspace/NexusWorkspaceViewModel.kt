@@ -97,6 +97,22 @@ data class WorkspaceUiState(
     val driveRememberVaultPassphrase: Boolean = false,
     val githubLatestReleaseBanner: String = "",
     val githubLatestReleaseUrl: String = "",
+    val isLanguageDialogVisible: Boolean = false,
+    val movingConnectionTarget: VaultConnection? = null,
+    val isAutoUpdateDialogVisible: Boolean = false,
+    val autoCheckUpdatesEnabled: Boolean = true,
+    val isCheckingForUpdates: Boolean = false,
+    val updateAvailable: Boolean = false,
+    val updateLatestTag: String = "",
+    val updateCurrentVersion: String = "",
+    val updateReleaseTitle: String = "",
+    val updateReleaseNotes: String = "",
+    val updateSha256Hex: String = "",
+    val updateApkSizeBytes: Long = 0L,
+    val updatePublishedAtIso: String = "",
+    val updateApkDownloadUrl: String = "",
+    val updateReleaseHtmlUrl: String = "",
+    val updateVerificationMessage: String = "",
     val remoteKeyCaptureEnabled: Boolean = false,
     val broadcastModeEnabled: Boolean = false,
     val isVaultLocked: Boolean = false,
@@ -541,6 +557,7 @@ class NexusWorkspaceViewModel @Inject constructor(
     }
 
     fun getOrCreateSshController(tab: WorkspaceSessionTab): SshTerminalSessionController {
+        activeVaultStore.tabConnectionIds[tab.tabId] = tab.connectionId
         return sshControllers.getOrPut(tab.tabId) {
             val (conn, secret) = resolveConnectionAndSecret(tab.connectionId, tab.tabId)
             val override = adHocOverrides[tab.tabId]
@@ -563,6 +580,7 @@ class NexusWorkspaceViewModel @Inject constructor(
     }
 
     fun getOrCreateRdpSession(tab: WorkspaceSessionTab): RdpManagedSession {
+        activeVaultStore.tabConnectionIds[tab.tabId] = tab.connectionId
         return rdpSessions.getOrPut(tab.tabId) {
             val (conn, secret) = resolveConnectionAndSecret(tab.connectionId, tab.tabId)
             val override = adHocOverrides[tab.tabId]
@@ -629,6 +647,7 @@ class NexusWorkspaceViewModel @Inject constructor(
             customColorHex = profile.effectiveColorAccentHex,
             broadcastEnabled = state.broadcastModeEnabled
         )
+        activeVaultStore.tabConnectionIds[tab.tabId] = connection.id
         recordRecentConnection(connection.id)
         appendLog("[Connect] Opening ${connection.protocol.name} session '${connection.name}' (${connection.host})")
 
@@ -699,6 +718,7 @@ class NexusWorkspaceViewModel @Inject constructor(
             customColorHex = tplAccent ?: profile.effectiveColorAccentHex,
             broadcastEnabled = _uiState.value.broadcastModeEnabled
         )
+        activeVaultStore.tabConnectionIds[tab.tabId] = connection.id
         adHocOverrides[tab.tabId] = override
         recordRecentConnection(connection.id)
         _uiState.update {
@@ -740,6 +760,128 @@ class NexusWorkspaceViewModel @Inject constructor(
         }
         val folderName = doc.folders.firstOrNull { it.id == folderId }?.name ?: folderId
         appendLog("[Bulk Connect] Opened ${children.size} session(s) from folder '$folderName'")
+    }
+
+    /**
+     * Recursively disconnects all active docked & detached sessions belonging to [folderId]
+     * and any of its nested subfolders, running post-disconnect tasks cleanly.
+     */
+    fun disconnectAllInFolder(folderId: String): Int {
+        if (_uiState.value.isVaultLocked) return 0
+        val doc = _uiState.value.vaultDocument
+        val folderName = doc.folders.firstOrNull { it.id == folderId }?.name ?: folderId
+        val folderTreeIds = collectDescendantFolderIds(doc.folders, folderId)
+        val connectionIdsInSubtree = doc.connections
+            .filter { it.parentFolderId in folderTreeIds && it.id !in doc.tombstonedObjectIds }
+            .map { it.id }
+            .toSet()
+
+        if (connectionIdsInSubtree.isEmpty()) {
+            _uiState.update { it.copy(userSnackbarMessage = "No active sessions in '$folderName'") }
+            return 0
+        }
+
+        val matchingDockedTabs = tilingController.allActiveTabs()
+            .filter { it.connectionId in connectionIdsInSubtree }
+        matchingDockedTabs.forEach { tab ->
+            closeSessionTab(tab.tabId)
+        }
+        val detachedEvicted = activeVaultStore.evictSessionsForConnectionIds(connectionIdsInSubtree)
+        val totalClosed = matchingDockedTabs.size + detachedEvicted
+
+        val msg = if (totalClosed > 0) {
+            "Disconnected $totalClosed session(s) in '$folderName'"
+        } else {
+            "No active sessions in '$folderName'"
+        }
+        _uiState.update { it.copy(userSnackbarMessage = msg) }
+        appendLog("[Bulk Disconnect] $msg")
+        return totalClosed
+    }
+
+    /**
+     * Disconnects all active docked & detached sessions for a single [connectionId].
+     */
+    fun disconnectConnectionSessions(connectionId: String): Int {
+        if (_uiState.value.isVaultLocked) return 0
+        val doc = _uiState.value.vaultDocument
+        val connName = doc.connections.firstOrNull { it.id == connectionId }?.name ?: connectionId
+        val matchingTabs = tilingController.allActiveTabs().filter { it.connectionId == connectionId }
+        matchingTabs.forEach { tab -> closeSessionTab(tab.tabId) }
+        val detachedEvicted = activeVaultStore.evictSessionsForConnectionIds(setOf(connectionId))
+        val totalClosed = matchingTabs.size + detachedEvicted
+        if (totalClosed > 0) {
+            _uiState.update { it.copy(userSnackbarMessage = "Disconnected '$connName'") }
+            appendLog("[Disconnect] Closed $totalClosed session(s) for '$connName'")
+        }
+        return totalClosed
+    }
+
+    fun openMoveConnectionDialog(connection: VaultConnection) {
+        if (_uiState.value.isVaultLocked) return
+        _uiState.update { it.copy(movingConnectionTarget = connection) }
+    }
+
+    fun dismissMoveConnectionDialog() {
+        _uiState.update { it.copy(movingConnectionTarget = null) }
+    }
+
+    /**
+     * Moves [connectionId] into [targetFolderId] (or top-level root when `null`) via drag-and-drop
+     * or context menu, preserving any active SSH/RDP sessions while refreshing inherited badges/colors.
+     */
+    fun moveConnectionToFolder(connectionId: String, targetFolderId: String?): Boolean {
+        if (_uiState.value.isVaultLocked) return false
+        val currentDoc = _uiState.value.vaultDocument
+        val existing = currentDoc.connections.firstOrNull {
+            it.id == connectionId && it.id !in currentDoc.tombstonedObjectIds
+        } ?: return false
+
+        val normalizedTargetId = targetFolderId?.takeIf { folderId ->
+            currentDoc.folders.any { it.id == folderId && it.id !in currentDoc.tombstonedObjectIds }
+        }
+        if (targetFolderId != null && normalizedTargetId == null) return false
+        if (existing.parentFolderId == normalizedTargetId) {
+            _uiState.update { it.copy(movingConnectionTarget = null) }
+            return false
+        }
+
+        val movedConn = existing.copy(
+            parentFolderId = normalizedTargetId,
+            updatedAtEpochMs = System.currentTimeMillis()
+        )
+        activeVaultStore.updateVaultDocument { doc ->
+            bumpDocRevisionAndClock(doc).copy(
+                connections = doc.connections.map { if (it.id == connectionId) movedConn else it }
+            )
+        }
+        val updatedDoc = activeVaultStore.snapshot.value.vaultDocument
+        val refreshedProfile = inheritanceResolver.resolveEffectiveProfile(updatedDoc, movedConn)
+        tilingController.allActiveTabs()
+            .filter { it.connectionId == connectionId }
+            .forEach { tab ->
+                tilingController.updateTab(tab.tabId) {
+                    it.copy(
+                        environmentTag = refreshedProfile.effectiveEnvironmentBadge,
+                        customColorHex = refreshedProfile.effectiveColorAccentHex
+                    )
+                }
+            }
+
+        val destinationLabel = normalizedTargetId?.let { fid ->
+            updatedDoc.folders.firstOrNull { it.id == fid }?.name
+        } ?: "Top Level"
+        val moveMessage = "Moved '${movedConn.name}' to '$destinationLabel'"
+        _uiState.update {
+            it.copy(
+                vaultDocument = updatedDoc,
+                selectedConnectionId = connectionId,
+                movingConnectionTarget = null,
+                userSnackbarMessage = moveMessage
+            )
+        }
+        appendLog("[Vault] $moveMessage")
+        return true
     }
 
     fun reconnectSessionTab(tab: WorkspaceSessionTab) {
@@ -800,6 +942,7 @@ class NexusWorkspaceViewModel @Inject constructor(
             customColorHex = profile.effectiveColorAccentHex,
             broadcastEnabled = state.broadcastModeEnabled
         )
+        activeVaultStore.tabConnectionIds[tab.tabId] = connection.id
         recordRecentConnection(connection.id)
         _uiState.update {
             it.copy(
@@ -1921,6 +2064,77 @@ class NexusWorkspaceViewModel @Inject constructor(
         }
     }
 
+    fun openLanguageDialog() {
+        if (_uiState.value.isVaultLocked) return
+        _uiState.update { it.copy(isLanguageDialogVisible = true) }
+    }
+
+    fun dismissLanguageDialog() {
+        _uiState.update { it.copy(isLanguageDialogVisible = false) }
+    }
+
+    fun openAutoUpdateDialog() {
+        if (_uiState.value.isVaultLocked) return
+        _uiState.update { it.copy(isAutoUpdateDialogVisible = true) }
+    }
+
+    fun dismissAutoUpdateDialog() {
+        _uiState.update { it.copy(isAutoUpdateDialogVisible = false) }
+    }
+
+    fun setAutoCheckUpdatesState(enabled: Boolean) {
+        _uiState.update { it.copy(autoCheckUpdatesEnabled = enabled) }
+    }
+
+    fun setCheckingForUpdates(checking: Boolean) {
+        _uiState.update { it.copy(isCheckingForUpdates = checking) }
+    }
+
+    fun applyAutoUpdateCheckOutcome(
+        isUpdateAvailable: Boolean,
+        latestTag: String,
+        currentVersion: String,
+        releaseTitle: String,
+        releaseNotes: String,
+        sha256Hex: String,
+        apkSizeBytes: Long,
+        publishedAtIso: String,
+        apkDownloadUrl: String,
+        releaseHtmlUrl: String,
+        bannerMessage: String,
+        openDialogAutomatically: Boolean = false
+    ) {
+        val primaryUrl = apkDownloadUrl.ifBlank { releaseHtmlUrl }
+        _uiState.update {
+            it.copy(
+                isCheckingForUpdates = false,
+                updateAvailable = isUpdateAvailable,
+                updateLatestTag = latestTag,
+                updateCurrentVersion = currentVersion,
+                updateReleaseTitle = releaseTitle,
+                updateReleaseNotes = releaseNotes,
+                updateSha256Hex = sha256Hex,
+                updateApkSizeBytes = apkSizeBytes,
+                updatePublishedAtIso = publishedAtIso,
+                updateApkDownloadUrl = apkDownloadUrl,
+                updateReleaseHtmlUrl = releaseHtmlUrl,
+                githubLatestReleaseBanner = bannerMessage.ifBlank { it.githubLatestReleaseBanner },
+                githubLatestReleaseUrl = primaryUrl,
+                isAutoUpdateDialogVisible = if (openDialogAutomatically && !it.isVaultLocked) true else it.isAutoUpdateDialogVisible
+            )
+        }
+        if (bannerMessage.isNotBlank()) {
+            appendLog("[Auto-Update] $bannerMessage")
+        }
+    }
+
+    fun setUpdateVerificationStatus(message: String) {
+        _uiState.update { it.copy(updateVerificationMessage = message) }
+        if (message.isNotBlank()) {
+            appendLog("[Auto-Update Verify] $message")
+        }
+    }
+
     private fun hasModalDialogOrOverlayOpen(state: WorkspaceUiState): Boolean {
         return state.isQuickConnectVisible ||
             state.isNewConnectionDialogVisible ||
@@ -1930,6 +2144,9 @@ class NexusWorkspaceViewModel @Inject constructor(
             state.isNewDynamicFolderDialogVisible ||
             state.isNewTemplateDialogVisible ||
             state.isLockVaultDialogVisible ||
+            state.isLanguageDialogVisible ||
+            state.movingConnectionTarget != null ||
+            state.isAutoUpdateDialogVisible ||
             state.pendingEncryptedImportFileName != null ||
             state.importErrorDialogMessage != null ||
             state.isBottomDrawerVisible

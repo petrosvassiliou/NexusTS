@@ -39,18 +39,20 @@ import com.nexusts.app.core.vault.crypto.NxtsVaultSerializer
 import com.nexusts.app.feature.workspace.NexusWorkspaceScreen
 import com.nexusts.app.feature.workspace.NexusWorkspaceViewModel
 import com.nexusts.app.service.ActiveSessionsForegroundService
+import com.nexusts.app.updater.GitHubReleaseCheckResult
 import com.nexusts.app.updater.GitHubReleaseUpdateChecker
 import com.nexusts.app.updater.PlayProtectCompliantUpdateCoordinator
 import com.nexusts.app.updater.PlayUpdateUiState
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import javax.inject.Inject
 
 /**
- * Primary Adaptive Googlebook OS & Android Tablet Desktop Window Activity (`v1.1.3`).
+ * Primary Adaptive Googlebook OS & Android Tablet Desktop Window Activity (`v1.1.5`).
  * Handles:
  * - Atomic local `.nxts` vault persistence & cold-start restoration (`nexusts_local_vault.nxts`)
  * - Direct `.nxts`, Royal TS `.rtsz` / `.rtsx` / `.rjson`, KeePass `.kdbx` / XML, Bitwarden JSON, 1Password `.1pux` / `.1pif`, & CSV opening
@@ -60,7 +62,7 @@ import javax.inject.Inject
  *   2. Google Drive REST API v3 (`AuthorizationClient` OAuth 2.0 + `GoogleDriveVaultSyncEngine`)
  * - URI scheme launches (`ssh://`, `rdp://`, `vnc://`, `sftp://`, `scp://`, `ftp://`, `ftps://`, `telnet://`, `serial://`, `k8s://`, `kubectl://`, `docker://`, `http://`, `https://`, `nexusts://`)
  * - Multi-monitor & freeform tab detachment into `DetachedSessionActivity` + seamless Re-Dock
- * - Play-Protect-Compliant `AppUpdateManager` & Direct-Install GitHub Releases Update Checker
+ * - Play-Protect-Compliant `AppUpdateManager` & Verified Direct-Install GitHub Releases Auto-Update Coordinator
  * - Android 13+ Per-App Language Preferences dynamic switching across all 6 enterprise locales
  */
 @AndroidEntryPoint
@@ -87,6 +89,7 @@ class MainActivity : AppCompatActivity() {
     lateinit var vaultSerializer: NxtsVaultSerializer
 
     private val githubUpdateChecker = GitHubReleaseUpdateChecker()
+    private var latestGitHubReleaseCheck: GitHubReleaseCheckResult? = null
     private var triggerFileImportFromActivity: (() -> Unit)? = null
     private val consumedShortcutKeyCodes = mutableSetOf<Int>()
 
@@ -140,15 +143,24 @@ class MainActivity : AppCompatActivity() {
         )
         GoogleDriveVaultSyncEngine.scheduleBackgroundSync(this)
 
+        workspaceViewModel.setAutoCheckUpdatesState(updateCoordinator.isAutoCheckEnabled())
         updateCoordinator.registerFlexibleListener()
         lifecycleScope.launch {
             updateCoordinator.checkAndTriggerPlayUpdate(playUpdateLauncher)
-            // For direct-installed APKs (outside Google Play), run non-blocking GitHub Releases check
+            // For direct-installed APKs (outside Google Play), run Play-Protect-compatible HTTPS GitHub Releases auto-check
             val installerPkg = runCatching {
                 packageManager.getInstallSourceInfo(packageName).installingPackageName
             }.getOrNull()
             if (installerPkg != "com.android.vending") {
-                checkGitHubReleases(silentWhenUpToDate = true)
+                if (updateCoordinator.isAutoCheckEnabled()) {
+                    checkGitHubReleases(silentWhenUpToDate = true, triggeredAutomatically = true)
+                }
+                while (true) {
+                    delay(PlayProtectCompliantUpdateCoordinator.AUTO_CHECK_INTERVAL_MS)
+                    if (updateCoordinator.isAutoCheckEnabled()) {
+                        checkGitHubReleases(silentWhenUpToDate = true, triggeredAutomatically = true)
+                    }
+                }
             }
         }
 
@@ -377,12 +389,49 @@ class MainActivity : AppCompatActivity() {
                         workspaceViewModel.setDriveAutoSyncOnSave(enabled)
                     },
                     onCheckGitHubReleases = {
-                        lifecycleScope.launch { checkGitHubReleases(silentWhenUpToDate = false) }
+                        lifecycleScope.launch {
+                            checkGitHubReleases(silentWhenUpToDate = false, triggeredAutomatically = false)
+                        }
                     },
                     onOpenGitHubReleaseUrl = { url ->
-                        runCatching {
-                            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                        updateCoordinator.launchTrustedBrowserUpdate(this@MainActivity, url)
+                    },
+                    onToggleAutoCheckUpdates = { enabled ->
+                        updateCoordinator.setAutoCheckEnabled(enabled)
+                        workspaceViewModel.setAutoCheckUpdatesState(enabled)
+                    },
+                    onTriggerBrowserUpdate = { url ->
+                        if (!updateCoordinator.launchTrustedBrowserUpdate(this@MainActivity, url)) {
+                            workspaceViewModel.setUpdateVerificationStatus(
+                                "Blocked untrusted update URL (HTTPS github.com allowlist enforced)."
+                            )
                         }
+                    },
+                    onDownloadVerifiedUpdateToFiles = {
+                        val release = latestGitHubReleaseCheck
+                        if (release != null) {
+                            lifecycleScope.launch {
+                                workspaceViewModel.setUpdateVerificationStatus(
+                                    "Downloading & verifying ${release.apkFileName.ifBlank { release.latestTag }} via Android DownloadManager…"
+                                )
+                                updateCoordinator.downloadAndVerifyViaSystemManager(release)
+                                    .onSuccess { summary ->
+                                        workspaceViewModel.setUpdateVerificationStatus(
+                                            "Verified ${summary.fileName} (SHA-256 ${summary.fileSha256Hex.take(16)}…, APK signer ${summary.signerCertSha256Hex.take(16)}…). Opening Android Downloads…"
+                                        )
+                                        updateCoordinator.openSystemDownloadsFolder(this@MainActivity)
+                                    }
+                                    .onFailure { err ->
+                                        workspaceViewModel.setUpdateVerificationStatus(
+                                            "Update verification failed (package purged): ${err.message}"
+                                        )
+                                    }
+                            }
+                        }
+                    },
+                    onSkipUpdateVersion = { tag ->
+                        updateCoordinator.setSkippedVersionTag(tag)
+                        workspaceViewModel.notifyUserMessage("Skipped update prompt for $tag.")
                     }
                 )
             }
@@ -603,27 +652,44 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private suspend fun checkGitHubReleases(silentWhenUpToDate: Boolean) {
+    private suspend fun checkGitHubReleases(
+        silentWhenUpToDate: Boolean,
+        triggeredAutomatically: Boolean = false
+    ) {
+        workspaceViewModel.setCheckingForUpdates(true)
         githubUpdateChecker.checkLatestRelease(BuildConfig.VERSION_NAME)
             .onSuccess { res ->
-                if (res.isUpdateAvailable) {
-                    val targetUrl = res.signedApkDownloadUrl ?: res.releaseHtmlUrl
-                    workspaceViewModel.updateGitHubReleaseState(
-                        banner = "Update available: ${res.latestTag} (installed: v${res.currentVersion})",
-                        releaseUrl = targetUrl
-                    )
-                } else if (!silentWhenUpToDate) {
-                    workspaceViewModel.updateGitHubReleaseState(
-                        banner = "Up to date: v${res.currentVersion} matches latest GitHub Release (${res.latestTag}).",
-                        releaseUrl = res.releaseHtmlUrl
-                    )
+                latestGitHubReleaseCheck = res
+                updateCoordinator.recordLastCheckTimestamp()
+                val isNotSkipped = res.latestTag != updateCoordinator.getSkippedVersionTag()
+                val banner = when {
+                    res.isUpdateAvailable ->
+                        "Update available: ${res.latestTag} (installed: v${res.currentVersion})"
+                    !silentWhenUpToDate ->
+                        "Up to date: v${res.currentVersion} matches latest GitHub Release (${res.latestTag})."
+                    else -> ""
                 }
+                workspaceViewModel.applyAutoUpdateCheckOutcome(
+                    isUpdateAvailable = res.isUpdateAvailable,
+                    latestTag = res.latestTag,
+                    currentVersion = res.currentVersion,
+                    releaseTitle = res.releaseTitle,
+                    releaseNotes = res.releaseNotes,
+                    sha256Hex = res.expectedApkSha256Hex.orEmpty(),
+                    apkSizeBytes = res.apkSizeBytes,
+                    publishedAtIso = res.publishedAtIso,
+                    apkDownloadUrl = res.signedApkDownloadUrl.orEmpty(),
+                    releaseHtmlUrl = res.releaseHtmlUrl,
+                    bannerMessage = banner,
+                    openDialogAutomatically = triggeredAutomatically && res.isUpdateAvailable && isNotSkipped
+                )
             }
             .onFailure { err ->
+                workspaceViewModel.setCheckingForUpdates(false)
                 if (!silentWhenUpToDate) {
-                    workspaceViewModel.updateGitHubReleaseState(
-                        banner = "GitHub Releases check failed: ${err.message}"
-                    )
+                    val msg = "GitHub Releases check failed: ${err.message}"
+                    workspaceViewModel.updateGitHubReleaseState(banner = msg)
+                    workspaceViewModel.setUpdateVerificationStatus(msg)
                 }
             }
     }

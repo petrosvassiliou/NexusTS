@@ -1,0 +1,6 @@
+NexusTS v1.1.5:
+• Trascinamento (drag & drop) delle connessioni tra cartelle e livello principale
+• Interfaccia Google Material 3 più ampia, pulita e con chiara distinzione tra cartelle e host
+• Disconnessione immediata di tutte le sessioni attive di una cartella e sottocartelle
+• Selettore lingua con bandiere vettoriali per tutte le 6 lingue
+• Aggiornamento automatico compatibile con Google Play Protect (verifica SHA-256 e firma APK)

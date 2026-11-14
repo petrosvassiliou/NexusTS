@@ -132,6 +132,17 @@ class NexusWorkspaceComposeE2ETest {
             assertTrue(res.getString(R.string.sync_check_github_updates).isNotBlank())
             assertTrue(res.getString(R.string.serial_section_uart).isNotBlank())
             assertTrue(res.getString(R.string.container_section_exec).isNotBlank())
+            assertTrue(res.getString(R.string.action_disconnect_all_folder).isNotBlank())
+            assertTrue(res.getString(R.string.action_disconnect_session).isNotBlank())
+            assertTrue(res.getString(R.string.action_move_to_folder).isNotBlank())
+            assertTrue(res.getString(R.string.move_to_root_folder).isNotBlank())
+            assertTrue(res.getString(R.string.dialog_language_title).isNotBlank())
+            assertTrue(res.getString(R.string.auto_update_title).isNotBlank())
+            assertTrue(res.getString(R.string.auto_update_auto_check).isNotBlank())
+            assertTrue(res.getString(R.string.auto_update_available_badge).isNotBlank())
+            assertTrue(res.getString(R.string.auto_update_install_action).isNotBlank())
+            assertTrue(res.getString(R.string.auto_update_up_to_date).isNotBlank())
+            assertTrue(res.getString(R.string.drag_drop_move_hint).isNotBlank())
         }
     }
 
@@ -944,4 +955,195 @@ class NexusWorkspaceComposeE2ETest {
         composeRule.waitForIdle()
         assertEquals(null, vm.uiState.value.importErrorDialogMessage)
     }
+
+    @Test
+    fun dragDropMoveDisconnectAllInFolderLanguageFlagsAndPlayProtectAutoUpdateWorkEndToEnd() {
+        val vm = buildRealViewModel()
+        val strings = WorkspaceLocalizedStrings.defaultEnglish()
+        val appContext = ApplicationProvider.getApplicationContext<Context>()
+
+        composeRule.setContent {
+            NexusTSTheme {
+                NexusWorkspaceScreen(
+                    viewModel = vm,
+                    strings = strings,
+                    connectedDisplays = emptyList(),
+                    flexibleUpdateDownloaded = false,
+                    onCompleteFlexibleUpdate = {},
+                    onRequestImportFilePicker = {},
+                    onRequestGoogleDriveSync = {},
+                    onDetachTabToNativeWindow = { _, _ -> }
+                )
+            }
+        }
+        composeRule.waitForIdle()
+
+        // 1. Create Folder A -> Subfolder A1 and Folder B, with 3 SSH connections, and launch all 3 sessions
+        composeRule.runOnIdle {
+            vm.saveFolderAndCredentialToVault(VaultFolder(id = "folder-a", name = "Folder A"))
+            vm.saveFolderAndCredentialToVault(VaultFolder(id = "folder-a1", parentFolderId = "folder-a", name = "Subfolder A1"))
+            vm.saveFolderAndCredentialToVault(VaultFolder(id = "folder-b", name = "Folder B"))
+
+            val connA = VaultConnection(
+                id = "conn-a",
+                parentFolderId = "folder-a",
+                name = "Host-Alpha",
+                host = "10.20.1.10",
+                protocol = VaultProtocolType.SSH,
+                settings = ProtocolSpecificSettings.Ssh()
+            )
+            val connA1 = VaultConnection(
+                id = "conn-a1",
+                parentFolderId = "folder-a1",
+                name = "Host-Alpha-Sub",
+                host = "10.20.1.11",
+                protocol = VaultProtocolType.SSH,
+                settings = ProtocolSpecificSettings.Ssh()
+            )
+            val connB = VaultConnection(
+                id = "conn-b",
+                parentFolderId = "folder-b",
+                name = "Host-Bravo",
+                host = "10.20.2.10",
+                protocol = VaultProtocolType.SSH,
+                settings = ProtocolSpecificSettings.Ssh()
+            )
+
+            vm.saveConnectionToVault(connA)
+            vm.saveConnectionToVault(connA1)
+            vm.saveConnectionToVault(connB)
+
+            vm.launchConnection(connA)
+            vm.launchConnection(connA1)
+            vm.launchConnection(connB)
+
+            // Hydrate live SSH session controllers for all 3 tabs
+            vm.tilingController.allActiveTabs().forEach { tab ->
+                vm.getOrCreateSshController(tab)
+            }
+        }
+        composeRule.waitForIdle()
+
+        assertEquals(3, vm.tilingController.allActiveTabs().size)
+        assertEquals(3, vm.sessionStore.sshControllers.size)
+
+        // Verify inline folder disconnect button renders on Folder A and closes Folder A + Subfolder A1 while keeping Folder B alive
+        composeRule
+            .onAllNodesWithContentDescription("${strings.actionDisconnectAllFolder}: Folder A")
+            .onFirst()
+            .performClick()
+        composeRule.waitForIdle()
+
+        val remainingTabs = vm.tilingController.allActiveTabs()
+        assertEquals(1, remainingTabs.size)
+        assertEquals("conn-b", remainingTabs.single().connectionId)
+        assertEquals(1, vm.sessionStore.sshControllers.size)
+
+        // 2. Drag-and-drop / Move connection between folders AND back to root without dropping live session
+        val liveControllerBeforeMove = vm.sessionStore.sshControllers.values.single()
+        val revBeforeMove = vm.uiState.value.vaultDocument.revision
+
+        composeRule.runOnIdle {
+            vm.moveConnectionToFolder("conn-b", "folder-a")
+        }
+        composeRule.waitForIdle()
+
+        val movedToFolderA = vm.uiState.value.vaultDocument.connections.first { it.id == "conn-b" }
+        assertEquals("folder-a", movedToFolderA.parentFolderId)
+        assertTrue(vm.uiState.value.vaultDocument.revision > revBeforeMove)
+        assertSame(liveControllerBeforeMove, vm.sessionStore.sshControllers.values.single())
+
+        // Move back to Top Level via MoveConnectionToFolderDialog
+        composeRule.runOnIdle {
+            vm.openMoveConnectionDialog(movedToFolderA)
+        }
+        composeRule.waitForIdle()
+
+        assertTextRendered(strings.moveToRootFolder)
+        composeRule
+            .onAllNodesWithText(strings.moveToRootFolder, substring = false)
+            .onFirst()
+            .performClick()
+        composeRule.waitForIdle()
+
+        val movedToRoot = vm.uiState.value.vaultDocument.connections.first { it.id == "conn-b" }
+        assertEquals(null, movedToRoot.parentFolderId)
+        assertSame(liveControllerBeforeMove, vm.sessionStore.sshControllers.values.single())
+
+        // 3. Language Selection Dialog with Vector Flags renders all 6 native language names
+        composeRule
+            .onAllNodesWithContentDescription(strings.actionLanguagePicker)
+            .onFirst()
+            .performClick()
+        composeRule.waitForIdle()
+
+        assertTrue(vm.uiState.value.isLanguageDialogVisible)
+        assertTextRendered(strings.dialogLanguageTitle)
+        assertTextRendered("English")
+        assertTextRendered("Deutsch")
+        assertTextRendered("Italiano")
+        assertTextRendered("Español")
+        assertTextRendered("Ελληνικά")
+        assertTextRendered("Français")
+
+        composeRule.runOnIdle {
+            vm.dismissLanguageDialog()
+        }
+        composeRule.waitForIdle()
+        assertFalse(vm.uiState.value.isLanguageDialogVisible)
+
+        // 4. Google Play Protect Compliance & Auto-Update Verification
+        val pkgInfo = appContext.packageManager.getPackageInfo(
+            appContext.packageName,
+            android.content.pm.PackageManager.GET_PERMISSIONS
+        )
+        val requestedPerms = pkgInfo.requestedPermissions?.toSet().orEmpty()
+        assertFalse(
+            "App must NEVER request REQUEST_INSTALL_PACKAGES to remain 100% Google Play Protect compatible",
+            "android.permission.REQUEST_INSTALL_PACKAGES" in requestedPerms
+        )
+
+        assertTrue(
+            GitHubReleaseUpdateChecker.isAllowedGitHubHttpsUrl(
+                "https://github.com/petrosvassiliou/NexusTS/releases/download/v1.1.5/NexusTS-v1.1.5-googlebook-android-release.apk"
+            )
+        )
+        assertFalse(GitHubReleaseUpdateChecker.isAllowedGitHubHttpsUrl("http://github.com/petrosvassiliou/NexusTS/app.apk"))
+        assertFalse(GitHubReleaseUpdateChecker.isAllowedGitHubHttpsUrl("https://evil.example.com/NexusTS-release.apk"))
+
+        val sampleSha = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        val sumsText = "$sampleSha  NexusTS-v1.2.0-googlebook-android-release.apk\n"
+        assertEquals(
+            sampleSha,
+            GitHubReleaseUpdateChecker.parseSha256SumsForAsset(
+                sumsText,
+                "NexusTS-v1.2.0-googlebook-android-release.apk"
+            )
+        )
+
+        composeRule.runOnIdle {
+            vm.applyAutoUpdateCheckOutcome(
+                isUpdateAvailable = true,
+                latestTag = "v1.2.0",
+                currentVersion = "1.1.5",
+                releaseTitle = "NexusTS v1.2.0",
+                releaseNotes = "Verified auto-update release",
+                sha256Hex = sampleSha,
+                apkSizeBytes = 25_165_824L,
+                publishedAtIso = "2026-11-13T16:00:00Z",
+                apkDownloadUrl = "https://github.com/petrosvassiliou/NexusTS/releases/download/v1.2.0/NexusTS-v1.2.0-googlebook-android-release.apk",
+                releaseHtmlUrl = "https://github.com/petrosvassiliou/NexusTS/releases/tag/v1.2.0",
+                bannerMessage = "Update available: v1.2.0",
+                openDialogAutomatically = true
+            )
+        }
+        composeRule.waitForIdle()
+
+        assertTrue(vm.uiState.value.isAutoUpdateDialogVisible)
+        assertTextRendered("Google Play Protect Verified Architecture")
+        assertTextRendered("v1.2.0")
+        assertTextRendered("SHA-256: ${sampleSha.take(24)}")
+        assertTextRendered(strings.autoUpdateInstallAction)
+    }
 }
+

@@ -178,6 +178,19 @@
     <string name="serial_section_uart">Serial por hardware USB-C / UART (FTDI, CP210x, CDC-ACM)</string>
     <string name="container_section_exec">Pod de Kubernetes y entorno de contenedores</string>
 
+    <!-- v1.1.5 Modern UI, Folder Disconnect, Drag & Drop, Flags & Play Protect Auto-Update -->
+    <string name="action_disconnect_all_folder">Desconectar todo en carpeta</string>
+    <string name="action_disconnect_session">Desconectar</string>
+    <string name="action_move_to_folder">Mover a carpeta…</string>
+    <string name="move_to_root_folder">Nivel superior (Sin carpeta)</string>
+    <string name="dialog_language_title">Seleccionar idioma</string>
+    <string name="auto_update_title">Actualizaciones de la app</string>
+    <string name="auto_update_auto_check">Buscar actualizaciones automáticamente</string>
+    <string name="auto_update_available_badge">Actualización %1$s</string>
+    <string name="auto_update_install_action">Descargar y actualizar</string>
+    <string name="auto_update_up_to_date">NexusTS %1$s está actualizado</string>
+    <string name="drag_drop_move_hint">Soltar en %1$s</string>
+
     <!-- Language Names -->
     <string name="lang_en">English</string>
     <string name="lang_de">Deutsch</string>

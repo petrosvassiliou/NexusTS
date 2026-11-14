@@ -146,16 +146,16 @@ fun NexusChoiceChip(
         border = BorderStroke(1.dp, borderColor)
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
+            horizontalArrangement = Arrangement.spacedBy(7.dp)
         ) {
             if (effectiveIcon != null) {
                 Icon(
                     imageVector = effectiveIcon,
                     contentDescription = null,
                     tint = leadingIconTint ?: if (selected) accentColor else fgColor,
-                    modifier = Modifier.size(15.dp)
+                    modifier = Modifier.size(16.dp)
                 )
             }
             Text(
@@ -225,16 +225,16 @@ fun NexusActionChip(
         border = BorderStroke(1.dp, borderColor)
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
+            horizontalArrangement = Arrangement.spacedBy(7.dp)
         ) {
             if (leadingIcon != null) {
                 Icon(
                     imageVector = leadingIcon,
                     contentDescription = null,
                     tint = leadingIconTint ?: accentColor,
-                    modifier = Modifier.size(15.dp)
+                    modifier = Modifier.size(16.dp)
                 )
             }
             Text(
@@ -293,7 +293,7 @@ fun ExpressiveSplitActionButton(
     ) {
         Surface(
             modifier = Modifier
-                .height(36.dp)
+                .height(40.dp)
                 .nexusHoverTracker(leadHover, PointerIcon.Hand)
                 .clip(leadShape)
                 .clickable(
@@ -306,14 +306,14 @@ fun ExpressiveSplitActionButton(
             contentColor = contentColor
         ) {
             Row(
-                modifier = Modifier.padding(start = 14.dp, end = 10.dp),
+                modifier = Modifier.padding(start = 16.dp, end = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Icon(
                     imageVector = leadingIcon,
                     contentDescription = null,
-                    modifier = Modifier.size(16.dp)
+                    modifier = Modifier.size(18.dp)
                 )
                 Text(
                     text = label,
@@ -325,8 +325,8 @@ fun ExpressiveSplitActionButton(
 
         Surface(
             modifier = Modifier
-                .height(36.dp)
-                .width(30.dp)
+                .height(40.dp)
+                .width(34.dp)
                 .nexusHoverTracker(trailHover, PointerIcon.Hand)
                 .clip(trailShape)
                 .clickable(
@@ -342,7 +342,7 @@ fun ExpressiveSplitActionButton(
                 Icon(
                     imageVector = Icons.Outlined.KeyboardArrowDown,
                     contentDescription = null,
-                    modifier = Modifier.size(17.dp)
+                    modifier = Modifier.size(19.dp)
                 )
             }
         }
@@ -368,9 +368,9 @@ fun ExpressiveMorphingIconButton(
     val motion = NexusTheme.motion
     val cornerRadius by animateDpAsState(
         targetValue = when {
-            isActive -> 12.dp
-            hover.value.isHovered -> 14.dp
-            else -> 18.dp
+            isActive -> 13.dp
+            hover.value.isHovered -> 15.dp
+            else -> 20.dp
         },
         animationSpec = motion.spatialFastDp,
         label = "IconBtnMorphRadius"
@@ -392,7 +392,7 @@ fun ExpressiveMorphingIconButton(
 
     Surface(
         modifier = modifier
-            .size(36.dp)
+            .size(40.dp)
             .scale(scale)
             .nexusHoverTracker(hover, PointerIcon.Hand)
             .clip(RoundedCornerShape(cornerRadius))
@@ -409,7 +409,7 @@ fun ExpressiveMorphingIconButton(
                 imageVector = icon,
                 contentDescription = contentDescription,
                 tint = if (isActive) activeTint else MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(19.dp)
+                modifier = Modifier.size(21.dp)
             )
         }
     }
@@ -472,8 +472,8 @@ fun ExpressiveMetricCard(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+                .padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -482,7 +482,7 @@ fun ExpressiveMetricCard(
             ) {
                 Text(
                     text = label,
-                    style = MaterialTheme.typography.labelMedium,
+                    style = MaterialTheme.typography.titleSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -491,7 +491,7 @@ fun ExpressiveMetricCard(
                 Spacer(modifier = Modifier.width(8.dp))
                 Box(
                     modifier = Modifier
-                        .size(30.dp)
+                        .size(34.dp)
                         .clip(CircleShape)
                         .background(accentColor.copy(alpha = 0.14f)),
                     contentAlignment = Alignment.Center
@@ -500,13 +500,13 @@ fun ExpressiveMetricCard(
                         imageVector = icon,
                         contentDescription = null,
                         tint = accentColor,
-                        modifier = Modifier.size(16.dp)
+                        modifier = Modifier.size(18.dp)
                     )
                 }
             }
             Text(
                 text = value,
-                style = MaterialTheme.typography.headlineSmall,
+                style = MaterialTheme.typography.headlineMedium,
                 color = MaterialTheme.colorScheme.onSurface
             )
             Text(
@@ -622,6 +622,149 @@ fun NexusBrandEmblem(
                 radius = (w * 0.048f).coerceAtLeast(1.5f),
                 center = Offset(w * 0.50f, h * 0.788f)
             )
+        }
+    }
+}
+
+/**
+ * Hardware-accelerated crisp vector Country/Language Flag Badge rendered directly on Compose [Canvas]
+ * so flags appear sharp at every DPI across all Googlebook OS & Android Tablet builds regardless of
+ * system colour-emoji font coverage (`en`, `de`, `it`, `es`, `el`, `fr`).
+ */
+@Composable
+fun NexusLanguageFlagBadge(
+    languageCode: String,
+    width: Dp = 30.dp,
+    height: Dp = 20.dp,
+    cornerRadius: Dp = 5.dp,
+    modifier: Modifier = Modifier
+) {
+    val shape = RoundedCornerShape(cornerRadius)
+    Surface(
+        shape = shape,
+        color = Color.White,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)),
+        modifier = modifier
+            .width(width)
+            .height(height)
+            .clip(shape)
+    ) {
+        Canvas(
+            modifier = Modifier
+                .width(width)
+                .height(height)
+        ) {
+            val w = size.width
+            val h = size.height
+            when (languageCode.lowercase().take(2)) {
+                "de" -> {
+                    val band = h / 3f
+                    drawRect(color = Color(0xFF14181F), topLeft = Offset(0f, 0f), size = Size(w, band))
+                    drawRect(color = Color(0xFFDD0000), topLeft = Offset(0f, band), size = Size(w, band))
+                    drawRect(color = Color(0xFFFFCE00), topLeft = Offset(0f, band * 2f), size = Size(w, band))
+                }
+                "it" -> {
+                    val band = w / 3f
+                    drawRect(color = Color(0xFF009246), topLeft = Offset(0f, 0f), size = Size(band, h))
+                    drawRect(color = Color(0xFFFFFFFF), topLeft = Offset(band, 0f), size = Size(band, h))
+                    drawRect(color = Color(0xFFCE2B37), topLeft = Offset(band * 2f, 0f), size = Size(band, h))
+                }
+                "fr" -> {
+                    val band = w / 3f
+                    drawRect(color = Color(0xFF002395), topLeft = Offset(0f, 0f), size = Size(band, h))
+                    drawRect(color = Color(0xFFFFFFFF), topLeft = Offset(band, 0f), size = Size(band, h))
+                    drawRect(color = Color(0xFFED2939), topLeft = Offset(band * 2f, 0f), size = Size(band, h))
+                }
+                "es" -> {
+                    drawRect(color = Color(0xFFAA151B), topLeft = Offset(0f, 0f), size = Size(w, h * 0.25f))
+                    drawRect(color = Color(0xFFF1BF00), topLeft = Offset(0f, h * 0.25f), size = Size(w, h * 0.50f))
+                    drawRect(color = Color(0xFFAA151B), topLeft = Offset(0f, h * 0.75f), size = Size(w, h * 0.25f))
+                    // Subtle heraldic shield accent on the left third
+                    drawRoundRect(
+                        color = Color(0xFFAA151B),
+                        topLeft = Offset(w * 0.24f, h * 0.36f),
+                        size = Size(w * 0.11f, h * 0.28f),
+                        cornerRadius = CornerRadius(w * 0.04f, w * 0.04f)
+                    )
+                }
+                "el" -> {
+                    val blue = Color(0xFF0D5EAF)
+                    val stripeH = h / 9f
+                    for (i in 0 until 9) {
+                        drawRect(
+                            color = if (i % 2 == 0) blue else Color.White,
+                            topLeft = Offset(0f, i * stripeH),
+                            size = Size(w, stripeH + 0.5f)
+                        )
+                    }
+                    val cantonSize = stripeH * 5f
+                    drawRect(color = blue, topLeft = Offset(0f, 0f), size = Size(cantonSize, cantonSize))
+                    drawRect(
+                        color = Color.White,
+                        topLeft = Offset(cantonSize * 0.4f, 0f),
+                        size = Size(cantonSize * 0.2f, cantonSize)
+                    )
+                    drawRect(
+                        color = Color.White,
+                        topLeft = Offset(0f, cantonSize * 0.4f),
+                        size = Size(cantonSize, cantonSize * 0.2f)
+                    )
+                }
+                else -> {
+                    // "en": Crisp Union Jack
+                    val navy = Color(0xFF012169)
+                    val red = Color(0xFFC8102E)
+                    drawRect(color = navy, topLeft = Offset.Zero, size = Size(w, h))
+                    // White diagonal saltires
+                    drawLine(
+                        color = Color.White,
+                        start = Offset(0f, 0f),
+                        end = Offset(w, h),
+                        strokeWidth = h * 0.22f
+                    )
+                    drawLine(
+                        color = Color.White,
+                        start = Offset(w, 0f),
+                        end = Offset(0f, h),
+                        strokeWidth = h * 0.22f
+                    )
+                    // Red diagonal saltires
+                    drawLine(
+                        color = red,
+                        start = Offset(0f, 0f),
+                        end = Offset(w, h),
+                        strokeWidth = h * 0.10f
+                    )
+                    drawLine(
+                        color = red,
+                        start = Offset(w, 0f),
+                        end = Offset(0f, h),
+                        strokeWidth = h * 0.10f
+                    )
+                    // White central cross
+                    drawRect(
+                        color = Color.White,
+                        topLeft = Offset(0f, h * 0.33f),
+                        size = Size(w, h * 0.34f)
+                    )
+                    drawRect(
+                        color = Color.White,
+                        topLeft = Offset(w * 0.39f, 0f),
+                        size = Size(w * 0.22f, h)
+                    )
+                    // Red St George's cross
+                    drawRect(
+                        color = red,
+                        topLeft = Offset(0f, h * 0.40f),
+                        size = Size(w, h * 0.20f)
+                    )
+                    drawRect(
+                        color = red,
+                        topLeft = Offset(w * 0.43f, 0f),
+                        size = Size(w * 0.14f, h)
+                    )
+                }
+            }
         }
     }
 }

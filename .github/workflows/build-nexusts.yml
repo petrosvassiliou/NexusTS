@@ -355,11 +355,12 @@ jobs:
             - **`NexusTS-${{ steps.stage.outputs.tag_name }}-playstore-release.aab`**: Signed Android App Bundle for optional future Google Play / Managed Google Play distribution.
             - **`nexusts-upload-certificate.pem` & `oauth-and-mdm-registration.json`**: Public X.509 upload certificate (`SHA-1: A6:AF:15:A9:BF:0B:FE:38:D4:66:46:3E:3E:72:A6:5B:4F:9C:4D:F6`, `SHA-256: 4A:BD:80:F1:20:14:B9:88:09:1C:97:92:2F:87:02:D1:BF:B7:93:9C:73:B6:9A:DB:1A:9B:76:30:6A:30:27:82`) and Managed Google Play `app_restrictions` template.
 
-            ### What's New in ${{ steps.stage.outputs.tag_name }} (Complete Quality Sweep & Enterprise Hardening)
-            - **Zero-Knowledge Security & Encrypted Local Persistence**: Full-screen Vault Lock shield blocking workspace, studios, shortcuts, and exports while locked; encrypted local disk persistence (`nexusts_local_vault.nxts`); and custom user-defined Google Drive Sync passphrases.
-            - **Live Session Stability & Multi-Window Re-Docking**: Process-wide `ActiveVaultSessionStore` session sharing keeps active FreeRDP 3.12 & SSH/SFTP sessions alive across vault edits and freeform Googlebook OS window tear-off / re-docking.
-            - **Full Hardware Keyboard & Studio CRUD**: Complete ANSI/VT hardware key translation (`Enter`, `Backspace`, `Tab`, `Esc`, Arrows, `Ctrl+A..Z`), recursive nested folders, ad-hoc `user@host:port` / `nexusts://` Quick Connect, and full Create/Edit/Delete CRUD across all Studios & Inspector cards.
-            - **Protocol, Native & Android 15 Hardening**: Hardened FreeRDP 3.12 C++20 JNI bridge, SSH/SFTP commander, USB-C Hardware Serial/UART (`Send BREAK`, `DTR`/`RTS`), Kubernetes/Docker Exec, R8 Full-Mode ProGuard rules, and Android 14/15 `FOREGROUND_SERVICE_SPECIAL_USE` compliance.
+            ### What's New in ${{ steps.stage.outputs.tag_name }}
+            - **Drag-and-Drop Connections Between Folders**: Drag connections smoothly between folders or back to Top Level via desktop mouse, trackpad, touch, or stylus (with auto-expanding collapsed folders on hover, floating preview card, and `"Move to Folder…"` context menu action) without dropping live SSH/RDP sessions.
+            - **Clean Google Material 3 Desktop UI & Clear Folder vs. Connection Hierarchy**: Scaled-up typography, wider sidebars (`324dp` / `340dp`), `64dp` decluttered window header, structured tonal Folder container cards with filled folder badges & connection/session pills, and indented Connection host rows with vertical tree guide rails & `36dp` protocol squircles.
+            - **1-Click Disconnect All in Folder**: Recursively close all active docked and detached sessions inside a folder and its subfolders from the sidebar tree or Overview Dashboard.
+            - **Language Selection Dialog with Vector Flags**: Crisp Canvas vector country flags and native/localized names across all 6 bundled locales (`EN`, `DE`, `IT`, `ES`, `EL`, `FR`) plus active flag pill in the top bar.
+            - **Google Play Protect–Compatible Auto-Update**: Startup & periodic (6h) HTTPS GitHub Release checks with zero `REQUEST_INSTALL_PACKAGES` permissions, trusted system browser handoff, and dual-verified (`SHA256SUMS.txt` + APK Signature Scheme v3/v4 signing certificate) Android `DownloadManager` verification.
           files: release-assets/*
 
       - name: Check Optional Google Play Service Account Secret
