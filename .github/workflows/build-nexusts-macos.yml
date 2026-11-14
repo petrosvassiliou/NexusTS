@@ -1,0 +1,69 @@
+name: NexusTS macOS Universal Build & Verify
+
+on:
+  push:
+    branches: [ "main", "macos" ]
+  pull_request:
+    branches: [ "main", "macos" ]
+  workflow_dispatch:
+
+concurrency:
+  group: nexusts-macos-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test-macos:
+    name: Build Universal2 NexusTS.app & Run XCTests (macOS 15)
+    runs-on: macos-15
+    timeout-minutes: 35
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain & Universal2 Apple targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Cache Cargo registry & build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            native/rust/target
+          key: ${{ runner.os }}-cargo-macos-${{ hashFiles('native/rust/**/Cargo.toml') }}
+
+      - name: Run Rust workspace unit & FFI roundtrip tests
+        working-directory: native/rust
+        run: cargo test --workspace
+
+      - name: Build Universal2 Rust FFI + C++20 FreeRDP macOS static archives
+        run: |
+          chmod +x scripts/build-macos-native.sh scripts/package-macos-app.sh
+          ./scripts/build-macos-native.sh --universal
+
+      - name: Run SwiftPM NexusTSCoreTests (.nxts v2, Kotlin parity, TOTP, Macro security, Importers)
+        working-directory: macos
+        run: swift test --parallel
+
+      - name: Package Universal2 NexusTS.app & DMG installer
+        run: ./scripts/package-macos-app.sh --universal
+
+      - name: Verify Universal2 Mach-O slices & bundle signature
+        run: |
+          ARCHS="$(lipo -archs macos/dist/NexusTS.app/Contents/MacOS/NexusTS)"
+          echo "NexusTS.app Mach-O architectures: ${ARCHS}"
+          echo "${ARCHS}" | grep -q "arm64"
+          echo "${ARCHS}" | grep -q "x86_64"
+          codesign --verify --deep --strict --verbose=2 macos/dist/NexusTS.app
+
+      - name: Upload NexusTS macOS Universal DMG & App Bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: NexusTS-macOS-Universal
+          path: |
+            macos/dist/NexusTS-macOS-Universal.dmg
+            macos/dist/NexusTS-macOS-Universal.zip
+          if-no-files-found: error

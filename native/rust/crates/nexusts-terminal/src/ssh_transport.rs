@@ -134,16 +134,15 @@ impl client::Handler for NexusSshHandler {
 }
 
 pub struct ActiveSshClientSession {
-    handle: Handle<NexusSshHandler>,
-    pty_channel_id: ChannelId,
+    handle: Arc<Handle<NexusSshHandler>>,
+    pty_channel_id: Option<ChannelId>,
 }
 
 impl ActiveSshClientSession {
-    /// Connects directly to `spec` or tunnels through an existing `bastion` SSH session via `direct-tcpip`.
-    pub async fn connect(
-        spec: SshConnectSpec,
+    async fn authenticate_session(
+        spec: &SshConnectSpec,
         bastion: Option<&ActiveSshClientSession>,
-    ) -> Result<(Self, Channel<Msg>), TransportError> {
+    ) -> Result<Arc<Handle<NexusSshHandler>>, TransportError> {
         let mut config = client::Config::default();
         if spec.keepalive_secs > 0 {
             config.keepalive_interval = Some(Duration::from_secs(spec.keepalive_secs));
@@ -188,6 +187,27 @@ impl ActiveSshClientSession {
             return Err(TransportError::AuthenticationRejected);
         }
 
+        Ok(Arc::new(handle))
+    }
+
+    /// Connects and authenticates without opening an interactive shell PTY (ideal for SFTP-only or Bastion sessions).
+    pub async fn connect_without_shell(
+        spec: SshConnectSpec,
+        bastion: Option<&ActiveSshClientSession>,
+    ) -> Result<Self, TransportError> {
+        let handle = Self::authenticate_session(&spec, bastion).await?;
+        Ok(Self {
+            handle,
+            pty_channel_id: None,
+        })
+    }
+
+    /// Connects directly to `spec` or tunnels through an existing `bastion` SSH session via `direct-tcpip`.
+    pub async fn connect(
+        spec: SshConnectSpec,
+        bastion: Option<&ActiveSshClientSession>,
+    ) -> Result<(Self, Channel<Msg>), TransportError> {
+        let handle = Self::authenticate_session(&spec, bastion).await?;
         let channel = handle.channel_open_session().await?;
         let pty_id = channel.id();
         channel
@@ -213,14 +233,18 @@ impl ActiveSshClientSession {
         Ok((
             Self {
                 handle,
-                pty_channel_id: pty_id,
+                pty_channel_id: Some(pty_id),
             },
             channel,
         ))
     }
 
-    pub fn pty_channel_id(&self) -> ChannelId {
+    pub fn pty_channel_id(&self) -> Option<ChannelId> {
         self.pty_channel_id
+    }
+
+    pub fn shared_handle(&self) -> Arc<Handle<NexusSshHandler>> {
+        Arc::clone(&self.handle)
     }
 
     pub async fn notify_pty_resize(

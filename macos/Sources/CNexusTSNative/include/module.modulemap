@@ -1,0 +1,4 @@
+module CNexusTSNative {
+    umbrella header "CNexusTSNative.h"
+    export *
+}
