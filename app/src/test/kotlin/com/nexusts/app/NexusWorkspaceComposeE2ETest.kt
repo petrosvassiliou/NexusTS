@@ -1070,14 +1070,14 @@ class NexusWorkspaceComposeE2ETest {
         assertEquals(null, movedToRoot.parentFolderId)
         assertSame(liveControllerBeforeMove, vm.sessionStore.sshControllers.values.single())
 
-        // 3. Language Selection Dialog with Vector Flags renders all 6 native language names
+        // 3. Anchored Language Selection DropdownMenu with Vector Flags renders all 6 native language names
         composeRule
             .onAllNodesWithContentDescription(strings.actionLanguagePicker)
             .onFirst()
             .performClick()
         composeRule.waitForIdle()
 
-        assertTrue(vm.uiState.value.isLanguageDialogVisible)
+        assertTrue(vm.uiState.value.isLanguageMenuExpanded)
         assertTextRendered(strings.dialogLanguageTitle)
         assertTextRendered("English")
         assertTextRendered("Deutsch")
@@ -1087,10 +1087,11 @@ class NexusWorkspaceComposeE2ETest {
         assertTextRendered("Français")
 
         composeRule.runOnIdle {
-            vm.dismissLanguageDialog()
+            vm.dismissLanguageMenu()
         }
         composeRule.waitForIdle()
-        assertFalse(vm.uiState.value.isLanguageDialogVisible)
+        assertFalse(vm.uiState.value.isLanguageMenuExpanded)
+        assertTextNotRendered("Ελληνικά")
 
         // 4. Google Play Protect Compliance & Auto-Update Verification
         val pkgInfo = appContext.packageManager.getPackageInfo(

@@ -1,0 +1,6 @@
+NexusTS v1.1.6:
+• Verankertes Material-3-Sprachauswahl-Dropdown in der Kopfleiste mit Vektor-Länderflaggen (6 Sprachen)
+• Drag-and-Drop für Verbindungen zwischen Ordnern und auf die oberste Ebene
+• Klares Google Material 3 Design mit deutlicher Unterscheidung zwischen Ordnern & Hosts
+• Alle aktiven Sitzungen eines Ordners (inkl. Unterordner) per Klick trennen
+• Google Play Protect–kompatibles Auto-Update mit SHA-256- und APK-Signaturprüfung

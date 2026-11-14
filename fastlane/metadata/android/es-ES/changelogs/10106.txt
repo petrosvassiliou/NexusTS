@@ -1,0 +1,6 @@
+NexusTS v1.1.6:
+• Menú desplegable Material 3 de selección de idioma en la barra superior con banderas vectoriales
+• Arrastrar y soltar conexiones entre carpetas y al nivel principal
+• Interfaz Google Material 3 amplia y limpia con clara distinción entre carpetas y hosts
+• Desconectar todas las sesiones activas de una carpeta y sus subcarpetas con un clic
+• Actualización automática compatible con Google Play Protect (SHA-256 y firma APK v3/v4)

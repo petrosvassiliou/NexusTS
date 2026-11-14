@@ -362,7 +362,7 @@ jobs:
             - **Drag-and-Drop Connections Between Folders**: Drag connections smoothly between folders or back to Top Level via desktop mouse, trackpad, touch, or stylus (with auto-expanding collapsed folders on hover, floating preview card, and `"Move to Folder…"` context menu action) without dropping live SSH/RDP sessions.
             - **Clean Google Material 3 Desktop UI & Clear Folder vs. Connection Hierarchy**: Scaled-up typography, wider sidebars (`324dp` / `340dp`), `64dp` decluttered window header, structured tonal Folder container cards with filled folder badges & connection/session pills, and indented Connection host rows with vertical tree guide rails & `36dp` protocol squircles.
             - **1-Click Disconnect All in Folder**: Recursively close all active docked and detached sessions inside a folder and its subfolders from the sidebar tree or Overview Dashboard.
-            - **Language Selection Dialog with Vector Flags**: Crisp Canvas vector country flags and native/localized names across all 6 bundled locales (`EN`, `DE`, `IT`, `ES`, `EL`, `FR`) plus active flag pill in the top bar.
+            - **Language Selection Dropdown with Vector Flags**: Anchored Material 3 top-bar dropdown displaying crisp Canvas vector country flags, native/localized names, and ISO language pills across all 6 bundled locales (`EN`, `DE`, `IT`, `ES`, `EL`, `FR`).
             - **Google Play Protect–Compatible Auto-Update**: Startup & periodic (6h) HTTPS GitHub Release checks with zero `REQUEST_INSTALL_PACKAGES` permissions, trusted system browser handoff, and dual-verified (`SHA256SUMS.txt` + APK Signature Scheme v3/v4 signing certificate) Android `DownloadManager` verification.
           files: release-assets/*
 

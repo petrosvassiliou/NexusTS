@@ -382,7 +382,13 @@ fun NexusWorkspaceScreen(
                     onToggleRemoteKeyCapture = viewModel::toggleRemoteKeyCapture,
                     onToggleBroadcast = viewModel::toggleGlobalBroadcast,
                     onLockVault = viewModel::openLockVaultDialog,
-                    onOpenLanguageDialog = viewModel::openLanguageDialog,
+                    isLanguageMenuExpanded = uiState.isLanguageMenuExpanded,
+                    onToggleLanguageMenu = viewModel::toggleLanguageMenu,
+                    onDismissLanguageMenu = viewModel::dismissLanguageMenu,
+                    onSelectLocale = { locale ->
+                        NexusLocaleController.switchLanguage(locale)
+                        viewModel.dismissLanguageMenu()
+                    },
                     onOpenAutoUpdateDialog = viewModel::openAutoUpdateDialog,
                     onCompleteFlexibleUpdate = onCompleteFlexibleUpdate
                 )
@@ -737,16 +743,6 @@ fun NexusWorkspaceScreen(
                     onDismiss = viewModel::dismissNewTemplateDialog,
                     onSaveTemplate = viewModel::saveTemplateToVault
                 )
-                LanguageSelectionDialog(
-                    visible = uiState.isLanguageDialogVisible,
-                    currentLocale = currentSupportedLocale,
-                    strings = strings,
-                    onSelectLocale = { locale ->
-                        NexusLocaleController.switchLanguage(locale)
-                        viewModel.dismissLanguageDialog()
-                    },
-                    onDismiss = viewModel::dismissLanguageDialog
-                )
                 MoveConnectionToFolderDialog(
                     targetConnection = uiState.movingConnectionTarget,
                     folders = uiState.vaultDocument.folders.filterNot { it.id in uiState.vaultDocument.tombstonedObjectIds },
@@ -989,7 +985,10 @@ private fun DesktopTopWindowChrome(
     onToggleRemoteKeyCapture: () -> Unit,
     onToggleBroadcast: () -> Unit,
     onLockVault: () -> Unit,
-    onOpenLanguageDialog: () -> Unit,
+    isLanguageMenuExpanded: Boolean,
+    onToggleLanguageMenu: () -> Unit,
+    onDismissLanguageMenu: () -> Unit,
+    onSelectLocale: (SupportedNexusLocale) -> Unit,
     onOpenAutoUpdateDialog: () -> Unit,
     onCompleteFlexibleUpdate: () -> Unit
 ) {
@@ -1271,55 +1270,79 @@ private fun DesktopTopWindowChrome(
                     )
                 }
 
-                // Language Flag Trigger Pill (opens Material 3 LanguageSelectionDialog with vector flags)
-                val langHover = rememberDesktopHoverState()
-                val langInteraction = remember { MutableInteractionSource() }
-                val isLangHovered = langHover.value.isHovered
-                Surface(
-                    modifier = Modifier
-                        .height(40.dp)
-                        .semantics(mergeDescendants = true) {
-                            contentDescription = strings.actionLanguagePicker
-                        }
-                        .nexusHoverTracker(langHover, PointerIcon.Hand)
-                        .clip(RoundedCornerShape(99.dp))
-                        .clickable(
-                            interactionSource = langInteraction,
-                            indication = null,
-                            onClick = onOpenLanguageDialog
-                        ),
-                    shape = RoundedCornerShape(99.dp),
-                    color = if (isLangHovered) {
-                        MaterialTheme.colorScheme.surfaceContainerHighest
-                    } else {
-                        MaterialTheme.colorScheme.surfaceContainerHigh
-                    },
-                    border = BorderStroke(
-                        1.dp,
-                        if (isLangHovered) {
-                            MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)
-                        } else {
-                            MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
-                        }
-                    )
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                // Language Flag Dropdown Pill (opens anchored Material 3 DropdownMenu with vector flags)
+                Box {
+                    val langHover = rememberDesktopHoverState()
+                    val langInteraction = remember { MutableInteractionSource() }
+                    val isLangHovered = langHover.value.isHovered
+                    Surface(
+                        modifier = Modifier
+                            .height(40.dp)
+                            .semantics(mergeDescendants = true) {
+                                contentDescription = strings.actionLanguagePicker
+                            }
+                            .nexusHoverTracker(langHover, PointerIcon.Hand)
+                            .clip(RoundedCornerShape(99.dp))
+                            .clickable(
+                                interactionSource = langInteraction,
+                                indication = null,
+                                onClick = onToggleLanguageMenu
+                            ),
+                        shape = RoundedCornerShape(99.dp),
+                        color = when {
+                            isLanguageMenuExpanded -> MaterialTheme.colorScheme.secondaryContainer
+                            isLangHovered -> MaterialTheme.colorScheme.surfaceContainerHighest
+                            else -> MaterialTheme.colorScheme.surfaceContainerHigh
+                        },
+                        border = BorderStroke(
+                            1.dp,
+                            when {
+                                isLanguageMenuExpanded -> MaterialTheme.colorScheme.primary.copy(alpha = 0.65f)
+                                isLangHovered -> MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)
+                                else -> MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
+                            }
+                        )
                     ) {
-                        NexusLanguageFlagBadge(
-                            languageCode = currentLocale.bcp47Tag,
-                            width = 24.dp,
-                            height = 16.dp,
-                            cornerRadius = 4.dp
-                        )
-                        Text(
-                            text = currentLocale.bcp47Tag.uppercase(),
-                            style = MaterialTheme.typography.labelLarge,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
+                        Row(
+                            modifier = Modifier.padding(start = 12.dp, end = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(7.dp)
+                        ) {
+                            NexusLanguageFlagBadge(
+                                languageCode = currentLocale.bcp47Tag,
+                                width = 24.dp,
+                                height = 16.dp,
+                                cornerRadius = 4.dp
+                            )
+                            Text(
+                                text = currentLocale.bcp47Tag.uppercase(),
+                                style = MaterialTheme.typography.labelLarge,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Icon(
+                                imageVector = if (isLanguageMenuExpanded) {
+                                    Icons.Outlined.ExpandLess
+                                } else {
+                                    Icons.Outlined.KeyboardArrowDown
+                                },
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                                tint = if (isLanguageMenuExpanded) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                }
+                            )
+                        }
                     }
+
+                    LanguageSelectionDropdownMenu(
+                        expanded = isLanguageMenuExpanded,
+                        currentLocale = currentLocale,
+                        strings = strings,
+                        onSelectLocale = onSelectLocale,
+                        onDismiss = onDismissLanguageMenu
+                    )
                 }
 
                 ExpressiveMorphingIconButton(
@@ -3881,139 +3904,121 @@ private fun ImportErrorAlertDialog(
 }
 
 @Composable
-private fun LanguageSelectionDialog(
-    visible: Boolean,
+private fun LanguageSelectionDropdownMenu(
+    expanded: Boolean,
     currentLocale: SupportedNexusLocale,
     strings: WorkspaceLocalizedStrings,
     onSelectLocale: (SupportedNexusLocale) -> Unit,
     onDismiss: () -> Unit
 ) {
-    if (!visible) return
-
-    AlertDialog(
+    DropdownMenu(
+        expanded = expanded,
         onDismissRequest = onDismiss,
-        shape = RoundedCornerShape(28.dp),
-        icon = {
+        modifier = Modifier.widthIn(min = 268.dp, max = 328.dp),
+        shape = RoundedCornerShape(18.dp),
+        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+        border = BorderStroke(
+            width = 1.dp,
+            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+        )
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
             Icon(
                 imageVector = Icons.Outlined.Language,
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(28.dp)
+                modifier = Modifier.size(17.dp)
             )
-        },
-        title = {
             Text(
                 text = strings.dialogLanguageTitle,
-                style = MaterialTheme.typography.headlineSmall
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-        },
-        text = {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                SupportedNexusLocale.entries.forEach { locale ->
-                    val isSelected = locale == currentLocale
-                    val localizedLabel = strings.languageLabels[locale] ?: locale.nativeDisplayName
-                    val rowHover = rememberDesktopHoverState()
-                    val rowInteraction = remember { MutableInteractionSource() }
-                    val isHovered = rowHover.value.isHovered
+        }
+        HorizontalDivider(
+            modifier = Modifier.padding(bottom = 4.dp),
+            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
+        )
 
-                    Surface(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .nexusHoverTracker(rowHover, PointerIcon.Hand)
-                            .clip(RoundedCornerShape(16.dp))
-                            .clickable(
-                                interactionSource = rowInteraction,
-                                indication = null,
-                                onClick = { onSelectLocale(locale) }
-                            ),
-                        shape = RoundedCornerShape(16.dp),
-                        color = when {
-                            isSelected -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.72f)
-                            isHovered -> MaterialTheme.colorScheme.surfaceContainerHighest
-                            else -> MaterialTheme.colorScheme.surfaceContainerLow
-                        },
-                        border = BorderStroke(
-                            width = if (isSelected) 1.5.dp else 1.dp,
-                            color = if (isSelected) {
-                                MaterialTheme.colorScheme.primary
-                            } else {
-                                MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
-                            }
+        SupportedNexusLocale.entries.forEach { locale ->
+            val isSelected = locale == currentLocale
+            val localizedLabel = strings.languageLabels[locale] ?: locale.nativeDisplayName
+
+            DropdownMenuItem(
+                modifier = Modifier
+                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(
+                        if (isSelected) {
+                            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.58f)
+                        } else {
+                            Color.Transparent
+                        }
+                    ),
+                leadingIcon = {
+                    NexusLanguageFlagBadge(
+                        languageCode = locale.bcp47Tag,
+                        width = 28.dp,
+                        height = 19.dp,
+                        cornerRadius = 4.dp
+                    )
+                },
+                text = {
+                    Column {
+                        Text(
+                            text = locale.nativeDisplayName,
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurface
                         )
+                        Text(
+                            text = if (localizedLabel != locale.nativeDisplayName) {
+                                "$localizedLabel • ${locale.regionSubtitle}"
+                            } else {
+                                locale.regionSubtitle
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                },
+                trailingIcon = {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 16.dp, vertical = 13.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
+                        Surface(
+                            shape = RoundedCornerShape(99.dp),
+                            color = MaterialTheme.colorScheme.surfaceContainerHighest
                         ) {
-                            Row(
-                                modifier = Modifier.weight(1f),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(14.dp)
-                            ) {
-                                NexusLanguageFlagBadge(
-                                    languageCode = locale.bcp47Tag,
-                                    width = 38.dp,
-                                    height = 26.dp,
-                                    cornerRadius = 6.dp
-                                )
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = locale.nativeDisplayName,
-                                        style = MaterialTheme.typography.titleSmall,
-                                        color = MaterialTheme.colorScheme.onSurface
-                                    )
-                                    Text(
-                                        text = "$localizedLabel • ${locale.regionSubtitle}",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                }
-                            }
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                Surface(
-                                    shape = RoundedCornerShape(99.dp),
-                                    color = MaterialTheme.colorScheme.surfaceContainerHighest
-                                ) {
-                                    Text(
-                                        text = locale.bcp47Tag.uppercase(),
-                                        style = NexusTheme.monospace.keycapShortcut,
-                                        color = MaterialTheme.colorScheme.secondary,
-                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                                    )
-                                }
-                                if (isSelected) {
-                                    Icon(
-                                        imageVector = Icons.Outlined.CheckCircle,
-                                        contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.size(20.dp)
-                                    )
-                                }
-                            }
+                            Text(
+                                text = locale.bcp47Tag.uppercase(),
+                                style = NexusTheme.monospace.keycapShortcut,
+                                color = MaterialTheme.colorScheme.secondary,
+                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                            )
+                        }
+                        if (isSelected) {
+                            Icon(
+                                imageVector = Icons.Outlined.CheckCircle,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(18.dp)
+                            )
                         }
                     }
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = onDismiss) {
-                Text(strings.dialogActionCancel)
-            }
+                },
+                onClick = { onSelectLocale(locale) }
+            )
         }
-    )
+    }
 }
 
 @Composable

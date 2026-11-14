@@ -97,7 +97,7 @@ data class WorkspaceUiState(
     val driveRememberVaultPassphrase: Boolean = false,
     val githubLatestReleaseBanner: String = "",
     val githubLatestReleaseUrl: String = "",
-    val isLanguageDialogVisible: Boolean = false,
+    val isLanguageMenuExpanded: Boolean = false,
     val movingConnectionTarget: VaultConnection? = null,
     val isAutoUpdateDialogVisible: Boolean = false,
     val autoCheckUpdatesEnabled: Boolean = true,
@@ -2064,13 +2064,18 @@ class NexusWorkspaceViewModel @Inject constructor(
         }
     }
 
-    fun openLanguageDialog() {
+    fun toggleLanguageMenu() {
         if (_uiState.value.isVaultLocked) return
-        _uiState.update { it.copy(isLanguageDialogVisible = true) }
+        _uiState.update { it.copy(isLanguageMenuExpanded = !it.isLanguageMenuExpanded) }
     }
 
-    fun dismissLanguageDialog() {
-        _uiState.update { it.copy(isLanguageDialogVisible = false) }
+    fun openLanguageMenu() {
+        if (_uiState.value.isVaultLocked) return
+        _uiState.update { it.copy(isLanguageMenuExpanded = true) }
+    }
+
+    fun dismissLanguageMenu() {
+        _uiState.update { it.copy(isLanguageMenuExpanded = false) }
     }
 
     fun openAutoUpdateDialog() {
@@ -2144,7 +2149,7 @@ class NexusWorkspaceViewModel @Inject constructor(
             state.isNewDynamicFolderDialogVisible ||
             state.isNewTemplateDialogVisible ||
             state.isLockVaultDialogVisible ||
-            state.isLanguageDialogVisible ||
+            state.isLanguageMenuExpanded ||
             state.movingConnectionTarget != null ||
             state.isAutoUpdateDialogVisible ||
             state.pendingEncryptedImportFileName != null ||
@@ -2239,6 +2244,9 @@ class NexusWorkspaceViewModel @Inject constructor(
                 it.copy(
                     isVaultLocked = true,
                     isLockVaultDialogVisible = false,
+                    isLanguageMenuExpanded = false,
+                    movingConnectionTarget = null,
+                    isAutoUpdateDialogVisible = false,
                     remoteKeyCaptureEnabled = false,
                     isQuickConnectVisible = false,
                     hydratedDynamicConnections = emptyMap()

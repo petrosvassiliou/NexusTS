@@ -1,0 +1,6 @@
+NexusTS v1.1.6:
+• Anchored Material 3 language dropdown in the top bar with crisp vector country flags across all 6 locales
+• Drag-and-drop connections between folders & back to root level
+• Clear Google Material 3 visual hierarchy distinguishing folder cards from host endpoints + scaled-up desktop UI
+• Disconnect all active sessions in a folder (including subfolders) with 1 click
+• Google Play Protect–compatible auto-update with SHA-256 & APK Signature Scheme v3/v4 verification
