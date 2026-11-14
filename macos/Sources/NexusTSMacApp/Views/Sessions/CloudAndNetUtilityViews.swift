@@ -535,25 +535,3 @@ public struct NetworkDiagnosticsSessionView: View {
         }
     }
 }
-
-private extension PortProbeHit {
-    init(port: UInt16, open: Bool, connectLatencyMs: UInt64, guessedService: String, serviceBanner: String?) {
-        let dict: [String: Any?] = [
-            "port": port,
-            "open": open,
-            "connect_latency_ms": connectLatencyMs,
-            "guessed_service": guessedService,
-            "service_banner": serviceBanner
-        ]
-        let compact = dict.compactMapValues { $0 }
-        let data = (try? JSONSerialization.data(withJSONObject: compact)) ?? Data()
-        self = (try? JSONDecoder().decode(PortProbeHit.self, from: data)) ?? PortProbeHitFallback.make(port: port)
-    }
-}
-
-private enum PortProbeHitFallback {
-    static func make(port: UInt16) -> PortProbeHit {
-        let json = "{\"port\":\(port),\"open\":true,\"connect_latency_ms\":1,\"guessed_service\":\"tcp\"}"
-        return try! JSONDecoder().decode(PortProbeHit.self, from: Data(json.utf8))
-    }
-}

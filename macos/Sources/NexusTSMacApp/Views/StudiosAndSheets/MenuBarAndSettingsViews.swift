@@ -150,7 +150,7 @@ public struct MacSettingsView: View {
         Form {
             Picker("Workspace Language", selection: $store.appLanguage) {
                 ForEach(NexusAppLanguage.allCases) { lang in
-                    Text(lang.displayName).tag(lang)
+                    Text(lang.nativeDisplayName).tag(lang)
                 }
             }
 

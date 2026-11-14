@@ -959,6 +959,20 @@ public struct PortProbeHit: Codable, Equatable, Identifiable, Sendable {
     public let guessedService: String
     public let serviceBanner: String?
 
+    public init(
+        port: UInt16,
+        open: Bool,
+        connectLatencyMs: UInt64,
+        guessedService: String,
+        serviceBanner: String? = nil
+    ) {
+        self.port = port
+        self.open = open
+        self.connectLatencyMs = connectLatencyMs
+        self.guessedService = guessedService
+        self.serviceBanner = serviceBanner
+    }
+
     enum CodingKeys: String, CodingKey {
         case port, open
         case connectLatencyMs = "connect_latency_ms"

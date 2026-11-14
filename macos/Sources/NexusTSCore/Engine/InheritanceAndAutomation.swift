@@ -251,13 +251,18 @@ public enum PropertyInheritanceResolver {
     ) -> [VaultConnection] {
         struct DynamicPayload: Decodable {
             struct Item: Decodable {
-                let Type: String?
+                let objectType: String?
                 let Name: String?
                 let ComputerName: String?
                 let URI: String?
                 let Port: Int?
                 let OS: String?
                 let Tags: [String]?
+
+                enum CodingKeys: String, CodingKey {
+                    case objectType = "Type"
+                    case Name, ComputerName, URI, Port, OS, Tags
+                }
             }
             let Objects: [Item]?
         }
@@ -269,7 +274,7 @@ public enum PropertyInheritanceResolver {
             guard !host.isEmpty else { return nil }
             let name = item.Name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? host
             let proto: VaultProtocolType = {
-                switch (item.Type ?? "SSH").uppercased() {
+                switch (item.objectType ?? "SSH").uppercased() {
                 case "RDP", "REMOTE DESKTOP": return .RDP
                 case "VNC": return .VNC
                 case "ARD", "APPLE_SCREEN_SHARING": return .APPLE_SCREEN_SHARING
@@ -432,9 +437,10 @@ public enum AutomationTaskEngine {
         let matches = tokenRegex.matches(in: template, range: nsRange)
         guard !matches.isEmpty else { return template }
 
-        let customCI: [String: String] = Dictionary(
-            uniqueKeysWithValues: profile.effectiveCustomProperties.map { ($0.key.lowercased(), $0.value) }
-        )
+        var customCI: [String: String] = [:]
+        for (propKey, entry) in profile.effectiveCustomProperties {
+            customCI[propKey.lowercased()] = entry.value
+        }
 
         var output = ""
         var cursor = template.startIndex
