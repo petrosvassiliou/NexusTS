@@ -65,6 +65,8 @@ typedef struct NexusRdpConfig {
     bool remote_app_mode;
     const char* remote_app_program;
     const char* remote_app_args;
+    const char* shared_drive_name;
+    const char* shared_drive_local_path;
 } NexusRdpConfig;
 
 int64_t nexusts_rdp_create_session(const NexusRdpConfig* config);

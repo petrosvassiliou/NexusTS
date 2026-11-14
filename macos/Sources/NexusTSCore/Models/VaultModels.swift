@@ -428,6 +428,24 @@ public struct RdpProtocolSettings: Codable, Equatable, Hashable, Sendable {
         self.restrictedAdminMode = try c.decodeIfPresent(Bool.self, forKey: .restrictedAdminMode) ?? false
         self.ignoreCertificateWarnings = try c.decodeIfPresent(Bool.self, forKey: .ignoreCertificateWarnings) ?? false
     }
+
+    public var macSharedFolderPath: String? {
+        for uri in redirectedDriveSafUris {
+            if uri.hasPrefix("file://"), let url = URL(string: uri), url.isFileURL {
+                return url.path
+            }
+            if uri.hasPrefix("/") {
+                return uri
+            }
+        }
+        return nil
+    }
+
+    public var macSharedDriveName: String {
+        guard let path = macSharedFolderPath, !path.isEmpty else { return "NexusTS" }
+        let last = (path as NSString).lastPathComponent
+        return last.isEmpty ? "Mac" : last
+    }
 }
 
 public struct SshProtocolSettings: Codable, Equatable, Hashable, Sendable {
@@ -997,6 +1015,7 @@ public struct VaultConnection: VaultTimestampedEntity, Hashable {
     public var tags: [String]
     public var notes: String
     public var favorite: Bool
+    public var sortOrder: Int
     public var inheritable: InheritableProperties
     public var settings: ProtocolSpecificSettings
     public var updatedAtEpochMs: Int64
@@ -1011,6 +1030,7 @@ public struct VaultConnection: VaultTimestampedEntity, Hashable {
         tags: [String] = [],
         notes: String = "",
         favorite: Bool = false,
+        sortOrder: Int = 0,
         inheritable: InheritableProperties = InheritableProperties(),
         settings: ProtocolSpecificSettings? = nil,
         updatedAtEpochMs: Int64 = VaultClock.nowMs()
@@ -1024,6 +1044,7 @@ public struct VaultConnection: VaultTimestampedEntity, Hashable {
         self.tags = tags
         self.notes = notes
         self.favorite = favorite
+        self.sortOrder = sortOrder
         self.inheritable = inheritable
         self.settings = settings ?? protocolType.defaultSettings(host: host)
         self.updatedAtEpochMs = updatedAtEpochMs
@@ -1032,7 +1053,7 @@ public struct VaultConnection: VaultTimestampedEntity, Hashable {
     enum CodingKeys: String, CodingKey {
         case id, parentFolderId, name, host
         case protocolType = "protocol"
-        case osFamily, tags, notes, favorite, inheritable, settings, updatedAtEpochMs
+        case osFamily, tags, notes, favorite, sortOrder, inheritable, settings, updatedAtEpochMs
     }
 
     public init(from decoder: Decoder) throws {
@@ -1048,6 +1069,7 @@ public struct VaultConnection: VaultTimestampedEntity, Hashable {
         self.tags = try c.decodeIfPresent([String].self, forKey: .tags) ?? []
         self.notes = try c.decodeIfPresent(String.self, forKey: .notes) ?? ""
         self.favorite = try c.decodeIfPresent(Bool.self, forKey: .favorite) ?? false
+        self.sortOrder = try c.decodeIfPresent(Int.self, forKey: .sortOrder) ?? 0
         self.inheritable = try c.decodeIfPresent(InheritableProperties.self, forKey: .inheritable) ?? InheritableProperties()
         self.settings = try c.decodeIfPresent(ProtocolSpecificSettings.self, forKey: .settings) ?? proto.defaultSettings(host: hostVal)
         self.updatedAtEpochMs = try c.decodeIfPresent(Int64.self, forKey: .updatedAtEpochMs) ?? 0

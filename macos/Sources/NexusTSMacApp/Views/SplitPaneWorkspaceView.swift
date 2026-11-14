@@ -140,6 +140,9 @@ private struct LeafPaneContainerView: View {
                                     if let detachedId = store.stageTabForDetachedWindow(tab.id) {
                                         openWindow(id: "detached-session", value: detachedId)
                                     }
+                                },
+                                onDropTabPayload: { payload in
+                                    handleTabDropPayload(payload, beforeTabId: tab.id)
                                 }
                             )
                         }
@@ -180,6 +183,12 @@ private struct LeafPaneContainerView: View {
                 .padding(.trailing, 10)
             }
             .background(.bar)
+            .dropDestination(for: String.self) { payloads, _ in
+                for p in payloads {
+                    handleTabDropPayload(p, beforeTabId: nil)
+                }
+                return true
+            }
             .overlay(alignment: .top) {
                 if isFocusedPane && store.paneTree.allLeafIds.count > 1 {
                     Rectangle()
@@ -208,6 +217,24 @@ private struct LeafPaneContainerView: View {
             }
         }
     }
+
+    private func handleTabDropPayload(_ payload: String, beforeTabId: UUID?) {
+        if payload.hasPrefix("tab:"),
+           let draggedId = UUID(uuidString: String(payload.dropFirst("tab:".count))) {
+            store.paneTree = store.paneTree.reorderingOrMovingTab(
+                draggedId,
+                before: beforeTabId,
+                in: paneId
+            )
+            store.focusedPaneId = paneId
+        } else if payload.hasPrefix("conn:") {
+            let connId = String(payload.dropFirst("conn:".count))
+            if let conn = store.activeConnections.first(where: { $0.id == connId }) {
+                store.focusedPaneId = paneId
+                store.openConnection(conn)
+            }
+        }
+    }
 }
 
 private struct MacTabPillView: View {
@@ -216,7 +243,9 @@ private struct MacTabPillView: View {
     let onSelect: () -> Void
     let onClose: () -> Void
     let onDetachWindow: () -> Void
+    let onDropTabPayload: (String) -> Void
     @State private var isHovering = false
+    @State private var isDropTargeted = false
 
     var body: some View {
         let accent = HIGColorUtilities.color(fromHex: tab.accentHex) ?? tab.connection.protocolType.appleSystemTint
@@ -253,11 +282,23 @@ private struct MacTabPillView: View {
         )
         .overlay(
             RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .strokeBorder(isActive ? Color.primary.opacity(0.12) : .clear, lineWidth: 0.75)
+                .strokeBorder(
+                    isDropTargeted ? Color.accentColor : (isActive ? Color.primary.opacity(0.12) : .clear),
+                    lineWidth: isDropTargeted ? 1.5 : 0.75
+                )
         )
         .contentShape(Rectangle())
         .onTapGesture(perform: onSelect)
         .onHover { isHovering = $0 }
+        .draggable("tab:\(tab.id.uuidString)")
+        .dropDestination(for: String.self) { payloads, _ in
+            for p in payloads {
+                onDropTabPayload(p)
+            }
+            return true
+        } isTargeted: { hovering in
+            isDropTargeted = hovering
+        }
         .contextMenu {
             Button("Move Tab to New Window") { onDetachWindow() }
             Divider()

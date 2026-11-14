@@ -216,4 +216,79 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
         let subnet = try XCTUnwrap(NetworkCalculators.calculateIpv4Subnet(cidrInput: "10.24.0.0/22"))
         XCTAssertEqual(subnet.usableHostCount, 1022)
     }
+
+    func testV117SortOrderRdpDriveAndTabReordering() throws {
+        let kotlinV117Json = """
+        {
+          "documentId": "doc-v117",
+          "name": "v1.1.7 Parity Vault",
+          "schemaVersion": 2,
+          "revision": 7,
+          "connections": [
+            {
+              "id": "rdp-v117",
+              "name": "WinServer 2025",
+              "host": "10.0.50.10",
+              "protocol": "RDP",
+              "sortOrder": 4,
+              "settings": {
+                "_type": "rdp",
+                "port": 3389,
+                "redirectDrives": true,
+                "redirectedDriveSafUris": ["file:///Users/ops/SharedOps"]
+              }
+            }
+          ]
+        }
+        """
+        let doc = try JSONDecoder().decode(NxtsVaultDocument.self, from: Data(kotlinV117Json.utf8))
+        let conn = try XCTUnwrap(doc.connections.first)
+        XCTAssertEqual(conn.sortOrder, 4)
+        guard case .rdp(let rdp) = conn.settings else {
+            return XCTFail("Expected .rdp settings")
+        }
+        XCTAssertEqual(rdp.macSharedFolderPath, "/Users/ops/SharedOps")
+        XCTAssertEqual(rdp.macSharedDriveName, "SharedOps")
+
+        // Verify cross-pane & intra-pane tab drag-and-drop reordering
+        let tab1 = WorkspaceSessionTab.makeLocalZshTab()
+        let tab2 = WorkspaceSessionTab.makeLocalZshTab()
+        let tab3 = WorkspaceSessionTab.makeLocalZshTab()
+        var tree = WorkspacePaneNode.initialEmpty()
+        let firstPaneId = try XCTUnwrap(tree.allLeafIds.first)
+        tree = tree.insertingTab(tab1, into: firstPaneId)
+        tree = tree.insertingTab(tab2, into: firstPaneId)
+        let (splitTree, secondPaneId) = tree.splittingPane(firstPaneId, orientation: .horizontal, newTab: tab3)
+
+        // Move tab1 from firstPane into secondPane before tab3
+        let movedTree = splitTree.reorderingOrMovingTab(tab1.id, before: tab3.id, in: secondPaneId)
+        XCTAssertEqual(movedTree.leafContaining(tabId: tab1.id), secondPaneId)
+        XCTAssertEqual(movedTree.allTabs.map(\.id), [tab2.id, tab1.id, tab3.id])
+    }
+
+    func testSha256UpdateManifestVerification() {
+        let payload = Data("NexusTS-Universal2-DMG-Binary-Test".utf8)
+        let validManifest = """
+        adf8b254e0028a4790d310e39a6ae8af49e5bac34c341c90b51497e52ae38bad  NexusTS-v1.1.8-macOS-Universal.dmg
+        """
+        let wrongManifest = """
+        0000000000000000000000000000000000000000000000000000000000000000  NexusTS-v1.1.8-macOS-Universal.dmg
+        """
+        XCTAssertTrue(
+            MacGitHubReleaseUpdater.verifySha256Manifest(
+                fileData: payload,
+                expectedAssetName: "NexusTS-v1.1.8-macOS-Universal.dmg",
+                manifestText: validManifest
+            )
+        )
+        XCTAssertFalse(
+            MacGitHubReleaseUpdater.verifySha256Manifest(
+                fileData: payload,
+                expectedAssetName: "NexusTS-v1.1.8-macOS-Universal.dmg",
+                manifestText: wrongManifest
+            )
+        )
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("1.1.8", isNewerThan: "1.1.7"))
+        XCTAssertFalse(MacGitHubReleaseUpdater.compareSemver("1.1.7", isNewerThan: "1.1.7"))
+    }
 }

@@ -38,6 +38,13 @@ chmod +x "${APP_BUNDLE}/Contents/MacOS/NexusTS"
 cp "${MACOS_DIR}/Info.plist" "${APP_BUNDLE}/Contents/Info.plist"
 printf "APPL????" > "${APP_BUNDLE}/Contents/PkgInfo"
 
+FREERDP_MAC_LIB_DIR="${REPO_ROOT}/native/third_party/freerdp3/macos/lib"
+if [[ -e "${FREERDP_MAC_LIB_DIR}/libfreerdp3.dylib" ]]; then
+    echo "==> Embedding Universal2 FreeRDP 3.x + OpenSSL 3.4 frameworks..."
+    mkdir -p "${APP_BUNDLE}/Contents/Frameworks"
+    cp -a "${FREERDP_MAC_LIB_DIR}/"*.dylib "${APP_BUNDLE}/Contents/Frameworks/"
+fi
+
 echo "==> Generating Apple HIG squircle AppIcon.icns..."
 ICONSET_DIR="${DIST_DIR}/AppIcon.iconset"
 mkdir -p "${ICONSET_DIR}"
@@ -120,7 +127,18 @@ rm -rf "${ICONSET_DIR}"
 
 echo "==> Code-signing NexusTS.app..."
 SIGN_IDENTITY="${CODESIGN_IDENTITY:--}"
-codesign --force --deep --entitlements "${MACOS_DIR}/NexusTS.entitlements" --sign "${SIGN_IDENTITY}" "${APP_BUNDLE}"
+SIGN_EXTRA_FLAGS=()
+if [[ "${SIGN_IDENTITY}" != "-" ]]; then
+    SIGN_EXTRA_FLAGS+=(--options runtime --timestamp)
+fi
+
+if [[ -d "${APP_BUNDLE}/Contents/Frameworks" ]]; then
+    while IFS= read -r -d '' dylib_file; do
+        codesign --force "${SIGN_EXTRA_FLAGS[@]}" --sign "${SIGN_IDENTITY}" "${dylib_file}"
+    done < <(find "${APP_BUNDLE}/Contents/Frameworks" -type f -name "*.dylib" -print0)
+fi
+
+codesign --force "${SIGN_EXTRA_FLAGS[@]}" --entitlements "${MACOS_DIR}/NexusTS.entitlements" --sign "${SIGN_IDENTITY}" "${APP_BUNDLE}"
 codesign --verify --deep --strict "${APP_BUNDLE}"
 
 ARCHIVE_SUFFIX="Host"
@@ -139,6 +157,17 @@ cp -R "${APP_BUNDLE}" "${STAGE_DMG_DIR}/NexusTS.app"
 ln -s /Applications "${STAGE_DMG_DIR}/Applications"
 hdiutil create -volname "NexusTS" -srcfolder "${STAGE_DMG_DIR}" -ov -format UDZO "${DMG_OUT}" >/dev/null
 rm -rf "${STAGE_DMG_DIR}"
+
+if [[ "${SIGN_IDENTITY}" != "-" && -n "${APPLE_ID:-}" && -n "${APPLE_TEAM_ID:-}" && -n "${APPLE_APP_SPECIFIC_PASSWORD:-}" ]]; then
+    echo "==> Submitting ${DMG_OUT} for Apple Developer ID Notarization..."
+    codesign --force --timestamp --sign "${SIGN_IDENTITY}" "${DMG_OUT}"
+    xcrun notarytool submit "${DMG_OUT}" \
+        --apple-id "${APPLE_ID}" \
+        --team-id "${APPLE_TEAM_ID}" \
+        --password "${APPLE_APP_SPECIFIC_PASSWORD}" \
+        --wait
+    xcrun stapler staple "${DMG_OUT}"
+fi
 
 echo "==> Packaged macOS artifacts:"
 ls -lh "${DIST_DIR}"

@@ -547,18 +547,38 @@ public final class MacLocalPtySession: @unchecked Sendable {
     }
 }
 
-// MARK: - 5. GitHub Releases macOS Signed DMG Update Checker
+// MARK: - 5. GitHub Releases macOS Signed DMG Update Checker & SHA-256 Verifier
 
 public struct MacReleaseUpdateCandidate: Equatable, Sendable {
     public let tagName: String
     public let releaseTitle: String
     public let htmlReleaseUrl: URL
+    public let dmgAssetName: String?
     public let dmgDownloadUrl: URL?
+    public let sha256SumsUrl: URL?
     public let releaseNotes: String
+
+    public init(
+        tagName: String,
+        releaseTitle: String,
+        htmlReleaseUrl: URL,
+        dmgAssetName: String? = nil,
+        dmgDownloadUrl: URL? = nil,
+        sha256SumsUrl: URL? = nil,
+        releaseNotes: String = ""
+    ) {
+        self.tagName = tagName
+        self.releaseTitle = releaseTitle
+        self.htmlReleaseUrl = htmlReleaseUrl
+        self.dmgAssetName = dmgAssetName
+        self.dmgDownloadUrl = dmgDownloadUrl
+        self.sha256SumsUrl = sha256SumsUrl
+        self.releaseNotes = releaseNotes
+    }
 }
 
 public enum MacGitHubReleaseUpdater {
-    public static let currentVersion = "1.1.0"
+    public static let currentVersion = "1.1.7"
 
     public static func checkForUpdates(
         repoSlug: String = "petrosvassiliou/NexusTS"
@@ -592,16 +612,78 @@ public enum MacGitHubReleaseUpdater {
         }
 
         let dmgAsset = rel.assets?.first(where: {
-            $0.name.lowercased().hasSuffix(".dmg") || $0.name.lowercased().contains("macos")
+            $0.name.lowercased().hasSuffix(".dmg")
+        }) ?? rel.assets?.first(where: {
+            $0.name.lowercased().contains("macos") && $0.name.lowercased().hasSuffix(".zip")
+        })
+
+        let sumsAsset = rel.assets?.first(where: {
+            $0.name == "SHA256SUMS-macos.txt"
+        }) ?? rel.assets?.first(where: {
+            $0.name == "SHA256SUMS.txt"
         })
 
         return MacReleaseUpdateCandidate(
             tagName: rel.tag_name,
             releaseTitle: rel.name ?? rel.tag_name,
             htmlReleaseUrl: htmlUrl,
+            dmgAssetName: dmgAsset?.name,
             dmgDownloadUrl: dmgAsset.flatMap { URL(string: $0.browser_download_url) },
+            sha256SumsUrl: sumsAsset.flatMap { URL(string: $0.browser_download_url) },
             releaseNotes: rel.body ?? ""
         )
+    }
+
+    public static func verifySha256Manifest(
+        fileData: Data,
+        expectedAssetName: String,
+        manifestText: String
+    ) -> Bool {
+        let actualHex = SHA256.hash(data: fileData)
+            .map { String(format: "%02x", $0) }
+            .joined()
+            .lowercased()
+
+        for rawLine in manifestText.split(whereSeparator: \.isNewline) {
+            let parts = rawLine.split(whereSeparator: { $0 == " " || $0 == "\t" })
+            guard parts.count >= 2 else { continue }
+            let hashToken = String(parts[0]).lowercased()
+            let fileToken = String(parts.last!).trimmingCharacters(in: CharacterSet(charactersIn: "*./"))
+            if fileToken == expectedAssetName {
+                return hashToken == actualHex
+            }
+        }
+        return false
+    }
+
+    public static func downloadAndVerifyDmg(
+        candidate: MacReleaseUpdateCandidate
+    ) async throws -> URL {
+        guard let dmgUrl = candidate.dmgDownloadUrl else {
+            throw NativeBridgeError.networkUtilityError("Release \(candidate.tagName) does not include a macOS DMG asset yet.")
+        }
+        let assetName = candidate.dmgAssetName ?? dmgUrl.lastPathComponent
+        let (dmgData, dmgResp) = try await URLSession.shared.data(from: dmgUrl)
+        guard let http = dmgResp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw NativeBridgeError.networkUtilityError("Failed to download \(assetName)")
+        }
+
+        if let sumsUrl = candidate.sha256SumsUrl,
+           let (sumsData, sumsResp) = try? await URLSession.shared.data(from: sumsUrl),
+           let sumsHttp = sumsResp as? HTTPURLResponse,
+           (200..<300).contains(sumsHttp.statusCode),
+           let manifestText = String(data: sumsData, encoding: .utf8),
+           manifestText.contains(assetName) {
+            guard verifySha256Manifest(fileData: dmgData, expectedAssetName: assetName, manifestText: manifestText) else {
+                throw NativeBridgeError.authenticationFailed("SHA-256 checksum mismatch for \(assetName)!")
+            }
+        }
+
+        let downloadsDir = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        let destination = downloadsDir.appendingPathComponent(assetName)
+        try dmgData.write(to: destination, options: .atomic)
+        return destination
     }
 
     public static func compareSemver(_ candidate: String, isNewerThan current: String) -> Bool {

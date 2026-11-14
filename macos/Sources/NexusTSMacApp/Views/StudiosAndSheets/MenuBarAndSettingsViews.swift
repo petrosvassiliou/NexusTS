@@ -238,14 +238,60 @@ public struct MacSettingsView: View {
         .formStyle(.grouped)
     }
 
+    @State private var updateStatusText: String? = nil
+    @State private var isDownloadingUpdate: Bool = false
+
     private var updatesTab: some View {
         Form {
-            LabeledContent("Installed macOS Version", value: "NexusTS \(MacGitHubReleaseUpdater.currentVersion) (Universal2)")
-            Button("Check GitHub Releases Now") {
-                Task { await store.checkGitHubUpdates() }
+            Section("macOS Universal2 Release Channel") {
+                LabeledContent("Installed macOS Version", value: "NexusTS \(MacGitHubReleaseUpdater.currentVersion) (Universal2)")
+                HStack(spacing: 10) {
+                    Button("Check GitHub Releases Now") {
+                        updateStatusText = "Checking GitHub Releases…"
+                        Task {
+                            await store.checkGitHubUpdates()
+                            updateStatusText = store.updateCandidate == nil
+                                ? "You're running the latest release (v\(MacGitHubReleaseUpdater.currentVersion))."
+                                : "Update \(store.updateCandidate!.tagName) available!"
+                        }
+                    }
+
+                    if let status = updateStatusText {
+                        Text(status)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
+
             if let rel = store.updateCandidate {
-                LabeledContent("Available Release", value: "\(rel.tagName) — \(rel.releaseTitle)")
+                Section("Available Update: \(rel.tagName)") {
+                    LabeledContent("Release", value: rel.releaseTitle)
+                    HStack(spacing: 10) {
+                        if rel.dmgDownloadUrl != nil {
+                            Button(isDownloadingUpdate ? "Downloading & Verifying SHA-256…" : "Download & Verify Universal2 DMG") {
+                                isDownloadingUpdate = true
+                                Task {
+                                    do {
+                                        if let fileURL = try await store.downloadVerifiedUpdateDmg() {
+                                            updateStatusText = "Verified SHA-256: \(fileURL.lastPathComponent)"
+                                            NSWorkspace.shared.activateFileViewerSelecting([fileURL])
+                                        }
+                                    } catch {
+                                        updateStatusText = error.localizedDescription
+                                    }
+                                    isDownloadingUpdate = false
+                                }
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(isDownloadingUpdate)
+                        }
+
+                        Button("Open Release Page") {
+                            NSWorkspace.shared.open(rel.htmlReleaseUrl)
+                        }
+                    }
+                }
             }
         }
         .formStyle(.grouped)

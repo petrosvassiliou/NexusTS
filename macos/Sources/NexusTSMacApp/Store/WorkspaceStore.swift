@@ -399,6 +399,9 @@ public final class WorkspaceStore: ObservableObject {
         self.linkedCloudFileURL = cloudBookmarkBridge.resolveLinkedURL()
         loadPersistedLocalVault()
         appendAudit("Vault", "NexusTS macOS initialized (\(document.connections.count) connections).")
+        Task { [weak self] in
+            await self?.checkGitHubUpdates()
+        }
     }
 
     // MARK: - Persistence, Locking & Touch ID
@@ -810,14 +813,101 @@ public final class WorkspaceStore: ObservableObject {
         appendAudit("Automation", "Dispatched key sequence '\(macro.name)'.")
     }
 
-    // MARK: - Drag-and-Drop Folder Reparenting, Import/Export & Cloud Sync
+    // MARK: - Drag-and-Drop Folder Reparenting, Reordering, Import/Export & Cloud Sync
 
     public func moveConnection(_ connectionId: String, toFolderId targetFolderId: String?) {
         commitMutation("Moved connection") { doc in
             if let idx = doc.connections.firstIndex(where: { $0.id == connectionId }) {
+                let siblingMaxOrder = doc.connections
+                    .filter { $0.parentFolderId == targetFolderId && $0.id != connectionId }
+                    .map(\.sortOrder)
+                    .max() ?? -1
                 doc.connections[idx].parentFolderId = targetFolderId
+                doc.connections[idx].sortOrder = siblingMaxOrder + 1
                 doc.connections[idx].updatedAtEpochMs = VaultClock.nowMs()
             }
+        }
+    }
+
+    public func reorderConnection(_ draggedConnectionId: String, before targetConnectionId: String) {
+        guard draggedConnectionId != targetConnectionId else { return }
+        commitMutation("Reordered connection") { doc in
+            guard let target = doc.connections.first(where: { $0.id == targetConnectionId }),
+                  let draggedIdx = doc.connections.firstIndex(where: { $0.id == draggedConnectionId }) else {
+                return
+            }
+            let destFolderId = target.parentFolderId
+            doc.connections[draggedIdx].parentFolderId = destFolderId
+            let orderedSiblings = doc.connections
+                .filter { $0.parentFolderId == destFolderId && !doc.tombstonedObjectIds.contains($0.id) && $0.id != draggedConnectionId }
+                .sorted {
+                    if $0.sortOrder != $1.sortOrder { return $0.sortOrder < $1.sortOrder }
+                    return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+                }
+            var newSequence = orderedSiblings.map(\.id)
+            if let insertPos = newSequence.firstIndex(of: targetConnectionId) {
+                newSequence.insert(draggedConnectionId, at: insertPos)
+            } else {
+                newSequence.append(draggedConnectionId)
+            }
+            let now = VaultClock.nowMs()
+            for (rank, id) in newSequence.enumerated() {
+                if let i = doc.connections.firstIndex(where: { $0.id == id }) {
+                    doc.connections[i].sortOrder = rank
+                    doc.connections[i].updatedAtEpochMs = now
+                }
+            }
+        }
+    }
+
+    public func moveFolder(_ folderId: String, toParentFolderId targetParentId: String?) {
+        guard folderId != targetParentId else { return }
+        // Guard against cycles (cannot drop a folder into its own descendant)
+        var cursor = targetParentId
+        while let current = cursor {
+            if current == folderId { return }
+            cursor = document.folders.first(where: { $0.id == current })?.parentFolderId
+        }
+        commitMutation("Moved folder") { doc in
+            if let idx = doc.folders.firstIndex(where: { $0.id == folderId }) {
+                let siblingMaxOrder = doc.folders
+                    .filter { $0.parentFolderId == targetParentId && $0.id != folderId }
+                    .map(\.sortOrder)
+                    .max() ?? -1
+                doc.folders[idx].parentFolderId = targetParentId
+                doc.folders[idx].sortOrder = siblingMaxOrder + 1
+                doc.folders[idx].updatedAtEpochMs = VaultClock.nowMs()
+            }
+        }
+    }
+
+    public func handleSidebarDrop(_ payloads: [String], intoFolderId targetFolderId: String?) {
+        for raw in payloads {
+            if raw.hasPrefix("folder:") {
+                let fId = String(raw.dropFirst("folder:".count))
+                moveFolder(fId, toParentFolderId: targetFolderId)
+            } else if raw.hasPrefix("conn:") {
+                let cId = String(raw.dropFirst("conn:".count))
+                moveConnection(cId, toFolderId: targetFolderId)
+            } else {
+                moveConnection(raw, toFolderId: targetFolderId)
+            }
+        }
+    }
+
+    public func setRdpSharedMacFolder(for connectionId: String, folderURL: URL?) {
+        commitMutation("Updated RDP shared folder") { doc in
+            guard let idx = doc.connections.firstIndex(where: { $0.id == connectionId }),
+                  case .rdp(var rdp) = doc.connections[idx].settings else { return }
+            if let folderURL {
+                rdp.redirectDrives = true
+                rdp.redirectedDriveSafUris = [folderURL.absoluteString]
+            } else {
+                rdp.redirectDrives = false
+                rdp.redirectedDriveSafUris = []
+            }
+            doc.connections[idx].settings = .rdp(rdp)
+            doc.connections[idx].updatedAtEpochMs = VaultClock.nowMs()
         }
     }
 
@@ -905,6 +995,13 @@ public final class WorkspaceStore: ObservableObject {
             self.updateCandidate = candidate
             appendAudit("Updater", "New release available on GitHub: \(candidate.tagName).")
         }
+    }
+
+    public func downloadVerifiedUpdateDmg() async throws -> URL? {
+        guard let candidate = updateCandidate else { return nil }
+        let fileURL = try await MacGitHubReleaseUpdater.downloadAndVerifyDmg(candidate: candidate)
+        appendAudit("Updater", "Verified SHA-256 & downloaded \(fileURL.lastPathComponent).")
+        return fileURL
     }
 
     public func appendAudit(_ category: String, _ message: String) {

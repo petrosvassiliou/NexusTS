@@ -78,6 +78,8 @@ int64_t nexusts_rdp_create_session(const NexusRdpConfig* config) {
     params.remote_app_mode = config->remote_app_mode;
     params.remote_app_program = safe_cstr(config->remote_app_program);
     params.remote_app_args = safe_cstr(config->remote_app_args);
+    params.shared_drive_name = safe_cstr(config->shared_drive_name);
+    params.shared_drive_local_path = safe_cstr(config->shared_drive_local_path);
 
     auto ctx = std::make_shared<nexusts::rdp::RdpSessionContext>(std::move(params));
     std::lock_guard<std::mutex> lock(g_macos_rdp_mutex);

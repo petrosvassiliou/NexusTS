@@ -111,6 +111,26 @@ public struct RdpSessionView: View {
                         }
                         .controlSize(.small)
 
+                        Button {
+                            let panel = NSOpenPanel()
+                            panel.canChooseDirectories = true
+                            panel.canChooseFiles = false
+                            panel.allowsMultipleSelection = false
+                            panel.prompt = "Share Folder via RDPDR"
+                            if panel.runModal() == .OK, let folderURL = panel.url {
+                                store.setRdpSharedMacFolder(for: tab.connection.id, folderURL: folderURL)
+                            }
+                        } label: {
+                            Label(
+                                rdpSettings.macSharedFolderPath != nil
+                                    ? "\\\\tsclient\\\(rdpSettings.macSharedDriveName)"
+                                    : "Share Folder…",
+                                systemImage: "folder.badge.gearshape"
+                            )
+                            .font(.caption)
+                        }
+                        .controlSize(.small)
+
                         Toggle("Fit", isOn: $scaleToFit)
                             .toggleStyle(.checkbox)
                             .font(.caption)

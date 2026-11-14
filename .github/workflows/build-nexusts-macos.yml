@@ -3,9 +3,29 @@ name: NexusTS macOS Universal Build & Verify
 on:
   push:
     branches: [ "main", "macos" ]
+    tags: [ "v*" ]
   pull_request:
     branches: [ "main", "macos" ]
   workflow_dispatch:
+    inputs:
+      compile_full_freerdp3:
+        description: "Compile full Universal2 OpenSSL 3.4 + FreeRDP 3.12 macOS libraries"
+        required: false
+        default: true
+        type: boolean
+      publish_release:
+        description: "Publish Universal2 DMG & ZIP to GitHub Releases"
+        required: false
+        default: false
+        type: boolean
+      release_tag:
+        description: "Tag name when publishing via workflow_dispatch"
+        required: false
+        default: "v1.1.7"
+        type: string
+
+permissions:
+  contents: read
 
 concurrency:
   group: nexusts-macos-${{ github.ref }}
@@ -15,11 +35,33 @@ jobs:
   build-and-test-macos:
     name: Build Universal2 NexusTS.app & Run XCTests (macOS 15)
     runs-on: macos-15
-    timeout-minutes: 35
+    timeout-minutes: 45
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Validate macOS Build & FreeRDP3 Scripts
+        run: |
+          chmod +x scripts/build-freerdp3-macos.sh scripts/build-macos-native.sh scripts/package-macos-app.sh
+          bash -n scripts/build-freerdp3-macos.sh
+          bash -n scripts/build-macos-native.sh
+          bash -n scripts/package-macos-app.sh
+          ./scripts/build-freerdp3-macos.sh --dry-run
+
+      - name: Cache Prebuilt Universal2 OpenSSL 3.4 + FreeRDP 3.12 macOS SDK
+        if: ${{ inputs.compile_full_freerdp3 != false }}
+        id: freerdp-macos-cache
+        uses: actions/cache@v4
+        with:
+          path: native/third_party/freerdp3/macos
+          key: freerdp3-macos-universal2-v1-${{ hashFiles('scripts/build-freerdp3-macos.sh') }}
+
+      - name: Build & Stage Universal2 OpenSSL 3.4.1 + FreeRDP 3.12.0 (arm64 + x86_64)
+        if: ${{ inputs.compile_full_freerdp3 != false && steps.freerdp-macos-cache.outputs.cache-hit != 'true' }}
+        run: |
+          command -v ninja >/dev/null 2>&1 || brew install ninja pkg-config
+          ./scripts/build-freerdp3-macos.sh --archs arm64,x86_64
 
       - name: Install Rust toolchain & Universal2 Apple targets
         uses: dtolnay/rust-toolchain@stable
@@ -40,15 +82,36 @@ jobs:
         run: cargo test --workspace
 
       - name: Build Universal2 Rust FFI + C++20 FreeRDP macOS static archives
-        run: |
-          chmod +x scripts/build-macos-native.sh scripts/package-macos-app.sh
-          ./scripts/build-macos-native.sh --universal
+        run: ./scripts/build-macos-native.sh --universal
 
       - name: Run SwiftPM NexusTSCoreTests (.nxts v2, Kotlin parity, TOTP, Macro security, Importers)
         working-directory: macos
         run: swift test --parallel
 
+      - name: Import Optional Apple Developer ID Certificate
+        env:
+          CERT_B64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          CERT_PWD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          DEV_IDENTITY: ${{ secrets.MACOS_CODESIGN_IDENTITY }}
+        run: |
+          if [[ -n "${CERT_B64}" && -n "${CERT_PWD}" && -n "${DEV_IDENTITY}" ]]; then
+            KEYCHAIN_PATH="${RUNNER_TEMP}/nexusts-signing.keychain-db"
+            KEYCHAIN_PASS="$(uuidgen)"
+            printf '%s' "${CERT_B64}" | base64 --decode > "${RUNNER_TEMP}/devid.p12"
+            security create-keychain -p "${KEYCHAIN_PASS}" "${KEYCHAIN_PATH}"
+            security set-keychain-settings -lut 21600 "${KEYCHAIN_PATH}"
+            security unlock-keychain -p "${KEYCHAIN_PASS}" "${KEYCHAIN_PATH}"
+            security import "${RUNNER_TEMP}/devid.p12" -P "${CERT_PWD}" -A -t cert -f pkcs12 -k "${KEYCHAIN_PATH}"
+            security list-keychain -d user -s "${KEYCHAIN_PATH}" login.keychain
+            security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "${KEYCHAIN_PASS}" "${KEYCHAIN_PATH}"
+            echo "CODESIGN_IDENTITY=${DEV_IDENTITY}" >> "${GITHUB_ENV}"
+          fi
+
       - name: Package Universal2 NexusTS.app & DMG installer
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
         run: ./scripts/package-macos-app.sh --universal
 
       - name: Verify Universal2 Mach-O slices & bundle signature
@@ -57,6 +120,12 @@ jobs:
           echo "NexusTS.app Mach-O architectures: ${ARCHS}"
           echo "${ARCHS}" | grep -q "arm64"
           echo "${ARCHS}" | grep -q "x86_64"
+          if [[ -f macos/dist/NexusTS.app/Contents/Frameworks/libfreerdp3.dylib ]]; then
+            RDP_ARCHS="$(lipo -archs macos/dist/NexusTS.app/Contents/Frameworks/libfreerdp3.dylib)"
+            echo "Bundled libfreerdp3.dylib architectures: ${RDP_ARCHS}"
+            echo "${RDP_ARCHS}" | grep -q "arm64"
+            echo "${RDP_ARCHS}" | grep -q "x86_64"
+          fi
           codesign --verify --deep --strict --verbose=2 macos/dist/NexusTS.app
 
       - name: Upload NexusTS macOS Universal DMG & App Bundle
@@ -67,3 +136,47 @@ jobs:
             macos/dist/NexusTS-macOS-Universal.dmg
             macos/dist/NexusTS-macOS-Universal.zip
           if-no-files-found: error
+
+  publish-macos-release:
+    name: Publish macOS Universal2 DMG & SHA-256 to GitHub Release
+    needs: [ build-and-test-macos ]
+    if: ${{ startsWith(github.ref, 'refs/tags/v') || inputs.publish_release == true }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download macOS Universal2 Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: NexusTS-macOS-Universal
+          path: dist-macos-raw
+
+      - name: Stage Versioned macOS Release Assets & SHA256SUMS-macos.txt
+        id: stage
+        run: |
+          set -euo pipefail
+          TAG_NAME="${GITHUB_REF_NAME}"
+          if [[ "${TAG_NAME}" != v* ]]; then
+            TAG_NAME="${{ inputs.release_tag || 'v1.1.7' }}"
+          fi
+          echo "tag_name=${TAG_NAME}" >> "${GITHUB_OUTPUT}"
+
+          mkdir -p release-assets-macos
+          cp "dist-macos-raw/NexusTS-macOS-Universal.dmg" \
+            "release-assets-macos/NexusTS-${TAG_NAME}-macOS-Universal.dmg"
+          cp "dist-macos-raw/NexusTS-macOS-Universal.zip" \
+            "release-assets-macos/NexusTS-${TAG_NAME}-macOS-Universal.zip"
+          (
+            cd release-assets-macos
+            sha256sum * > SHA256SUMS-macos.txt
+            cat SHA256SUMS-macos.txt
+          )
+
+      - name: Attach macOS Universal2 Deliverables to GitHub Release (${{ steps.stage.outputs.tag_name }})
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.stage.outputs.tag_name }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: release-assets-macos/*

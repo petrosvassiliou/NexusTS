@@ -99,19 +99,27 @@ public struct SidebarHierarchyView: View {
                         SidebarConnectionRow(connection: conn)
                     }
                 } else {
-                    let rootFolders = store.activeFolders.filter { $0.parentFolderId == nil }
+                    let rootFolders = store.activeFolders
+                        .filter { $0.parentFolderId == nil }
+                        .sorted {
+                            if $0.sortOrder != $1.sortOrder { return $0.sortOrder < $1.sortOrder }
+                            return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+                        }
                     ForEach(rootFolders) { folder in
                         SidebarFolderTreeBranch(folder: folder)
                     }
 
                     let rootConnections = store.activeConnections
                         .filter { $0.parentFolderId == nil }
-                        .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+                        .sorted {
+                            if $0.sortOrder != $1.sortOrder { return $0.sortOrder < $1.sortOrder }
+                            return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+                        }
                     ForEach(rootConnections) { conn in
                         SidebarConnectionRow(connection: conn)
                     }
                     .dropDestination(for: String.self) { items, _ in
-                        for id in items { store.moveConnection(id, toFolderId: nil) }
+                        store.handleSidebarDrop(items, intoFolderId: nil)
                         return true
                     }
                 }
@@ -156,10 +164,18 @@ struct SidebarFolderTreeBranch: View {
     @State private var isDropTargeted: Bool = false
 
     var body: some View {
-        let childFolders = store.activeFolders.filter { $0.parentFolderId == folder.id }
+        let childFolders = store.activeFolders
+            .filter { $0.parentFolderId == folder.id }
+            .sorted {
+                if $0.sortOrder != $1.sortOrder { return $0.sortOrder < $1.sortOrder }
+                return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+            }
         let childConnections = store.activeConnections
             .filter { $0.parentFolderId == folder.id }
-            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            .sorted {
+                if $0.sortOrder != $1.sortOrder { return $0.sortOrder < $1.sortOrder }
+                return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+            }
 
         DisclosureGroup(isExpanded: $isExpanded) {
             ForEach(childFolders) { sub in
@@ -195,11 +211,10 @@ struct SidebarFolderTreeBranch: View {
             .onTapGesture {
                 store.selectedFolderId = folder.id
             }
+            .draggable("folder:\(folder.id)")
         }
         .dropDestination(for: String.self) { droppedIds, _ in
-            for id in droppedIds {
-                store.moveConnection(id, toFolderId: folder.id)
-            }
+            store.handleSidebarDrop(droppedIds, intoFolderId: folder.id)
             return true
         } isTargeted: { hovering in
             isDropTargeted = hovering
@@ -240,6 +255,18 @@ struct SidebarFolderTreeBranch: View {
                 Label("New RDP Connection Here…", systemImage: "display")
             }
 
+            Menu("Move Folder to…") {
+                Button("Top Level (Root)") {
+                    store.moveFolder(folder.id, toParentFolderId: nil)
+                }
+                Divider()
+                ForEach(store.activeFolders.filter { $0.id != folder.id }) { target in
+                    Button(target.name) {
+                        store.moveFolder(folder.id, toParentFolderId: target.id)
+                    }
+                }
+            }
+
             Divider()
 
             Button {
@@ -267,6 +294,7 @@ struct SidebarConnectionRow: View {
     @EnvironmentObject private var store: WorkspaceStore
     @Environment(\.openWindow) private var openWindow
     let connection: VaultConnection
+    @State private var isReorderTargeted: Bool = false
 
     var body: some View {
         let liveCount = store.activeSessionCount(forConnectionId: connection.id)
@@ -307,6 +335,13 @@ struct SidebarConnectionRow: View {
             RoundedRectangle(cornerRadius: 6, style: .continuous)
                 .fill(isSelected ? Color.accentColor.opacity(0.16) : .clear)
         )
+        .overlay(alignment: .top) {
+            if isReorderTargeted {
+                Rectangle()
+                    .fill(Color.accentColor)
+                    .frame(height: 2)
+            }
+        }
         .contentShape(Rectangle())
         .onTapGesture(count: 2) {
             store.openConnection(connection)
@@ -316,7 +351,18 @@ struct SidebarConnectionRow: View {
                 store.selectedConnectionId = connection.id
             }
         )
-        .draggable(connection.id)
+        .draggable("conn:\(connection.id)")
+        .dropDestination(for: String.self) { payloads, _ in
+            for raw in payloads {
+                let id = raw.hasPrefix("conn:") ? String(raw.dropFirst("conn:".count)) : raw
+                if !raw.hasPrefix("folder:") {
+                    store.reorderConnection(id, before: connection.id)
+                }
+            }
+            return true
+        } isTargeted: { hovering in
+            isReorderTargeted = hovering
+        }
         .contextMenu {
             Button {
                 store.openConnection(connection)

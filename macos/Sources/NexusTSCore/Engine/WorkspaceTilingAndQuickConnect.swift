@@ -265,6 +265,45 @@ public indirect enum WorkspacePaneNode: Equatable, Identifiable, Sendable {
         }
         return prune(self) ?? .initialEmpty()
     }
+
+    public func reorderingOrMovingTab(
+        _ draggedTabId: UUID,
+        before targetTabId: UUID?,
+        in targetPaneId: UUID
+    ) -> WorkspacePaneNode {
+        guard draggedTabId != targetTabId,
+              let movingTab = findTab(id: draggedTabId) else {
+            return self
+        }
+        let treeWithoutDragged = removingTab(draggedTabId)
+        // If removing the only tab in targetPaneId collapsed that leaf, fall back to the first remaining leaf
+        let resolvedPaneId = treeWithoutDragged.allLeafIds.contains(targetPaneId)
+            ? targetPaneId
+            : (treeWithoutDragged.allLeafIds.first ?? targetPaneId)
+
+        func insertInLeaf(_ node: WorkspacePaneNode) -> WorkspacePaneNode {
+            switch node {
+            case .leaf(let paneId, var tabs, _):
+                guard paneId == resolvedPaneId else { return node }
+                if let beforeId = targetTabId,
+                   let idx = tabs.firstIndex(where: { $0.id == beforeId }) {
+                    tabs.insert(movingTab, at: idx)
+                } else {
+                    tabs.append(movingTab)
+                }
+                return .leaf(paneId: paneId, tabs: tabs, activeTabId: movingTab.id)
+            case .split(let splitId, let orientation, let ratio, let first, let second):
+                return .split(
+                    splitId: splitId,
+                    orientation: orientation,
+                    ratio: ratio,
+                    first: insertInLeaf(first),
+                    second: insertInLeaf(second)
+                )
+            }
+        }
+        return insertInLeaf(treeWithoutDragged)
+    }
 }
 
 // MARK: - Quick Connect Ad-Hoc URI Parser & Fuzzy Search

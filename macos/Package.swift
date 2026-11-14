@@ -4,6 +4,29 @@ import PackageDescription
 
 let packageDir = URL(fileURLWithPath: #filePath).deletingLastPathComponent().path
 let vendorLibDir = "\(packageDir)/Vendor/lib"
+let freerdpMacLibDir = URL(fileURLWithPath: "\(packageDir)/../native/third_party/freerdp3/macos/lib").standardized.path
+let hasPrebuiltFreeRdp = FileManager.default.fileExists(atPath: "\(freerdpMacLibDir)/libfreerdp3.dylib")
+
+var coreUnsafeLinkerFlags: [String] = [
+    "-L\(vendorLibDir)",
+    "-lnexusts_ffi",
+    "-lnexusts_rdp_macos"
+]
+if hasPrebuiltFreeRdp {
+    coreUnsafeLinkerFlags += [
+        "-L\(freerdpMacLibDir)",
+        "-lfreerdp3",
+        "-lfreerdp-client3",
+        "-lwinpr3"
+    ]
+}
+
+var testLinkerSettings: [LinkerSetting] = []
+if hasPrebuiltFreeRdp {
+    testLinkerSettings.append(
+        .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", freerdpMacLibDir])
+    )
+}
 
 let package = Package(
     name: "NexusTSMac",
@@ -29,7 +52,7 @@ let package = Package(
                 .swiftLanguageMode(.v5)
             ],
             linkerSettings: [
-                .unsafeFlags(["-L\(vendorLibDir)", "-lnexusts_ffi", "-lnexusts_rdp_macos"]),
+                .unsafeFlags(coreUnsafeLinkerFlags),
                 .linkedLibrary("c++"),
                 .linkedLibrary("resolv"),
                 .linkedLibrary("z"),
@@ -50,6 +73,7 @@ let package = Package(
                 .swiftLanguageMode(.v5)
             ],
             linkerSettings: [
+                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"]),
                 .linkedFramework("AppKit"),
                 .linkedFramework("SwiftUI"),
                 .linkedFramework("WebKit"),
@@ -66,7 +90,8 @@ let package = Package(
             path: "Tests/NexusTSCoreTests",
             swiftSettings: [
                 .swiftLanguageMode(.v5)
-            ]
+            ],
+            linkerSettings: testLinkerSettings
         )
     ]
 )

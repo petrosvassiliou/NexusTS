@@ -800,6 +800,8 @@ public final class NativeRdpSession: @unchecked Sendable {
         initialWidth: Int = 1920,
         initialHeight: Int = 1080
     ) {
+        let driveName = settings.macSharedDriveName
+        let drivePath = settings.macSharedFolderPath ?? ""
         self.handle = host.withCString { hostPtr in
             username.withCString { userPtr in
                 password.withCString { passPtr in
@@ -807,50 +809,56 @@ public final class NativeRdpSession: @unchecked Sendable {
                         settings.rdGatewayHostname.withCString { gwPtr in
                             settings.remoteAppProgram.withCString { appPtr in
                                 settings.remoteAppArguments.withCString { argsPtr in
-                                    var cfg = NexusRdpConfig()
-                                    cfg.host = hostPtr
-                                    cfg.port = UInt16(clamping: settings.port)
-                                    cfg.username = userPtr
-                                    cfg.password = passPtr
-                                    cfg.domain = domPtr
-                                    cfg.rd_gateway_host = gwPtr
-                                    cfg.rd_gateway_port = UInt16(clamping: settings.rdGatewayPort)
-                                    cfg.initial_width = UInt32(max(640, initialWidth))
-                                    cfg.initial_height = UInt32(max(480, initialHeight))
-                                    cfg.desktop_dpi = settings.hiDpiEnabled ? 192 : 96
-                                    cfg.connect_to_console = settings.connectToConsoleAdmin
-                                    cfg.hidpi_enabled = settings.hiDpiEnabled
-                                    cfg.desktop_scale_factor = UInt32(max(100, settings.desktopScaleFactorPercent))
-                                    cfg.device_scale_factor = UInt32(max(100, settings.deviceScaleFactorPercent))
-                                    cfg.color_depth_bits = UInt32(settings.colorDepthBits)
-                                    cfg.enable_gfx_pipeline = settings.enableGfxPipeline
-                                    cfg.enable_h264_avc444 = settings.enableH264Avc444
-                                    cfg.enable_remotefx = settings.enableRemoteFx
-                                    cfg.enable_dynamic_resize = settings.resizeBehavior == .DYNAMIC_DISP_DVC
-                                    cfg.multi_monitor_spanning = settings.multiMonitorSpanning
-                                    cfg.redirect_clipboard = settings.redirectClipboard
-                                    cfg.audio_redirection_mode = settings.audioRedirectionMode.nativeCode
-                                    cfg.redirect_audio_out = settings.redirectAudioPlayback
-                                    cfg.redirect_mic_in = settings.redirectMicrophone
-                                    cfg.redirect_drives = settings.redirectDrives
-                                    cfg.redirect_printers = settings.redirectPrinters
-                                    cfg.redirect_serial_ports = settings.redirectPorts
-                                    cfg.redirect_smartcard = settings.redirectSmartcardYubiKey
-                                    cfg.enable_font_smoothing = settings.enableFontSmoothing
-                                    cfg.enable_desktop_composition = settings.enableDesktopComposition
-                                    cfg.enable_wallpaper = settings.enableWallpaper
-                                    cfg.enable_full_window_drag = settings.enableFullWindowDrag
-                                    cfg.enable_menu_animations = settings.enableMenuAnimations
-                                    cfg.enable_themes = settings.enableThemes
-                                    cfg.compression_enabled = settings.compressionEnabled
-                                    cfg.nla_security = settings.nlaSecurityRequired
-                                    cfg.tls_security = settings.tlsSecurity
-                                    cfg.restricted_admin_mode = settings.restrictedAdminMode
-                                    cfg.ignore_certificate = settings.ignoreCertificateWarnings
-                                    cfg.remote_app_mode = settings.remoteAppMode
-                                    cfg.remote_app_program = appPtr
-                                    cfg.remote_app_args = argsPtr
-                                    return nexusts_rdp_create_session(&cfg)
+                                    driveName.withCString { driveNamePtr in
+                                        drivePath.withCString { drivePathPtr in
+                                            var cfg = NexusRdpConfig()
+                                            cfg.host = hostPtr
+                                            cfg.port = UInt16(clamping: settings.port)
+                                            cfg.username = userPtr
+                                            cfg.password = passPtr
+                                            cfg.domain = domPtr
+                                            cfg.rd_gateway_host = gwPtr
+                                            cfg.rd_gateway_port = UInt16(clamping: settings.rdGatewayPort)
+                                            cfg.initial_width = UInt32(max(640, initialWidth))
+                                            cfg.initial_height = UInt32(max(480, initialHeight))
+                                            cfg.desktop_dpi = settings.hiDpiEnabled ? 192 : 96
+                                            cfg.connect_to_console = settings.connectToConsoleAdmin
+                                            cfg.hidpi_enabled = settings.hiDpiEnabled
+                                            cfg.desktop_scale_factor = UInt32(max(100, settings.desktopScaleFactorPercent))
+                                            cfg.device_scale_factor = UInt32(max(100, settings.deviceScaleFactorPercent))
+                                            cfg.color_depth_bits = UInt32(settings.colorDepthBits)
+                                            cfg.enable_gfx_pipeline = settings.enableGfxPipeline
+                                            cfg.enable_h264_avc444 = settings.enableH264Avc444
+                                            cfg.enable_remotefx = settings.enableRemoteFx
+                                            cfg.enable_dynamic_resize = settings.resizeBehavior == .DYNAMIC_DISP_DVC
+                                            cfg.multi_monitor_spanning = settings.multiMonitorSpanning
+                                            cfg.redirect_clipboard = settings.redirectClipboard
+                                            cfg.audio_redirection_mode = settings.audioRedirectionMode.nativeCode
+                                            cfg.redirect_audio_out = settings.redirectAudioPlayback
+                                            cfg.redirect_mic_in = settings.redirectMicrophone
+                                            cfg.redirect_drives = settings.redirectDrives || !drivePath.isEmpty
+                                            cfg.redirect_printers = settings.redirectPrinters
+                                            cfg.redirect_serial_ports = settings.redirectPorts
+                                            cfg.redirect_smartcard = settings.redirectSmartcardYubiKey
+                                            cfg.enable_font_smoothing = settings.enableFontSmoothing
+                                            cfg.enable_desktop_composition = settings.enableDesktopComposition
+                                            cfg.enable_wallpaper = settings.enableWallpaper
+                                            cfg.enable_full_window_drag = settings.enableFullWindowDrag
+                                            cfg.enable_menu_animations = settings.enableMenuAnimations
+                                            cfg.enable_themes = settings.enableThemes
+                                            cfg.compression_enabled = settings.compressionEnabled
+                                            cfg.nla_security = settings.nlaSecurityRequired
+                                            cfg.tls_security = settings.tlsSecurity
+                                            cfg.restricted_admin_mode = settings.restrictedAdminMode
+                                            cfg.ignore_certificate = settings.ignoreCertificateWarnings
+                                            cfg.remote_app_mode = settings.remoteAppMode
+                                            cfg.remote_app_program = appPtr
+                                            cfg.remote_app_args = argsPtr
+                                            cfg.shared_drive_name = driveNamePtr
+                                            cfg.shared_drive_local_path = drivePathPtr
+                                            return nexusts_rdp_create_session(&cfg)
+                                        }
+                                    }
                                 }
                             }
                         }
