@@ -1,0 +1,5 @@
+NexusTS v1.1.9:
+• Störende IP-Adressen aus der Verbindungsliste in der Seitenleiste entfernt – klare, aufgeräumte Ordneransicht
+• Intelligente Protokollgruppierung (keine redundanten RDP/SSH-Kürzel; Verbindungsart beim Überfahren mit der Maus sichtbar)
+• Kompakte Seitenleiste ganz links & Rechtsklick-Ordnermenüs (Alle RDP starten, Umbenennen, Verschieben, Löschen)
+• 100 % nahtloses Upgrade von v1.1.7 / v1.1.8

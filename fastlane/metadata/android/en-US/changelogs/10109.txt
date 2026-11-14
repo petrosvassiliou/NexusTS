@@ -1,0 +1,5 @@
+NexusTS v1.1.9:
+• Removed cluttering IP addresses & hostnames from the sidebar connection list for a clean, distraction-free hierarchy
+• Intelligent connection-type grouping (hides redundant RDP/SSH labels in single-protocol folders; reveals protocol on mouse hover)
+• Compact flush far-left explorer & folder right-click context menus (Start All RDP, Rename, Move, Delete)
+• 100% seamless in-place upgrade over v1.1.7 / v1.1.8

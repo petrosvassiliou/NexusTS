@@ -21,7 +21,7 @@ on:
       release_tag:
         description: "Tag name when publishing via workflow_dispatch"
         required: false
-        default: "v1.1.8"
+        default: "v1.1.9"
         type: string
 
 permissions:
@@ -318,7 +318,7 @@ jobs:
           set -euo pipefail
           TAG_NAME="${GITHUB_REF_NAME}"
           if [[ "${TAG_NAME}" != v* ]]; then
-            TAG_NAME="${{ inputs.release_tag || 'v1.1.8' }}"
+            TAG_NAME="${{ inputs.release_tag || 'v1.1.9' }}"
           fi
           echo "tag_name=${TAG_NAME}" >> "${GITHUB_OUTPUT}"
 
@@ -360,10 +360,10 @@ jobs:
 
             ### What's New in ${{ steps.stage.outputs.tag_name }}
             - **macOS Liquid Glass Design System (Apple HIG)**: Optical translucency (`ultraThinMaterial` / `thinMaterial`), directional specular rim highlights, top refraction sheen, capsule controls & session tabs, and ambient window aura.
-            - **Intelligent Connection-Type Grouping & Hover Protocol Reveal**: Removed repetitive `RDP`/`SSH` prefixes before connection entries; folders with mixed connection types automatically group by protocol (`RDP`, `SSH`, etc.), while single-protocol folders suppress redundant headers and reveal the connection type pill + tooltip smoothly on mouse hover.
+            - **Clean Distraction-Free Connection List & Intelligent Protocol Grouping**: Removed cluttering IP addresses and repetitive `RDP`/`SSH` prefixes from the sidebar connection list; mixed-protocol folders automatically group by protocol (`RDP`, `SSH`, etc.), while single-protocol folders suppress redundant headers and reveal the connection type pill smoothly on mouse hover.
             - **Compact Flush Far-Left Connection & Folder Explorer**: Removed the wide outer navigation rail so folders, subfolders, and connections sit flush at the far-left edge in a sleek, resizable (`180–440dp` / `185–340pt`) single-line tree view; moved Studios (`Templates`, `Credentials`, `Gateways`, `Tasks`, `Drive Sync`) to a compact top-toolbar switcher.
             - **Rich Folder Right-Click Context Menus**: Right-click any folder for **Start All RDP Connections** (recursively across nested subfolders), **Connect All / Disconnect All**, **Rename Folder…**, **Move Folder to…** (with cycle protection), **Move Up / Down**, **New RDP / SSH / Subfolder**, **Duplicate Folder**, **Expand / Collapse Subfolders**, **Folder Credentials & Inheritance**, and **Delete Folder…** (choose between deleting all contents or moving items up).
-            - **Seamless In-Place Replacement (`v1.1.7` → `v1.1.8`)**: 100% `.nxts` v2 wire compatibility (`NXTS\x00\x02`, Argon2id + AES-256-GCM) and SHA-256-verified APK/DMG updates.
+            - **Seamless In-Place Replacement (`v1.1.7` → `v1.1.9`)**: 100% `.nxts` v2 wire compatibility (`NXTS\x00\x02`, Argon2id + AES-256-GCM) and SHA-256-verified APK/DMG updates.
           files: release-assets/*
 
       - name: Check Optional Google Play Service Account Secret

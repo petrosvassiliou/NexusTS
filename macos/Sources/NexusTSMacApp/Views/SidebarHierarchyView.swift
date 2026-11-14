@@ -592,9 +592,7 @@ struct SidebarConnectionRow: View {
         let isSelected = store.selectedConnectionId == connection.id
         let protoTint = HIGColorUtilities.color(fromHex: connection.inheritable.displayColorAccentHex)
             ?? connection.protocolType.appleSystemTint
-        let tooltipText = connection.host.isEmpty
-            ? "\(connection.protocolType.displayName) (\(connection.protocolType.shortBadge))"
-            : "\(connection.protocolType.displayName) (\(connection.protocolType.shortBadge)) • \(connection.host)"
+        let tooltipText = "\(connection.protocolType.displayName) (\(connection.protocolType.shortBadge))"
 
         HStack(spacing: 5) {
             Text(connection.name)
@@ -605,13 +603,6 @@ struct SidebarConnectionRow: View {
                 Image(systemName: "star.fill")
                     .font(.system(size: 9))
                     .foregroundStyle(.yellow)
-            }
-            if !connection.host.isEmpty && !isHovered {
-                Text(connection.host)
-                    .font(.system(size: 10.5, design: .monospaced))
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
             }
             Spacer(minLength: 4)
             if isHovered {

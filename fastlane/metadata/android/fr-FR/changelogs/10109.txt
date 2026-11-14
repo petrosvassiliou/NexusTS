@@ -1,0 +1,5 @@
+NexusTS v1.1.9 :
+• Suppression des adresses IP dans la liste latérale des connexions pour un affichage net et épuré
+• Regroupement intelligent par protocole (type affiché au survol de la souris sans préfixe RDP/SSH répétitif)
+• Explorateur compact collé à gauche et menus contextuels sur les dossiers (Lancer tout RDP, Renommer, Déplacer, Supprimer)
+• Mise à jour 100 % compatible depuis v1.1.7 / v1.1.8

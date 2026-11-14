@@ -820,13 +820,6 @@ fun ExpressiveVaultOverviewDashboard(
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis
                                         )
-                                        Text(
-                                            text = fav.host,
-                                            style = NexusTheme.monospace.keycapShortcut,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
                                     }
                                 }
 

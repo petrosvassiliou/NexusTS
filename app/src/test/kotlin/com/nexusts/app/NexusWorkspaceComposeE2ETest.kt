@@ -1463,10 +1463,10 @@ class NexusWorkspaceComposeE2ETest {
 
     @Test
     fun compactFlushLeftSidebarFolderContextMenusStartAllRdpRenameDeleteAndV117UpgradeParity() {
-        assertEquals(10108, BuildConfig.VERSION_CODE)
+        assertEquals(10109, BuildConfig.VERSION_CODE)
         assertTrue(
-            "Expected BuildConfig.VERSION_NAME (${BuildConfig.VERSION_NAME}) to start with 1.1.8",
-            BuildConfig.VERSION_NAME.startsWith("1.1.8")
+            "Expected BuildConfig.VERSION_NAME (${BuildConfig.VERSION_NAME}) to start with 1.1.9",
+            BuildConfig.VERSION_NAME.startsWith("1.1.9")
         )
 
         val serializer = buildFastSerializer()
@@ -1578,6 +1578,14 @@ class NexusWorkspaceComposeE2ETest {
             assertTextRendered("Windows RDS Tier")
             assertTextRendered("DC-Core-RDP-01")
             assertTextRendered(strings.navStudiosMenu)
+            // Connection list must NEVER display IP addresses next to connection names
+            for (ip in listOf("10.80.1.10", "10.80.2.20", "10.80.2.99", "10.90.0.15")) {
+                assertEquals(
+                    "Sidebar connection list must not render IP address $ip",
+                    0,
+                    composeRule.onAllNodesWithText(ip, substring = true).fetchSemanticsNodes().size
+                )
+            }
 
             // Switch sidebar quick filter to Favorites -> shows favorite connection, hides non-favorite folder rows
             composeRule.runOnIdle {

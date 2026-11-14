@@ -107,7 +107,7 @@ public struct VaultOverviewDashboardView: View {
                                                 .font(.body.weight(.semibold))
                                                 .foregroundStyle(.primary)
                                                 .lineLimit(1)
-                                            Text("\(conn.protocolType.shortBadge) • \(conn.host)")
+                                            Text(conn.protocolType.displayName)
                                                 .font(.caption)
                                                 .foregroundStyle(.secondary)
                                                 .lineLimit(1)

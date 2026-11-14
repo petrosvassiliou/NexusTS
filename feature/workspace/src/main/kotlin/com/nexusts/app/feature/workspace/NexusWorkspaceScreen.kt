@@ -4051,15 +4051,6 @@ private fun ConnectionTreeRow(
                                 tint = MaterialTheme.colorScheme.tertiary
                             )
                         }
-                        if (connection.host.isNotBlank() && !isHovered) {
-                            Text(
-                                text = connection.host,
-                                style = NexusTheme.monospace.keycapShortcut,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
                     }
 
                     if (isHovered) {
@@ -5830,7 +5821,7 @@ private fun PlayProtectAutoUpdateDialog(
                                     ).trim()
                                     else -> String.format(
                                         strings.autoUpdateUpToDateFormat,
-                                        uiState.updateCurrentVersion.ifBlank { "1.1.8" }
+                                        uiState.updateCurrentVersion.ifBlank { "1.1.9" }
                                     )
                                 },
                                 style = MaterialTheme.typography.titleSmall,
@@ -5845,7 +5836,7 @@ private fun PlayProtectAutoUpdateDialog(
                                 ""
                             }
                             Text(
-                                text = "Installed: v${uiState.updateCurrentVersion.ifBlank { "1.1.8" }}  →  Latest: ${uiState.updateLatestTag.ifBlank { "current" }}$sizeMb",
+                                text = "Installed: v${uiState.updateCurrentVersion.ifBlank { "1.1.9" }}  →  Latest: ${uiState.updateLatestTag.ifBlank { "current" }}$sizeMb",
                                 style = NexusTheme.monospace.keycapShortcut,
                                 color = MaterialTheme.colorScheme.secondary
                             )
