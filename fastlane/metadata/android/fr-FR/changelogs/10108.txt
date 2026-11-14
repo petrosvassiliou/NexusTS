@@ -1,0 +1,4 @@
+NexusTS v1.1.8 :
+• Explorateur compact de dossiers et connexions tout à gauche avec menu Studios dans la barre supérieure
+• Menu contextuel clic droit sur les dossiers : Démarrer toutes les connexions RDP, Renommer, Déplacer, Dupliquer et Supprimer (avec ou sans contenu)
+• Mise à niveau sur place 100 % compatible avec v1.1.7 (.nxts v2 & Play Protect)

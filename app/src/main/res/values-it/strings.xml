@@ -191,6 +191,15 @@
     <string name="auto_update_up_to_date">NexusTS %1$s è aggiornato</string>
     <string name="drag_drop_move_hint">Rilascia in %1$s</string>
 
+    <!-- v1.1.8 Compact Far-Left Explorer, Folder Context Menus & Top-Toolbar Studios -->
+    <string name="action_rename_folder">Rinomina cartella…</string>
+    <string name="action_start_all_rdp_folder">Avvia tutte le connessioni RDP</string>
+    <string name="dialog_rename_folder_title">Rinomina cartella</string>
+    <string name="dialog_delete_folder_title">Elimina cartella</string>
+    <string name="action_delete_folder_and_contents">Elimina cartella e tutto il contenuto</string>
+    <string name="action_delete_folder_keep_contents">Elimina solo cartella (Sposta elementi sopra)</string>
+    <string name="nav_studios_menu">Studio</string>
+
     <!-- Language Names -->
     <string name="lang_en">English</string>
     <string name="lang_de">Deutsch</string>

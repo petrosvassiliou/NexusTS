@@ -65,6 +65,11 @@ public struct LocalizedWorkspaceStrings: Equatable, Sendable {
     public let splitDown: String
     public let detachToWindow: String
     public let disconnectAll: String
+    public let studios: String
+    public let renameFolder: String
+    public let startAllRdp: String
+    public let deleteFolderAndContents: String
+    public let deleteFolderKeepContents: String
 
     public static func catalog(for language: NexusAppLanguage) -> LocalizedWorkspaceStrings {
         switch language.resolvedCode {
@@ -96,7 +101,12 @@ public struct LocalizedWorkspaceStrings: Equatable, Sendable {
                 splitRight: "Rechts teilen",
                 splitDown: "Unten teilen",
                 detachToWindow: "In neuem Fenster öffnen",
-                disconnectAll: "Alle im Ordner trennen"
+                disconnectAll: "Alle im Ordner trennen",
+                studios: "Studios",
+                renameFolder: "Ordner umbenennen…",
+                startAllRdp: "Alle RDP-Verbindungen starten",
+                deleteFolderAndContents: "Ordner & gesamten Inhalt löschen",
+                deleteFolderKeepContents: "Nur Ordner löschen (Elemente nach oben)"
             )
         case "it":
             return LocalizedWorkspaceStrings(
@@ -126,7 +136,12 @@ public struct LocalizedWorkspaceStrings: Equatable, Sendable {
                 splitRight: "Dividi a Destra",
                 splitDown: "Dividi in Basso",
                 detachToWindow: "Stacca in Nuova Finestra",
-                disconnectAll: "Disconnetti Tutto"
+                disconnectAll: "Disconnetti Tutto",
+                studios: "Studio",
+                renameFolder: "Rinomina Cartella…",
+                startAllRdp: "Avvia Tutte le Connessioni RDP",
+                deleteFolderAndContents: "Elimina Cartella e Tutto il Contenuto",
+                deleteFolderKeepContents: "Elimina Solo Cartella (Sposta Elementi Sopra)"
             )
         case "es":
             return LocalizedWorkspaceStrings(
@@ -156,7 +171,12 @@ public struct LocalizedWorkspaceStrings: Equatable, Sendable {
                 splitRight: "Dividir a la Derecha",
                 splitDown: "Dividir Abajo",
                 detachToWindow: "Abrir en Nueva Ventana",
-                disconnectAll: "Desconectar Todo"
+                disconnectAll: "Desconectar Todo",
+                studios: "Estudios",
+                renameFolder: "Renombrar Carpeta…",
+                startAllRdp: "Iniciar Todas las Conexiones RDP",
+                deleteFolderAndContents: "Eliminar Carpeta y Todo su Contenido",
+                deleteFolderKeepContents: "Eliminar Solo la Carpeta (Mover Elementos Arriba)"
             )
         case "el":
             return LocalizedWorkspaceStrings(
@@ -186,7 +206,12 @@ public struct LocalizedWorkspaceStrings: Equatable, Sendable {
                 splitRight: "Διαίρεση Δεξιά",
                 splitDown: "Διαίρεση Κάτω",
                 detachToWindow: "Άνοιγμα σε Νέο Παράθυρο",
-                disconnectAll: "Αποσύνδεση Όλων"
+                disconnectAll: "Αποσύνδεση Όλων",
+                studios: "Στούντιο",
+                renameFolder: "Μετονομασία Φακέλου…",
+                startAllRdp: "Εκκίνηση Όλων των Συνδέσεων RDP",
+                deleteFolderAndContents: "Διαγραφή Φακέλου & Περιεχομένων",
+                deleteFolderKeepContents: "Διαγραφή Μόνο Φακέλου (Μετακίνηση Πάνω)"
             )
         case "fr":
             return LocalizedWorkspaceStrings(
@@ -216,7 +241,12 @@ public struct LocalizedWorkspaceStrings: Equatable, Sendable {
                 splitRight: "Scinder à Droite",
                 splitDown: "Scinder en Bas",
                 detachToWindow: "Détacher dans une Fenêtre",
-                disconnectAll: "Tout Déconnecter"
+                disconnectAll: "Tout Déconnecter",
+                studios: "Studios",
+                renameFolder: "Renommer le Dossier…",
+                startAllRdp: "Démarrer Toutes les Connexions RDP",
+                deleteFolderAndContents: "Supprimer le Dossier et Tout son Contenu",
+                deleteFolderKeepContents: "Supprimer Uniquement le Dossier (Remonter les Éléments)"
             )
         default:
             return LocalizedWorkspaceStrings(
@@ -246,7 +276,12 @@ public struct LocalizedWorkspaceStrings: Equatable, Sendable {
                 splitRight: "Split Right",
                 splitDown: "Split Down",
                 detachToWindow: "Move Tab to New Window",
-                disconnectAll: "Disconnect All in Folder"
+                disconnectAll: "Disconnect All in Folder",
+                studios: "Studios",
+                renameFolder: "Rename Folder…",
+                startAllRdp: "Start All RDP Connections",
+                deleteFolderAndContents: "Delete Folder & All Contents",
+                deleteFolderKeepContents: "Delete Folder Only (Move Items Up)"
             )
         }
     }

@@ -45,6 +45,7 @@ import com.nexusts.app.core.vault.model.VaultProtocolType
 import com.nexusts.app.feature.workspace.ActiveVaultSessionStore
 import com.nexusts.app.feature.workspace.NexusWorkspaceScreen
 import com.nexusts.app.feature.workspace.NexusWorkspaceViewModel
+import com.nexusts.app.feature.workspace.SidebarQuickFilter
 import com.nexusts.app.feature.workspace.i18n.WorkspaceLocalizedStrings
 import com.nexusts.app.protocols.ssh.bridge.SshNativeBridge
 import com.nexusts.app.security.BiometricVaultUnlockManager
@@ -145,6 +146,13 @@ class NexusWorkspaceComposeE2ETest {
             assertTrue(res.getString(R.string.auto_update_install_action).isNotBlank())
             assertTrue(res.getString(R.string.auto_update_up_to_date).isNotBlank())
             assertTrue(res.getString(R.string.drag_drop_move_hint).isNotBlank())
+            assertTrue(res.getString(R.string.action_rename_folder).isNotBlank())
+            assertTrue(res.getString(R.string.action_start_all_rdp_folder).isNotBlank())
+            assertTrue(res.getString(R.string.dialog_rename_folder_title).isNotBlank())
+            assertTrue(res.getString(R.string.dialog_delete_folder_title).isNotBlank())
+            assertTrue(res.getString(R.string.action_delete_folder_and_contents).isNotBlank())
+            assertTrue(res.getString(R.string.action_delete_folder_keep_contents).isNotBlank())
+            assertTrue(res.getString(R.string.nav_studios_menu).isNotBlank())
         }
     }
 
@@ -1452,6 +1460,292 @@ class NexusWorkspaceComposeE2ETest {
         assertFalse(vm.uiState.value.isVaultLocked)
         assertTrue(vm.uiState.value.vaultDocument.connections.any { it.id == "conn-rdp-saf" })
     }
+
+    @Test
+    fun compactFlushLeftSidebarFolderContextMenusStartAllRdpRenameDeleteAndV117UpgradeParity() {
+        assertEquals(10108, BuildConfig.VERSION_CODE)
+        assertTrue(
+            "Expected BuildConfig.VERSION_NAME (${BuildConfig.VERSION_NAME}) to start with 1.1.8",
+            BuildConfig.VERSION_NAME.startsWith("1.1.8")
+        )
+
+        val serializer = buildFastSerializer()
+        val upgradeDir = Files.createTempDirectory("nexusts-v117-to-v118-upgrade").toFile()
+        try {
+            // 1. Simulate an existing v1.1.7 user vault persisted on disk with nested folders, RDP, WTS & SSH hosts
+            val v117Doc = NxtsVaultDocument(
+                schemaVersion = 2,
+                documentId = "vault-prod-v117",
+                name = "Prod Fleet v1.1.7",
+                revision = 7L,
+                folders = listOf(
+                    VaultFolder(
+                        id = "fld-dc-root",
+                        parentFolderId = null,
+                        name = "EU-Central Datacenter",
+                        sortOrder = 10
+                    ),
+                    VaultFolder(
+                        id = "fld-dc-win",
+                        parentFolderId = "fld-dc-root",
+                        name = "Windows RDS Tier",
+                        sortOrder = 10
+                    ),
+                    VaultFolder(
+                        id = "fld-staging-keep",
+                        parentFolderId = null,
+                        name = "Staging Wrapper",
+                        sortOrder = 20
+                    )
+                ),
+                connections = listOf(
+                    VaultConnection(
+                        id = "conn-rdp-core",
+                        parentFolderId = "fld-dc-root",
+                        name = "DC-Core-RDP-01",
+                        host = "10.80.1.10",
+                        protocol = VaultProtocolType.RDP,
+                        favorite = true,
+                        sortOrder = 10,
+                        settings = ProtocolSpecificSettings.Rdp()
+                    ),
+                    VaultConnection(
+                        id = "conn-wts-sub",
+                        parentFolderId = "fld-dc-win",
+                        name = "RDS-Farm-Node-02",
+                        host = "10.80.2.20",
+                        protocol = VaultProtocolType.WINDOWS_TERMINAL_SERVICES,
+                        sortOrder = 20,
+                        settings = ProtocolSpecificSettings.Rdp()
+                    ),
+                    VaultConnection(
+                        id = "conn-ssh-sub",
+                        parentFolderId = "fld-dc-win",
+                        name = "Linux-Bastion-SSH-01",
+                        host = "10.80.2.99",
+                        protocol = VaultProtocolType.SSH,
+                        sortOrder = 30,
+                        settings = ProtocolSpecificSettings.Ssh()
+                    ),
+                    VaultConnection(
+                        id = "conn-staging-ssh",
+                        parentFolderId = "fld-staging-keep",
+                        name = "Staging-App-01",
+                        host = "10.90.0.15",
+                        protocol = VaultProtocolType.SSH,
+                        sortOrder = 10,
+                        settings = ProtocolSpecificSettings.Ssh()
+                    )
+                )
+            )
+            val persistedVaultFile = java.io.File(upgradeDir, ActiveVaultSessionStore.LOCAL_VAULT_FILE_NAME)
+            persistedVaultFile.writeBytes(
+                serializer.sealDocument(
+                    v117Doc,
+                    ActiveVaultSessionStore.DEFAULT_LOCAL_VAULT_PASSPHRASE.toCharArray()
+                )
+            )
+
+            // Cold-start v1.1.8 store over the v1.1.7 vault file -> seamless in-place upgrade
+            val store = ActiveVaultSessionStore()
+            assertTrue(
+                "v1.1.8 must seamlessly unseal & restore existing v1.1.7 .nxts v2 vault in place",
+                store.loadPersistedVaultIfNeeded(upgradeDir, serializer)
+            )
+            val vm = buildRealViewModel(serializer = serializer, store = store)
+            val strings = WorkspaceLocalizedStrings.defaultEnglish()
+
+            composeRule.setContent {
+                NexusTSTheme {
+                    NexusWorkspaceScreen(
+                        viewModel = vm,
+                        strings = strings,
+                        connectedDisplays = emptyList(),
+                        flexibleUpdateDownloaded = false,
+                        onCompleteFlexibleUpdate = {},
+                        onRequestImportFilePicker = {},
+                        onRequestGoogleDriveSync = {},
+                        onDetachTabToNativeWindow = { _, _ -> }
+                    )
+                }
+            }
+            composeRule.waitForIdle()
+
+            // 2. Verify flush far-left sidebar renders Folders & Connections immediately + Quick Filters + Top Studios menu
+            assertEquals("connections", vm.uiState.value.activeRailId)
+            assertEquals(SidebarQuickFilter.ALL, vm.uiState.value.sidebarQuickFilter)
+            assertTextRendered("EU-Central Datacenter")
+            assertTextRendered("Windows RDS Tier")
+            assertTextRendered("DC-Core-RDP-01")
+            assertTextRendered(strings.navStudiosMenu)
+
+            // Switch sidebar quick filter to Favorites -> shows favorite connection, hides non-favorite folder rows
+            composeRule.runOnIdle {
+                vm.setSidebarQuickFilter(SidebarQuickFilter.FAVORITES)
+            }
+            composeRule.waitForIdle()
+            assertEquals(SidebarQuickFilter.FAVORITES, vm.uiState.value.sidebarQuickFilter)
+            assertTextRendered("DC-Core-RDP-01")
+
+            composeRule.runOnIdle {
+                vm.setSidebarQuickFilter(SidebarQuickFilter.ALL)
+            }
+            composeRule.waitForIdle()
+
+            // Switch to Templates Studio via top toolbar Studios menu and return via "Connections" back chip
+            composeRule
+                .onAllNodesWithText(strings.navStudiosMenu, substring = false)
+                .onFirst()
+                .performClick()
+            composeRule.waitForIdle()
+            composeRule
+                .onAllNodesWithText(strings.navTemplates, substring = false)
+                .onFirst()
+                .performClick()
+            composeRule.waitForIdle()
+            assertEquals("templates", vm.uiState.value.activeRailId)
+
+            composeRule
+                .onAllNodesWithText(strings.navConnections, substring = false)
+                .onFirst()
+                .performClick()
+            composeRule.waitForIdle()
+            assertEquals("connections", vm.uiState.value.activeRailId)
+
+            // 3. Verify recursive RDP count & "Start All RDP Connections" inside parent folder subtree
+            assertEquals(2, vm.countRdpConnectionsInSubtree("fld-dc-root"))
+            var launchedRdpCount = 0
+            composeRule.runOnIdle {
+                launchedRdpCount = vm.connectAllRdpInFolder("fld-dc-root")
+            }
+            composeRule.waitForIdle()
+            assertEquals(2, launchedRdpCount)
+            val activeTabConnIds = vm.tilingController.allActiveTabs().map { it.connectionId }.toSet()
+            assertEquals(setOf("conn-rdp-core", "conn-wts-sub"), activeTabConnIds)
+            assertFalse(
+                "SSH host inside subfolder must NOT be launched by Start All RDP Connections",
+                "conn-ssh-sub" in activeTabConnIds
+            )
+
+            // 4. Verify RenameFolderDialog & live non-disruptive folder rename (keeps active RDP tabs open!)
+            val rootFolder = vm.uiState.value.vaultDocument.folders.first { it.id == "fld-dc-root" }
+            val revBeforeRename = vm.uiState.value.vaultDocument.revision
+            composeRule.runOnIdle {
+                vm.openRenameFolderDialog(rootFolder)
+            }
+            composeRule.waitForIdle()
+            assertTextRendered(strings.dialogRenameFolderTitle)
+
+            composeRule.runOnIdle {
+                assertTrue(vm.renameFolder("fld-dc-root", "EU-Frankfurt Prod"))
+            }
+            composeRule.waitForIdle()
+            assertEquals(
+                "EU-Frankfurt Prod",
+                vm.uiState.value.vaultDocument.folders.first { it.id == "fld-dc-root" }.name
+            )
+            assertTrue(vm.uiState.value.vaultDocument.revision > revBeforeRename)
+            assertEquals(2, vm.tilingController.allActiveTabs().size)
+
+            // 5. Verify DeleteFolderConfirmationDialog Option B: Delete folder only (move contents up)
+            val stagingFolder = vm.uiState.value.vaultDocument.folders.first { it.id == "fld-staging-keep" }
+            composeRule.runOnIdle {
+                vm.requestDeleteFolderConfirmation(stagingFolder)
+            }
+            composeRule.waitForIdle()
+            assertTextRendered(strings.dialogDeleteFolderTitle)
+            assertTextRendered(strings.actionDeleteFolderAndContents)
+            assertTextRendered(strings.actionDeleteFolderKeepContents)
+
+            composeRule
+                .onAllNodesWithText(strings.actionDeleteFolderKeepContents, substring = false)
+                .onFirst()
+                .performClick()
+            composeRule.waitForIdle()
+            assertFalse(vm.uiState.value.vaultDocument.folders.any { it.id == "fld-staging-keep" })
+            val reparentedStagingConn = vm.uiState.value.vaultDocument.connections.first { it.id == "conn-staging-ssh" }
+            assertEquals(null, reparentedStagingConn.parentFolderId)
+
+            // 6. Verify DeleteFolderConfirmationDialog Option A: Delete folder & all connections/subfolders inside
+            val renamedRoot = vm.uiState.value.vaultDocument.folders.first { it.id == "fld-dc-root" }
+            composeRule.runOnIdle {
+                vm.requestDeleteFolderConfirmation(renamedRoot)
+            }
+            composeRule.waitForIdle()
+            composeRule
+                .onAllNodesWithText(strings.actionDeleteFolderAndContents, substring = false)
+                .onFirst()
+                .performClick()
+            composeRule.waitForIdle()
+
+            val finalDoc = vm.uiState.value.vaultDocument
+            assertFalse(finalDoc.folders.any { it.id == "fld-dc-root" || it.id == "fld-dc-win" })
+            assertFalse(
+                finalDoc.connections.any {
+                    it.id in setOf("conn-rdp-core", "conn-wts-sub", "conn-ssh-sub")
+                }
+            )
+            assertTrue(
+                finalDoc.tombstonedObjectIds.containsAll(
+                    setOf("fld-dc-root", "fld-dc-win", "conn-rdp-core", "conn-wts-sub", "conn-ssh-sub")
+                )
+            )
+            assertTrue(
+                "Active RDP tabs inside deleted folder subtree must be closed cleanly",
+                vm.tilingController.allActiveTabs().isEmpty()
+            )
+            assertTrue(
+                "Unrelated connection outside deleted subtree must remain intact",
+                finalDoc.connections.any { it.id == "conn-staging-ssh" }
+            )
+        } finally {
+            upgradeDir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun intelligentSidebarProtocolGroupingSuppressesSingleTypeAndGroupsMixedTypes() {
+        val rdpA = VaultConnection(
+            id = "g-rdp-a",
+            name = "RDS-Broker-02",
+            host = "10.80.2.22",
+            protocol = VaultProtocolType.RDP,
+            sortOrder = 20,
+            settings = ProtocolSpecificSettings.Rdp()
+        )
+        val wtsB = VaultConnection(
+            id = "g-wts-b",
+            name = "RDS-Broker-01",
+            host = "10.80.2.21",
+            protocol = VaultProtocolType.WINDOWS_TERMINAL_SERVICES,
+            sortOrder = 10,
+            settings = ProtocolSpecificSettings.Rdp()
+        )
+        val sshC = VaultConnection(
+            id = "g-ssh-c",
+            name = "bastion-fra-01",
+            host = "10.80.9.10",
+            protocol = VaultProtocolType.SSH,
+            sortOrder = 5,
+            settings = ProtocolSpecificSettings.Ssh()
+        )
+
+        // 1. Homogeneous folder (only RDP + WTS -> both normalize to "RDP") must NOT show an "RDP" group header
+        val rdpOnlyGroups = com.nexusts.app.feature.workspace.groupConnectionsIntelligently(listOf(rdpA, wtsB))
+        assertEquals(1, rdpOnlyGroups.size)
+        assertEquals("RDP", rdpOnlyGroups[0].badge)
+        assertFalse(
+            "Single-protocol folder must suppress redundant RDP header",
+            rdpOnlyGroups[0].showsHeader
+        )
+        assertEquals(listOf("g-wts-b", "g-rdp-a"), rdpOnlyGroups[0].connections.map { it.id })
+
+        // 2. Mixed folder (RDP + SSH) must group into canonical ["RDP", "SSH"] order with headers enabled
+        val mixedGroups = com.nexusts.app.feature.workspace.groupConnectionsIntelligently(listOf(sshC, rdpA, wtsB))
+        assertEquals(2, mixedGroups.size)
+        assertEquals(listOf("RDP", "SSH"), mixedGroups.map { it.badge })
+        assertTrue(mixedGroups.all { it.showsHeader })
+        assertEquals(listOf("g-wts-b", "g-rdp-a"), mixedGroups[0].connections.map { it.id })
+        assertEquals(listOf("g-ssh-c"), mixedGroups[1].connections.map { it.id })
+    }
 }
-
-

@@ -1,0 +1,4 @@
+NexusTS v1.1.8:
+• Compact flush far-left folder & connection explorer with resizable tree and top-toolbar Studios switcher
+• Rich right-click folder context menus: Start All RDP Connections in folder/subfolders, Rename, Move, Duplicate, Reorder & Delete (with keep vs delete contents choice)
+• 100% seamless in-place upgrade compatibility with v1.1.7 (.nxts v2 vaults, Keystore & Play Protect)

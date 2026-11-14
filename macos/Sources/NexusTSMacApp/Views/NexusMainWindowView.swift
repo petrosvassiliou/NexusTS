@@ -11,19 +11,22 @@ public struct NexusMainWindowView: View {
     @State private var exportPayload: ExportedFileDocument? = nil
     @State private var exportFormat: VaultExportFormat = .nxts
     @State private var isExportingVaultFile = false
+    @State private var isDownloadingVerifiedDmg = false
     @State private var bannerAlertMessage: String? = nil
 
     public init() {}
 
     public var body: some View {
         ZStack {
+            LiquidGlassBackdropAura()
+
             if store.isVaultLocked {
                 ZeroKnowledgeLockShieldView()
                     .transition(.opacity)
             } else {
                 NavigationSplitView(columnVisibility: $store.columnVisibility) {
                     SidebarHierarchyView()
-                        .navigationSplitViewColumnWidth(min: 235, ideal: 270, max: 360)
+                        .navigationSplitViewColumnWidth(min: 185, ideal: 225, max: 340)
                 } detail: {
                     workspaceDetailCanvas
                         .inspector(isPresented: $store.isInspectorPresented) {
@@ -33,6 +36,7 @@ public struct NexusMainWindowView: View {
                 }
                 .navigationTitle(store.document.name)
                 .navigationSubtitle("Rev \(store.document.revision) • \(store.syncStatusSummary)")
+                .toolbarBackground(.ultraThinMaterial, for: .windowToolbar)
                 .toolbar {
                     unifiedMacToolbar
                 }
@@ -63,8 +67,38 @@ public struct NexusMainWindowView: View {
         .sheet(item: $store.editingFolder) { folder in
             FolderInheritanceEditorSheet(existing: folder)
         }
+        .sheet(item: $store.renamingFolder) { folder in
+            RenameFolderSheet(folder: folder)
+        }
         .sheet(item: $store.connectWithOptionsTarget) { target in
             ConnectWithOptionsSheet(connection: target)
+        }
+        .confirmationDialog(
+            "Delete Folder \"\(store.deletingFolderCandidate?.name ?? "")\"?",
+            isPresented: Binding(
+                get: { store.deletingFolderCandidate != nil },
+                set: { if !$0 { store.deletingFolderCandidate = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button(store.strings.deleteFolderAndContents, role: .destructive) {
+                if let folder = store.deletingFolderCandidate {
+                    store.deleteFolder(folder.id, deleteContents: true)
+                }
+            }
+            Button(store.strings.deleteFolderKeepContents) {
+                if let folder = store.deletingFolderCandidate {
+                    store.deleteFolder(folder.id, deleteContents: false)
+                }
+            }
+            Button("Cancel", role: .cancel) {
+                store.deletingFolderCandidate = nil
+            }
+        } message: {
+            if let folder = store.deletingFolderCandidate {
+                let count = store.connectionCountInSubtree(folder.id)
+                Text("Choose whether to delete all \(count) connection(s) and subfolders inside \"\(folder.name)\" or move its contents up one level.")
+            }
         }
         .fileImporter(
             isPresented: $isImportingVaultFile,
@@ -105,13 +139,31 @@ public struct NexusMainWindowView: View {
                 HStack(spacing: 10) {
                     Image(systemName: "arrow.down.circle.fill")
                         .foregroundStyle(Color(nsColor: .systemBlue))
-                    Text("NexusTS \(update.tagName) is available on GitHub Releases.")
+                    Text("NexusTS \(update.tagName) is available on GitHub Releases (100% vault-compatible in-place upgrade).")
                         .font(.callout.weight(.medium))
                     Spacer()
-                    Button("Download Update…") {
-                        NSWorkspace.shared.open(update.dmgDownloadUrl ?? update.htmlReleaseUrl)
+                    if isDownloadingVerifiedDmg {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Button("Download Verified DMG…") {
+                            isDownloadingVerifiedDmg = true
+                            Task { @MainActor in
+                                defer { isDownloadingVerifiedDmg = false }
+                                do {
+                                    if let dmgUrl = try await store.downloadVerifiedUpdateDmg() {
+                                        NSWorkspace.shared.open(dmgUrl)
+                                        NSWorkspace.shared.activateFileViewerSelecting([dmgUrl])
+                                    } else {
+                                        NSWorkspace.shared.open(update.dmgDownloadUrl ?? update.htmlReleaseUrl)
+                                    }
+                                } catch {
+                                    NSWorkspace.shared.open(update.dmgDownloadUrl ?? update.htmlReleaseUrl)
+                                }
+                            }
+                        }
+                        .controlSize(.small)
                     }
-                    .controlSize(.small)
                     Button {
                         store.updateCandidate = nil
                     } label: {
@@ -150,8 +202,50 @@ public struct NexusMainWindowView: View {
         }
     }
 
+    private func studioTitle(for section: WorkspacePrimarySection) -> String {
+        switch section {
+        case .sessions: return store.strings.connections
+        case .overview: return store.strings.overview
+        case .templates: return store.strings.templates
+        case .credentials: return store.strings.credentials
+        case .gateways: return store.strings.gateways
+        case .automationTasks: return store.strings.automationTasks
+        case .cloudSync: return store.strings.cloudSync
+        }
+    }
+
     @ToolbarContentBuilder
     private var unifiedMacToolbar: some ToolbarContent {
+        ToolbarItemGroup(placement: .navigation) {
+            if store.activeSection != .sessions {
+                Button {
+                    store.activeSection = .sessions
+                } label: {
+                    Label(store.strings.connections, systemImage: "chevron.left")
+                }
+                .help("Return to Connections & Sessions (⌘1)")
+            }
+
+            Menu {
+                ForEach(WorkspacePrimarySection.allCases) { section in
+                    Button {
+                        store.activeSection = section
+                    } label: {
+                        Label(
+                            studioTitle(for: section),
+                            systemImage: store.activeSection == section ? "checkmark.circle.fill" : section.sfSymbol
+                        )
+                    }
+                }
+            } label: {
+                Label(
+                    store.activeSection == .sessions ? store.strings.studios : studioTitle(for: store.activeSection),
+                    systemImage: store.activeSection == .sessions ? "square.grid.2x2" : store.activeSection.sfSymbol
+                )
+            }
+            .help("Switch Workspace Studio (⌘1–⌘7)")
+        }
+
         ToolbarItemGroup(placement: .primaryAction) {
             Menu {
                 Button {
@@ -171,6 +265,7 @@ public struct NexusMainWindowView: View {
                 }
 
                 Button {
+                    store.newFolderInitialParentId = store.selectedFolderId
                     store.isPresentingNewFolderSheet = true
                 } label: {
                     Label(store.strings.newFolder, systemImage: "folder.badge.plus")
@@ -392,15 +487,11 @@ struct QuickConnectSpotlightOverlay: View {
                 .padding(.vertical, 7)
             }
             .frame(width: 620)
-            .background(
-                MacVibrancySurface(material: .popover, blendingMode: .withinWindow)
+            .clipShape(RoundedRectangle(cornerRadius: LiquidGlassMetrics.modalCornerRadius, style: .continuous))
+            .liquidGlassSurface(
+                cornerRadius: LiquidGlassMetrics.modalCornerRadius,
+                prominence: .elevated
             )
-            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .strokeBorder(Color.primary.opacity(0.14), lineWidth: 1)
-            )
-            .shadow(color: .black.opacity(0.28), radius: 28, y: 14)
             .padding(.top, 56)
             .onExitCommand {
                 store.isQuickConnectPresented = false
@@ -436,14 +527,21 @@ struct ZeroKnowledgeLockShieldView: View {
 
     var body: some View {
         ZStack {
-            MacVibrancySurface(material: .underWindowBackground, blendingMode: .behindWindow)
-                .ignoresSafeArea()
+            LiquidGlassBackdropAura()
 
             VStack(spacing: 20) {
                 ZStack {
                     Circle()
-                        .fill(Color.accentColor.opacity(0.14))
+                        .fill(.ultraThinMaterial)
                         .frame(width: 84, height: 84)
+                        .overlay(
+                            Circle()
+                                .fill(Color.accentColor.opacity(0.16))
+                        )
+                        .overlay(
+                            Circle()
+                                .strokeBorder(Color.accentColor.opacity(0.38), lineWidth: 0.85)
+                        )
                     Image(systemName: "lock.shield.fill")
                         .font(.system(size: 40, weight: .semibold))
                         .symbolRenderingMode(.hierarchical)
@@ -491,12 +589,11 @@ struct ZeroKnowledgeLockShieldView: View {
                 }
             }
             .padding(36)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .strokeBorder(Color.primary.opacity(0.1), lineWidth: 1)
+            .liquidGlassSurface(
+                cornerRadius: LiquidGlassMetrics.modalCornerRadius,
+                tint: Color.accentColor,
+                prominence: .elevated
             )
-            .shadow(color: .black.opacity(0.18), radius: 24, y: 10)
         }
     }
 }

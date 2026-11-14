@@ -387,7 +387,10 @@ public struct FolderInheritanceEditorSheet: View {
                     TextField("Folder Name", text: $name)
                     Picker("Parent Folder", selection: $parentFolderId) {
                         Text("Vault Root").tag("")
-                        ForEach(store.activeFolders.filter { $0.id != existing?.id }) { f in
+                        ForEach(store.activeFolders.filter { candidate in
+                            guard let existingId = existing?.id else { return true }
+                            return store.canMoveFolder(existingId, toParentFolderId: candidate.id)
+                        }) { f in
                             Text(f.name).tag(f.id)
                         }
                     }
@@ -420,7 +423,10 @@ public struct FolderInheritanceEditorSheet: View {
             Divider()
 
             HStack {
-                Button("Cancel", role: .cancel) { dismiss() }
+                Button("Cancel", role: .cancel) {
+                    store.newFolderInitialParentId = nil
+                    dismiss()
+                }
                 Spacer()
                 Button(existing == nil ? "Create Folder" : "Save Folder") {
                     var inh = existing?.inheritable ?? InheritableProperties()
@@ -432,8 +438,13 @@ public struct FolderInheritanceEditorSheet: View {
                     let folder = VaultFolder(
                         id: existing?.id ?? UUID().uuidString.lowercased(),
                         parentFolderId: parentFolderId.isEmpty ? nil : parentFolderId,
-                        name: name,
+                        name: name.trimmingCharacters(in: .whitespacesAndNewlines),
+                        description: existing?.description ?? "",
+                        tags: existing?.tags ?? [],
                         inheritable: inh,
+                        sortOrder: existing?.sortOrder ?? ((store.activeFolders.filter {
+                            $0.parentFolderId == (parentFolderId.isEmpty ? nil : parentFolderId)
+                        }.map(\.sortOrder).max() ?? -1) + 1),
                         updatedAtEpochMs: VaultClock.nowMs()
                     )
                     store.commitMutation(existing == nil ? "Created folder \(folder.name)" : "Updated folder \(folder.name)") { doc in
@@ -443,6 +454,7 @@ public struct FolderInheritanceEditorSheet: View {
                             doc.folders.append(folder)
                         }
                     }
+                    store.newFolderInitialParentId = nil
                     dismiss()
                 }
                 .buttonStyle(.borderedProminent)
@@ -461,8 +473,72 @@ public struct FolderInheritanceEditorSheet: View {
                 explicitCredentialId = f.inheritable.explicitCredentialId ?? ""
                 colorHex = f.inheritable.displayColorAccentHex ?? ""
             } else {
-                parentFolderId = store.selectedFolderId ?? ""
+                parentFolderId = store.newFolderInitialParentId ?? store.selectedFolderId ?? ""
             }
+        }
+    }
+}
+
+// MARK: - 2b. Quick Rename Folder Sheet
+
+public struct RenameFolderSheet: View {
+    @EnvironmentObject private var store: WorkspaceStore
+    @Environment(\.dismiss) private var dismiss
+
+    public let folder: VaultFolder
+    @State private var folderName: String = ""
+    @FocusState private var isFocused: Bool
+
+    public init(folder: VaultFolder) {
+        self.folder = folder
+    }
+
+    public var body: some View {
+        VStack(spacing: 14) {
+            HStack(spacing: 10) {
+                Image(systemName: "folder.fill")
+                    .font(.title3)
+                    .foregroundStyle(
+                        HIGColorUtilities.color(fromHex: folder.inheritable.displayColorAccentHex)
+                            ?? Color.accentColor
+                    )
+                Text(store.strings.renameFolder)
+                    .font(.headline)
+                Spacer()
+            }
+
+            TextField("Folder Name", text: $folderName)
+                .textFieldStyle(.roundedBorder)
+                .focused($isFocused)
+                .onSubmit {
+                    let trimmed = folderName.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !trimmed.isEmpty {
+                        store.renameFolder(folder.id, newName: trimmed)
+                        dismiss()
+                    }
+                }
+
+            HStack {
+                Button("Cancel", role: .cancel) {
+                    store.renamingFolder = nil
+                    dismiss()
+                }
+                .keyboardShortcut(.cancelAction)
+                Spacer()
+                Button("Save") {
+                    store.renameFolder(folder.id, newName: folderName)
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+                .disabled(folderName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(18)
+        .frame(width: 360)
+        .onAppear {
+            folderName = folder.name
+            isFocused = true
         }
     }
 }

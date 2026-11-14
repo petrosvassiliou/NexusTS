@@ -21,7 +21,7 @@ on:
       release_tag:
         description: "Tag name when publishing via workflow_dispatch"
         required: false
-        default: "v1.1.1"
+        default: "v1.1.8"
         type: string
 
 permissions:
@@ -318,7 +318,7 @@ jobs:
           set -euo pipefail
           TAG_NAME="${GITHUB_REF_NAME}"
           if [[ "${TAG_NAME}" != v* ]]; then
-            TAG_NAME="${{ inputs.release_tag || 'v1.1.1' }}"
+            TAG_NAME="${{ inputs.release_tag || 'v1.1.8' }}"
           fi
           echo "tag_name=${TAG_NAME}" >> "${GITHUB_OUTPUT}"
 
@@ -345,24 +345,25 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.stage.outputs.tag_name }}
-          name: "NexusTS ${{ steps.stage.outputs.tag_name }} — Googlebook OS & Android Tablet Enterprise Release"
+          name: "NexusTS ${{ steps.stage.outputs.tag_name }} — Googlebook OS, Android & macOS Enterprise Release"
           draft: false
           prerelease: false
           generate_release_notes: true
           body: |
-            ## NexusTS ${{ steps.stage.outputs.tag_name }} (`com.nexusts.app`)
-            **Native Enterprise Remote Management & Connection Manager for Googlebook OS & Android Tablets**
+            ## NexusTS ${{ steps.stage.outputs.tag_name }} (`com.nexusts.app` / `com.nexusts.app.macos`)
+            **Native Enterprise Remote Management & Connection Manager for Googlebook OS, Android Tablets & macOS**
 
-            ### Signed Deliverables (Ready for Direct Install on Googlebook OS & Android Tablets)
-            - **`NexusTS-${{ steps.stage.outputs.tag_name }}-googlebook-android-release.apk`**: Cryptographically signed (APK Signature Scheme v2/v3/v4, RSA-4096) universal `arm64-v8a` + `x86_64` APK with 16 KB ELF page alignment (`0x4000`) and 100% Google Play Protect compliance.
+            ### Signed Deliverables (100% In-Place Upgrade Compatible with Prior Releases)
+            - **`NexusTS-${{ steps.stage.outputs.tag_name }}-googlebook-android-release.apk`**: Cryptographically signed (APK Signature Scheme v2/v3/v4, RSA-4096) universal `arm64-v8a` + `x86_64` APK with 16 KB ELF page alignment (`0x4000`) and 100% Google Play Protect compliance. Upgrades `v1.1.7` (`10107`) directly in place while preserving all `.nxts` v2 vaults & Android Keystore secrets.
             - **`NexusTS-${{ steps.stage.outputs.tag_name }}-playstore-release.aab`**: Signed Android App Bundle for optional future Google Play / Managed Google Play distribution.
             - **`nexusts-upload-certificate.pem` & `oauth-and-mdm-registration.json`**: Public X.509 upload certificate (`SHA-1: A6:AF:15:A9:BF:0B:FE:38:D4:66:46:3E:3E:72:A6:5B:4F:9C:4D:F6`, `SHA-256: 4A:BD:80:F1:20:14:B9:88:09:1C:97:92:2F:87:02:D1:BF:B7:93:9C:73:B6:9A:DB:1A:9B:76:30:6A:30:27:82`) and Managed Google Play `app_restrictions` template.
 
             ### What's New in ${{ steps.stage.outputs.tag_name }}
-            - **Biometric, Passkey & Hardware Keystore Vault Unlock + Idle Auto-Lock**: Unlock Argon2id `.nxts` vaults via fingerprint, face, passkey, or device credential backed by Android Keystore AES-256-GCM (`BiometricPrompt`), plus 1-tap **Quick-Lock** and a configurable **Idle Auto-Lock Timeout** (`Off`, `1m`, `5m`, `15m`, `30m`) tracked across pointer, stylus, and keyboard activity.
-            - **Nested Folder Drag-and-Drop, Manual Sorting, & Session Tab Reordering / Tear-Off**: Drag folders into other folders (with strict cycle/descendant protection) or back to Top Level, manually sort folders and hosts (`Move Up` / `Move Down` & drag-onto-connection insertion), reorder live session tabs within a tab strip or across split panes, and tear off tabs vertically into native Googlebook OS freeform windows (`DetachedSessionActivity`).
-            - **FreeRDP 3.12 Dynamic Window Auto-Resize (`DISP` Virtual Channel)**: Live desktop resolution auto-fitting (`DispClientContext->SendMonitorLayout` + `DesktopResize`) when resizing Googlebook OS freeform windows or split panes, with a live toolbar mode chip (`Auto-Fit DISP`, `Smart Scale`, `Fixed`).
-            - **Google Play Protect–Compliant SAF Shared Folder Redirection (`RDPDR`)**: Expose chosen local Googlebook OS / Android folders inside remote Windows sessions as `\\tsclient\<ShareName>` via Storage Access Framework (`OpenDocumentTree`) with incremental two-way synchronization and zero `MANAGE_EXTERNAL_STORAGE` permissions.
+            - **macOS Liquid Glass Design System (Apple HIG)**: Optical translucency (`ultraThinMaterial` / `thinMaterial`), directional specular rim highlights, top refraction sheen, capsule controls & session tabs, and ambient window aura.
+            - **Intelligent Connection-Type Grouping & Hover Protocol Reveal**: Removed repetitive `RDP`/`SSH` prefixes before connection entries; folders with mixed connection types automatically group by protocol (`RDP`, `SSH`, etc.), while single-protocol folders suppress redundant headers and reveal the connection type pill + tooltip smoothly on mouse hover.
+            - **Compact Flush Far-Left Connection & Folder Explorer**: Removed the wide outer navigation rail so folders, subfolders, and connections sit flush at the far-left edge in a sleek, resizable (`180–440dp` / `185–340pt`) single-line tree view; moved Studios (`Templates`, `Credentials`, `Gateways`, `Tasks`, `Drive Sync`) to a compact top-toolbar switcher.
+            - **Rich Folder Right-Click Context Menus**: Right-click any folder for **Start All RDP Connections** (recursively across nested subfolders), **Connect All / Disconnect All**, **Rename Folder…**, **Move Folder to…** (with cycle protection), **Move Up / Down**, **New RDP / SSH / Subfolder**, **Duplicate Folder**, **Expand / Collapse Subfolders**, **Folder Credentials & Inheritance**, and **Delete Folder…** (choose between deleting all contents or moving items up).
+            - **Seamless In-Place Replacement (`v1.1.7` → `v1.1.8`)**: 100% `.nxts` v2 wire compatibility (`NXTS\x00\x02`, Argon2id + AES-256-GCM) and SHA-256-verified APK/DMG updates.
           files: release-assets/*
 
       - name: Check Optional Google Play Service Account Secret

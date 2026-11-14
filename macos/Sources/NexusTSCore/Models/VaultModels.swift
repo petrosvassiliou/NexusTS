@@ -1611,3 +1611,93 @@ public enum VaultClock {
         Int64(Date().timeIntervalSince1970 * 1000.0)
     }
 }
+
+// MARK: - Intelligent Sidebar Connection-Type Grouping
+
+public struct IntelligentConnectionProtocolGroup: Identifiable, Equatable, Sendable {
+    public var id: String { groupBadge }
+    public let groupBadge: String
+    public let primaryProtocol: VaultProtocolType
+    public let connections: [VaultConnection]
+    public let showsHeader: Bool
+
+    public init(
+        groupBadge: String,
+        primaryProtocol: VaultProtocolType,
+        connections: [VaultConnection],
+        showsHeader: Bool
+    ) {
+        self.groupBadge = groupBadge
+        self.primaryProtocol = primaryProtocol
+        self.connections = connections
+        self.showsHeader = showsHeader
+    }
+}
+
+public enum IntelligentConnectionGrouper {
+    private static let canonicalBadgeOrder: [String] = [
+        "RDP", "SSH", "VNC", "ARD", "SFTP", "SCP", "FTP", "FTPS",
+        "TEL", "UART", "WEB", "K8S", "OCI", "PVE", "ESXi", "HV",
+        "EC2", "AZ", "PING", "MTR", "SCAN", "WOL"
+    ]
+
+    public static func groupBadge(for protocolType: VaultProtocolType) -> String {
+        switch protocolType {
+        case .RDP, .WINDOWS_TERMINAL_SERVICES:
+            return "RDP"
+        default:
+            return protocolType.shortBadge
+        }
+    }
+
+    private static func rank(for badge: String) -> Int {
+        canonicalBadgeOrder.firstIndex(of: badge) ?? canonicalBadgeOrder.count
+    }
+
+    public static func group(
+        _ connections: [VaultConnection],
+        preserveInputOrderWithinGroups: Bool = false
+    ) -> [IntelligentConnectionProtocolGroup] {
+        guard !connections.isEmpty else { return [] }
+
+        var buckets: [String: [VaultConnection]] = [:]
+        var firstProtocolByBadge: [String: VaultProtocolType] = [:]
+
+        for conn in connections {
+            let badge = groupBadge(for: conn.protocolType)
+            if firstProtocolByBadge[badge] == nil {
+                firstProtocolByBadge[badge] = conn.protocolType == .WINDOWS_TERMINAL_SERVICES ? .RDP : conn.protocolType
+            }
+            buckets[badge, default: []].append(conn)
+        }
+
+        let sortedBadges = buckets.keys.sorted { lhs, rhs in
+            let lRank = rank(for: lhs)
+            let rRank = rank(for: rhs)
+            if lRank != rRank { return lRank < rRank }
+            return lhs.localizedCaseInsensitiveCompare(rhs) == .orderedAscending
+        }
+
+        let showsHeader = sortedBadges.count > 1
+
+        return sortedBadges.compactMap { badge in
+            guard let rawItems = buckets[badge], let proto = firstProtocolByBadge[badge] else { return nil }
+            let orderedItems: [VaultConnection]
+            if preserveInputOrderWithinGroups {
+                orderedItems = rawItems
+            } else {
+                orderedItems = rawItems.sorted {
+                    if $0.sortOrder != $1.sortOrder { return $0.sortOrder < $1.sortOrder }
+                    return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+                }
+            }
+            return IntelligentConnectionProtocolGroup(
+                groupBadge: badge,
+                primaryProtocol: proto,
+                connections: orderedItems,
+                showsHeader: showsHeader
+            )
+        }
+    }
+}
+

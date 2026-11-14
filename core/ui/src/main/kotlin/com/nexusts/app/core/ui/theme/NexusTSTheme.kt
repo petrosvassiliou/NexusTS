@@ -45,13 +45,13 @@ fun NexusTSTheme(
             lineHeight = defaultMono.terminalBold.lineHeight * terminalFontScale
         )
     )
-    val subtleDesktopRipple = remember(colorScheme.primary) {
+    val subtleDesktopRipple = remember {
         RippleConfiguration(
-            color = colorScheme.primary,
+            color = androidx.compose.ui.graphics.Color.Unspecified,
             rippleAlpha = RippleAlpha(
                 pressedAlpha = 0.10f,
-                focusedAlpha = 0.05f,
-                hoveredAlpha = 0.04f,
+                focusedAlpha = 0.06f,
+                hoveredAlpha = 0.06f,
                 draggedAlpha = 0.08f
             )
         )

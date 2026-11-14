@@ -1,0 +1,4 @@
+NexusTS v1.1.8:
+• Explorador compacto de carpetas y conexiones en el extremo izquierdo con menú Estudios en la barra superior
+• Menú contextual clic derecho en carpetas: Iniciar todas las conexiones RDP, Renombrar, Mover, Duplicar y Eliminar (con o sin contenido)
+• Actualización directa 100% compatible con v1.1.7 (bóvedas .nxts v2 y Play Protect)

@@ -85,6 +85,7 @@ struct NexusMenuBarCommands: Commands {
             .keyboardShortcut("n", modifiers: [.command])
 
             Button("New Folder…") {
+                store.newFolderInitialParentId = store.selectedFolderId
                 store.isPresentingNewFolderSheet = true
             }
             .keyboardShortcut("n", modifiers: [.command, .shift])
@@ -103,6 +104,43 @@ struct NexusMenuBarCommands: Commands {
         }
 
         CommandMenu("Workspace") {
+            Button(store.strings.connections) {
+                store.activeSection = .sessions
+            }
+            .keyboardShortcut("1", modifiers: [.command])
+
+            Button(store.strings.overview) {
+                store.activeSection = .overview
+            }
+            .keyboardShortcut("2", modifiers: [.command])
+
+            Button(store.strings.templates) {
+                store.activeSection = .templates
+            }
+            .keyboardShortcut("3", modifiers: [.command])
+
+            Button(store.strings.credentials) {
+                store.activeSection = .credentials
+            }
+            .keyboardShortcut("4", modifiers: [.command])
+
+            Button(store.strings.gateways) {
+                store.activeSection = .gateways
+            }
+            .keyboardShortcut("5", modifiers: [.command])
+
+            Button(store.strings.automationTasks) {
+                store.activeSection = .automationTasks
+            }
+            .keyboardShortcut("6", modifiers: [.command])
+
+            Button(store.strings.cloudSync) {
+                store.activeSection = .cloudSync
+            }
+            .keyboardShortcut("7", modifiers: [.command])
+
+            Divider()
+
             Button("Split Active Pane Right") {
                 store.splitFocusedPane(.horizontal)
             }

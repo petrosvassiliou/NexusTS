@@ -160,6 +160,13 @@ fun rememberLocalizedWorkspaceStrings(): WorkspaceLocalizedStrings {
         syncCheckGitHubUpdates = stringResource(R.string.sync_check_github_updates),
         serialSectionUart = stringResource(R.string.serial_section_uart),
         containerSectionExec = stringResource(R.string.container_section_exec),
+        actionRenameFolder = stringResource(R.string.action_rename_folder),
+        actionStartAllRdpFolder = stringResource(R.string.action_start_all_rdp_folder),
+        dialogRenameFolderTitle = stringResource(R.string.dialog_rename_folder_title),
+        dialogDeleteFolderTitle = stringResource(R.string.dialog_delete_folder_title),
+        actionDeleteFolderAndContents = stringResource(R.string.action_delete_folder_and_contents),
+        actionDeleteFolderKeepContents = stringResource(R.string.action_delete_folder_keep_contents),
+        navStudiosMenu = stringResource(R.string.nav_studios_menu),
         languageLabels = mapOf(
             SupportedNexusLocale.ENGLISH to stringResource(R.string.lang_en),
             SupportedNexusLocale.GERMAN to stringResource(R.string.lang_de),

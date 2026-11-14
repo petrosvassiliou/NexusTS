@@ -1,0 +1,4 @@
+NexusTS v1.1.8:
+• Esplora cartelle e connessioni compatto sul lato sinistro con menu Studi nella barra superiore
+• Menu contestuale tasto destro sulle cartelle: Avvia tutte le connessioni RDP, Rinomina, Sposta, Duplica ed Elimina (con o senza contenuti)
+• Aggiornamento diretto al 100% compatibile con v1.1.7 (.nxts v2 & Play Protect)

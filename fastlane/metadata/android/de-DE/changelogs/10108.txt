@@ -1,0 +1,4 @@
+NexusTS v1.1.8:
+• Kompakter Verbindungs- & Ordner-Explorer ganz links mit Studios-Menü in der oberen Symbolleiste
+• Rechtsklick-Kontextmenü für Ordner: Alle RDP-Verbindungen starten, Umbenennen, Verschieben, Duplizieren & Löschen (mit oder ohne Inhalt)
+• 100 % nahtloses In-Place-Upgrade von v1.1.7 (.nxts v2 Tresore & Play Protect)

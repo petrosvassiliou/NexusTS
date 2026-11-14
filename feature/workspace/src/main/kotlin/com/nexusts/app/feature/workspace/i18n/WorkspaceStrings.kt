@@ -201,6 +201,13 @@ data class WorkspaceLocalizedStrings(
     val syncCheckGitHubUpdates: String = "Check GitHub Releases Update",
     val serialSectionUart: String = "USB-C Hardware Serial / UART (FTDI, CP210x, CDC-ACM)",
     val containerSectionExec: String = "Kubernetes Pod & Container Runtime",
+    val actionRenameFolder: String = "Rename Folder…",
+    val actionStartAllRdpFolder: String = "Start All RDP Connections",
+    val dialogRenameFolderTitle: String = "Rename Folder",
+    val dialogDeleteFolderTitle: String = "Delete Folder",
+    val actionDeleteFolderAndContents: String = "Delete Folder & All Contents",
+    val actionDeleteFolderKeepContents: String = "Delete Folder Only (Move Items Up)",
+    val navStudiosMenu: String = "Studios",
     val languageLabels: Map<SupportedNexusLocale, String> = mapOf(
         SupportedNexusLocale.ENGLISH to "English",
         SupportedNexusLocale.GERMAN to "Deutsch",

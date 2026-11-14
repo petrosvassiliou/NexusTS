@@ -182,7 +182,8 @@ private struct LeafPaneContainerView: View {
                 .foregroundStyle(.secondary)
                 .padding(.trailing, 10)
             }
-            .background(.bar)
+            .padding(.vertical, 2)
+            .background(.ultraThinMaterial)
             .dropDestination(for: String.self) { payloads, _ in
                 for p in payloads {
                     handleTabDropPayload(p, beforeTabId: nil)
@@ -257,6 +258,7 @@ private struct MacTabPillView: View {
 
             Text(tab.title)
                 .font(.system(size: 12, weight: isActive ? .semibold : .regular))
+                .foregroundStyle(.primary)
                 .lineLimit(1)
 
             if tab.broadcastEnabled {
@@ -274,22 +276,16 @@ private struct MacTabPillView: View {
             .buttonStyle(.plain)
             .opacity(isHovering || isActive ? 1.0 : 0.35)
         }
-        .padding(.horizontal, 10)
+        .padding(.horizontal, 11)
         .padding(.vertical, 5)
-        .background(
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .fill(isActive ? Color(nsColor: .controlBackgroundColor) : Color.primary.opacity(isHovering ? 0.06 : 0.0))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 7, style: .continuous)
-                .strokeBorder(
-                    isDropTargeted ? Color.accentColor : (isActive ? Color.primary.opacity(0.12) : .clear),
-                    lineWidth: isDropTargeted ? 1.5 : 0.75
-                )
-        )
-        .contentShape(Rectangle())
+        .liquidGlassCapsule(tint: accent, isSelected: isActive || isDropTargeted, isHovered: isHovering)
+        .contentShape(Capsule(style: .continuous))
         .onTapGesture(perform: onSelect)
-        .onHover { isHovering = $0 }
+        .onHover { hovering in
+            withAnimation(LiquidGlassMetrics.hoverAnimation) {
+                isHovering = hovering
+            }
+        }
         .draggable("tab:\(tab.id.uuidString)")
         .dropDestination(for: String.self) { payloads, _ in
             for p in payloads {

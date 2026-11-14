@@ -28,6 +28,14 @@ public enum WorkspacePrimarySection: String, CaseIterable, Identifiable, Hashabl
     }
 }
 
+public enum SidebarFilterMode: String, CaseIterable, Identifiable, Hashable {
+    case all
+    case favorites
+    case recents
+
+    public var id: String { rawValue }
+}
+
 public struct AuditLogEntry: Identifiable, Equatable {
     public let id = UUID()
     public let timestamp: Date
@@ -340,10 +348,12 @@ public final class WorkspaceStore: ObservableObject {
     // Navigation & Chrome State
     @Published public var columnVisibility: NavigationSplitViewVisibility = .all
     @Published public var activeSection: WorkspacePrimarySection = .sessions
+    @Published public var sidebarFilterMode: SidebarFilterMode = .all
+    @Published public var collapsedFolderIds: Set<String> = []
     @Published public var selectedConnectionId: String? = nil
     @Published public var selectedFolderId: String? = nil
     @Published public var sidebarSearchQuery: String = ""
-    @Published public var isInspectorPresented: Bool = true
+    @Published public var isInspectorPresented: Bool = false
     @Published public var isBottomConsolePresented: Bool = false
     @Published public var isQuickConnectPresented: Bool = false
 
@@ -374,6 +384,9 @@ public final class WorkspaceStore: ObservableObject {
     @Published public var newConnectionInitialProtocol: VaultProtocolType = .SSH
     @Published public var editingFolder: VaultFolder? = nil
     @Published public var isPresentingNewFolderSheet: Bool = false
+    @Published public var newFolderInitialParentId: String? = nil
+    @Published public var renamingFolder: VaultFolder? = nil
+    @Published public var deletingFolderCandidate: VaultFolder? = nil
     @Published public var connectWithOptionsTarget: VaultConnection? = nil
 
     private var activePassphrase: String = NxtsVaultSerializer.defaultTransparentPassphrase
@@ -860,14 +873,18 @@ public final class WorkspaceStore: ObservableObject {
         }
     }
 
-    public func moveFolder(_ folderId: String, toParentFolderId targetParentId: String?) {
-        guard folderId != targetParentId else { return }
-        // Guard against cycles (cannot drop a folder into its own descendant)
+    public func canMoveFolder(_ folderId: String, toParentFolderId targetParentId: String?) -> Bool {
+        if folderId == targetParentId { return false }
         var cursor = targetParentId
         while let current = cursor {
-            if current == folderId { return }
+            if current == folderId { return false }
             cursor = document.folders.first(where: { $0.id == current })?.parentFolderId
         }
+        return true
+    }
+
+    public func moveFolder(_ folderId: String, toParentFolderId targetParentId: String?) {
+        guard canMoveFolder(folderId, toParentFolderId: targetParentId) else { return }
         commitMutation("Moved folder") { doc in
             if let idx = doc.folders.firstIndex(where: { $0.id == folderId }) {
                 let siblingMaxOrder = doc.folders
@@ -879,6 +896,192 @@ public final class WorkspaceStore: ObservableObject {
                 doc.folders[idx].updatedAtEpochMs = VaultClock.nowMs()
             }
         }
+    }
+
+    public func renameFolder(_ folderId: String, newName: String) {
+        let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        commitMutation("Renamed folder to \(trimmed)") { doc in
+            if let idx = doc.folders.firstIndex(where: { $0.id == folderId }) {
+                doc.folders[idx].name = trimmed
+                doc.folders[idx].updatedAtEpochMs = VaultClock.nowMs()
+            }
+        }
+        renamingFolder = nil
+    }
+
+    public func reorderFolder(_ folderId: String, moveUp: Bool) {
+        guard let target = activeFolders.first(where: { $0.id == folderId }) else { return }
+        let siblings = activeFolders.filter { $0.parentFolderId == target.parentFolderId }
+        guard let currentPos = siblings.firstIndex(where: { $0.id == folderId }) else { return }
+        let swapPos = moveUp ? currentPos - 1 : currentPos + 1
+        guard siblings.indices.contains(swapPos) else { return }
+
+        var ids = siblings.map(\.id)
+        ids.swapAt(currentPos, swapPos)
+        let now = VaultClock.nowMs()
+        commitMutation("Reordered folder \(target.name)") { doc in
+            for (rank, id) in ids.enumerated() {
+                if let idx = doc.folders.firstIndex(where: { $0.id == id }) {
+                    doc.folders[idx].sortOrder = rank
+                    doc.folders[idx].updatedAtEpochMs = now
+                }
+            }
+        }
+    }
+
+    public func duplicateFolder(_ folder: VaultFolder) {
+        commitMutation("Duplicated folder \(folder.name)") { doc in
+            let now = VaultClock.nowMs()
+            let newFolderId = UUID().uuidString.lowercased()
+            let siblingMaxOrder = doc.folders
+                .filter { $0.parentFolderId == folder.parentFolderId }
+                .map(\.sortOrder)
+                .max() ?? -1
+            var folderCopy = folder
+            folderCopy.id = newFolderId
+            folderCopy.name = "\(folder.name) Copy"
+            folderCopy.sortOrder = siblingMaxOrder + 1
+            folderCopy.updatedAtEpochMs = now
+            doc.folders.append(folderCopy)
+
+            let directConns = doc.connections.filter {
+                $0.parentFolderId == folder.id && !doc.tombstonedObjectIds.contains($0.id)
+            }
+            for conn in directConns {
+                var connCopy = conn
+                connCopy.id = UUID().uuidString.lowercased()
+                connCopy.parentFolderId = newFolderId
+                connCopy.updatedAtEpochMs = now
+                doc.connections.append(connCopy)
+            }
+        }
+    }
+
+    public func deleteFolder(_ folderId: String, deleteContents: Bool) {
+        guard let folder = document.folders.first(where: { $0.id == folderId }) else {
+            deletingFolderCandidate = nil
+            return
+        }
+        if deleteContents {
+            let subtreeIds = collectSubtreeFolderIds(rootFolderId: folderId)
+            disconnectAllInFolder(folderId)
+            commitMutation("Deleted folder \(folder.name) and contents") { doc in
+                let removedConnIds = doc.connections
+                    .filter { $0.parentFolderId.map(subtreeIds.contains) ?? false }
+                    .map(\.id)
+                for fId in subtreeIds { doc.tombstonedObjectIds.insert(fId) }
+                for cId in removedConnIds { doc.tombstonedObjectIds.insert(cId) }
+                doc.folders.removeAll { subtreeIds.contains($0.id) }
+                doc.connections.removeAll { $0.parentFolderId.map(subtreeIds.contains) ?? false }
+                doc.recentConnectionIds.removeAll { removedConnIds.contains($0) }
+            }
+            if let selFolder = selectedFolderId, subtreeIds.contains(selFolder) {
+                selectedFolderId = nil
+            }
+            if let selConn = selectedConnectionId, !activeConnections.contains(where: { $0.id == selConn }) {
+                selectedConnectionId = activeConnections.first?.id
+            }
+            collapsedFolderIds.subtract(subtreeIds)
+        } else {
+            let now = VaultClock.nowMs()
+            commitMutation("Deleted folder \(folder.name) (moved items up)") { doc in
+                doc.tombstonedObjectIds.insert(folder.id)
+                doc.folders.removeAll { $0.id == folder.id }
+                for idx in doc.folders.indices where doc.folders[idx].parentFolderId == folder.id {
+                    doc.folders[idx].parentFolderId = folder.parentFolderId
+                    doc.folders[idx].updatedAtEpochMs = now
+                }
+                for idx in doc.connections.indices where doc.connections[idx].parentFolderId == folder.id {
+                    doc.connections[idx].parentFolderId = folder.parentFolderId
+                    doc.connections[idx].updatedAtEpochMs = now
+                }
+            }
+            if selectedFolderId == folder.id {
+                selectedFolderId = folder.parentFolderId
+            }
+            collapsedFolderIds.remove(folder.id)
+        }
+        deletingFolderCandidate = nil
+    }
+
+    public func orderedConnectionsInSubtree(_ folderId: String) -> [VaultConnection] {
+        var orderedFolders: [String] = []
+        var visited = Set<String>()
+        func visit(_ currentId: String) {
+            guard visited.insert(currentId).inserted else { return }
+            orderedFolders.append(currentId)
+            let children = activeFolders.filter { $0.parentFolderId == currentId }
+            for child in children {
+                visit(child.id)
+            }
+        }
+        visit(folderId)
+
+        var collected: [VaultConnection] = []
+        for fId in orderedFolders {
+            let conns = activeConnections
+                .filter { $0.parentFolderId == fId }
+                .sorted {
+                    if $0.sortOrder != $1.sortOrder { return $0.sortOrder < $1.sortOrder }
+                    return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+                }
+            collected.append(contentsOf: conns)
+        }
+        return collected
+    }
+
+    public func connectionCountInSubtree(_ folderId: String) -> Int {
+        let subtreeIds = collectSubtreeFolderIds(rootFolderId: folderId)
+        return activeConnections.filter { $0.parentFolderId.map(subtreeIds.contains) ?? false }.count
+    }
+
+    public func rdpConnectionCountInSubtree(_ folderId: String) -> Int {
+        let subtreeIds = collectSubtreeFolderIds(rootFolderId: folderId)
+        return activeConnections.filter { conn in
+            guard let p = conn.parentFolderId, subtreeIds.contains(p) else { return false }
+            return conn.protocolType == .RDP || conn.protocolType == .WINDOWS_TERMINAL_SERVICES
+        }.count
+    }
+
+    public func activeSessionCountInSubtree(_ folderId: String) -> Int {
+        let subtreeIds = collectSubtreeFolderIds(rootFolderId: folderId)
+        return activeConnections
+            .filter { $0.parentFolderId.map(subtreeIds.contains) ?? false }
+            .reduce(0) { $0 + activeSessionCount(forConnectionId: $1.id) }
+    }
+
+    public func connectAllInFolder(_ folderId: String) {
+        let targets = orderedConnectionsInSubtree(folderId)
+        for conn in targets {
+            openConnection(conn)
+        }
+    }
+
+    public func connectAllRdpInFolder(_ folderId: String) {
+        let rdpTargets = orderedConnectionsInSubtree(folderId).filter {
+            $0.protocolType == .RDP || $0.protocolType == .WINDOWS_TERMINAL_SERVICES
+        }
+        for conn in rdpTargets {
+            openConnection(conn)
+        }
+        appendAudit("Session", "Started \(rdpTargets.count) RDP connection(s) in folder subtree.")
+    }
+
+    public func expandAllFolders() {
+        collapsedFolderIds.removeAll()
+    }
+
+    public func collapseAllFolders() {
+        collapsedFolderIds = Set(activeFolders.map(\.id))
+    }
+
+    public func expandSubtree(_ folderId: String) {
+        collapsedFolderIds.subtract(collectSubtreeFolderIds(rootFolderId: folderId))
+    }
+
+    public func collapseSubtree(_ folderId: String) {
+        collapsedFolderIds.formUnion(collectSubtreeFolderIds(rootFolderId: folderId))
     }
 
     public func handleSidebarDrop(_ payloads: [String], intoFolderId targetFolderId: String?) {

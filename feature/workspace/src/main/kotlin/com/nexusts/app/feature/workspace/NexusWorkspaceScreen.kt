@@ -30,8 +30,10 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.filled.Folder as FilledFolderIcon
 import androidx.compose.material.icons.filled.FolderOpen as FilledFolderOpenIcon
@@ -81,12 +83,15 @@ import androidx.compose.material.icons.outlined.SystemUpdateAlt
 import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material.icons.outlined.Timer
 import androidx.compose.material.icons.outlined.Tune
+import androidx.compose.material.icons.outlined.UnfoldLess
+import androidx.compose.material.icons.outlined.UnfoldMore
 import androidx.compose.material.icons.outlined.UploadFile
 import androidx.compose.material.icons.outlined.VerticalSplit
 import androidx.compose.material.icons.outlined.ViewSidebar
 import androidx.compose.material.icons.outlined.VpnKey
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -122,6 +127,7 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.input.pointer.PointerType
@@ -136,11 +142,13 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.nexusts.app.core.ui.components.ExpressiveMorphingIconButton
 import com.nexusts.app.core.ui.components.ExpressiveSplitActionButton
 import com.nexusts.app.core.ui.components.NexusActionChip
@@ -360,6 +368,9 @@ fun NexusWorkspaceScreen(
                 DesktopTopWindowChrome(
                     vaultName = uiState.vaultDocument.name,
                     vaultRevision = uiState.vaultDocument.revision,
+                    destinations = destinations,
+                    selectedDestinationId = uiState.activeRailId,
+                    onSelectDestination = viewModel::selectRailDestination,
                     isDriveLinked = isDriveLinked,
                     isSidebarVisible = uiState.isSidebarVisible,
                     isInspectorVisible = uiState.isInspectorVisible,
@@ -414,6 +425,7 @@ fun NexusWorkspaceScreen(
                     strings = strings,
                     activeSessionCountByConnectionId = activeSessionCountByConnectionId,
                     onFilterQueryChanged = viewModel::updateSidebarFilterQuery,
+                    onSelectQuickFilter = viewModel::setSidebarQuickFilter,
                     smartFolderConnectionsProvider = viewModel::evaluateSmartFolderConnections,
                     onToggleSmartFolder = viewModel::toggleSmartFolderSelection,
                     onNewSmartFolder = viewModel::openNewSmartFolderDialog,
@@ -431,9 +443,16 @@ fun NexusWorkspaceScreen(
                         viewModel.openNewConnectionInFolder(folderId, VaultProtocolType.SSH)
                     },
                     onNewSubfolder = viewModel::openNewSubfolder,
+                    onRenameFolder = viewModel::openRenameFolderDialog,
                     onEditFolder = viewModel::openEditFolderDialog,
                     onDuplicateFolder = viewModel::duplicateFolder,
-                    onDeleteFolder = viewModel::deleteFolder,
+                    onRequestDeleteFolder = viewModel::requestDeleteFolderConfirmation,
+                    onDeleteFolder = { folderId -> viewModel.deleteFolder(folderId, deleteContents = false) },
+                    onConnectAllRdpInFolder = { folderId ->
+                        viewModel.connectAllRdpInFolder(folderId) { tab ->
+                            onDetachTabToNativeWindow(tab, null)
+                        }
+                    },
                     onConnectAllInFolder = { folderId ->
                         viewModel.connectAllInFolder(folderId) { tab ->
                             onDetachTabToNativeWindow(tab, null)
@@ -798,6 +817,27 @@ fun NexusWorkspaceScreen(
                     },
                     onDismiss = viewModel::dismissMoveFolderDialog
                 )
+                RenameFolderDialog(
+                    targetFolder = uiState.renamingFolderTarget,
+                    strings = strings,
+                    onRename = { folderId, newName ->
+                        viewModel.renameFolder(folderId, newName)
+                    },
+                    onDismiss = viewModel::dismissRenameFolderDialog
+                )
+                DeleteFolderConfirmationDialog(
+                    targetFolder = uiState.deletingFolderTarget,
+                    folders = uiState.vaultDocument.folders.filterNot { it.id in uiState.vaultDocument.tombstonedObjectIds },
+                    connections = uiState.vaultDocument.connections.filterNot { it.id in uiState.vaultDocument.tombstonedObjectIds },
+                    strings = strings,
+                    onDeleteWithContents = { folderId ->
+                        viewModel.deleteFolder(folderId, deleteContents = true)
+                    },
+                    onDeleteKeepContents = { folderId ->
+                        viewModel.deleteFolder(folderId, deleteContents = false)
+                    },
+                    onDismiss = viewModel::dismissDeleteFolderConfirmation
+                )
                 PlayProtectAutoUpdateDialog(
                     visible = uiState.isAutoUpdateDialogVisible,
                     uiState = uiState,
@@ -1013,6 +1053,9 @@ fun ActiveProtocolSessionDispatcher(
 private fun DesktopTopWindowChrome(
     vaultName: String,
     vaultRevision: Long,
+    destinations: List<NexusRailDestination> = emptyList(),
+    selectedDestinationId: String = "connections",
+    onSelectDestination: (String) -> Unit = {},
     isDriveLinked: Boolean,
     isSidebarVisible: Boolean,
     isInspectorVisible: Boolean,
@@ -1051,65 +1094,226 @@ private fun DesktopTopWindowChrome(
 ) {
     var createMenuExpanded by remember { mutableStateOf(false) }
     var toolsMenuExpanded by remember { mutableStateOf(false) }
+    var studiosMenuExpanded by remember { mutableStateOf(false) }
+    val activeStudio = remember(destinations, selectedDestinationId) {
+        destinations.firstOrNull { it.id == selectedDestinationId }
+    }
+    val inNonSessionStudio = selectedDestinationId != "connections"
 
     Surface(
         color = MaterialTheme.colorScheme.surfaceContainerLowest,
         modifier = Modifier
             .fillMaxWidth()
-            .height(64.dp)
+            .height(52.dp)
     ) {
+        Column(modifier = Modifier.fillMaxSize()) {
         Row(
             modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 18.dp),
+                .weight(1f)
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            // Left Window Identity Cluster
+            // Left Window Identity + Studios Switcher Cluster
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 ExpressiveMorphingIconButton(
                     icon = Icons.Outlined.ViewSidebar,
-                    contentDescription = null,
+                    contentDescription = "Toggle Sidebar",
                     isActive = isSidebarVisible,
                     onClick = onToggleSidebar
                 )
-                NexusBrandEmblem(size = 36.dp, cornerRadius = 11.dp)
+                NexusBrandEmblem(size = 30.dp, cornerRadius = 9.dp)
                 Text(
                     text = strings.appName,
-                    style = MaterialTheme.typography.titleLarge,
+                    style = MaterialTheme.typography.titleMedium,
                     color = MaterialTheme.colorScheme.onSurface
                 )
                 if (vaultName.isNotBlank() && vaultName != NexusWorkspaceViewModel.DEFAULT_VAULT_NAME) {
                     Surface(
                         shape = RoundedCornerShape(99.dp),
                         color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                        modifier = Modifier.widthIn(max = 190.dp)
+                        modifier = Modifier.widthIn(max = 150.dp)
                     ) {
                         Text(
                             text = vaultName,
-                            style = MaterialTheme.typography.labelMedium,
+                            style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp)
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
                         )
                     }
                 }
+
+                // Top-Toolbar Studios Switcher (replaces the wide 96dp left NavigationRail)
+                if (destinations.isNotEmpty()) {
+                    Box {
+                        val studiosHover = rememberDesktopHoverState()
+                        val studiosInteraction = remember { MutableInteractionSource() }
+                        val isStudiosHovered = studiosHover.value.isHovered
+                        Surface(
+                            modifier = Modifier
+                                .height(34.dp)
+                                .semantics(mergeDescendants = true) {
+                                    contentDescription = strings.navStudiosMenu
+                                }
+                                .nexusHoverTracker(studiosHover, PointerIcon.Hand)
+                                .clip(RoundedCornerShape(99.dp))
+                                .clickable(
+                                    interactionSource = studiosInteraction,
+                                    indication = null,
+                                    onClick = { studiosMenuExpanded = true }
+                                ),
+                            shape = RoundedCornerShape(99.dp),
+                            color = when {
+                                inNonSessionStudio && (studiosMenuExpanded || isStudiosHovered) ->
+                                    androidx.compose.ui.graphics.lerp(
+                                        MaterialTheme.colorScheme.secondaryContainer,
+                                        MaterialTheme.colorScheme.onSecondaryContainer,
+                                        0.08f
+                                    )
+                                inNonSessionStudio -> MaterialTheme.colorScheme.secondaryContainer
+                                studiosMenuExpanded || isStudiosHovered -> MaterialTheme.colorScheme.surfaceContainerHighest
+                                else -> MaterialTheme.colorScheme.surfaceContainerHigh
+                            },
+                            border = BorderStroke(
+                                1.dp,
+                                if (inNonSessionStudio || studiosMenuExpanded || isStudiosHovered) {
+                                    MaterialTheme.colorScheme.outline.copy(alpha = 0.55f)
+                                } else {
+                                    MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
+                                }
+                            )
+                        ) {
+                            val studiosFg = if (inNonSessionStudio) {
+                                MaterialTheme.colorScheme.onSecondaryContainer
+                            } else {
+                                MaterialTheme.colorScheme.onSurface
+                            }
+                            Row(
+                                modifier = Modifier.padding(start = 10.dp, end = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(5.dp)
+                            ) {
+                                Icon(
+                                    imageVector = if (inNonSessionStudio && activeStudio != null) {
+                                        activeStudio.icon
+                                    } else {
+                                        Icons.Outlined.Tune
+                                    },
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp),
+                                    tint = if (inNonSessionStudio) {
+                                        MaterialTheme.colorScheme.onSecondaryContainer
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    }
+                                )
+                                Text(
+                                    text = if (inNonSessionStudio && activeStudio != null) {
+                                        activeStudio.label
+                                    } else {
+                                        strings.navStudiosMenu
+                                    },
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = studiosFg,
+                                    maxLines = 1
+                                )
+                                Icon(
+                                    imageVector = Icons.Outlined.KeyboardArrowDown,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp),
+                                    tint = if (inNonSessionStudio) {
+                                        MaterialTheme.colorScheme.onSecondaryContainer
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    }
+                                )
+                            }
+                        }
+
+                        DropdownMenu(
+                            expanded = studiosMenuExpanded,
+                            onDismissRequest = { studiosMenuExpanded = false }
+                        ) {
+                            destinations.forEach { dest ->
+                                val isSelected = dest.id == selectedDestinationId
+                                DropdownMenuItem(
+                                    text = {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            Text(dest.label)
+                                            if (dest.badgeCount > 0) {
+                                                Surface(
+                                                    shape = RoundedCornerShape(99.dp),
+                                                    color = MaterialTheme.colorScheme.primaryContainer
+                                                ) {
+                                                    Text(
+                                                        text = dest.badgeCount.toString(),
+                                                        style = NexusTheme.monospace.keycapShortcut,
+                                                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp)
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    },
+                                    leadingIcon = {
+                                        Icon(
+                                            imageVector = dest.icon,
+                                            contentDescription = null,
+                                            tint = if (isSelected) {
+                                                MaterialTheme.colorScheme.primary
+                                            } else {
+                                                MaterialTheme.colorScheme.onSurfaceVariant
+                                            }
+                                        )
+                                    },
+                                    trailingIcon = {
+                                        if (isSelected) {
+                                            Icon(
+                                                imageVector = Icons.Outlined.CheckCircle,
+                                                contentDescription = null,
+                                                tint = MaterialTheme.colorScheme.primary,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                        }
+                                    },
+                                    onClick = {
+                                        studiosMenuExpanded = false
+                                        onSelectDestination(dest.id)
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+
+                if (inNonSessionStudio) {
+                    NexusActionChip(
+                        onClick = { onSelectDestination("connections") },
+                        label = strings.navConnections,
+                        leadingIcon = Icons.AutoMirrored.Outlined.ArrowBack
+                    )
+                }
             }
 
-            // Center Google M3 Quick-Connect Omnibox (`Ctrl + K`) — generous 44dp pill
+            // Center Google M3 Quick-Connect Omnibox (`Ctrl + K`) — sleek 36dp pill
             val quickConnectHover = rememberDesktopHoverState()
             val quickConnectInteraction = remember { MutableInteractionSource() }
             val isQuickConnectHovered = quickConnectHover.value.isHovered
             Surface(
                 modifier = Modifier
                     .weight(1f, fill = false)
-                    .widthIn(min = 210.dp, max = 380.dp)
-                    .padding(horizontal = 14.dp)
-                    .height(44.dp)
+                    .widthIn(min = 190.dp, max = 350.dp)
+                    .padding(horizontal = 10.dp)
+                    .height(36.dp)
                     .nexusHoverTracker(quickConnectHover, PointerIcon.Hand)
                     .clip(RoundedCornerShape(99.dp))
                     .clickable(
@@ -1133,7 +1337,7 @@ private fun DesktopTopWindowChrome(
                 )
             ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 16.dp),
+                    modifier = Modifier.padding(horizontal = 12.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
@@ -1144,17 +1348,17 @@ private fun DesktopTopWindowChrome(
                         Icon(
                             imageVector = Icons.Outlined.Search,
                             contentDescription = null,
-                            modifier = Modifier.size(18.dp),
+                            modifier = Modifier.size(16.dp),
                             tint = if (isQuickConnectHovered) {
                                 MaterialTheme.colorScheme.primary
                             } else {
                                 MaterialTheme.colorScheme.secondary
                             }
                         )
-                        Spacer(modifier = Modifier.width(10.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
                         Text(
                             text = strings.quickConnectButton,
-                            style = MaterialTheme.typography.bodyMedium,
+                            style = MaterialTheme.typography.bodySmall,
                             color = if (isQuickConnectHovered) {
                                 MaterialTheme.colorScheme.onSurface
                             } else {
@@ -1164,7 +1368,7 @@ private fun DesktopTopWindowChrome(
                             overflow = TextOverflow.Ellipsis
                         )
                     }
-                    Spacer(modifier = Modifier.width(10.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
                     Surface(
                         shape = RoundedCornerShape(99.dp),
                         color = MaterialTheme.colorScheme.surfaceContainerLowest
@@ -1173,7 +1377,7 @@ private fun DesktopTopWindowChrome(
                             text = "Ctrl+K",
                             style = NexusTheme.monospace.keycapShortcut,
                             color = MaterialTheme.colorScheme.secondary,
-                            modifier = Modifier.padding(horizontal = 9.dp, vertical = 3.dp)
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
                         )
                     }
                 }
@@ -1182,7 +1386,7 @@ private fun DesktopTopWindowChrome(
             // Right Google M3 Action Cluster (Clean & Uncluttered)
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 if (flexibleUpdateDownloaded) {
                     FilledTonalButton(
@@ -1491,6 +1695,11 @@ private fun DesktopTopWindowChrome(
                 }
             }
         }
+        HorizontalDivider(
+            thickness = 1.dp,
+            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
+        )
+        }
     }
 }
 
@@ -1650,10 +1859,76 @@ private data class SidebarFolderEntry(
     val depth: Int,
     val directConnections: List<VaultConnection>,
     val subtreeConnectionCount: Int,
+    val subtreeRdpCount: Int,
     val subtreeActiveSessionCount: Int,
     val hasChildFolders: Boolean,
     val isExpanded: Boolean
 )
+
+@Composable
+private fun SidebarQuickFilterChip(
+    label: String,
+    selected: Boolean,
+    leadingIcon: androidx.compose.ui.graphics.vector.ImageVector? = null,
+    count: Int = 0,
+    onClick: () -> Unit
+) {
+    val hover = rememberDesktopHoverState()
+    val interaction = remember { MutableInteractionSource() }
+    val isHovered = hover.value.isHovered
+    Surface(
+        modifier = Modifier
+            .height(24.dp)
+            .nexusHoverTracker(hover, PointerIcon.Hand)
+            .clip(RoundedCornerShape(99.dp))
+            .clickable(interactionSource = interaction, indication = null, onClick = onClick),
+        shape = RoundedCornerShape(99.dp),
+        color = when {
+            selected && isHovered -> androidx.compose.ui.graphics.lerp(
+                MaterialTheme.colorScheme.secondaryContainer,
+                MaterialTheme.colorScheme.onSecondaryContainer,
+                0.08f
+            )
+            selected -> MaterialTheme.colorScheme.secondaryContainer
+            isHovered -> MaterialTheme.colorScheme.surfaceContainerHighest
+            else -> Color.Transparent
+        },
+        border = BorderStroke(
+            width = 1.dp,
+            color = when {
+                selected -> MaterialTheme.colorScheme.outline.copy(alpha = 0.55f)
+                isHovered -> MaterialTheme.colorScheme.outline.copy(alpha = 0.45f)
+                else -> MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
+            }
+        )
+    ) {
+        val fgColor = when {
+            selected -> MaterialTheme.colorScheme.onSecondaryContainer
+            isHovered -> MaterialTheme.colorScheme.onSurface
+            else -> MaterialTheme.colorScheme.onSurfaceVariant
+        }
+        Row(
+            modifier = Modifier.padding(horizontal = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            if (leadingIcon != null) {
+                Icon(
+                    imageVector = leadingIcon,
+                    contentDescription = null,
+                    modifier = Modifier.size(12.dp),
+                    tint = fgColor
+                )
+            }
+            Text(
+                text = if (count > 0) "$label $count" else label,
+                style = MaterialTheme.typography.labelSmall,
+                color = fgColor,
+                maxLines = 1
+            )
+        }
+    }
+}
 
 @Composable
 private fun VaultHierarchySidebarTree(
@@ -1661,6 +1936,7 @@ private fun VaultHierarchySidebarTree(
     strings: WorkspaceLocalizedStrings,
     activeSessionCountByConnectionId: Map<String, Int> = emptyMap(),
     onFilterQueryChanged: (String) -> Unit,
+    onSelectQuickFilter: (SidebarQuickFilter) -> Unit = {},
     smartFolderConnectionsProvider: (SmartFolder) -> List<VaultConnection>,
     onToggleSmartFolder: (String) -> Unit,
     onNewSmartFolder: () -> Unit,
@@ -1674,9 +1950,12 @@ private fun VaultHierarchySidebarTree(
     onNewRdpInFolder: (String) -> Unit = {},
     onNewSshInFolder: (String) -> Unit = {},
     onNewSubfolder: (String) -> Unit = {},
+    onRenameFolder: (VaultFolder) -> Unit = {},
     onEditFolder: (VaultFolder) -> Unit,
     onDuplicateFolder: (VaultFolder) -> Unit = {},
+    onRequestDeleteFolder: (VaultFolder) -> Unit = {},
     onDeleteFolder: (String) -> Unit,
+    onConnectAllRdpInFolder: (String) -> Unit = {},
     onConnectAllInFolder: (String) -> Unit,
     onDisconnectAllInFolder: (String) -> Unit = {},
     onSelectConnection: (String) -> Unit,
@@ -1740,6 +2019,11 @@ private fun VaultHierarchySidebarTree(
             )
     }
     val activeFolderIds = remember(activeFolders) { activeFolders.map { it.id }.toSet() }
+    val childrenByParentMap = remember(activeFolders, activeFolderIds) {
+        activeFolders.groupBy { folder ->
+            folder.parentFolderId?.takeIf { it in activeFolderIds && it != folder.id }
+        }
+    }
     val sortedActiveConnections = remember(doc.connections, doc.tombstonedObjectIds) {
         doc.connections
             .filterNot { it.id in doc.tombstonedObjectIds }
@@ -1750,6 +2034,19 @@ private fun VaultHierarchySidebarTree(
             )
     }
     var collapsedFolderIds by remember { mutableStateOf(emptySet<String>()) }
+
+    fun collectSubtreeIds(folderId: String): Set<String> {
+        val visited = mutableSetOf<String>()
+        val queue = ArrayDeque<String>()
+        queue.add(folderId)
+        while (queue.isNotEmpty()) {
+            val id = queue.removeFirst()
+            if (visited.add(id)) {
+                childrenByParentMap[id].orEmpty().forEach { queue.add(it.id) }
+            }
+        }
+        return visited
+    }
 
     // Automatically expand a collapsed folder when hovering a dragged connection or folder over it for 480ms
     LaunchedEffect(dragDropState.hoveredDropTargetKey) {
@@ -1764,14 +2061,12 @@ private fun VaultHierarchySidebarTree(
 
     val flattenedFolders = remember(
         activeFolders,
+        childrenByParentMap,
         sortedActiveConnections,
         query,
         collapsedFolderIds,
         activeSessionCountByConnectionId
     ) {
-        val childrenByParent = activeFolders.groupBy { folder ->
-            folder.parentFolderId?.takeIf { it in activeFolderIds && it != folder.id }
-        }
         val allConnectionsByFolder = sortedActiveConnections.groupBy { it.parentFolderId }
         val connectionsByFolder = sortedActiveConnections
             .filter(::matchesFilter)
@@ -1781,10 +2076,22 @@ private fun VaultHierarchySidebarTree(
             if (folderId in visited) return 0
             val nextVisited = visited + folderId
             val direct = connectionsByFolder[folderId]?.size ?: 0
-            val childTotal = childrenByParent[folderId].orEmpty().sumOf { child ->
+            val childTotal = childrenByParentMap[folderId].orEmpty().sumOf { child ->
                 countSubtreeMatches(child.id, nextVisited)
             }
             return direct + childTotal
+        }
+
+        fun countSubtreeRdp(folderId: String, visited: Set<String>): Int {
+            if (folderId in visited) return 0
+            val nextVisited = visited + folderId
+            val directRdp = allConnectionsByFolder[folderId].orEmpty().count { conn ->
+                conn.protocol == VaultProtocolType.RDP || conn.protocol == VaultProtocolType.WINDOWS_TERMINAL_SERVICES
+            }
+            val childRdp = childrenByParentMap[folderId].orEmpty().sumOf { child ->
+                countSubtreeRdp(child.id, nextVisited)
+            }
+            return directRdp + childRdp
         }
 
         fun countSubtreeActiveSessions(folderId: String, visited: Set<String>): Int {
@@ -1793,7 +2100,7 @@ private fun VaultHierarchySidebarTree(
             val directSessions = allConnectionsByFolder[folderId].orEmpty().sumOf { conn ->
                 activeSessionCountByConnectionId[conn.id] ?: 0
             }
-            val childSessions = childrenByParent[folderId].orEmpty().sumOf { child ->
+            val childSessions = childrenByParentMap[folderId].orEmpty().sumOf { child ->
                 countSubtreeActiveSessions(child.id, nextVisited)
             }
             return directSessions + childSessions
@@ -1805,7 +2112,7 @@ private fun VaultHierarchySidebarTree(
             if (folder.name.lowercase().contains(query)) return true
             if (!connectionsByFolder[folder.id].isNullOrEmpty()) return true
             val nextVisited = visited + folder.id
-            return childrenByParent[folder.id].orEmpty().any { child ->
+            return childrenByParentMap[folder.id].orEmpty().any { child ->
                 subtreeMatchesFolderQuery(child, nextVisited)
             }
         }
@@ -1815,9 +2122,10 @@ private fun VaultHierarchySidebarTree(
             if (folder.id in visited) return
             if (!subtreeMatchesFolderQuery(folder, visited)) return
             val nextVisited = visited + folder.id
-            val childFolders = childrenByParent[folder.id].orEmpty()
+            val childFolders = childrenByParentMap[folder.id].orEmpty()
             val directConns = connectionsByFolder[folder.id].orEmpty()
             val subtreeCount = countSubtreeMatches(folder.id, visited)
+            val subtreeRdp = countSubtreeRdp(folder.id, visited)
             val subtreeActive = countSubtreeActiveSessions(folder.id, visited)
             val expanded = query.isNotEmpty() || folder.id !in collapsedFolderIds
             result += SidebarFolderEntry(
@@ -1825,6 +2133,7 @@ private fun VaultHierarchySidebarTree(
                 depth = depth,
                 directConnections = directConns,
                 subtreeConnectionCount = subtreeCount,
+                subtreeRdpCount = subtreeRdp,
                 subtreeActiveSessionCount = subtreeActive,
                 hasChildFolders = childFolders.isNotEmpty(),
                 isExpanded = expanded
@@ -1836,7 +2145,7 @@ private fun VaultHierarchySidebarTree(
             }
         }
 
-        childrenByParent[null].orEmpty().forEach { root ->
+        childrenByParentMap[null].orEmpty().forEach { root ->
             visit(root, 0, emptySet())
         }
         result
@@ -1847,10 +2156,7 @@ private fun VaultHierarchySidebarTree(
             (it.parentFolderId == null || it.parentFolderId !in activeFolderIds) && matchesFilter(it)
         }
     }
-    val hasUpperSections = favorites.isNotEmpty() ||
-        (query.isEmpty() && recentConnections.isNotEmpty()) ||
-        activeSmartFolders.isNotEmpty() ||
-        activeDynamicFolders.isNotEmpty()
+    val allCollapsed = activeFolders.isNotEmpty() && collapsedFolderIds.containsAll(activeFolderIds)
 
     Box(
         modifier = Modifier
@@ -1861,177 +2167,445 @@ private fun VaultHierarchySidebarTree(
             .nexusDesktopPointerButtons(onSecondaryClick = { sidebarBgMenuOpen = true })
     ) {
         Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 12.dp, vertical = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+            modifier = Modifier.fillMaxSize()
         ) {
-            // Instant Google M3 Pill Filter Bar
-            OutlinedTextField(
-                value = uiState.sidebarFilterQuery,
-                onValueChange = onFilterQueryChanged,
-                placeholder = { Text(strings.sidebarFilterPlaceholder, style = MaterialTheme.typography.bodyMedium) },
-                leadingIcon = {
-                    Icon(Icons.Outlined.Search, contentDescription = null, modifier = Modifier.size(18.dp))
-                },
-                trailingIcon = {
-                    if (uiState.sidebarFilterQuery.isNotEmpty()) {
-                        IconButton(onClick = { onFilterQueryChanged("") }, modifier = Modifier.size(26.dp)) {
-                            Icon(Icons.Outlined.Close, contentDescription = null, modifier = Modifier.size(16.dp))
-                        }
-                    }
-                },
-                singleLine = true,
-                shape = RoundedCornerShape(99.dp),
-                modifier = Modifier.fillMaxWidth()
-            )
-
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
+            // Compact Explorer Header: Search + Quick Actions + Filter Chips
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                verticalArrangement = Arrangement.spacedBy(5.dp)
             ) {
-                // 1. Pinned Favorites Section
-                if (favorites.isNotEmpty()) {
-                    item(key = "header-favorites") {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Outlined.Star,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.tertiary,
-                                modifier = Modifier.size(15.dp)
-                            )
-                            Text(
-                                text = strings.vaultSectionFavorites,
-                                style = MaterialTheme.typography.labelLarge,
-                                color = MaterialTheme.colorScheme.tertiary
-                            )
-                        }
-                    }
-                    items(favorites, key = { "fav-${it.id}" }) { conn ->
-                        ConnectionTreeRow(
-                            connection = conn,
-                            indentLevel = 0,
-                            isSelected = conn.id == uiState.selectedConnectionId,
-                            strings = strings,
-                            activeSessionCount = activeSessionCountByConnectionId[conn.id] ?: 0,
-                            enableDragToFolder = true,
-                            dragDropState = dragDropState,
-                            onSelect = { onSelectConnection(conn.id) },
-                            onEdit = { onEditConnection(conn) },
-                            onConnectWithOptions = { onConnectWithOptions(conn) },
-                            onToggleFavorite = { onToggleFavorite(conn.id) },
-                            onDuplicate = { onDuplicateConnection(conn) },
-                            onDelete = { onDeleteConnection(conn.id) },
-                            onDisconnect = { onDisconnectConnection(conn.id) },
-                            onOpenMoveDialog = { onOpenMoveConnectionDialog(conn) },
-                            onMoveToFolder = { targetFolderId -> onMoveConnectionToFolder(conn.id, targetFolderId) },
-                            onLaunch = { placement -> onLaunchConnection(conn, placement) },
-                            onLaunchSplitDown = { onLaunchConnectionInSplitDown(conn) }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Surface(
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(30.dp),
+                        shape = RoundedCornerShape(8.dp),
+                        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                        border = BorderStroke(
+                            1.dp,
+                            MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
                         )
-                    }
-                }
-
-                // 2. Recent Sessions Section (shown when not filtering)
-                if (query.isEmpty() && recentConnections.isNotEmpty()) {
-                    item(key = "header-recents") {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Outlined.History,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.secondary,
-                                modifier = Modifier.size(15.dp)
-                            )
-                            Text(
-                                text = strings.vaultSectionRecents,
-                                style = MaterialTheme.typography.labelLarge,
-                                color = MaterialTheme.colorScheme.secondary
-                            )
-                        }
-                    }
-                    items(recentConnections.take(5), key = { "recent-${it.id}" }) { conn ->
-                        ConnectionTreeRow(
-                            connection = conn,
-                            indentLevel = 0,
-                            isSelected = conn.id == uiState.selectedConnectionId,
-                            strings = strings,
-                            activeSessionCount = activeSessionCountByConnectionId[conn.id] ?: 0,
-                            enableDragToFolder = true,
-                            dragDropState = dragDropState,
-                            onSelect = { onSelectConnection(conn.id) },
-                            onEdit = { onEditConnection(conn) },
-                            onConnectWithOptions = { onConnectWithOptions(conn) },
-                            onToggleFavorite = { onToggleFavorite(conn.id) },
-                            onDuplicate = { onDuplicateConnection(conn) },
-                            onDelete = { onDeleteConnection(conn.id) },
-                            onDisconnect = { onDisconnectConnection(conn.id) },
-                            onOpenMoveDialog = { onOpenMoveConnectionDialog(conn) },
-                            onMoveToFolder = { targetFolderId -> onMoveConnectionToFolder(conn.id, targetFolderId) },
-                            onLaunch = { placement -> onLaunchConnection(conn, placement) },
-                            onLaunchSplitDown = { onLaunchConnectionInSplitDown(conn) }
-                        )
-                    }
-                }
-
-                // 3. Smart Folders Section (shown when populated)
-                if (activeSmartFolders.isNotEmpty()) {
-                    item(key = "header-smart-folders") {
+                    ) {
                         Row(
                             modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 6.dp, vertical = 4.dp),
+                                .fillMaxSize()
+                                .padding(horizontal = 8.dp),
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            Text(
-                                text = strings.vaultSectionSmartFolders,
-                                style = MaterialTheme.typography.labelLarge,
-                                color = MaterialTheme.colorScheme.secondary
+                            Icon(
+                                imageVector = Icons.Outlined.Search,
+                                contentDescription = null,
+                                modifier = Modifier.size(14.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
                             )
-                            IconButton(onClick = onNewSmartFolder, modifier = Modifier.size(26.dp)) {
-                                Icon(
-                                    imageVector = Icons.Outlined.Add,
-                                    contentDescription = strings.actionNewSmartFolder,
-                                    modifier = Modifier.size(16.dp),
-                                    tint = MaterialTheme.colorScheme.secondary
+                            Box(
+                                modifier = Modifier.weight(1f),
+                                contentAlignment = Alignment.CenterStart
+                            ) {
+                                if (uiState.sidebarFilterQuery.isEmpty()) {
+                                    Text(
+                                        text = strings.sidebarFilterPlaceholder,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                                BasicTextField(
+                                    value = uiState.sidebarFilterQuery,
+                                    onValueChange = onFilterQueryChanged,
+                                    singleLine = true,
+                                    textStyle = MaterialTheme.typography.bodySmall.copy(
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    ),
+                                    cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                                    modifier = Modifier.fillMaxWidth()
                                 )
+                            }
+                            if (uiState.sidebarFilterQuery.isNotEmpty()) {
+                                IconButton(
+                                    onClick = { onFilterQueryChanged("") },
+                                    modifier = Modifier.size(18.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Outlined.Close,
+                                        contentDescription = "Clear Filter",
+                                        modifier = Modifier.size(13.dp),
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
                             }
                         }
                     }
-                    activeSmartFolders.forEach { smart ->
-                        val matchedConnections = smartFolderConnectionsProvider(smart).filter(::matchesFilter)
-                        val isExpanded = uiState.selectedSmartFolderId == smart.id
-                        item(key = "smart-${smart.id}") {
-                            SmartFolderTreeRow(
-                                smartFolder = smart,
-                                matchedCount = matchedConnections.size,
-                                isExpanded = isExpanded,
-                                strings = strings,
-                                onToggle = { onToggleSmartFolder(smart.id) },
-                                onConnectAll = {
-                                    matchedConnections.forEach { conn ->
-                                        onLaunchConnection(conn, QuickLaunchPlacement.ACTIVE_PANE_TAB)
-                                    }
-                                },
-                                onNewSmartFolder = onNewSmartFolder,
-                                onDelete = { onDeleteSmartFolder(smart.id) }
+
+                    IconButton(
+                        onClick = onNewFolder,
+                        modifier = Modifier.size(28.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.CreateNewFolder,
+                            contentDescription = strings.actionNewFolder,
+                            modifier = Modifier.size(16.dp),
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                    IconButton(
+                        onClick = onNewConnection,
+                        modifier = Modifier.size(28.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Add,
+                            contentDescription = strings.actionNewConnection,
+                            modifier = Modifier.size(17.dp),
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                    if (activeFolders.isNotEmpty()) {
+                        IconButton(
+                            onClick = {
+                                collapsedFolderIds = if (allCollapsed) emptySet() else activeFolderIds
+                            },
+                            modifier = Modifier.size(26.dp)
+                        ) {
+                            Icon(
+                                imageVector = if (allCollapsed) Icons.Outlined.UnfoldMore else Icons.Outlined.UnfoldLess,
+                                contentDescription = if (allCollapsed) "Expand All Folders" else "Collapse All Folders",
+                                modifier = Modifier.size(15.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
-                        if (isExpanded) {
-                            items(matchedConnections, key = { "smart-${smart.id}-${it.id}" }) { conn ->
+                    }
+                }
+
+                // Compact Filter Chips (`All` default shows pure Folders & Connections immediately)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                ) {
+                    SidebarQuickFilterChip(
+                        label = strings.vaultSectionFolders,
+                        selected = uiState.sidebarQuickFilter == SidebarQuickFilter.ALL,
+                        leadingIcon = Icons.Outlined.Folder,
+                        onClick = { onSelectQuickFilter(SidebarQuickFilter.ALL) }
+                    )
+                    SidebarQuickFilterChip(
+                        label = "★",
+                        selected = uiState.sidebarQuickFilter == SidebarQuickFilter.FAVORITES,
+                        count = favorites.size,
+                        onClick = {
+                            onSelectQuickFilter(
+                                if (uiState.sidebarQuickFilter == SidebarQuickFilter.FAVORITES) {
+                                    SidebarQuickFilter.ALL
+                                } else {
+                                    SidebarQuickFilter.FAVORITES
+                                }
+                            )
+                        }
+                    )
+                    SidebarQuickFilterChip(
+                        label = strings.vaultSectionRecents.split(" ").firstOrNull() ?: "Recent",
+                        selected = uiState.sidebarQuickFilter == SidebarQuickFilter.RECENTS,
+                        leadingIcon = Icons.Outlined.History,
+                        count = recentConnections.size,
+                        onClick = {
+                            onSelectQuickFilter(
+                                if (uiState.sidebarQuickFilter == SidebarQuickFilter.RECENTS) {
+                                    SidebarQuickFilter.ALL
+                                } else {
+                                    SidebarQuickFilter.RECENTS
+                                }
+                            )
+                        }
+                    )
+                }
+            }
+
+            HorizontalDivider(
+                thickness = 1.dp,
+                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
+            )
+
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 6.dp, vertical = 4.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                when (uiState.sidebarQuickFilter) {
+                    SidebarQuickFilter.FAVORITES -> {
+                        if (favorites.isEmpty()) {
+                            item(key = "empty-favorites") {
+                                Text(
+                                    text = "No favorite connections yet",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(12.dp)
+                                )
+                            }
+                        } else {
+                            groupConnectionsIntelligently(favorites).forEach { group ->
+                                if (group.showsHeader) {
+                                    item(key = "fav-hdr-${group.badge}") {
+                                        SidebarProtocolGroupHeaderRow(
+                                            badge = group.badge,
+                                            count = group.connections.size,
+                                            indentLevel = 0
+                                        )
+                                    }
+                                }
+                                items(group.connections, key = { "fav-${it.id}" }) { conn ->
+                                    ConnectionTreeRow(
+                                        connection = conn,
+                                        indentLevel = 0,
+                                        isSelected = conn.id == uiState.selectedConnectionId,
+                                        strings = strings,
+                                        activeSessionCount = activeSessionCountByConnectionId[conn.id] ?: 0,
+                                        enableDragToFolder = false,
+                                        onSelect = { onSelectConnection(conn.id) },
+                                        onEdit = { onEditConnection(conn) },
+                                        onConnectWithOptions = { onConnectWithOptions(conn) },
+                                        onToggleFavorite = { onToggleFavorite(conn.id) },
+                                        onDuplicate = { onDuplicateConnection(conn) },
+                                        onDelete = { onDeleteConnection(conn.id) },
+                                        onDisconnect = { onDisconnectConnection(conn.id) },
+                                        onOpenMoveDialog = { onOpenMoveConnectionDialog(conn) },
+                                        onMoveToFolder = { targetFolderId -> onMoveConnectionToFolder(conn.id, targetFolderId) },
+                                        onLaunch = { placement -> onLaunchConnection(conn, placement) },
+                                        onLaunchSplitDown = { onLaunchConnectionInSplitDown(conn) }
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    SidebarQuickFilter.RECENTS -> {
+                        if (recentConnections.isEmpty()) {
+                            item(key = "empty-recents") {
+                                Text(
+                                    text = "No recent sessions",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(12.dp)
+                                )
+                            }
+                        } else {
+                            groupConnectionsIntelligently(
+                                recentConnections,
+                                preserveInputOrderWithinGroups = true
+                            ).forEach { group ->
+                                if (group.showsHeader) {
+                                    item(key = "recent-hdr-${group.badge}") {
+                                        SidebarProtocolGroupHeaderRow(
+                                            badge = group.badge,
+                                            count = group.connections.size,
+                                            indentLevel = 0
+                                        )
+                                    }
+                                }
+                                items(group.connections, key = { "recent-${it.id}" }) { conn ->
+                                    ConnectionTreeRow(
+                                        connection = conn,
+                                        indentLevel = 0,
+                                        isSelected = conn.id == uiState.selectedConnectionId,
+                                        strings = strings,
+                                        activeSessionCount = activeSessionCountByConnectionId[conn.id] ?: 0,
+                                        enableDragToFolder = false,
+                                        onSelect = { onSelectConnection(conn.id) },
+                                        onEdit = { onEditConnection(conn) },
+                                        onConnectWithOptions = { onConnectWithOptions(conn) },
+                                        onToggleFavorite = { onToggleFavorite(conn.id) },
+                                        onDuplicate = { onDuplicateConnection(conn) },
+                                        onDelete = { onDeleteConnection(conn.id) },
+                                        onDisconnect = { onDisconnectConnection(conn.id) },
+                                        onOpenMoveDialog = { onOpenMoveConnectionDialog(conn) },
+                                        onMoveToFolder = { targetFolderId -> onMoveConnectionToFolder(conn.id, targetFolderId) },
+                                        onLaunch = { placement -> onLaunchConnection(conn, placement) },
+                                        onLaunchSplitDown = { onLaunchConnectionInSplitDown(conn) }
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    SidebarQuickFilter.ALL -> {
+                        // Root-Level Drop Zone Banner (appears while dragging a nested connection or nested folder to move it to root)
+                        val draggingConn = dragDropState.draggingConnection
+                        val draggingFolder = dragDropState.draggingFolder
+                        if ((draggingConn != null && draggingConn.parentFolderId != null) ||
+                            (draggingFolder != null && draggingFolder.parentFolderId != null)
+                        ) {
+                            item(key = "root-drop-target") {
+                                val isRootHovered = dragDropState.hoveredDropTargetKey == ROOT_DROP_TARGET_KEY
+                                DisposableEffect(Unit) {
+                                    onDispose {
+                                        dragDropState.unregisterDropTarget(ROOT_DROP_TARGET_KEY)
+                                    }
+                                }
+                                Surface(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .onGloballyPositioned { coords ->
+                                            dragDropState.registerDropTarget(ROOT_DROP_TARGET_KEY, coords.boundsInRoot())
+                                        },
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = if (isRootHovered) {
+                                        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.72f)
+                                    } else {
+                                        MaterialTheme.colorScheme.surfaceContainerLow
+                                    },
+                                    border = BorderStroke(
+                                        width = if (isRootHovered) 1.5.dp else 1.dp,
+                                        color = if (isRootHovered) {
+                                            MaterialTheme.colorScheme.primary
+                                        } else {
+                                            MaterialTheme.colorScheme.outlineVariant
+                                        }
+                                    )
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 8.dp, vertical = 6.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Outlined.DriveFileMove,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(15.dp)
+                                        )
+                                        Text(
+                                            text = strings.moveToRootFolder,
+                                            style = MaterialTheme.typography.labelMedium,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        // Pure Hierarchical Folders & Connections Tree right from the top
+                        flattenedFolders.forEach { entry ->
+                            val folder = entry.folder
+                            val explicitFolderCred = if (folder.inheritable.credentialMode == InheritanceMode.OVERRIDE_EXPLICIT) {
+                                doc.credentials.firstOrNull {
+                                    it.id == folder.inheritable.explicitCredentialId && it.id !in doc.tombstonedObjectIds
+                                }
+                            } else {
+                                null
+                            }
+                            item(key = "folder-${folder.id}") {
+                                FolderTreeRow(
+                                    folder = folder,
+                                    depth = entry.depth,
+                                    isExpanded = entry.isExpanded,
+                                    hasExpandableChildren = entry.hasChildFolders || entry.directConnections.isNotEmpty(),
+                                    explicitFolderCredentialName = explicitFolderCred?.name,
+                                    childCount = entry.subtreeConnectionCount,
+                                    rdpCount = entry.subtreeRdpCount,
+                                    activeSessionCountInSubtree = entry.subtreeActiveSessionCount,
+                                    dragDropState = dragDropState,
+                                    strings = strings,
+                                    onToggleExpand = {
+                                        collapsedFolderIds = if (folder.id in collapsedFolderIds) {
+                                            collapsedFolderIds - folder.id
+                                        } else {
+                                            collapsedFolderIds + folder.id
+                                        }
+                                    },
+                                    onExpandSubtree = {
+                                        collapsedFolderIds = collapsedFolderIds - collectSubtreeIds(folder.id)
+                                    },
+                                    onCollapseSubtree = {
+                                        collapsedFolderIds = collapsedFolderIds + collectSubtreeIds(folder.id)
+                                    },
+                                    onNewRdpInFolder = { onNewRdpInFolder(folder.id) },
+                                    onNewSshInFolder = { onNewSshInFolder(folder.id) },
+                                    onNewSubfolder = { onNewSubfolder(folder.id) },
+                                    onRenameFolder = { onRenameFolder(folder) },
+                                    onEditFolder = { onEditFolder(folder) },
+                                    onDuplicateFolder = { onDuplicateFolder(folder) },
+                                    onRequestDeleteFolder = { onRequestDeleteFolder(folder) },
+                                    onDeleteFolder = { onDeleteFolder(folder.id) },
+                                    onConnectAllRdpInFolder = { onConnectAllRdpInFolder(folder.id) },
+                                    onConnectAllInFolder = { onConnectAllInFolder(folder.id) },
+                                    onDisconnectAllInFolder = { onDisconnectAllInFolder(folder.id) },
+                                    onOpenMoveFolderDialog = { onOpenMoveFolderDialog(folder) },
+                                    onMoveFolderToParent = { targetParentId -> onMoveFolderToParent(folder.id, targetParentId) },
+                                    onMoveUp = { onReorderFolder(folder.id, true) },
+                                    onMoveDown = { onReorderFolder(folder.id, false) }
+                                )
+                            }
+                            if (entry.isExpanded) {
+                                groupConnectionsIntelligently(entry.directConnections).forEach { group ->
+                                    if (group.showsHeader) {
+                                        item(key = "fconn-hdr-${folder.id}-${group.badge}") {
+                                            SidebarProtocolGroupHeaderRow(
+                                                badge = group.badge,
+                                                count = group.connections.size,
+                                                indentLevel = entry.depth + 1
+                                            )
+                                        }
+                                    }
+                                    items(group.connections, key = { "fconn-${folder.id}-${it.id}" }) { conn ->
+                                        ConnectionTreeRow(
+                                            connection = conn,
+                                            indentLevel = entry.depth + 1,
+                                            isSelected = conn.id == uiState.selectedConnectionId,
+                                            strings = strings,
+                                            activeSessionCount = activeSessionCountByConnectionId[conn.id] ?: 0,
+                                            enableDragToFolder = true,
+                                            dragDropState = dragDropState,
+                                            onSelect = { onSelectConnection(conn.id) },
+                                            onEdit = { onEditConnection(conn) },
+                                            onConnectWithOptions = { onConnectWithOptions(conn) },
+                                            onToggleFavorite = { onToggleFavorite(conn.id) },
+                                            onDuplicate = { onDuplicateConnection(conn) },
+                                            onDelete = { onDeleteConnection(conn.id) },
+                                            onDisconnect = { onDisconnectConnection(conn.id) },
+                                            onOpenMoveDialog = { onOpenMoveConnectionDialog(conn) },
+                                            onMoveToFolder = { targetFolderId -> onMoveConnectionToFolder(conn.id, targetFolderId) },
+                                            onReorderRelativeTo = { targetConnId, placeAfter ->
+                                                onReorderConnectionRelativeTo(conn.id, targetConnId, placeAfter)
+                                            },
+                                            onMoveUp = { onReorderConnection(conn.id, true) },
+                                            onMoveDown = { onReorderConnection(conn.id, false) },
+                                            onLaunch = { placement -> onLaunchConnection(conn, placement) },
+                                            onLaunchSplitDown = { onLaunchConnectionInSplitDown(conn) }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        groupConnectionsIntelligently(rootConnections).forEach { group ->
+                            if (group.showsHeader) {
+                                item(key = "root-hdr-${group.badge}") {
+                                    SidebarProtocolGroupHeaderRow(
+                                        badge = group.badge,
+                                        count = group.connections.size,
+                                        indentLevel = 0
+                                    )
+                                }
+                            }
+                            items(group.connections, key = { "root-${it.id}" }) { conn ->
                                 ConnectionTreeRow(
                                     connection = conn,
-                                    indentLevel = 1,
+                                    indentLevel = 0,
                                     isSelected = conn.id == uiState.selectedConnectionId,
                                     strings = strings,
                                     activeSessionCount = activeSessionCountByConnectionId[conn.id] ?: 0,
+                                    enableDragToFolder = true,
+                                    dragDropState = dragDropState,
                                     onSelect = { onSelectConnection(conn.id) },
                                     onEdit = { onEditConnection(conn) },
                                     onConnectWithOptions = { onConnectWithOptions(conn) },
@@ -2040,298 +2614,207 @@ private fun VaultHierarchySidebarTree(
                                     onDelete = { onDeleteConnection(conn.id) },
                                     onDisconnect = { onDisconnectConnection(conn.id) },
                                     onOpenMoveDialog = { onOpenMoveConnectionDialog(conn) },
+                                    onMoveToFolder = { targetFolderId -> onMoveConnectionToFolder(conn.id, targetFolderId) },
+                                    onReorderRelativeTo = { targetConnId, placeAfter ->
+                                        onReorderConnectionRelativeTo(conn.id, targetConnId, placeAfter)
+                                    },
+                                    onMoveUp = { onReorderConnection(conn.id, true) },
+                                    onMoveDown = { onReorderConnection(conn.id, false) },
                                     onLaunch = { placement -> onLaunchConnection(conn, placement) },
                                     onLaunchSplitDown = { onLaunchConnectionInSplitDown(conn) }
                                 )
                             }
                         }
-                    }
-                }
 
-                // 4. Dynamic Folders Section (shown when populated)
-                if (activeDynamicFolders.isNotEmpty()) {
-                    item(key = "header-dynamic-folders") {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 6.dp, vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text(
-                                text = strings.vaultSectionDynamicFolders,
-                                style = MaterialTheme.typography.labelLarge,
-                                color = MaterialTheme.colorScheme.secondary
-                            )
-                            IconButton(onClick = onNewDynamicFolder, modifier = Modifier.size(26.dp)) {
-                                Icon(
-                                    imageVector = Icons.Outlined.Add,
-                                    contentDescription = strings.vaultSectionDynamicFolders,
-                                    modifier = Modifier.size(16.dp),
-                                    tint = MaterialTheme.colorScheme.secondary
-                                )
-                            }
-                        }
-                    }
-                    activeDynamicFolders.forEach { dyn ->
-                        val hydrated = uiState.hydratedDynamicConnections[dyn.id].orEmpty().filter(::matchesFilter)
-                        val isExpanded = uiState.selectedDynamicFolderId == dyn.id
-                        item(key = "dyn-${dyn.id}") {
-                            DynamicFolderTreeRow(
-                                dynamicFolder = dyn,
-                                isExpanded = isExpanded,
-                                strings = strings,
-                                onToggle = { onToggleDynamicFolder(dyn) },
-                                onReload = { onReloadDynamicFolder(dyn) },
-                                onNewDynamicFolder = onNewDynamicFolder,
-                                onDelete = { onDeleteDynamicFolder(dyn.id) }
-                            )
-                        }
-                        if (isExpanded) {
-                            items(hydrated, key = { "dyn-${dyn.id}-${it.id}" }) { conn ->
-                                ConnectionTreeRow(
-                                    connection = conn,
-                                    indentLevel = 1,
-                                    isSelected = conn.id == uiState.selectedConnectionId,
-                                    strings = strings,
-                                    activeSessionCount = activeSessionCountByConnectionId[conn.id] ?: 0,
-                                    onSelect = { onSelectConnection(conn.id) },
-                                    onEdit = { onEditConnection(conn) },
-                                    onConnectWithOptions = { onConnectWithOptions(conn) },
-                                    onToggleFavorite = { onToggleFavorite(conn.id) },
-                                    onDuplicate = { onDuplicateConnection(conn) },
-                                    onDelete = { onDeleteConnection(conn.id) },
-                                    onDisconnect = { onDisconnectConnection(conn.id) },
-                                    onLaunch = { placement -> onLaunchConnection(conn, placement) },
-                                    onLaunchSplitDown = { onLaunchConnectionInSplitDown(conn) }
-                                )
-                            }
-                        }
-                    }
-                }
-
-                // 5. Hierarchical Nested Folders & Connections Section
-                item(key = "header-folders") {
-                    if (hasUpperSections) {
-                        Spacer(modifier = Modifier.height(6.dp))
-                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-                        Spacer(modifier = Modifier.height(6.dp))
-                    }
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 6.dp, vertical = 2.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text(
-                            text = strings.vaultSectionFolders,
-                            style = MaterialTheme.typography.labelLarge,
-                            color = MaterialTheme.colorScheme.secondary
-                        )
-                        IconButton(
-                            onClick = onNewFolder,
-                            modifier = Modifier.size(28.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Outlined.Add,
-                                contentDescription = strings.actionNewFolder,
-                                modifier = Modifier.size(18.dp),
-                                tint = MaterialTheme.colorScheme.secondary
-                            )
-                        }
-                    }
-                }
-
-                // Root-Level Drop Zone Banner (appears while dragging a nested connection or nested folder to move it to root)
-                val draggingConn = dragDropState.draggingConnection
-                val draggingFolder = dragDropState.draggingFolder
-                if ((draggingConn != null && draggingConn.parentFolderId != null) ||
-                    (draggingFolder != null && draggingFolder.parentFolderId != null)
-                ) {
-                    item(key = "root-drop-target") {
-                        val isRootHovered = dragDropState.hoveredDropTargetKey == ROOT_DROP_TARGET_KEY
-                        DisposableEffect(Unit) {
-                            onDispose {
-                                dragDropState.unregisterDropTarget(ROOT_DROP_TARGET_KEY)
-                            }
-                        }
-                        Surface(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .onGloballyPositioned { coords ->
-                                    dragDropState.registerDropTarget(ROOT_DROP_TARGET_KEY, coords.boundsInRoot())
-                                },
-                            shape = RoundedCornerShape(14.dp),
-                            color = if (isRootHovered) {
-                                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.72f)
-                            } else {
-                                MaterialTheme.colorScheme.surfaceContainerLow
-                            },
-                            border = BorderStroke(
-                                width = if (isRootHovered) 2.dp else 1.dp,
-                                color = if (isRootHovered) {
-                                    MaterialTheme.colorScheme.primary
-                                } else {
-                                    MaterialTheme.colorScheme.outlineVariant
-                                }
-                            )
-                        ) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 12.dp, vertical = 10.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(10.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Outlined.DriveFileMove,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                                Text(
-                                    text = strings.moveToRootFolder,
-                                    style = MaterialTheme.typography.titleSmall,
-                                    color = MaterialTheme.colorScheme.onSurface
-                                )
-                            }
-                        }
-                    }
-                }
-
-                flattenedFolders.forEach { entry ->
-                    val folder = entry.folder
-                    val explicitFolderCred = if (folder.inheritable.credentialMode == InheritanceMode.OVERRIDE_EXPLICIT) {
-                        doc.credentials.firstOrNull {
-                            it.id == folder.inheritable.explicitCredentialId && it.id !in doc.tombstonedObjectIds
-                        }
-                    } else {
-                        null
-                    }
-                    item(key = "folder-${folder.id}") {
-                        FolderTreeRow(
-                            folder = folder,
-                            depth = entry.depth,
-                            isExpanded = entry.isExpanded,
-                            hasExpandableChildren = entry.hasChildFolders || entry.directConnections.isNotEmpty(),
-                            explicitFolderCredentialName = explicitFolderCred?.name,
-                            childCount = entry.subtreeConnectionCount,
-                            activeSessionCountInSubtree = entry.subtreeActiveSessionCount,
-                            dragDropState = dragDropState,
-                            strings = strings,
-                            onToggleExpand = {
-                                collapsedFolderIds = if (folder.id in collapsedFolderIds) {
-                                    collapsedFolderIds - folder.id
-                                } else {
-                                    collapsedFolderIds + folder.id
-                                }
-                            },
-                            onNewRdpInFolder = { onNewRdpInFolder(folder.id) },
-                            onNewSshInFolder = { onNewSshInFolder(folder.id) },
-                            onNewSubfolder = { onNewSubfolder(folder.id) },
-                            onEditFolder = { onEditFolder(folder) },
-                            onDuplicateFolder = { onDuplicateFolder(folder) },
-                            onDeleteFolder = { onDeleteFolder(folder.id) },
-                            onConnectAllInFolder = { onConnectAllInFolder(folder.id) },
-                            onDisconnectAllInFolder = { onDisconnectAllInFolder(folder.id) },
-                            onOpenMoveFolderDialog = { onOpenMoveFolderDialog(folder) },
-                            onMoveFolderToParent = { targetParentId -> onMoveFolderToParent(folder.id, targetParentId) },
-                            onMoveUp = { onReorderFolder(folder.id, true) },
-                            onMoveDown = { onReorderFolder(folder.id, false) }
-                        )
-                    }
-                    if (entry.isExpanded) {
-                        items(entry.directConnections, key = { "fconn-${folder.id}-${it.id}" }) { conn ->
-                            ConnectionTreeRow(
-                                connection = conn,
-                                indentLevel = entry.depth + 1,
-                                isSelected = conn.id == uiState.selectedConnectionId,
-                                strings = strings,
-                                activeSessionCount = activeSessionCountByConnectionId[conn.id] ?: 0,
-                                enableDragToFolder = true,
-                                dragDropState = dragDropState,
-                                onSelect = { onSelectConnection(conn.id) },
-                                onEdit = { onEditConnection(conn) },
-                                onConnectWithOptions = { onConnectWithOptions(conn) },
-                                onToggleFavorite = { onToggleFavorite(conn.id) },
-                                onDuplicate = { onDuplicateConnection(conn) },
-                                onDelete = { onDeleteConnection(conn.id) },
-                                onDisconnect = { onDisconnectConnection(conn.id) },
-                                onOpenMoveDialog = { onOpenMoveConnectionDialog(conn) },
-                                onMoveToFolder = { targetFolderId -> onMoveConnectionToFolder(conn.id, targetFolderId) },
-                                onReorderRelativeTo = { targetConnId, placeAfter ->
-                                    onReorderConnectionRelativeTo(conn.id, targetConnId, placeAfter)
-                                },
-                                onMoveUp = { onReorderConnection(conn.id, true) },
-                                onMoveDown = { onReorderConnection(conn.id, false) },
-                                onLaunch = { placement -> onLaunchConnection(conn, placement) },
-                                onLaunchSplitDown = { onLaunchConnectionInSplitDown(conn) }
-                            )
-                        }
-                    }
-                }
-
-                items(rootConnections, key = { "root-${it.id}" }) { conn ->
-                    ConnectionTreeRow(
-                        connection = conn,
-                        indentLevel = 0,
-                        isSelected = conn.id == uiState.selectedConnectionId,
-                        strings = strings,
-                        activeSessionCount = activeSessionCountByConnectionId[conn.id] ?: 0,
-                        enableDragToFolder = true,
-                        dragDropState = dragDropState,
-                        onSelect = { onSelectConnection(conn.id) },
-                        onEdit = { onEditConnection(conn) },
-                        onConnectWithOptions = { onConnectWithOptions(conn) },
-                        onToggleFavorite = { onToggleFavorite(conn.id) },
-                        onDuplicate = { onDuplicateConnection(conn) },
-                        onDelete = { onDeleteConnection(conn.id) },
-                        onDisconnect = { onDisconnectConnection(conn.id) },
-                        onOpenMoveDialog = { onOpenMoveConnectionDialog(conn) },
-                        onMoveToFolder = { targetFolderId -> onMoveConnectionToFolder(conn.id, targetFolderId) },
-                        onReorderRelativeTo = { targetConnId, placeAfter ->
-                            onReorderConnectionRelativeTo(conn.id, targetConnId, placeAfter)
-                        },
-                        onMoveUp = { onReorderConnection(conn.id, true) },
-                        onMoveDown = { onReorderConnection(conn.id, false) },
-                        onLaunch = { placement -> onLaunchConnection(conn, placement) },
-                        onLaunchSplitDown = { onLaunchConnectionInSplitDown(conn) }
-                    )
-                }
-
-                if (flattenedFolders.isEmpty() && rootConnections.isEmpty()) {
-                    item(key = "empty-sidebar-hint") {
-                        Surface(
-                            shape = RoundedCornerShape(16.dp),
-                            color = MaterialTheme.colorScheme.surfaceContainerLow,
-                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(top = 8.dp, start = 2.dp, end = 2.dp)
-                        ) {
-                            Column(
-                                modifier = Modifier.padding(18.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.spacedBy(12.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Outlined.DeviceHub,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.85f),
-                                    modifier = Modifier.size(26.dp)
-                                )
-                                FilledTonalButton(
-                                    onClick = onNewConnection,
-                                    modifier = Modifier.fillMaxWidth()
+                        // Optional Smart & Dynamic Folders tucked cleanly below the main tree only when defined
+                        if (activeSmartFolders.isNotEmpty()) {
+                            item(key = "header-smart-folders") {
+                                Spacer(modifier = Modifier.height(6.dp))
+                                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 6.dp, vertical = 3.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
                                 ) {
-                                    Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(18.dp))
-                                    Spacer(modifier = Modifier.width(6.dp))
                                     Text(
-                                        text = strings.actionNewConnection,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
+                                        text = strings.vaultSectionSmartFolders,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.secondary
                                     )
+                                    IconButton(onClick = onNewSmartFolder, modifier = Modifier.size(22.dp)) {
+                                        Icon(
+                                            imageVector = Icons.Outlined.Add,
+                                            contentDescription = strings.actionNewSmartFolder,
+                                            modifier = Modifier.size(14.dp),
+                                            tint = MaterialTheme.colorScheme.secondary
+                                        )
+                                    }
+                                }
+                            }
+                            activeSmartFolders.forEach { smart ->
+                                val matchedConnections = smartFolderConnectionsProvider(smart).filter(::matchesFilter)
+                                val isExpanded = uiState.selectedSmartFolderId == smart.id
+                                item(key = "smart-${smart.id}") {
+                                    SmartFolderTreeRow(
+                                        smartFolder = smart,
+                                        matchedCount = matchedConnections.size,
+                                        isExpanded = isExpanded,
+                                        strings = strings,
+                                        onToggle = { onToggleSmartFolder(smart.id) },
+                                        onConnectAll = {
+                                            matchedConnections.forEach { conn ->
+                                                onLaunchConnection(conn, QuickLaunchPlacement.ACTIVE_PANE_TAB)
+                                            }
+                                        },
+                                        onNewSmartFolder = onNewSmartFolder,
+                                        onDelete = { onDeleteSmartFolder(smart.id) }
+                                    )
+                                }
+                                if (isExpanded) {
+                                    groupConnectionsIntelligently(matchedConnections).forEach { group ->
+                                        if (group.showsHeader) {
+                                            item(key = "smart-hdr-${smart.id}-${group.badge}") {
+                                                SidebarProtocolGroupHeaderRow(
+                                                    badge = group.badge,
+                                                    count = group.connections.size,
+                                                    indentLevel = 1
+                                                )
+                                            }
+                                        }
+                                        items(group.connections, key = { "smart-${smart.id}-${it.id}" }) { conn ->
+                                            ConnectionTreeRow(
+                                                connection = conn,
+                                                indentLevel = 1,
+                                                isSelected = conn.id == uiState.selectedConnectionId,
+                                                strings = strings,
+                                                activeSessionCount = activeSessionCountByConnectionId[conn.id] ?: 0,
+                                                onSelect = { onSelectConnection(conn.id) },
+                                                onEdit = { onEditConnection(conn) },
+                                                onConnectWithOptions = { onConnectWithOptions(conn) },
+                                                onToggleFavorite = { onToggleFavorite(conn.id) },
+                                                onDuplicate = { onDuplicateConnection(conn) },
+                                                onDelete = { onDeleteConnection(conn.id) },
+                                                onDisconnect = { onDisconnectConnection(conn.id) },
+                                                onOpenMoveDialog = { onOpenMoveConnectionDialog(conn) },
+                                                onLaunch = { placement -> onLaunchConnection(conn, placement) },
+                                                onLaunchSplitDown = { onLaunchConnectionInSplitDown(conn) }
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        if (activeDynamicFolders.isNotEmpty()) {
+                            item(key = "header-dynamic-folders") {
+                                Spacer(modifier = Modifier.height(6.dp))
+                                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 6.dp, vertical = 3.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(
+                                        text = strings.vaultSectionDynamicFolders,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.secondary
+                                    )
+                                    IconButton(onClick = onNewDynamicFolder, modifier = Modifier.size(22.dp)) {
+                                        Icon(
+                                            imageVector = Icons.Outlined.Add,
+                                            contentDescription = strings.vaultSectionDynamicFolders,
+                                            modifier = Modifier.size(14.dp),
+                                            tint = MaterialTheme.colorScheme.secondary
+                                        )
+                                    }
+                                }
+                            }
+                            activeDynamicFolders.forEach { dyn ->
+                                val hydrated = uiState.hydratedDynamicConnections[dyn.id].orEmpty().filter(::matchesFilter)
+                                val isExpanded = uiState.selectedDynamicFolderId == dyn.id
+                                item(key = "dyn-${dyn.id}") {
+                                    DynamicFolderTreeRow(
+                                        dynamicFolder = dyn,
+                                        isExpanded = isExpanded,
+                                        strings = strings,
+                                        onToggle = { onToggleDynamicFolder(dyn) },
+                                        onReload = { onReloadDynamicFolder(dyn) },
+                                        onNewDynamicFolder = onNewDynamicFolder,
+                                        onDelete = { onDeleteDynamicFolder(dyn.id) }
+                                    )
+                                }
+                                if (isExpanded) {
+                                    groupConnectionsIntelligently(hydrated).forEach { group ->
+                                        if (group.showsHeader) {
+                                            item(key = "dyn-hdr-${dyn.id}-${group.badge}") {
+                                                SidebarProtocolGroupHeaderRow(
+                                                    badge = group.badge,
+                                                    count = group.connections.size,
+                                                    indentLevel = 1
+                                                )
+                                            }
+                                        }
+                                        items(group.connections, key = { "dyn-${dyn.id}-${it.id}" }) { conn ->
+                                            ConnectionTreeRow(
+                                                connection = conn,
+                                                indentLevel = 1,
+                                                isSelected = conn.id == uiState.selectedConnectionId,
+                                                strings = strings,
+                                                activeSessionCount = activeSessionCountByConnectionId[conn.id] ?: 0,
+                                                onSelect = { onSelectConnection(conn.id) },
+                                                onEdit = { onEditConnection(conn) },
+                                                onConnectWithOptions = { onConnectWithOptions(conn) },
+                                                onToggleFavorite = { onToggleFavorite(conn.id) },
+                                                onDuplicate = { onDuplicateConnection(conn) },
+                                                onDelete = { onDeleteConnection(conn.id) },
+                                                onDisconnect = { onDisconnectConnection(conn.id) },
+                                                onLaunch = { placement -> onLaunchConnection(conn, placement) },
+                                                onLaunchSplitDown = { onLaunchConnectionInSplitDown(conn) }
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        if (flattenedFolders.isEmpty() && rootConnections.isEmpty()) {
+                            item(key = "empty-sidebar-hint") {
+                                Surface(
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = MaterialTheme.colorScheme.surfaceContainerLow,
+                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(top = 8.dp, start = 2.dp, end = 2.dp)
+                                ) {
+                                    Column(
+                                        modifier = Modifier.padding(14.dp),
+                                        horizontalAlignment = Alignment.CenterHorizontally,
+                                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Outlined.DeviceHub,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.85f),
+                                            modifier = Modifier.size(22.dp)
+                                        )
+                                        FilledTonalButton(
+                                            onClick = onNewConnection,
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text(
+                                                text = strings.actionNewConnection,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -2369,16 +2852,16 @@ private fun VaultHierarchySidebarTree(
             Surface(
                 modifier = Modifier
                     .offset { IntOffset(localX, localY) }
-                    .widthIn(max = 260.dp)
-                    .shadow(10.dp, RoundedCornerShape(14.dp)),
-                shape = RoundedCornerShape(14.dp),
+                    .widthIn(max = 240.dp)
+                    .shadow(8.dp, RoundedCornerShape(10.dp)),
+                shape = RoundedCornerShape(10.dp),
                 color = MaterialTheme.colorScheme.surfaceContainerHighest,
                 border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
             ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     if (activeDraggedConn != null) {
                         val uiProto = NexusWorkspaceViewModel.mapProtocolToUiKind(activeDraggedConn.protocol)
@@ -2386,27 +2869,27 @@ private fun VaultHierarchySidebarTree(
                             imageVector = protocolIcon(uiProto),
                             contentDescription = null,
                             tint = protocolAccentColor(uiProto),
-                            modifier = Modifier.size(18.dp)
+                            modifier = Modifier.size(16.dp)
                         )
                     } else {
                         Icon(
                             imageVector = Icons.Filled.FilledFolderIcon,
                             contentDescription = null,
                             tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(18.dp)
+                            modifier = Modifier.size(16.dp)
                         )
                     }
                     Column {
                         Text(
                             text = activeDraggedConn?.name ?: activeDraggedFolder?.name.orEmpty(),
-                            style = MaterialTheme.typography.titleSmall,
+                            style = MaterialTheme.typography.labelLarge,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
                         if (targetLabel != null) {
                             Text(
                                 text = String.format(strings.dragDropMoveHintFormat, targetLabel),
-                                style = MaterialTheme.typography.labelMedium,
+                                style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.primary,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
@@ -2740,16 +3223,22 @@ private fun FolderTreeRow(
     hasExpandableChildren: Boolean,
     explicitFolderCredentialName: String?,
     childCount: Int,
+    rdpCount: Int = 0,
     activeSessionCountInSubtree: Int,
     dragDropState: SidebarTreeDragDropState,
     strings: WorkspaceLocalizedStrings,
     onToggleExpand: () -> Unit,
+    onExpandSubtree: () -> Unit = {},
+    onCollapseSubtree: () -> Unit = {},
     onNewRdpInFolder: () -> Unit,
     onNewSshInFolder: () -> Unit,
     onNewSubfolder: () -> Unit,
+    onRenameFolder: () -> Unit = {},
     onEditFolder: () -> Unit,
     onDuplicateFolder: () -> Unit,
+    onRequestDeleteFolder: () -> Unit = {},
     onDeleteFolder: () -> Unit,
+    onConnectAllRdpInFolder: () -> Unit = {},
     onConnectAllInFolder: () -> Unit,
     onDisconnectAllInFolder: () -> Unit,
     onOpenMoveFolderDialog: () -> Unit = {},
@@ -2778,271 +3267,277 @@ private fun FolderTreeRow(
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(start = (depth * 18).dp, top = 2.dp, bottom = 2.dp)
+            .padding(start = if (depth > 0) ((depth - 1) * 14 + 8).dp else 0.dp)
             .onGloballyPositioned { coords ->
                 rowOriginInRoot = coords.positionInRoot()
                 dragDropState.registerDropTarget(folder.id, coords.boundsInRoot())
             }
     ) {
-        Surface(
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .defaultMinSize(minHeight = 48.dp)
-                .nexusHoverTracker(hover, PointerIcon.Hand)
-                .clip(RoundedCornerShape(14.dp))
-                .pointerInput(folder.id, folder.parentFolderId) {
-                    awaitEachGesture {
-                        val down = awaitFirstDown(requireUnconsumed = false)
-                        if (down.type != PointerType.Mouse) return@awaitEachGesture
-                        var dragStarted = false
-                        var accumulated = Offset.Zero
-                        val slop = viewConfiguration.touchSlop
-                        while (true) {
-                            val event = awaitPointerEvent()
-                            if (event.buttons.isSecondaryPressed) {
-                                if (dragStarted) dragDropState.cancelDrag()
-                                break
-                            }
-                            val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                            if (!change.pressed) {
-                                if (dragStarted) {
-                                    change.consume()
-                                    dragDropState.finishFolderDrag { _, targetParentId ->
-                                        onMoveFolderToParent(targetParentId)
-                                    }
-                                }
-                                break
-                            }
-                            val delta = change.positionChange()
-                            if (!dragStarted) {
-                                accumulated += delta
-                                if (event.buttons.isPrimaryPressed && accumulated.getDistance() > slop) {
-                                    dragStarted = true
-                                    dragDropState.startFolderDrag(folder, rowOriginInRoot + change.position)
-                                    change.consume()
-                                }
-                            } else {
-                                change.consume()
-                                dragDropState.updateDragAtRoot(rowOriginInRoot + change.position)
-                            }
-                        }
-                    }
-                }
-                .nexusDesktopPointerButtons(onSecondaryClick = { folderMenuOpen = true })
-                .clickable(
-                    interactionSource = interactionSource,
-                    indication = null,
-                    onClick = {
-                        if (hasExpandableChildren) {
-                            onToggleExpand()
-                        } else {
-                            onEditFolder()
-                        }
-                    }
-                ),
-            shape = RoundedCornerShape(14.dp),
-            color = when {
-                isFolderBeingDragged -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
-                isDropTargetHovered -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.72f)
-                isHovered -> lerp(MaterialTheme.colorScheme.surfaceContainerHigh, folderAccent, 0.11f)
-                else -> lerp(MaterialTheme.colorScheme.surfaceContainerLow, folderAccent, 0.06f)
-            },
-            border = BorderStroke(
-                width = if (isDropTargetHovered) 2.dp else 1.dp,
-                color = when {
-                    isDropTargetHovered -> MaterialTheme.colorScheme.primary
-                    isHovered -> folderAccent.copy(alpha = 0.45f)
-                    else -> MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
-                }
-            )
+                .height(IntrinsicSize.Min),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 10.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Row(
-                    modifier = Modifier.weight(1f),
-                    verticalAlignment = Alignment.CenterVertically
+            if (depth > 0) {
+                Box(
+                    modifier = Modifier
+                        .width(10.dp)
+                        .fillMaxHeight(),
+                    contentAlignment = Alignment.Center
                 ) {
                     Box(
                         modifier = Modifier
-                            .size(width = 18.dp, height = 30.dp)
-                            .onGloballyPositioned { coords ->
-                                handleOriginInRoot = coords.positionInRoot()
-                            }
-                            .nexusHoverTracker(handleHover, PointerIcon.Hand)
-                            .pointerInput(folder.id, folder.parentFolderId) {
-                                detectDragGestures(
-                                    onDragStart = { localOffset ->
-                                        dragDropState.startFolderDrag(folder, handleOriginInRoot + localOffset)
-                                    },
-                                    onDrag = { change, dragAmount ->
+                            .width(1.5.dp)
+                            .fillMaxHeight()
+                            .padding(vertical = 2.dp)
+                            .clip(RoundedCornerShape(99.dp))
+                            .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                    )
+                }
+            }
+
+            Surface(
+                modifier = Modifier
+                    .weight(1f)
+                    .defaultMinSize(minHeight = 32.dp)
+                    .nexusHoverTracker(hover, PointerIcon.Hand)
+                    .clip(RoundedCornerShape(8.dp))
+                    .pointerInput(folder.id, folder.parentFolderId) {
+                        awaitEachGesture {
+                            val down = awaitFirstDown(requireUnconsumed = false)
+                            if (down.type != PointerType.Mouse) return@awaitEachGesture
+                            var dragStarted = false
+                            var accumulated = Offset.Zero
+                            val slop = viewConfiguration.touchSlop
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                if (event.buttons.isSecondaryPressed) {
+                                    if (dragStarted) dragDropState.cancelDrag()
+                                    break
+                                }
+                                val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                                if (!change.pressed) {
+                                    if (dragStarted) {
                                         change.consume()
-                                        dragDropState.updateDragByDelta(dragAmount)
-                                    },
-                                    onDragEnd = {
                                         dragDropState.finishFolderDrag { _, targetParentId ->
                                             onMoveFolderToParent(targetParentId)
                                         }
-                                    },
-                                    onDragCancel = {
-                                        dragDropState.cancelDrag()
                                     }
-                                )
-                            },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.Outlined.DragIndicator,
-                            contentDescription = "Drag folder ${folder.name}",
-                            modifier = Modifier.size(15.dp),
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(
-                                alpha = if (isHovered || handleHover.value.isHovered) 0.85f else 0.32f
-                            )
-                        )
-                    }
-
-                    if (hasExpandableChildren) {
-                        IconButton(
-                            onClick = onToggleExpand,
-                            modifier = Modifier.size(24.dp)
-                        ) {
-                            Icon(
-                                imageVector = if (isExpanded) {
-                                    Icons.Outlined.KeyboardArrowDown
+                                    break
+                                }
+                                val delta = change.positionChange()
+                                if (!dragStarted) {
+                                    accumulated += delta
+                                    if (event.buttons.isPrimaryPressed && accumulated.getDistance() > slop) {
+                                        dragStarted = true
+                                        dragDropState.startFolderDrag(folder, rowOriginInRoot + change.position)
+                                        change.consume()
+                                    }
                                 } else {
-                                    Icons.Outlined.ChevronRight
-                                },
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp),
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        Spacer(modifier = Modifier.width(2.dp))
-                    } else {
-                        Spacer(modifier = Modifier.width(4.dp))
-                    }
-
-                    // Distinct Structured Container Badge with Filled Folder Icon
-                    Surface(
-                        shape = RoundedCornerShape(10.dp),
-                        color = folderAccent.copy(alpha = 0.17f),
-                        modifier = Modifier.size(34.dp)
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Icon(
-                                imageVector = if (isExpanded && hasExpandableChildren) {
-                                    Icons.Filled.FilledFolderOpenIcon
-                                } else {
-                                    Icons.Filled.FilledFolderIcon
-                                },
-                                contentDescription = null,
-                                tint = folderAccent,
-                                modifier = Modifier.size(20.dp)
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = folder.name,
-                            style = MaterialTheme.typography.titleSmall,
-                            color = MaterialTheme.colorScheme.onSurface,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        if (explicitFolderCredentialName != null) {
-                            Text(
-                                text = explicitFolderCredentialName,
-                                style = NexusTheme.monospace.keycapShortcut,
-                                color = MaterialTheme.colorScheme.secondary,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                    }
-                }
-
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    if (activeSessionCountInSubtree > 0) {
-                        Surface(
-                            shape = RoundedCornerShape(99.dp),
-                            color = MaterialTheme.colorScheme.primaryContainer
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(5.dp)
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(6.dp)
-                                        .clip(CircleShape)
-                                        .background(MaterialTheme.colorScheme.primary)
-                                )
-                                Text(
-                                    text = activeSessionCountInSubtree.toString(),
-                                    style = NexusTheme.monospace.keycapShortcut,
-                                    color = MaterialTheme.colorScheme.onPrimaryContainer
-                                )
+                                    change.consume()
+                                    dragDropState.updateDragAtRoot(rowOriginInRoot + change.position)
+                                }
                             }
                         }
-                        IconButton(
-                            onClick = onDisconnectAllInFolder,
-                            modifier = Modifier.size(28.dp)
+                    }
+                    .nexusDesktopPointerButtons(onSecondaryClick = { folderMenuOpen = true })
+                    .clickable(
+                        interactionSource = interactionSource,
+                        indication = null,
+                        onClick = {
+                            if (hasExpandableChildren) {
+                                onToggleExpand()
+                            } else {
+                                onEditFolder()
+                            }
+                        }
+                    ),
+                shape = RoundedCornerShape(8.dp),
+                color = when {
+                    isFolderBeingDragged -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
+                    isDropTargetHovered -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.72f)
+                    isHovered || folderMenuOpen -> lerp(MaterialTheme.colorScheme.surfaceContainerHigh, folderAccent, 0.10f)
+                    else -> Color.Transparent
+                },
+                border = if (isDropTargetHovered) {
+                    BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
+                } else {
+                    null
+                }
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 6.dp, vertical = 3.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(width = 14.dp, height = 22.dp)
+                                .onGloballyPositioned { coords ->
+                                    handleOriginInRoot = coords.positionInRoot()
+                                }
+                                .nexusHoverTracker(handleHover, PointerIcon.Hand)
+                                .pointerInput(folder.id, folder.parentFolderId) {
+                                    detectDragGestures(
+                                        onDragStart = { localOffset ->
+                                            dragDropState.startFolderDrag(folder, handleOriginInRoot + localOffset)
+                                        },
+                                        onDrag = { change, dragAmount ->
+                                            change.consume()
+                                            dragDropState.updateDragByDelta(dragAmount)
+                                        },
+                                        onDragEnd = {
+                                            dragDropState.finishFolderDrag { _, targetParentId ->
+                                                onMoveFolderToParent(targetParentId)
+                                            }
+                                        },
+                                        onDragCancel = {
+                                            dragDropState.cancelDrag()
+                                        }
+                                    )
+                                },
+                            contentAlignment = Alignment.Center
                         ) {
                             Icon(
-                                imageVector = Icons.Outlined.PowerSettingsNew,
-                                contentDescription = "${strings.actionDisconnectAllFolder}: ${folder.name}",
-                                modifier = Modifier.size(16.dp),
-                                tint = MaterialTheme.colorScheme.error
+                                imageVector = Icons.Outlined.DragIndicator,
+                                contentDescription = "Drag folder ${folder.name}",
+                                modifier = Modifier.size(13.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(
+                                    alpha = if (isHovered || handleHover.value.isHovered) 0.75f else 0.22f
+                                )
                             )
                         }
-                    } else if (childCount > 0) {
-                        Surface(
-                            shape = RoundedCornerShape(99.dp),
-                            color = MaterialTheme.colorScheme.surfaceContainerHighest
-                        ) {
+
+                        if (hasExpandableChildren) {
+                            IconButton(
+                                onClick = onToggleExpand,
+                                modifier = Modifier.size(20.dp)
+                            ) {
+                                Icon(
+                                    imageVector = if (isExpanded) {
+                                        Icons.Outlined.KeyboardArrowDown
+                                    } else {
+                                        Icons.Outlined.ChevronRight
+                                    },
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp),
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        } else {
+                            Spacer(modifier = Modifier.width(20.dp))
+                        }
+
+                        Icon(
+                            imageVector = if (isExpanded && hasExpandableChildren) {
+                                Icons.Filled.FilledFolderOpenIcon
+                            } else {
+                                Icons.Filled.FilledFolderIcon
+                            },
+                            contentDescription = null,
+                            tint = folderAccent,
+                            modifier = Modifier.size(17.dp)
+                        )
+
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = folder.name,
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
+                        )
+                        if (explicitFolderCredentialName != null) {
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Icon(
+                                imageVector = Icons.Outlined.Key,
+                                contentDescription = explicitFolderCredentialName,
+                                modifier = Modifier.size(12.dp),
+                                tint = MaterialTheme.colorScheme.secondary
+                            )
+                        }
+                    }
+
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        if (activeSessionCountInSubtree > 0) {
+                            Surface(
+                                shape = RoundedCornerShape(99.dp),
+                                color = MaterialTheme.colorScheme.primaryContainer
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(5.dp)
+                                            .clip(CircleShape)
+                                            .background(MaterialTheme.colorScheme.primary)
+                                    )
+                                    Text(
+                                        text = activeSessionCountInSubtree.toString(),
+                                        style = NexusTheme.monospace.keycapShortcut,
+                                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                                    )
+                                }
+                            }
+                            IconButton(
+                                onClick = onDisconnectAllInFolder,
+                                modifier = Modifier.size(22.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Outlined.PowerSettingsNew,
+                                    contentDescription = "${strings.actionDisconnectAllFolder}: ${folder.name}",
+                                    modifier = Modifier.size(14.dp),
+                                    tint = MaterialTheme.colorScheme.error
+                                )
+                            }
+                        } else if (childCount > 0) {
                             Text(
                                 text = childCount.toString(),
                                 style = NexusTheme.monospace.keycapShortcut,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+                                modifier = Modifier.padding(horizontal = 4.dp)
                             )
                         }
-                    }
 
-                    // Direct `+` icon button to immediately create an RDP connection inside this folder
-                    IconButton(
-                        onClick = onNewRdpInFolder,
-                        modifier = Modifier.size(30.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Outlined.Add,
-                            contentDescription = "New RDP Connection in ${folder.name}",
-                            modifier = Modifier.size(18.dp),
-                            tint = MaterialTheme.colorScheme.primary
-                        )
-                    }
-
-                    if (isHovered || folderMenuOpen) {
+                        // Direct `+` icon button to immediately create an RDP connection inside this folder
                         IconButton(
-                            onClick = { folderMenuOpen = true },
-                            modifier = Modifier.size(28.dp)
+                            onClick = onNewRdpInFolder,
+                            modifier = Modifier.size(22.dp)
                         ) {
                             Icon(
-                                imageVector = Icons.Outlined.MoreVert,
-                                contentDescription = "Folder Actions",
-                                modifier = Modifier.size(16.dp),
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                imageVector = Icons.Outlined.Add,
+                                contentDescription = "New RDP Connection in ${folder.name}",
+                                modifier = Modifier.size(15.dp),
+                                tint = MaterialTheme.colorScheme.primary.copy(alpha = if (isHovered) 1f else 0.72f)
                             )
+                        }
+
+                        if (isHovered || folderMenuOpen) {
+                            IconButton(
+                                onClick = { folderMenuOpen = true },
+                                modifier = Modifier.size(22.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Outlined.MoreVert,
+                                    contentDescription = "Folder Actions",
+                                    modifier = Modifier.size(14.dp),
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                         }
                     }
                 }
@@ -3053,6 +3548,68 @@ private fun FolderTreeRow(
             expanded = folderMenuOpen,
             onDismissRequest = { folderMenuOpen = false }
         ) {
+            DropdownMenuItem(
+                text = {
+                    Text(
+                        if (rdpCount > 0) {
+                            "${strings.actionStartAllRdpFolder} ($rdpCount)"
+                        } else {
+                            strings.actionStartAllRdpFolder
+                        }
+                    )
+                },
+                enabled = rdpCount > 0,
+                leadingIcon = {
+                    Icon(
+                        protocolIcon(SessionProtocolKind.RDP),
+                        contentDescription = null
+                    )
+                },
+                onClick = {
+                    folderMenuOpen = false
+                    onConnectAllRdpInFolder()
+                }
+            )
+            if (childCount > 0) {
+                DropdownMenuItem(
+                    text = { Text("${strings.actionConnectAllFolder} ($childCount)") },
+                    leadingIcon = { Icon(Icons.Outlined.PlayArrow, contentDescription = null) },
+                    onClick = {
+                        folderMenuOpen = false
+                        onConnectAllInFolder()
+                    }
+                )
+            }
+            if (activeSessionCountInSubtree > 0 || childCount > 0) {
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            text = if (activeSessionCountInSubtree > 0) {
+                                "${strings.actionDisconnectAllFolder} ($activeSessionCountInSubtree)"
+                            } else {
+                                strings.actionDisconnectAllFolder
+                            }
+                        )
+                    },
+                    enabled = activeSessionCountInSubtree > 0,
+                    leadingIcon = {
+                        Icon(
+                            Icons.Outlined.PowerSettingsNew,
+                            contentDescription = null,
+                            tint = if (activeSessionCountInSubtree > 0) {
+                                MaterialTheme.colorScheme.error
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            }
+                        )
+                    },
+                    onClick = {
+                        folderMenuOpen = false
+                        onDisconnectAllInFolder()
+                    }
+                )
+            }
+            HorizontalDivider()
             DropdownMenuItem(
                 text = { Text("New RDP Connection") },
                 leadingIcon = { Icon(Icons.Outlined.Add, contentDescription = null) },
@@ -3078,44 +3635,14 @@ private fun FolderTreeRow(
                 }
             )
             HorizontalDivider()
-            if (childCount > 0) {
-                DropdownMenuItem(
-                    text = { Text(strings.actionConnectAllFolder) },
-                    leadingIcon = { Icon(Icons.Outlined.PlayArrow, contentDescription = null) },
-                    onClick = {
-                        folderMenuOpen = false
-                        onConnectAllInFolder()
-                    }
-                )
-            }
-            if (activeSessionCountInSubtree > 0 || childCount > 0) {
-                DropdownMenuItem(
-                    text = {
-                        Text(
-                            text = if (activeSessionCountInSubtree > 0) {
-                                "${strings.actionDisconnectAllFolder} ($activeSessionCountInSubtree)"
-                            } else {
-                                strings.actionDisconnectAllFolder
-                            }
-                        )
-                    },
-                    leadingIcon = {
-                        Icon(
-                            Icons.Outlined.PowerSettingsNew,
-                            contentDescription = null,
-                            tint = if (activeSessionCountInSubtree > 0) {
-                                MaterialTheme.colorScheme.error
-                            } else {
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            }
-                        )
-                    },
-                    onClick = {
-                        folderMenuOpen = false
-                        onDisconnectAllInFolder()
-                    }
-                )
-            }
+            DropdownMenuItem(
+                text = { Text(strings.actionRenameFolder) },
+                leadingIcon = { Icon(Icons.Outlined.Edit, contentDescription = null) },
+                onClick = {
+                    folderMenuOpen = false
+                    onRenameFolder()
+                }
+            )
             DropdownMenuItem(
                 text = { Text("Move Folder to…") },
                 leadingIcon = { Icon(Icons.Outlined.DriveFileMove, contentDescription = null) },
@@ -3141,19 +3668,34 @@ private fun FolderTreeRow(
                 }
             )
             DropdownMenuItem(
-                text = { Text(strings.actionEditFolderCredentials) },
-                leadingIcon = { Icon(Icons.Outlined.Key, contentDescription = null) },
-                onClick = {
-                    folderMenuOpen = false
-                    onEditFolder()
-                }
-            )
-            DropdownMenuItem(
                 text = { Text("Duplicate Folder") },
                 leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null) },
                 onClick = {
                     folderMenuOpen = false
                     onDuplicateFolder()
+                }
+            )
+            if (hasExpandableChildren) {
+                DropdownMenuItem(
+                    text = { Text(if (isExpanded) "Collapse Subfolders" else "Expand Subfolders") },
+                    leadingIcon = {
+                        Icon(
+                            if (isExpanded) Icons.Outlined.UnfoldLess else Icons.Outlined.UnfoldMore,
+                            contentDescription = null
+                        )
+                    },
+                    onClick = {
+                        folderMenuOpen = false
+                        if (isExpanded) onCollapseSubtree() else onExpandSubtree()
+                    }
+                )
+            }
+            DropdownMenuItem(
+                text = { Text(strings.actionEditFolderCredentials) },
+                leadingIcon = { Icon(Icons.Outlined.Key, contentDescription = null) },
+                onClick = {
+                    folderMenuOpen = false
+                    onEditFolder()
                 }
             )
             HorizontalDivider()
@@ -3164,10 +3706,121 @@ private fun FolderTreeRow(
                 },
                 onClick = {
                     folderMenuOpen = false
-                    onDeleteFolder()
+                    onRequestDeleteFolder()
                 }
             )
         }
+    }
+}
+
+private fun VaultProtocolType.shortSidebarBadge(): String = when (this) {
+    VaultProtocolType.RDP -> "RDP"
+    VaultProtocolType.SSH -> "SSH"
+    VaultProtocolType.TELNET -> "TEL"
+    VaultProtocolType.SERIAL -> "UART"
+    VaultProtocolType.SFTP -> "SFTP"
+    VaultProtocolType.FTP -> "FTP"
+    VaultProtocolType.FTPS -> "FTPS"
+    VaultProtocolType.SCP -> "SCP"
+    VaultProtocolType.VNC -> "VNC"
+    VaultProtocolType.APPLE_SCREEN_SHARING -> "ARD"
+    VaultProtocolType.WEB_PAGE -> "WEB"
+    VaultProtocolType.VMWARE_VSPHERE -> "ESXi"
+    VaultProtocolType.PROXMOX_VE -> "PVE"
+    VaultProtocolType.HYPER_V -> "HV"
+    VaultProtocolType.AWS_EC2 -> "EC2"
+    VaultProtocolType.AZURE_VM -> "AZ"
+    VaultProtocolType.WINDOWS_TERMINAL_SERVICES -> "RDP"
+    VaultProtocolType.UTILITY_PING -> "PING"
+    VaultProtocolType.UTILITY_TRACEROUTE -> "MTR"
+    VaultProtocolType.UTILITY_PORT_SCANNER -> "SCAN"
+    VaultProtocolType.UTILITY_WAKE_ON_LAN -> "WOL"
+    VaultProtocolType.KUBERNETES_POD -> "K8S"
+    VaultProtocolType.DOCKER_CONTAINER -> "OCI"
+}
+
+data class SidebarProtocolConnectionGroup(
+    val badge: String,
+    val connections: List<VaultConnection>,
+    val showsHeader: Boolean
+)
+
+private val CANONICAL_SIDEBAR_PROTOCOL_ORDER = listOf(
+    "RDP", "SSH", "VNC", "ARD", "SFTP", "SCP", "FTP", "FTPS",
+    "TEL", "UART", "WEB", "K8S", "OCI", "PVE", "ESXi", "HV",
+    "EC2", "AZ", "PING", "MTR", "SCAN", "WOL"
+)
+
+fun groupConnectionsIntelligently(
+    connections: List<VaultConnection>,
+    preserveInputOrderWithinGroups: Boolean = false
+): List<SidebarProtocolConnectionGroup> {
+    if (connections.isEmpty()) return emptyList()
+    val buckets = linkedMapOf<String, MutableList<VaultConnection>>()
+    for (conn in connections) {
+        val badge = conn.protocol.shortSidebarBadge()
+        buckets.getOrPut(badge) { mutableListOf() }.add(conn)
+    }
+    val sortedKeys = buckets.keys.sortedWith(
+        compareBy<String> { key ->
+            val idx = CANONICAL_SIDEBAR_PROTOCOL_ORDER.indexOf(key)
+            if (idx >= 0) idx else CANONICAL_SIDEBAR_PROTOCOL_ORDER.size
+        }.thenBy { it }
+    )
+    val showsHeader = sortedKeys.size > 1
+    return sortedKeys.map { badge ->
+        val raw = buckets[badge].orEmpty()
+        val ordered = if (preserveInputOrderWithinGroups) {
+            raw.toList()
+        } else {
+            raw.sortedWith(compareBy<VaultConnection> { it.sortOrder }.thenBy(String.CASE_INSENSITIVE_ORDER) { it.name })
+        }
+        SidebarProtocolConnectionGroup(
+            badge = badge,
+            connections = ordered,
+            showsHeader = showsHeader
+        )
+    }
+}
+
+@Composable
+private fun SidebarProtocolGroupHeaderRow(
+    badge: String,
+    count: Int,
+    indentLevel: Int
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(
+                start = if (indentLevel > 0) ((indentLevel - 1) * 14 + 20).dp else 8.dp,
+                end = 8.dp,
+                top = 4.dp,
+                bottom = 1.dp
+            ),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(5.dp)
+    ) {
+        Text(
+            text = badge,
+            style = NexusTheme.monospace.keycapShortcut.copy(
+                fontSize = 9.sp,
+                lineHeight = 11.sp,
+                fontWeight = FontWeight.SemiBold
+            ),
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .height(0.8.dp)
+                .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
+        )
+        Text(
+            text = count.toString(),
+            style = NexusTheme.monospace.keycapShortcut.copy(fontSize = 9.sp, lineHeight = 11.sp),
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f)
+        )
     }
 }
 
@@ -3222,7 +3875,7 @@ private fun ConnectionTreeRow(
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(start = if (indentLevel > 0) ((indentLevel - 1) * 18 + 12).dp else 0.dp)
+            .padding(start = if (indentLevel > 0) ((indentLevel - 1) * 14 + 8).dp else 0.dp)
     ) {
         Row(
             modifier = Modifier
@@ -3234,21 +3887,21 @@ private fun ConnectionTreeRow(
             if (indentLevel > 0) {
                 Box(
                     modifier = Modifier
-                        .width(12.dp)
+                        .width(10.dp)
                         .fillMaxHeight(),
                     contentAlignment = Alignment.Center
                 ) {
                     Box(
                         modifier = Modifier
-                            .width(2.dp)
+                            .width(1.5.dp)
                             .fillMaxHeight()
-                            .padding(vertical = 3.dp)
+                            .padding(vertical = 2.dp)
                             .clip(RoundedCornerShape(99.dp))
                             .background(
                                 if (isSelected) {
                                     MaterialTheme.colorScheme.primary.copy(alpha = 0.65f)
                                 } else {
-                                    MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)
+                                    MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
                                 }
                             )
                     )
@@ -3259,7 +3912,7 @@ private fun ConnectionTreeRow(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .defaultMinSize(minHeight = 50.dp)
+                        .defaultMinSize(minHeight = 30.dp)
                         .onGloballyPositioned { coords ->
                             rowOriginInRoot = coords.positionInRoot()
                             if (enableDragToFolder && dragDropState != null) {
@@ -3267,12 +3920,12 @@ private fun ConnectionTreeRow(
                             }
                         }
                         .nexusHoverTracker(hover, PointerIcon.Hand)
-                        .clip(RoundedCornerShape(12.dp))
+                        .clip(RoundedCornerShape(7.dp))
                         .background(
                             when {
                                 isBeingDragged -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.32f)
                                 isSelected -> MaterialTheme.colorScheme.secondaryContainer
-                                isHovered -> MaterialTheme.colorScheme.surfaceContainerHigh
+                                isHovered || contextMenuOpen -> MaterialTheme.colorScheme.surfaceContainerHigh
                                 else -> Color.Transparent
                             }
                         )
@@ -3328,13 +3981,13 @@ private fun ConnectionTreeRow(
                             onSelect()
                             onLaunch(QuickLaunchPlacement.ACTIVE_PANE_TAB)
                         }
-                        .padding(horizontal = 10.dp, vertical = 7.dp),
+                        .padding(horizontal = 6.dp, vertical = 3.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     if (enableDragToFolder && dragDropState != null) {
                         Box(
                             modifier = Modifier
-                                .size(width = 20.dp, height = 34.dp)
+                                .size(width = 14.dp, height = 22.dp)
                                 .onGloballyPositioned { coords ->
                                     handleOriginInRoot = coords.positionInRoot()
                                 }
@@ -3368,74 +4021,75 @@ private fun ConnectionTreeRow(
                             Icon(
                                 imageVector = Icons.Outlined.DragIndicator,
                                 contentDescription = "Drag ${connection.name}",
-                                modifier = Modifier.size(16.dp),
+                                modifier = Modifier.size(13.dp),
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(
-                                    alpha = if (isHovered || isSelected || handleHover.value.isHovered) 0.85f else 0.35f
+                                    alpha = if (isHovered || isSelected || handleHover.value.isHovered) 0.75f else 0.22f
                                 )
                             )
                         }
+                        Spacer(modifier = Modifier.width(3.dp))
+                    }
+
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = connection.name,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
+                        )
+                        if (connection.favorite) {
+                            Icon(
+                                imageVector = Icons.Outlined.Star,
+                                contentDescription = null,
+                                modifier = Modifier.size(12.dp),
+                                tint = MaterialTheme.colorScheme.tertiary
+                            )
+                        }
+                        if (connection.host.isNotBlank() && !isHovered) {
+                            Text(
+                                text = connection.host,
+                                style = NexusTheme.monospace.keycapShortcut,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+
+                    if (isHovered) {
                         Spacer(modifier = Modifier.width(4.dp))
-                    }
-
-                    // Tinted Protocol Squircle Endpoint Badge + Live Session Indicator Dot
-                    Box(modifier = Modifier.size(36.dp)) {
                         Surface(
-                            shape = RoundedCornerShape(10.dp),
+                            shape = RoundedCornerShape(99.dp),
                             color = effectiveIconTint.copy(alpha = 0.14f),
-                            modifier = Modifier.fillMaxSize()
-                        ) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(
-                                    imageVector = protocolIcon(uiProto),
-                                    contentDescription = null,
-                                    tint = effectiveIconTint,
-                                    modifier = Modifier.size(19.dp)
-                                )
-                            }
-                        }
-                        if (activeSessionCount > 0) {
-                            Box(
-                                modifier = Modifier
-                                    .align(Alignment.BottomEnd)
-                                    .size(10.dp)
-                                    .clip(CircleShape)
-                                    .background(MaterialTheme.colorScheme.surface)
-                                    .padding(1.5.dp)
-                                    .clip(CircleShape)
-                                    .background(MaterialTheme.colorScheme.primary)
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(5.dp)
+                            border = BorderStroke(0.6.dp, effectiveIconTint.copy(alpha = 0.32f))
                         ) {
                             Text(
-                                text = connection.name,
-                                style = MaterialTheme.typography.bodyLarge,
+                                text = connection.protocol.shortSidebarBadge(),
+                                style = NexusTheme.monospace.keycapShortcut.copy(
+                                    fontSize = 8.5.sp,
+                                    lineHeight = 10.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                ),
                                 color = MaterialTheme.colorScheme.onSurface,
                                 maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.weight(1f, fill = false)
+                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
                             )
-                            if (connection.favorite) {
-                                Icon(
-                                    imageVector = Icons.Outlined.Star,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(13.dp),
-                                    tint = MaterialTheme.colorScheme.tertiary
-                                )
-                            }
                         }
-                        Text(
-                            text = "${connection.protocol.name} • ${connection.host}",
-                            style = NexusTheme.monospace.keycapShortcut,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
+                    }
+
+                    if (activeSessionCount > 0) {
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Box(
+                            modifier = Modifier
+                                .size(6.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.primary)
                         )
                     }
 
@@ -3443,12 +4097,12 @@ private fun ConnectionTreeRow(
                     if (isHovered || isSelected || contextMenuOpen) {
                         IconButton(
                             onClick = { contextMenuOpen = true },
-                            modifier = Modifier.size(28.dp)
+                            modifier = Modifier.size(22.dp)
                         ) {
                             Icon(
                                 imageVector = Icons.Outlined.MoreVert,
                                 contentDescription = strings.actionEditConnection,
-                                modifier = Modifier.size(16.dp),
+                                modifier = Modifier.size(14.dp),
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
@@ -4875,6 +5529,162 @@ private fun MoveFolderToParentDialog(
 }
 
 @Composable
+private fun RenameFolderDialog(
+    targetFolder: VaultFolder?,
+    strings: WorkspaceLocalizedStrings,
+    onRename: (String, String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val folder = targetFolder ?: return
+    var folderName by remember(folder.id, folder.name) { mutableStateOf(folder.name) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        shape = RoundedCornerShape(24.dp),
+        icon = {
+            Icon(
+                imageVector = Icons.Outlined.Edit,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(26.dp)
+            )
+        },
+        title = {
+            Text(
+                text = strings.dialogRenameFolderTitle,
+                style = MaterialTheme.typography.headlineSmall
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                OutlinedTextField(
+                    value = folderName,
+                    onValueChange = { folderName = it },
+                    label = { Text(strings.dialogFieldName) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    val trimmed = folderName.trim()
+                    if (trimmed.isNotEmpty()) {
+                        onRename(folder.id, trimmed)
+                    }
+                },
+                enabled = folderName.trim().isNotEmpty()
+            ) {
+                Text(strings.dialogActionSave)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(strings.dialogActionCancel)
+            }
+        }
+    )
+}
+
+@Composable
+private fun DeleteFolderConfirmationDialog(
+    targetFolder: VaultFolder?,
+    folders: List<VaultFolder>,
+    connections: List<VaultConnection>,
+    strings: WorkspaceLocalizedStrings,
+    onDeleteWithContents: (String) -> Unit,
+    onDeleteKeepContents: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val folder = targetFolder ?: return
+    val (subFolderCount, connectionCount) = remember(folder.id, folders, connections) {
+        val childrenByParent = folders.groupBy { it.parentFolderId }
+        val subtreeIds = linkedSetOf<String>()
+        val queue = ArrayDeque<String>()
+        queue.add(folder.id)
+        while (queue.isNotEmpty()) {
+            val current = queue.removeFirst()
+            if (subtreeIds.add(current)) {
+                childrenByParent[current].orEmpty().forEach { child -> queue.add(child.id) }
+            }
+        }
+        val nestedFolders = (subtreeIds.size - 1).coerceAtLeast(0)
+        val nestedConnections = connections.count { it.parentFolderId in subtreeIds }
+        nestedFolders to nestedConnections
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        shape = RoundedCornerShape(24.dp),
+        icon = {
+            Icon(
+                imageVector = Icons.Outlined.Delete,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.error,
+                modifier = Modifier.size(26.dp)
+            )
+        },
+        title = {
+            Text(
+                text = strings.dialogDeleteFolderTitle,
+                style = MaterialTheme.typography.headlineSmall
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    text = buildString {
+                        append("\"${folder.name}\"")
+                        if (subFolderCount > 0 || connectionCount > 0) {
+                            append(" ($connectionCount connections")
+                            if (subFolderCount > 0) append(", $subFolderCount subfolders")
+                            append(")")
+                        }
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                Button(
+                    onClick = { onDeleteWithContents(folder.id) },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error,
+                        contentColor = MaterialTheme.colorScheme.onError
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Outlined.Delete, contentDescription = null, modifier = Modifier.size(17.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(strings.actionDeleteFolderAndContents)
+                }
+
+                FilledTonalButton(
+                    onClick = { onDeleteKeepContents(folder.id) },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Outlined.DriveFileMove, contentDescription = null, modifier = Modifier.size(17.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(strings.actionDeleteFolderKeepContents)
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(strings.dialogActionCancel)
+            }
+        }
+    )
+}
+
+@Composable
 private fun PlayProtectAutoUpdateDialog(
     visible: Boolean,
     uiState: WorkspaceUiState,
@@ -5020,7 +5830,7 @@ private fun PlayProtectAutoUpdateDialog(
                                     ).trim()
                                     else -> String.format(
                                         strings.autoUpdateUpToDateFormat,
-                                        uiState.updateCurrentVersion.ifBlank { "1.1.7" }
+                                        uiState.updateCurrentVersion.ifBlank { "1.1.8" }
                                     )
                                 },
                                 style = MaterialTheme.typography.titleSmall,
@@ -5035,7 +5845,7 @@ private fun PlayProtectAutoUpdateDialog(
                                 ""
                             }
                             Text(
-                                text = "Installed: v${uiState.updateCurrentVersion.ifBlank { "1.1.7" }}  →  Latest: ${uiState.updateLatestTag.ifBlank { "current" }}$sizeMb",
+                                text = "Installed: v${uiState.updateCurrentVersion.ifBlank { "1.1.8" }}  →  Latest: ${uiState.updateLatestTag.ifBlank { "current" }}$sizeMb",
                                 style = NexusTheme.monospace.keycapShortcut,
                                 color = MaterialTheme.colorScheme.secondary
                             )

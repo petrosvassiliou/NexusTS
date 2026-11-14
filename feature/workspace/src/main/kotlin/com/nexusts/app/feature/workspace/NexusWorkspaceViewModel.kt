@@ -64,6 +64,12 @@ import java.util.Arrays
 import java.util.UUID
 import javax.inject.Inject
 
+enum class SidebarQuickFilter {
+    ALL,
+    FAVORITES,
+    RECENTS
+}
+
 data class WorkspaceUiState(
     val activeRailId: String = "connections",
     val isSidebarVisible: Boolean = true,
@@ -88,6 +94,7 @@ data class WorkspaceUiState(
     val importErrorDialogMessage: String? = null,
     val userSnackbarMessage: String? = null,
     val sidebarFilterQuery: String = "",
+    val sidebarQuickFilter: SidebarQuickFilter = SidebarQuickFilter.ALL,
     val useSharedTeamDriveZone: Boolean = false,
     val driveSignedInEmail: String = "",
     val driveLinkedSafLabel: String = "",
@@ -100,6 +107,8 @@ data class WorkspaceUiState(
     val isLanguageMenuExpanded: Boolean = false,
     val movingConnectionTarget: VaultConnection? = null,
     val movingFolderTarget: VaultFolder? = null,
+    val renamingFolderTarget: VaultFolder? = null,
+    val deletingFolderTarget: VaultFolder? = null,
     val isAutoUpdateDialogVisible: Boolean = false,
     val autoCheckUpdatesEnabled: Boolean = true,
     val isCheckingForUpdates: Boolean = false,
@@ -755,9 +764,9 @@ class NexusWorkspaceViewModel @Inject constructor(
         if (_uiState.value.isVaultLocked) return
         val doc = _uiState.value.vaultDocument
         val folderTreeIds = collectDescendantFolderIds(doc.folders, folderId)
-        val children = doc.connections.filter {
-            it.parentFolderId in folderTreeIds && it.id !in doc.tombstonedObjectIds
-        }
+        val children = doc.connections
+            .filter { it.parentFolderId in folderTreeIds && it.id !in doc.tombstonedObjectIds }
+            .sortedWith(compareBy<VaultConnection> { it.sortOrder }.thenBy { it.name.lowercase() })
         if (children.isEmpty()) return
         _uiState.update { it.copy(activeRailId = "connections") }
         children.forEach { conn ->
@@ -765,6 +774,56 @@ class NexusWorkspaceViewModel @Inject constructor(
         }
         val folderName = doc.folders.firstOrNull { it.id == folderId }?.name ?: folderId
         appendLog("[Bulk Connect] Opened ${children.size} session(s) from folder '$folderName'")
+    }
+
+    /**
+     * Counts all active RDP / Windows Terminal Services connections inside [folderId]
+     * and any nested subfolders.
+     */
+    fun countRdpConnectionsInSubtree(folderId: String): Int {
+        val doc = _uiState.value.vaultDocument
+        val folderTreeIds = collectDescendantFolderIds(doc.folders, folderId)
+        return doc.connections.count { conn ->
+            conn.parentFolderId in folderTreeIds &&
+                conn.id !in doc.tombstonedObjectIds &&
+                (conn.protocol == VaultProtocolType.RDP || conn.protocol == VaultProtocolType.WINDOWS_TERMINAL_SERVICES)
+        }
+    }
+
+    /**
+     * Recursively launches all RDP / Windows Terminal Services connections inside [folderId]
+     * and its nested subfolders in deterministic folder/sort order, leaving SSH/VNC/other
+     * connections untouched.
+     */
+    fun connectAllRdpInFolder(
+        folderId: String,
+        onDetachWindowRequested: ((WorkspaceSessionTab) -> Unit)? = null
+    ): Int {
+        if (_uiState.value.isVaultLocked) return 0
+        val doc = _uiState.value.vaultDocument
+        val folderName = doc.folders.firstOrNull { it.id == folderId }?.name ?: folderId
+        val folderTreeIds = collectDescendantFolderIds(doc.folders, folderId)
+        val rdpChildren = doc.connections
+            .filter { conn ->
+                conn.parentFolderId in folderTreeIds &&
+                    conn.id !in doc.tombstonedObjectIds &&
+                    (conn.protocol == VaultProtocolType.RDP || conn.protocol == VaultProtocolType.WINDOWS_TERMINAL_SERVICES)
+            }
+            .sortedWith(compareBy<VaultConnection> { it.sortOrder }.thenBy { it.name.lowercase() })
+
+        if (rdpChildren.isEmpty()) {
+            _uiState.update { it.copy(userSnackbarMessage = "No RDP connections in '$folderName'") }
+            return 0
+        }
+
+        _uiState.update { it.copy(activeRailId = "connections") }
+        rdpChildren.forEach { conn ->
+            launchConnection(conn, QuickLaunchPlacement.ACTIVE_PANE_TAB, onDetachWindowRequested)
+        }
+        val msg = "Started ${rdpChildren.size} RDP session(s) from '$folderName'"
+        _uiState.update { it.copy(userSnackbarMessage = msg) }
+        appendLog("[Bulk RDP] $msg")
+        return rdpChildren.size
     }
 
     /**
@@ -1157,6 +1216,10 @@ class NexusWorkspaceViewModel @Inject constructor(
         _uiState.update { it.copy(sidebarFilterQuery = query) }
     }
 
+    fun setSidebarQuickFilter(filter: SidebarQuickFilter) {
+        _uiState.update { it.copy(sidebarQuickFilter = filter) }
+    }
+
     fun toggleFavoriteConnection(connectionId: String) {
         activeVaultStore.updateVaultDocument { doc ->
             bumpDocRevisionAndClock(doc).copy(
@@ -1222,6 +1285,61 @@ class NexusWorkspaceViewModel @Inject constructor(
         saveFolderAndCredentialToVault(cloned)
     }
 
+    fun openRenameFolderDialog(folder: VaultFolder) {
+        if (_uiState.value.isVaultLocked) return
+        _uiState.update { it.copy(renamingFolderTarget = folder) }
+    }
+
+    fun dismissRenameFolderDialog() {
+        _uiState.update { it.copy(renamingFolderTarget = null) }
+    }
+
+    /**
+     * Fast, non-disruptive folder rename that updates [VaultFolder.name] and [VaultFolder.updatedAtEpochMs]
+     * without tearing down active SSH/RDP sessions inside the folder.
+     */
+    fun renameFolder(folderId: String, newName: String): Boolean {
+        if (_uiState.value.isVaultLocked) return false
+        val trimmed = newName.trim()
+        if (trimmed.isEmpty()) return false
+        val currentDoc = _uiState.value.vaultDocument
+        val existing = currentDoc.folders.firstOrNull {
+            it.id == folderId && it.id !in currentDoc.tombstonedObjectIds
+        } ?: return false
+        if (existing.name == trimmed) {
+            _uiState.update { it.copy(renamingFolderTarget = null) }
+            return true
+        }
+        val now = System.currentTimeMillis()
+        activeVaultStore.updateVaultDocument { doc ->
+            bumpDocRevisionAndClock(doc).copy(
+                folders = doc.folders.map { f ->
+                    if (f.id == folderId) f.copy(name = trimmed, updatedAtEpochMs = now) else f
+                }
+            )
+        }
+        val updatedDoc = activeVaultStore.snapshot.value.vaultDocument
+        val msg = "Renamed folder '${existing.name}' to '$trimmed'"
+        _uiState.update {
+            it.copy(
+                vaultDocument = updatedDoc,
+                renamingFolderTarget = null,
+                userSnackbarMessage = msg
+            )
+        }
+        appendLog("[Folder] $msg")
+        return true
+    }
+
+    fun requestDeleteFolderConfirmation(folder: VaultFolder) {
+        if (_uiState.value.isVaultLocked) return
+        _uiState.update { it.copy(deletingFolderTarget = folder) }
+    }
+
+    fun dismissDeleteFolderConfirmation() {
+        _uiState.update { it.copy(deletingFolderTarget = null) }
+    }
+
     fun deleteConnection(connectionId: String) {
         tilingController.allActiveTabs()
             .filter { it.connectionId == connectionId }
@@ -1249,9 +1367,59 @@ class NexusWorkspaceViewModel @Inject constructor(
         appendLog("[Vault] Deleted connection ($connectionId) with tombstone marker")
     }
 
-    fun deleteFolder(folderId: String) {
+    fun deleteFolder(folderId: String, deleteContents: Boolean = false) {
         val currentDoc = _uiState.value.vaultDocument
         val targetFolder = currentDoc.folders.firstOrNull { it.id == folderId } ?: return
+
+        if (deleteContents) {
+            val subtreeFolderIds = collectDescendantFolderIds(currentDoc.folders, folderId)
+            val deletedConnIds = currentDoc.connections
+                .filter { it.parentFolderId in subtreeFolderIds }
+                .map { it.id }
+                .toSet()
+            val deletedDynamicIds = currentDoc.dynamicFolders
+                .filter { it.parentFolderId in subtreeFolderIds }
+                .map { it.id }
+                .toSet()
+
+            tilingController.allActiveTabs()
+                .filter { it.connectionId in deletedConnIds }
+                .forEach { closeSessionTab(it.tabId) }
+            evictLiveSessionsForConnections(deletedConnIds)
+
+            val allTombstones = subtreeFolderIds + deletedConnIds + deletedDynamicIds
+            activeVaultStore.updateVaultDocument { doc ->
+                bumpDocRevisionAndClock(doc).copy(
+                    folders = doc.folders.filterNot { it.id in subtreeFolderIds },
+                    connections = doc.connections.filterNot { it.id in deletedConnIds },
+                    recentConnectionIds = doc.recentConnectionIds.filterNot { it in deletedConnIds },
+                    dynamicFolders = doc.dynamicFolders.filterNot { it.id in deletedDynamicIds },
+                    tombstonedObjectIds = doc.tombstonedObjectIds + allTombstones
+                )
+            }
+            val updatedDoc = activeVaultStore.snapshot.value.vaultDocument
+            val msg = "Deleted folder '${targetFolder.name}' and ${deletedConnIds.size} connection(s)"
+            _uiState.update { state ->
+                state.copy(
+                    deletingFolderTarget = if (state.deletingFolderTarget?.id in subtreeFolderIds) null else state.deletingFolderTarget,
+                    renamingFolderTarget = if (state.renamingFolderTarget?.id in subtreeFolderIds) null else state.renamingFolderTarget,
+                    movingFolderTarget = if (state.movingFolderTarget?.id in subtreeFolderIds) null else state.movingFolderTarget,
+                    editingFolder = if (state.editingFolder?.id in subtreeFolderIds) null else state.editingFolder,
+                    isFolderDialogVisible = if (state.editingFolder?.id in subtreeFolderIds) false else state.isFolderDialogVisible,
+                    selectedConnectionId = if (state.selectedConnectionId in deletedConnIds) {
+                        updatedDoc.connections.firstOrNull { it.id !in updatedDoc.tombstonedObjectIds }?.id
+                    } else {
+                        state.selectedConnectionId
+                    },
+                    hydratedDynamicConnections = state.hydratedDynamicConnections - deletedDynamicIds,
+                    vaultDocument = updatedDoc,
+                    userSnackbarMessage = msg
+                )
+            }
+            appendLog("[Folder] $msg")
+            return
+        }
+
         val fallbackParentId = targetFolder.parentFolderId
         val affectedConnIds = currentDoc.connections
             .filter { it.parentFolderId == folderId }
@@ -1282,9 +1450,13 @@ class NexusWorkspaceViewModel @Inject constructor(
         }
         _uiState.update { state ->
             state.copy(
+                deletingFolderTarget = if (state.deletingFolderTarget?.id == folderId) null else state.deletingFolderTarget,
+                renamingFolderTarget = if (state.renamingFolderTarget?.id == folderId) null else state.renamingFolderTarget,
+                movingFolderTarget = if (state.movingFolderTarget?.id == folderId) null else state.movingFolderTarget,
                 editingFolder = if (state.editingFolder?.id == folderId) null else state.editingFolder,
                 isFolderDialogVisible = if (state.editingFolder?.id == folderId) false else state.isFolderDialogVisible,
-                vaultDocument = activeVaultStore.snapshot.value.vaultDocument
+                vaultDocument = activeVaultStore.snapshot.value.vaultDocument,
+                userSnackbarMessage = "Deleted folder '${targetFolder.name}' (items moved up)"
             )
         }
         appendLog("[Folder] Deleted folder '${targetFolder.name}' and re-parented child items")

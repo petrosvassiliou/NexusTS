@@ -117,13 +117,10 @@ public struct VaultOverviewDashboardView: View {
                                             .foregroundStyle(Color.accentColor)
                                     }
                                     .padding(12)
-                                    .background(
-                                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                            .fill(Color(nsColor: .controlBackgroundColor))
-                                    )
-                                    .overlay(
-                                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                            .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.75)
+                                    .liquidGlassSurface(
+                                        cornerRadius: LiquidGlassMetrics.cardCornerRadius,
+                                        tint: HIGColorUtilities.color(fromHex: conn.inheritable.displayColorAccentHex) ?? conn.protocolType.appleSystemTint,
+                                        prominence: .subtle
                                     )
                                 }
                                 .buttonStyle(.plain)
@@ -147,14 +144,12 @@ public struct VaultOverviewDashboardView: View {
                         ShortcutLegendItem("Inspector", keys: "⌥⌘I")
                     }
                     .padding(12)
-                    .background(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .fill(Color(nsColor: .controlBackgroundColor).opacity(0.65))
-                    )
+                    .liquidGlassSurface(cornerRadius: 12, prominence: .subtle)
                 }
             }
             .padding(28)
         }
+        .scrollContentBackground(.hidden)
     }
 }
 
@@ -165,6 +160,7 @@ private struct OverviewStatCard: View {
     let symbol: String
     let tint: Color
     let action: () -> Void
+    @State private var isHovered: Bool = false
 
     var body: some View {
         Button(action: action) {
@@ -172,6 +168,7 @@ private struct OverviewStatCard: View {
                 HStack {
                     Image(systemName: symbol)
                         .font(.title3.weight(.semibold))
+                        .symbolRenderingMode(.hierarchical)
                         .foregroundStyle(tint)
                     Spacer()
                     Text(value)
@@ -189,16 +186,19 @@ private struct OverviewStatCard: View {
                 }
             }
             .padding(14)
-            .background(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(Color(nsColor: .controlBackgroundColor))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.75)
+            .liquidGlassSurface(
+                cornerRadius: LiquidGlassMetrics.cardCornerRadius,
+                tint: tint,
+                prominence: .regular,
+                isHovered: isHovered
             )
         }
         .buttonStyle(.plain)
+        .onHover { hovering in
+            withAnimation(LiquidGlassMetrics.hoverAnimation) {
+                isHovered = hovering
+            }
+        }
     }
 }
 

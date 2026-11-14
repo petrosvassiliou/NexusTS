@@ -289,6 +289,70 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
             )
         )
         XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("1.1.8", isNewerThan: "1.1.7"))
-        XCTAssertFalse(MacGitHubReleaseUpdater.compareSemver("1.1.7", isNewerThan: "1.1.7"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("1.1.9", isNewerThan: "1.1.8"))
+        XCTAssertFalse(MacGitHubReleaseUpdater.compareSemver("1.1.8", isNewerThan: "1.1.8"))
+    }
+
+    func testV118LocalizationUpgradeVersionAndVaultReplacementCompatibility() throws {
+        XCTAssertEqual(MacGitHubReleaseUpdater.currentVersion, "1.1.8")
+
+        for lang in NexusAppLanguage.allCases {
+            let catalog = LocalizedWorkspaceStrings.catalog(for: lang)
+            XCTAssertFalse(catalog.studios.isEmpty)
+            XCTAssertFalse(catalog.renameFolder.isEmpty)
+            XCTAssertFalse(catalog.startAllRdp.isEmpty)
+            XCTAssertFalse(catalog.deleteFolderAndContents.isEmpty)
+            XCTAssertFalse(catalog.deleteFolderKeepContents.isEmpty)
+        }
+
+        // Verify a persisted v1.1.7 .nxts v2 vault with nested folders + RDP/SSH hosts upgrades seamlessly in v1.1.8
+        let rootFolder = VaultFolder(id: "f-dc", name: "Datacenter Europe", sortOrder: 0)
+        let subFolder = VaultFolder(id: "f-win", parentFolderId: rootFolder.id, name: "Windows RDS Farm", sortOrder: 1)
+        let rdp1 = VaultConnection(id: "c-rdp-1", parentFolderId: rootFolder.id, name: "DC01", host: "10.10.1.10", protocolType: .RDP)
+        let rdp2 = VaultConnection(id: "c-rdp-2", parentFolderId: subFolder.id, name: "RDS-Broker", host: "10.10.2.20", protocolType: .WINDOWS_TERMINAL_SERVICES)
+        let ssh1 = VaultConnection(id: "c-ssh-1", parentFolderId: subFolder.id, name: "Linux-Jump", host: "10.10.2.30", protocolType: .SSH)
+
+        let v117Doc = NxtsVaultDocument(
+            documentId: "doc-upgrade-v117-to-v118",
+            name: "Enterprise Upgrade Vault",
+            revision: 17,
+            folders: [rootFolder, subFolder],
+            connections: [rdp1, rdp2, ssh1]
+        )
+        let sealed = try NxtsVaultSerializer.seal(
+            document: v117Doc,
+            passphrase: NxtsVaultSerializer.defaultTransparentPassphrase,
+            kdf: .interactiveFast
+        )
+        let openedInV118 = try NxtsVaultSerializer.open(
+            sealedData: sealed,
+            passphrase: NxtsVaultSerializer.defaultTransparentPassphrase
+        )
+        XCTAssertEqual(openedInV118.documentId, "doc-upgrade-v117-to-v118")
+        XCTAssertEqual(openedInV118.folders.count, 2)
+        XCTAssertEqual(openedInV118.connections.count, 3)
+    }
+
+    func testIntelligentSidebarProtocolGroupingSuppressesSingleTypeAndGroupsMixedTypes() {
+        let rdpOnly = [
+            VaultConnection(id: "r1", parentFolderId: "f-rdp", name: "RDS-01", host: "10.0.1.1", protocolType: .RDP, sortOrder: 1),
+            VaultConnection(id: "r2", parentFolderId: "f-rdp", name: "RDS-02", host: "10.0.1.2", protocolType: .WINDOWS_TERMINAL_SERVICES, sortOrder: 2)
+        ]
+        let singleGroups = IntelligentConnectionGrouper.group(rdpOnly)
+        XCTAssertEqual(singleGroups.count, 1)
+        XCTAssertEqual(singleGroups.first?.groupBadge, "RDP")
+        XCTAssertFalse(singleGroups.first?.showsHeader ?? true, "Homogeneous RDP folder must not show redundant RDP header")
+
+        let mixed = [
+            VaultConnection(id: "s1", parentFolderId: "f-mix", name: "bastion-01", host: "10.0.2.10", protocolType: .SSH, sortOrder: 1),
+            VaultConnection(id: "r3", parentFolderId: "f-mix", name: "DC-Core-01", host: "10.0.2.20", protocolType: .RDP, sortOrder: 2),
+            VaultConnection(id: "s2", parentFolderId: "f-mix", name: "bastion-02", host: "10.0.2.11", protocolType: .SSH, sortOrder: 3)
+        ]
+        let mixedGroups = IntelligentConnectionGrouper.group(mixed)
+        XCTAssertEqual(mixedGroups.count, 2)
+        XCTAssertEqual(mixedGroups.map(\.groupBadge), ["RDP", "SSH"])
+        XCTAssertTrue(mixedGroups.allSatisfy(\.showsHeader), "Mixed-protocol folder must group by connection type with subtle headers")
+        XCTAssertEqual(mixedGroups[0].connections.map(\.id), ["r3"])
+        XCTAssertEqual(mixedGroups[1].connections.map(\.id), ["s1", "s2"])
     }
 }

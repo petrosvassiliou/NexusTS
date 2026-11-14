@@ -191,6 +191,15 @@
     <string name="auto_update_up_to_date">Το NexusTS %1$s είναι ενημερωμένο</string>
     <string name="drag_drop_move_hint">Απόθεση σε %1$s</string>
 
+    <!-- v1.1.8 Compact Far-Left Explorer, Folder Context Menus & Top-Toolbar Studios -->
+    <string name="action_rename_folder">Μετονομασία φακέλου…</string>
+    <string name="action_start_all_rdp_folder">Εκκίνηση όλων των συνδέσεων RDP</string>
+    <string name="dialog_rename_folder_title">Μετονομασία φακέλου</string>
+    <string name="dialog_delete_folder_title">Διαγραφή φακέλου</string>
+    <string name="action_delete_folder_and_contents">Διαγραφή φακέλου &amp; όλου του περιεχομένου</string>
+    <string name="action_delete_folder_keep_contents">Διαγραφή μόνο φακέλου (Μετακίνηση στοιχείων πάνω)</string>
+    <string name="nav_studios_menu">Στούντιο</string>
+
     <!-- Language Names -->
     <string name="lang_en">English</string>
     <string name="lang_de">Deutsch</string>
