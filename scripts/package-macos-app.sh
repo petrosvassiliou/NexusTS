@@ -18,8 +18,13 @@ export MACOSX_DEPLOYMENT_TARGET="14.0"
 
 echo "==> Compiling NexusTS SwiftUI / AppKit macOS executable..."
 if [[ -n "${UNIVERSAL_FLAG}" ]]; then
-    swift build --package-path "${MACOS_DIR}" -c release --arch arm64 --arch x86_64
-    BIN_PATH="${MACOS_DIR}/.build/apple/Products/Release/NexusTS"
+    swift build --package-path "${MACOS_DIR}" -c release --arch arm64
+    swift build --package-path "${MACOS_DIR}" -c release --arch x86_64
+    ARM64_BIN="$(swift build --package-path "${MACOS_DIR}" -c release --arch arm64 --show-bin-path)/NexusTS"
+    X86_64_BIN="$(swift build --package-path "${MACOS_DIR}" -c release --arch x86_64 --show-bin-path)/NexusTS"
+    mkdir -p "${MACOS_DIR}/.build/universal"
+    BIN_PATH="${MACOS_DIR}/.build/universal/NexusTS"
+    lipo -create -output "${BIN_PATH}" "${ARM64_BIN}" "${X86_64_BIN}"
 else
     swift build --package-path "${MACOS_DIR}" -c release
     BIN_PATH="$(swift build --package-path "${MACOS_DIR}" -c release --show-bin-path)/NexusTS"
@@ -102,6 +107,8 @@ for (filename, px) in specs {
     ctx.strokePath()
 
     NSGraphicsContext.restoreGraphicsState()
+    let pointDim = filename.contains("@2x") ? (px / 2) : px
+    rep.size = NSSize(width: pointDim, height: pointDim)
     if let png = rep.representation(using: .png, properties: [:]) {
         try png.write(to: URL(fileURLWithPath: "\(outDir)/\(filename)"))
     }
