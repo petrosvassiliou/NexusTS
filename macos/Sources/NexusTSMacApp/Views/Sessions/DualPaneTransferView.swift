@@ -392,7 +392,8 @@ public struct DualPaneTransferView: View {
               let localId = selectedLocalId,
               let local = localEntries.first(where: { $0.id == localId }),
               !local.isDirectory else { return }
-        let destPath = remotePath.hasSuffix("/") ? "\(remotePath)\(local.name)" : "\(remotePath)/\(local.name)"
+        let currentRemoteDir = remotePath
+        let destPath = currentRemoteDir.hasSuffix("/") ? "\(currentRemoteDir)\(local.name)" : "\(currentRemoteDir)/\(local.name)"
         isBusy = true
         transferStatusText = "Uploading \(local.name) → \(destPath)…"
 
@@ -400,7 +401,7 @@ public struct DualPaneTransferView: View {
             do {
                 let bytes = try Data(contentsOf: local.url)
                 try sftp.uploadBytes(bytes, to: destPath)
-                let refreshed = try sftp.listDirectory(remotePath)
+                let refreshed = try sftp.listDirectory(currentRemoteDir)
                 await MainActor.run {
                     self.remoteEntries = refreshed
                     self.isBusy = false
@@ -444,12 +445,13 @@ public struct DualPaneTransferView: View {
 
     private func createRemoteDirectory() {
         guard let sftp = sftpSession, !newFolderName.trimmingCharacters(in: .whitespaces).isEmpty else { return }
-        let path = remotePath.hasSuffix("/") ? "\(remotePath)\(newFolderName)" : "\(remotePath)/\(newFolderName)"
+        let currentRemoteDir = remotePath
+        let path = currentRemoteDir.hasSuffix("/") ? "\(currentRemoteDir)\(newFolderName)" : "\(currentRemoteDir)/\(newFolderName)"
         newFolderName = ""
         isCreatingRemoteFolder = false
         Task.detached(priority: .userInitiated) {
             try? sftp.createDirectory(path)
-            let refreshed = (try? sftp.listDirectory(remotePath)) ?? []
+            let refreshed = (try? sftp.listDirectory(currentRemoteDir)) ?? []
             await MainActor.run {
                 self.remoteEntries = refreshed
                 self.transferStatusText = "Created directory \(path)"
@@ -461,9 +463,10 @@ public struct DualPaneTransferView: View {
         guard let sftp = sftpSession,
               let remoteId = selectedRemoteId,
               let entry = remoteEntries.first(where: { $0.id == remoteId }) else { return }
+        let currentRemoteDir = remotePath
         Task.detached(priority: .userInitiated) {
             try? sftp.removeEntry(entry.fullPath, isDirectory: entry.isDirectory)
-            let refreshed = (try? sftp.listDirectory(remotePath)) ?? []
+            let refreshed = (try? sftp.listDirectory(currentRemoteDir)) ?? []
             await MainActor.run {
                 self.remoteEntries = refreshed
                 self.selectedRemoteId = nil

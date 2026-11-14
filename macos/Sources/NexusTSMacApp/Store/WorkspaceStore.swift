@@ -160,50 +160,52 @@ public final class LiveTerminalController: ObservableObject {
         let forwards = sshSettings.portForwards.filter(\.enabled)
         let startupCmd = sshSettings.startupCommand
 
-        Task.detached(priority: .userInitiated) { [weak self] in
+        let terminalType = sshSettings.terminalType
+
+        Task { @MainActor [weak self] in
             do {
-                let session = try NativeSshSession.connect(spec: spec, bastion: bastionSpec, openPty: true)
-                var boundCount = 0
-                for rule in forwards {
-                    switch rule.kind {
-                    case .LOCAL:
-                        try? session.startLocalPortForward(
-                            bindAddress: rule.bindAddress,
-                            bindPort: UInt16(clamping: rule.bindPort),
-                            targetHost: rule.targetHost,
-                            targetPort: UInt16(clamping: rule.targetPort)
-                        )
-                        boundCount += 1
-                    case .DYNAMIC_SOCKS5:
-                        try? session.startDynamicSocks5Forward(
-                            bindAddress: rule.bindAddress,
-                            bindPort: UInt16(clamping: rule.bindPort)
-                        )
-                        boundCount += 1
-                    case .REMOTE:
-                        break
+                let (session, finalBoundCount) = try await Task.detached(priority: .userInitiated) { () -> (NativeSshSession, Int) in
+                    let session = try NativeSshSession.connect(spec: spec, bastion: bastionSpec, openPty: true)
+                    var boundCount = 0
+                    for rule in forwards {
+                        switch rule.kind {
+                        case .LOCAL:
+                            try? session.startLocalPortForward(
+                                bindAddress: rule.bindAddress,
+                                bindPort: UInt16(clamping: rule.bindPort),
+                                targetHost: rule.targetHost,
+                                targetPort: UInt16(clamping: rule.targetPort)
+                            )
+                            boundCount += 1
+                        case .DYNAMIC_SOCKS5:
+                            try? session.startDynamicSocks5Forward(
+                                bindAddress: rule.bindAddress,
+                                bindPort: UInt16(clamping: rule.bindPort)
+                            )
+                            boundCount += 1
+                        case .REMOTE:
+                            break
+                        }
                     }
-                }
-                if !startupCmd.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    _ = session.sendInput(Data((startupCmd + "\n").utf8))
-                }
-                await MainActor.run {
-                    guard let self else {
-                        session.disconnect()
-                        return
+                    if !startupCmd.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        _ = session.sendInput(Data((startupCmd + "\n").utf8))
                     }
-                    self.sshSession = session
-                    self.isConnected = true
-                    self.activeForwardsCount = boundCount
-                    self.statusBanner = "Connected • SSH-2.0 (\(sshSettings.terminalType))"
-                    self.startOutputPump()
+                    return (session, boundCount)
+                }.value
+
+                guard let self else {
+                    session.disconnect()
+                    return
                 }
+                self.sshSession = session
+                self.isConnected = true
+                self.activeForwardsCount = finalBoundCount
+                self.statusBanner = "Connected • SSH-2.0 (\(terminalType))"
+                self.startOutputPump()
             } catch {
-                await MainActor.run {
-                    self?.isConnected = false
-                    self?.statusBanner = "Disconnected"
-                    self?.feedBannerText("\r\n\u{1B}[38;2;255;99;99m✖ \(error.localizedDescription)\u{1B}[0m\r\n")
-                }
+                self?.isConnected = false
+                self?.statusBanner = "Disconnected"
+                self?.feedBannerText("\r\n\u{1B}[38;2;255;99;99m✖ \(error.localizedDescription)\u{1B}[0m\r\n")
             }
         }
     }
@@ -711,7 +713,7 @@ public final class WorkspaceStore: ObservableObject {
             isLocalShell: tab.isLocalShell,
             effectiveCredential: effectiveCred,
             bastionConnection: bastionConn,
-            bastionCred: bastionCred
+            bastionCredential: bastionCred
         )
         terminalControllers[tab.id] = created
         return created

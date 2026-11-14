@@ -33,7 +33,7 @@ public struct NexusMainWindowView: View {
                 }
                 .navigationTitle(store.document.name)
                 .navigationSubtitle("Rev \(store.document.revision) • \(store.syncStatusSummary)")
-                .toolbar(id: "nexusts-unified-toolbar") {
+                .toolbar {
                     unifiedMacToolbar
                 }
 

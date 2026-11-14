@@ -498,8 +498,9 @@ public struct NetworkDiagnosticsSessionView: View {
                         results.append("seq=\(seq)  host=\(host)  timeout")
                     }
                 }
+                let finalResults = results
                 await MainActor.run {
-                    self.outputLines = results
+                    self.outputLines = finalResults
                     self.isRunning = false
                 }
             }
@@ -524,8 +525,9 @@ public struct NetworkDiagnosticsSessionView: View {
                         openHits.append(enriched)
                     }
                 }
+                let finalHits = openHits
                 await MainActor.run {
-                    self.scanHits = openHits
+                    self.scanHits = finalHits
                     self.isRunning = false
                 }
             }
