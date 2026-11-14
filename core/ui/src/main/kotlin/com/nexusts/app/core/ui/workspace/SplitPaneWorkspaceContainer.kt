@@ -27,7 +27,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.layout.offset
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowLeft
+import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.CloudQueue
@@ -49,20 +52,33 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import com.nexusts.app.core.ui.components.parseHexColorOrNull
 import com.nexusts.app.core.ui.input.nexusDesktopPointerButtons
 import com.nexusts.app.core.ui.input.nexusHoverTracker
@@ -72,6 +88,7 @@ import com.nexusts.app.core.ui.theme.MorphContainerState
 import com.nexusts.app.core.ui.theme.NexusTheme
 import com.nexusts.app.core.ui.theme.rememberExpressiveTabShape
 import com.nexusts.app.core.ui.theme.rememberMorphingContainerShape
+import kotlin.math.roundToInt
 
 @ImmutableTabStrings
 data class SplitWorkspaceLabels(
@@ -81,6 +98,8 @@ data class SplitWorkspaceLabels(
     val detachToDisplayPrefix: String,
     val toggleBroadcastLabel: String,
     val reconnectTabLabel: String = "Reconnect",
+    val moveTabLeftLabel: String = "Move Tab Left",
+    val moveTabRightLabel: String = "Move Tab Right",
     val closeOtherTabsLabel: String = "Close Other Tabs",
     val closeTabLabel: String,
     val emptyWorkspaceTitle: String,
@@ -88,6 +107,63 @@ data class SplitWorkspaceLabels(
 )
 
 private annotation class ImmutableTabStrings
+
+private class SessionTabDragDropState {
+    var draggedTab by mutableStateOf<WorkspaceSessionTab?>(null)
+    var sourcePaneId by mutableStateOf<String?>(null)
+    var sourceTabIndex by mutableStateOf(0)
+    var pointerInRoot by mutableStateOf(Offset.Zero)
+    var containerOriginInRoot by mutableStateOf(Offset.Zero)
+
+    val paneHeaderBounds = mutableStateMapOf<String, Rect>()
+    val emptyPaneBounds = mutableStateMapOf<String, Rect>()
+    val tabChipBounds = mutableStateMapOf<String, Rect>() // "$paneId::$tabId" -> Rect
+    val paneTabOrders = mutableStateMapOf<String, List<String>>() // paneId -> ordered tabIds
+
+    fun chipKey(paneId: String, tabId: String): String = "$paneId::$tabId"
+
+    fun hoveredPaneHeaderId(): String? =
+        paneHeaderBounds.entries.firstOrNull { (_, rect) -> rect.inflate(10f).contains(pointerInRoot) }?.key
+
+    fun hoveredEmptyPaneId(): String? =
+        emptyPaneBounds.entries.firstOrNull { (_, rect) -> rect.contains(pointerInRoot) }?.key
+
+    fun computeTargetIndexInPane(paneId: String): Int? {
+        val orderedIds = paneTabOrders[paneId] ?: return null
+        if (orderedIds.isEmpty()) return 0
+        for ((idx, tabId) in orderedIds.withIndex()) {
+            val rect = tabChipBounds[chipKey(paneId, tabId)] ?: continue
+            if (pointerInRoot.x < rect.center.x) {
+                return idx
+            }
+        }
+        return orderedIds.lastIndex
+    }
+
+    fun isTearOffCandidate(tearOffThresholdPx: Float): Boolean {
+        val activeTab = draggedTab ?: return false
+        val srcPane = sourcePaneId ?: return false
+        if (hoveredPaneHeaderId() != null || hoveredEmptyPaneId() != null) {
+            return false
+        }
+        val srcHeader = paneHeaderBounds[srcPane] ?: return false
+        val verticalDist = when {
+            pointerInRoot.y < srcHeader.top -> srcHeader.top - pointerInRoot.y
+            pointerInRoot.y > srcHeader.bottom -> pointerInRoot.y - srcHeader.bottom
+            else -> 0f
+        }
+        return activeTab.tabId.isNotEmpty() && verticalDist >= tearOffThresholdPx
+    }
+
+    fun reset() {
+        draggedTab = null
+        sourcePaneId = null
+        sourceTabIndex = 0
+        pointerInRoot = Offset.Zero
+    }
+}
+
+private val LocalSessionTabDragDropState = compositionLocalOf<SessionTabDragDropState?> { null }
 
 /**
  * Recursive Multi-Pane & Multi-Tab Tiling Renderer built on Material 3 Expressive motion & morphing shapes.
@@ -107,194 +183,297 @@ fun SplitPaneWorkspaceContainer(
     onToggleTabBroadcast: (tab: WorkspaceSessionTab) -> Unit,
     onReconnectTab: ((tab: WorkspaceSessionTab) -> Unit)? = null,
     onCloseEmptyPane: ((paneId: String) -> Unit)? = null,
+    onReorderTab: ((paneId: String, fromIndex: Int, toIndex: Int) -> Unit)? = null,
+    onMoveTabToPane: ((tabId: String, targetPaneId: String, targetIndex: Int?) -> Unit)? = null,
     isInsideSplit: Boolean = false,
     emptyStateContent: @Composable () -> Unit,
     sessionRenderer: @Composable (WorkspaceSessionTab, isPaneFocused: Boolean) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    when (node) {
-        is PaneNode.Leaf -> {
-            if (node.tabs.isEmpty()) {
-                val isFocused = node.nodeId == focusedPaneId
-                val focusBorder = if (isFocused && isInsideSplit) {
-                    NexusTheme.extendedColors.activePaneFocusRing.copy(alpha = 0.65f)
+    val inheritedDragState = LocalSessionTabDragDropState.current
+    val dragState = inheritedDragState ?: remember { SessionTabDragDropState() }
+    val density = LocalDensity.current
+    val tearOffThresholdPx = with(density) { 56.dp.toPx() }
+
+    val content: @Composable () -> Unit = {
+        when (node) {
+            is PaneNode.Leaf -> {
+                if (node.tabs.isEmpty()) {
+                    DisposableEffect(node.nodeId) {
+                        onDispose { dragState.emptyPaneBounds.remove(node.nodeId) }
+                    }
+                    val isFocused = node.nodeId == focusedPaneId
+                    val isDropHovered = dragState.draggedTab != null && dragState.hoveredEmptyPaneId() == node.nodeId
+                    val focusBorder = when {
+                        isDropHovered -> MaterialTheme.colorScheme.primary
+                        isFocused && isInsideSplit -> NexusTheme.extendedColors.activePaneFocusRing.copy(alpha = 0.65f)
+                        else -> MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
+                    }
+                    Box(
+                        modifier = modifier
+                            .fillMaxSize()
+                            .padding(6.dp)
+                            .onGloballyPositioned { coords ->
+                                dragState.emptyPaneBounds[node.nodeId] = coords.boundsInRoot()
+                            }
+                            .border(
+                                width = if (isDropHovered) 2.dp else if (isFocused && isInsideSplit) 1.5.dp else 1.dp,
+                                color = focusBorder,
+                                shape = MaterialTheme.shapes.large
+                            )
+                            .clip(MaterialTheme.shapes.large)
+                            .background(
+                                if (isDropHovered) {
+                                    MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.18f)
+                                } else {
+                                    MaterialTheme.colorScheme.surfaceContainerLowest
+                                }
+                            )
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null,
+                                onClick = { onFocusPane(node.nodeId) }
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        emptyStateContent()
+                        if (isInsideSplit && onCloseEmptyPane != null) {
+                            IconButton(
+                                onClick = { onCloseEmptyPane(node.nodeId) },
+                                modifier = Modifier
+                                    .align(Alignment.TopEnd)
+                                    .padding(8.dp)
+                                    .size(30.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Outlined.Close,
+                                    contentDescription = labels.closeTabLabel,
+                                    modifier = Modifier.size(16.dp),
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
                 } else {
-                    MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
+                    LeafSessionPane(
+                        leaf = node,
+                        isFocused = node.nodeId == focusedPaneId,
+                        connectedDisplays = connectedDisplays,
+                        labels = labels,
+                        dragState = dragState,
+                        tearOffThresholdPx = tearOffThresholdPx,
+                        onFocus = { onFocusPane(node.nodeId) },
+                        onSelectTab = { tabId -> onSelectTab(node.nodeId, tabId) },
+                        onCloseTab = onCloseTab,
+                        onSplit = { orientation -> onSplitPane(node.nodeId, orientation) },
+                        onDetachToWindow = onDetachTabToWindow,
+                        onToggleBroadcast = onToggleTabBroadcast,
+                        onReconnectTab = onReconnectTab,
+                        onReorderTab = onReorderTab,
+                        onMoveTabToPane = onMoveTabToPane,
+                        sessionRenderer = sessionRenderer,
+                        modifier = modifier
+                    )
                 }
-                Box(
-                    modifier = modifier
-                        .fillMaxSize()
-                        .padding(6.dp)
-                        .border(
-                            width = if (isFocused && isInsideSplit) 1.5.dp else 1.dp,
-                            color = focusBorder,
-                            shape = MaterialTheme.shapes.large
-                        )
-                        .clip(MaterialTheme.shapes.large)
-                        .background(MaterialTheme.colorScheme.surfaceContainerLowest)
-                        .clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null,
-                            onClick = { onFocusPane(node.nodeId) }
-                        ),
-                    contentAlignment = Alignment.Center
-                ) {
-                    emptyStateContent()
-                    if (isInsideSplit && onCloseEmptyPane != null) {
-                        IconButton(
-                            onClick = { onCloseEmptyPane(node.nodeId) },
-                            modifier = Modifier
-                                .align(Alignment.TopEnd)
-                                .padding(8.dp)
-                                .size(30.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Outlined.Close,
-                                contentDescription = labels.closeTabLabel,
-                                modifier = Modifier.size(16.dp),
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            }
+
+            is PaneNode.Split -> {
+                BoxWithConstraints(modifier = modifier.fillMaxSize()) {
+                    val totalWidthPx = with(density) { maxWidth.toPx().coerceAtLeast(1f) }
+                    val totalHeightPx = with(density) { maxHeight.toPx().coerceAtLeast(1f) }
+
+                    if (node.orientation == SplitOrientation.HORIZONTAL) {
+                        Row(modifier = Modifier.fillMaxSize()) {
+                            SplitPaneWorkspaceContainer(
+                                node = node.first,
+                                focusedPaneId = focusedPaneId,
+                                connectedDisplays = connectedDisplays,
+                                labels = labels,
+                                onFocusPane = onFocusPane,
+                                onSelectTab = onSelectTab,
+                                onCloseTab = onCloseTab,
+                                onSplitPane = onSplitPane,
+                                onResizeSplit = onResizeSplit,
+                                onDetachTabToWindow = onDetachTabToWindow,
+                                onToggleTabBroadcast = onToggleTabBroadcast,
+                                onReconnectTab = onReconnectTab,
+                                onCloseEmptyPane = onCloseEmptyPane,
+                                onReorderTab = onReorderTab,
+                                onMoveTabToPane = onMoveTabToPane,
+                                isInsideSplit = true,
+                                emptyStateContent = emptyStateContent,
+                                sessionRenderer = sessionRenderer,
+                                modifier = Modifier
+                                    .weight(node.splitRatio)
+                                    .fillMaxHeight()
+                            )
+
+                            ExpressiveSplitDivider(
+                                isHorizontalSplit = true,
+                                onDragDeltaPx = { dx ->
+                                    val nextRatio = node.splitRatio + (dx / totalWidthPx)
+                                    onResizeSplit(node.nodeId, nextRatio)
+                                },
+                                onDoubleClickReset = { onResizeSplit(node.nodeId, 0.5f) }
+                            )
+
+                            SplitPaneWorkspaceContainer(
+                                node = node.second,
+                                focusedPaneId = focusedPaneId,
+                                connectedDisplays = connectedDisplays,
+                                labels = labels,
+                                onFocusPane = onFocusPane,
+                                onSelectTab = onSelectTab,
+                                onCloseTab = onCloseTab,
+                                onSplitPane = onSplitPane,
+                                onResizeSplit = onResizeSplit,
+                                onDetachTabToWindow = onDetachTabToWindow,
+                                onToggleTabBroadcast = onToggleTabBroadcast,
+                                onReconnectTab = onReconnectTab,
+                                onCloseEmptyPane = onCloseEmptyPane,
+                                onReorderTab = onReorderTab,
+                                onMoveTabToPane = onMoveTabToPane,
+                                isInsideSplit = true,
+                                emptyStateContent = emptyStateContent,
+                                sessionRenderer = sessionRenderer,
+                                modifier = Modifier
+                                    .weight(1f - node.splitRatio)
+                                    .fillMaxHeight()
+                            )
+                        }
+                    } else {
+                        Column(modifier = Modifier.fillMaxSize()) {
+                            SplitPaneWorkspaceContainer(
+                                node = node.first,
+                                focusedPaneId = focusedPaneId,
+                                connectedDisplays = connectedDisplays,
+                                labels = labels,
+                                onFocusPane = onFocusPane,
+                                onSelectTab = onSelectTab,
+                                onCloseTab = onCloseTab,
+                                onSplitPane = onSplitPane,
+                                onResizeSplit = onResizeSplit,
+                                onDetachTabToWindow = onDetachTabToWindow,
+                                onToggleTabBroadcast = onToggleTabBroadcast,
+                                onReconnectTab = onReconnectTab,
+                                onCloseEmptyPane = onCloseEmptyPane,
+                                onReorderTab = onReorderTab,
+                                onMoveTabToPane = onMoveTabToPane,
+                                isInsideSplit = true,
+                                emptyStateContent = emptyStateContent,
+                                sessionRenderer = sessionRenderer,
+                                modifier = Modifier
+                                    .weight(node.splitRatio)
+                                    .fillMaxWidth()
+                            )
+
+                            ExpressiveSplitDivider(
+                                isHorizontalSplit = false,
+                                onDragDeltaPx = { dy ->
+                                    val nextRatio = node.splitRatio + (dy / totalHeightPx)
+                                    onResizeSplit(node.nodeId, nextRatio)
+                                },
+                                onDoubleClickReset = { onResizeSplit(node.nodeId, 0.5f) }
+                            )
+
+                            SplitPaneWorkspaceContainer(
+                                node = node.second,
+                                focusedPaneId = focusedPaneId,
+                                connectedDisplays = connectedDisplays,
+                                labels = labels,
+                                onFocusPane = onFocusPane,
+                                onSelectTab = onSelectTab,
+                                onCloseTab = onCloseTab,
+                                onSplitPane = onSplitPane,
+                                onResizeSplit = onResizeSplit,
+                                onDetachTabToWindow = onDetachTabToWindow,
+                                onToggleTabBroadcast = onToggleTabBroadcast,
+                                onReconnectTab = onReconnectTab,
+                                onCloseEmptyPane = onCloseEmptyPane,
+                                onReorderTab = onReorderTab,
+                                onMoveTabToPane = onMoveTabToPane,
+                                isInsideSplit = true,
+                                emptyStateContent = emptyStateContent,
+                                sessionRenderer = sessionRenderer,
+                                modifier = Modifier
+                                    .weight(1f - node.splitRatio)
+                                    .fillMaxWidth()
                             )
                         }
                     }
                 }
-            } else {
-                LeafSessionPane(
-                    leaf = node,
-                    isFocused = node.nodeId == focusedPaneId,
-                    connectedDisplays = connectedDisplays,
-                    labels = labels,
-                    onFocus = { onFocusPane(node.nodeId) },
-                    onSelectTab = { tabId -> onSelectTab(node.nodeId, tabId) },
-                    onCloseTab = onCloseTab,
-                    onSplit = { orientation -> onSplitPane(node.nodeId, orientation) },
-                    onDetachToWindow = onDetachTabToWindow,
-                    onToggleBroadcast = onToggleTabBroadcast,
-                    onReconnectTab = onReconnectTab,
-                    sessionRenderer = sessionRenderer,
-                    modifier = modifier
-                )
             }
         }
+    }
 
-        is PaneNode.Split -> {
-            val density = LocalDensity.current
-            BoxWithConstraints(modifier = modifier.fillMaxSize()) {
-                val totalWidthPx = with(density) { maxWidth.toPx().coerceAtLeast(1f) }
-                val totalHeightPx = with(density) { maxHeight.toPx().coerceAtLeast(1f) }
-
-                if (node.orientation == SplitOrientation.HORIZONTAL) {
-                    Row(modifier = Modifier.fillMaxSize()) {
-                        SplitPaneWorkspaceContainer(
-                            node = node.first,
-                            focusedPaneId = focusedPaneId,
-                            connectedDisplays = connectedDisplays,
-                            labels = labels,
-                            onFocusPane = onFocusPane,
-                            onSelectTab = onSelectTab,
-                            onCloseTab = onCloseTab,
-                            onSplitPane = onSplitPane,
-                            onResizeSplit = onResizeSplit,
-                            onDetachTabToWindow = onDetachTabToWindow,
-                            onToggleTabBroadcast = onToggleTabBroadcast,
-                            onReconnectTab = onReconnectTab,
-                            onCloseEmptyPane = onCloseEmptyPane,
-                            isInsideSplit = true,
-                            emptyStateContent = emptyStateContent,
-                            sessionRenderer = sessionRenderer,
-                            modifier = Modifier
-                                .weight(node.splitRatio)
-                                .fillMaxHeight()
-                        )
-
-                        ExpressiveSplitDivider(
-                            isHorizontalSplit = true,
-                            onDragDeltaPx = { dx ->
-                                val nextRatio = node.splitRatio + (dx / totalWidthPx)
-                                onResizeSplit(node.nodeId, nextRatio)
-                            },
-                            onDoubleClickReset = { onResizeSplit(node.nodeId, 0.5f) }
-                        )
-
-                        SplitPaneWorkspaceContainer(
-                            node = node.second,
-                            focusedPaneId = focusedPaneId,
-                            connectedDisplays = connectedDisplays,
-                            labels = labels,
-                            onFocusPane = onFocusPane,
-                            onSelectTab = onSelectTab,
-                            onCloseTab = onCloseTab,
-                            onSplitPane = onSplitPane,
-                            onResizeSplit = onResizeSplit,
-                            onDetachTabToWindow = onDetachTabToWindow,
-                            onToggleTabBroadcast = onToggleTabBroadcast,
-                            onReconnectTab = onReconnectTab,
-                            onCloseEmptyPane = onCloseEmptyPane,
-                            isInsideSplit = true,
-                            emptyStateContent = emptyStateContent,
-                            sessionRenderer = sessionRenderer,
-                            modifier = Modifier
-                                .weight(1f - node.splitRatio)
-                                .fillMaxHeight()
-                        )
+    if (inheritedDragState == null) {
+        CompositionLocalProvider(LocalSessionTabDragDropState provides dragState) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .onGloballyPositioned { coords ->
+                        dragState.containerOriginInRoot = coords.boundsInRoot().topLeft
                     }
-                } else {
-                    Column(modifier = Modifier.fillMaxSize()) {
-                        SplitPaneWorkspaceContainer(
-                            node = node.first,
-                            focusedPaneId = focusedPaneId,
-                            connectedDisplays = connectedDisplays,
-                            labels = labels,
-                            onFocusPane = onFocusPane,
-                            onSelectTab = onSelectTab,
-                            onCloseTab = onCloseTab,
-                            onSplitPane = onSplitPane,
-                            onResizeSplit = onResizeSplit,
-                            onDetachTabToWindow = onDetachTabToWindow,
-                            onToggleTabBroadcast = onToggleTabBroadcast,
-                            onReconnectTab = onReconnectTab,
-                            onCloseEmptyPane = onCloseEmptyPane,
-                            isInsideSplit = true,
-                            emptyStateContent = emptyStateContent,
-                            sessionRenderer = sessionRenderer,
-                            modifier = Modifier
-                                .weight(node.splitRatio)
-                                .fillMaxWidth()
-                        )
+            ) {
+                content()
 
-                        ExpressiveSplitDivider(
-                            isHorizontalSplit = false,
-                            onDragDeltaPx = { dy ->
-                                val nextRatio = node.splitRatio + (dy / totalHeightPx)
-                                onResizeSplit(node.nodeId, nextRatio)
+                val draggingTab = dragState.draggedTab
+                if (draggingTab != null) {
+                    val isTearOff = dragState.isTearOffCandidate(tearOffThresholdPx)
+                    val localPos = dragState.pointerInRoot - dragState.containerOriginInRoot
+                    Surface(
+                        modifier = Modifier
+                            .zIndex(50f)
+                            .offset {
+                                IntOffset(
+                                    x = (localPos.x + 14f).roundToInt(),
+                                    y = (localPos.y + 14f).roundToInt()
+                                )
                             },
-                            onDoubleClickReset = { onResizeSplit(node.nodeId, 0.5f) }
-                        )
-
-                        SplitPaneWorkspaceContainer(
-                            node = node.second,
-                            focusedPaneId = focusedPaneId,
-                            connectedDisplays = connectedDisplays,
-                            labels = labels,
-                            onFocusPane = onFocusPane,
-                            onSelectTab = onSelectTab,
-                            onCloseTab = onCloseTab,
-                            onSplitPane = onSplitPane,
-                            onResizeSplit = onResizeSplit,
-                            onDetachTabToWindow = onDetachTabToWindow,
-                            onToggleTabBroadcast = onToggleTabBroadcast,
-                            onReconnectTab = onReconnectTab,
-                            onCloseEmptyPane = onCloseEmptyPane,
-                            isInsideSplit = true,
-                            emptyStateContent = emptyStateContent,
-                            sessionRenderer = sessionRenderer,
-                            modifier = Modifier
-                                .weight(1f - node.splitRatio)
-                                .fillMaxWidth()
-                        )
+                        shape = RoundedCornerShape(99.dp),
+                        color = if (isTearOff) {
+                            MaterialTheme.colorScheme.primaryContainer
+                        } else {
+                            MaterialTheme.colorScheme.surfaceContainerHighest
+                        },
+                        border = BorderStroke(
+                            1.dp,
+                            if (isTearOff) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
+                        ),
+                        tonalElevation = 8.dp,
+                        shadowElevation = 8.dp
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(
+                                imageVector = if (isTearOff) {
+                                    Icons.AutoMirrored.Outlined.OpenInNew
+                                } else {
+                                    protocolIcon(draggingTab.protocol)
+                                },
+                                contentDescription = null,
+                                modifier = Modifier.size(15.dp),
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                            Text(
+                                text = if (isTearOff) {
+                                    "${labels.detachNewWindowLabel} • ${draggingTab.title}"
+                                } else {
+                                    draggingTab.title
+                                },
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        }
                     }
                 }
             }
         }
+    } else {
+        content()
     }
 }
 
@@ -304,6 +483,8 @@ private fun LeafSessionPane(
     isFocused: Boolean,
     connectedDisplays: List<ExternalDisplayDescriptor>,
     labels: SplitWorkspaceLabels,
+    dragState: SessionTabDragDropState,
+    tearOffThresholdPx: Float,
     onFocus: () -> Unit,
     onSelectTab: (String) -> Unit,
     onCloseTab: (String) -> Unit,
@@ -311,15 +492,29 @@ private fun LeafSessionPane(
     onDetachToWindow: (WorkspaceSessionTab, Int?) -> Unit,
     onToggleBroadcast: (WorkspaceSessionTab) -> Unit,
     onReconnectTab: ((WorkspaceSessionTab) -> Unit)? = null,
+    onReorderTab: ((String, Int, Int) -> Unit)? = null,
+    onMoveTabToPane: ((String, String, Int?) -> Unit)? = null,
     sessionRenderer: @Composable (WorkspaceSessionTab, Boolean) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val extendedColors = NexusTheme.extendedColors
+    val isHeaderDropTarget = dragState.draggedTab != null &&
+        dragState.hoveredPaneHeaderId() == leaf.nodeId &&
+        dragState.sourcePaneId != leaf.nodeId
+
+    DisposableEffect(leaf.nodeId, leaf.tabs) {
+        dragState.paneTabOrders[leaf.nodeId] = leaf.tabs.map { it.tabId }
+        onDispose {
+            dragState.paneHeaderBounds.remove(leaf.nodeId)
+            dragState.paneTabOrders.remove(leaf.nodeId)
+        }
+    }
+
     val borderColor by animateColorAsState(
-        targetValue = if (isFocused) {
-            extendedColors.activePaneFocusRing.copy(alpha = 0.72f)
-        } else {
-            MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
+        targetValue = when {
+            isHeaderDropTarget -> MaterialTheme.colorScheme.primary
+            isFocused -> extendedColors.activePaneFocusRing.copy(alpha = 0.72f)
+            else -> MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
         },
         animationSpec = createColorSpec(),
         label = "PaneFocusBorderColor"
@@ -334,7 +529,7 @@ private fun LeafSessionPane(
         modifier = modifier
             .padding(4.dp)
             .border(
-                width = if (isFocused) 1.5.dp else 1.dp,
+                width = if (isHeaderDropTarget) 2.dp else if (isFocused) 1.5.dp else 1.dp,
                 color = borderColor,
                 shape = paneShape
             )
@@ -349,7 +544,16 @@ private fun LeafSessionPane(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(42.dp)
-                    .background(MaterialTheme.colorScheme.surfaceContainer)
+                    .onGloballyPositioned { coords ->
+                        dragState.paneHeaderBounds[leaf.nodeId] = coords.boundsInRoot()
+                    }
+                    .background(
+                        if (isHeaderDropTarget) {
+                            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.25f)
+                        } else {
+                            MaterialTheme.colorScheme.surfaceContainer
+                        }
+                    )
                     .padding(horizontal = 6.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -360,15 +564,41 @@ private fun LeafSessionPane(
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    leaf.tabs.forEach { tab ->
+                    val hoveredHeaderPane = dragState.hoveredPaneHeaderId()
+                    val previewDropIndex = if (dragState.draggedTab != null && hoveredHeaderPane == leaf.nodeId) {
+                        dragState.computeTargetIndexInPane(leaf.nodeId)
+                    } else {
+                        null
+                    }
+
+                    leaf.tabs.forEachIndexed { tabIndex, tab ->
                         val isSelected = tab.tabId == leaf.activeTab?.tabId
                         ExpressiveSessionTabChip(
+                            paneId = leaf.nodeId,
                             tab = tab,
+                            tabIndex = tabIndex,
+                            totalTabs = leaf.tabs.size,
                             isSelected = isSelected,
+                            isDropSlotHighlighted = previewDropIndex == tabIndex &&
+                                dragState.draggedTab?.tabId != tab.tabId,
+                            dragState = dragState,
+                            tearOffThresholdPx = tearOffThresholdPx,
                             connectedDisplays = connectedDisplays,
                             labels = labels,
                             onSelect = { onSelectTab(tab.tabId) },
                             onClose = { onCloseTab(tab.tabId) },
+                            onMoveLeft = if (tabIndex > 0 && onReorderTab != null) {
+                                { onReorderTab(leaf.nodeId, tabIndex, tabIndex - 1) }
+                            } else {
+                                null
+                            },
+                            onMoveRight = if (tabIndex < leaf.tabs.lastIndex && onReorderTab != null) {
+                                { onReorderTab(leaf.nodeId, tabIndex, tabIndex + 1) }
+                            } else {
+                                null
+                            },
+                            onReorderTab = onReorderTab,
+                            onMoveTabToPane = onMoveTabToPane,
                             onCloseOtherTabs = if (leaf.tabs.size > 1) {
                                 {
                                     leaf.tabs
@@ -511,12 +741,22 @@ private fun LeafSessionPane(
 
 @Composable
 private fun ExpressiveSessionTabChip(
+    paneId: String,
     tab: WorkspaceSessionTab,
+    tabIndex: Int,
+    totalTabs: Int,
     isSelected: Boolean,
+    isDropSlotHighlighted: Boolean,
+    dragState: SessionTabDragDropState,
+    tearOffThresholdPx: Float,
     connectedDisplays: List<ExternalDisplayDescriptor>,
     labels: SplitWorkspaceLabels,
     onSelect: () -> Unit,
     onClose: () -> Unit,
+    onMoveLeft: (() -> Unit)? = null,
+    onMoveRight: (() -> Unit)? = null,
+    onReorderTab: ((String, Int, Int) -> Unit)? = null,
+    onMoveTabToPane: ((String, String, Int?) -> Unit)? = null,
     onCloseOtherTabs: (() -> Unit)? = null,
     onSplitRight: () -> Unit,
     onSplitDown: () -> Unit,
@@ -526,13 +766,28 @@ private fun ExpressiveSessionTabChip(
 ) {
     val hoverState = rememberDesktopHoverState()
     var contextMenuOpen by remember { mutableStateOf(false) }
+    var chipCoordinates by remember { mutableStateOf<LayoutCoordinates?>(null) }
     val customAccent = parseHexColorOrNull(tab.customColorHex)
+    val isBeingDragged = dragState.draggedTab?.tabId == tab.tabId
+
+    val latestTabIndex by rememberUpdatedState(tabIndex)
+    val latestOnReorderTab by rememberUpdatedState(onReorderTab)
+    val latestOnMoveTabToPane by rememberUpdatedState(onMoveTabToPane)
+    val latestOnDetachToWindow by rememberUpdatedState(onDetachToWindow)
+
+    DisposableEffect(paneId, tab.tabId) {
+        onDispose {
+            dragState.tabChipBounds.remove(dragState.chipKey(paneId, tab.tabId))
+        }
+    }
+
     val tabShape = rememberExpressiveTabShape(
         isSelected = isSelected,
         isHovered = hoverState.value.isHovered
     )
     val bgColor by animateColorAsState(
         targetValue = when {
+            isDropSlotHighlighted -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.48f)
             isSelected && customAccent != null -> customAccent.copy(alpha = 0.20f)
             isSelected -> MaterialTheme.colorScheme.secondaryContainer
             hoverState.value.isHovered -> MaterialTheme.colorScheme.surfaceContainerHighest
@@ -547,11 +802,63 @@ private fun ExpressiveSessionTabChip(
         Surface(
             modifier = Modifier
                 .height(32.dp)
+                .alpha(if (isBeingDragged) 0.45f else 1f)
+                .onGloballyPositioned { coords ->
+                    chipCoordinates = coords
+                    dragState.tabChipBounds[dragState.chipKey(paneId, tab.tabId)] = coords.boundsInRoot()
+                }
                 .nexusHoverTracker(hoverState, PointerIcon.Hand)
                 .nexusDesktopPointerButtons(
                     onSecondaryClick = { contextMenuOpen = true },
                     onTertiaryMiddleClick = { onClose() }
                 )
+                .pointerInput(paneId, tab.tabId, totalTabs) {
+                    detectDragGestures(
+                        onDragStart = { startOffset ->
+                            val rootOrigin = chipCoordinates?.boundsInRoot()?.topLeft ?: Offset.Zero
+                            dragState.draggedTab = tab
+                            dragState.sourcePaneId = paneId
+                            dragState.sourceTabIndex = latestTabIndex
+                            dragState.pointerInRoot = rootOrigin + startOffset
+                        },
+                        onDrag = { change, dragAmount ->
+                            change.consume()
+                            dragState.pointerInRoot += dragAmount
+                        },
+                        onDragCancel = {
+                            dragState.reset()
+                        },
+                        onDragEnd = {
+                            val dragged = dragState.draggedTab
+                            val srcPane = dragState.sourcePaneId
+                            val srcIdx = dragState.sourceTabIndex
+                            if (dragged != null && srcPane != null) {
+                                val targetHeaderPane = dragState.hoveredPaneHeaderId()
+                                val targetEmptyPane = dragState.hoveredEmptyPaneId()
+                                when {
+                                    targetHeaderPane != null && targetHeaderPane == srcPane -> {
+                                        val destIdx = dragState.computeTargetIndexInPane(srcPane)
+                                        if (destIdx != null && destIdx != srcIdx) {
+                                            latestOnReorderTab?.invoke(srcPane, srcIdx, destIdx)
+                                                ?: latestOnMoveTabToPane?.invoke(dragged.tabId, srcPane, destIdx)
+                                        }
+                                    }
+                                    targetHeaderPane != null && targetHeaderPane != srcPane -> {
+                                        val destIdx = dragState.computeTargetIndexInPane(targetHeaderPane)
+                                        latestOnMoveTabToPane?.invoke(dragged.tabId, targetHeaderPane, destIdx)
+                                    }
+                                    targetEmptyPane != null && targetEmptyPane != srcPane -> {
+                                        latestOnMoveTabToPane?.invoke(dragged.tabId, targetEmptyPane, 0)
+                                    }
+                                    dragState.isTearOffCandidate(tearOffThresholdPx) -> {
+                                        latestOnDetachToWindow(null)
+                                    }
+                                }
+                            }
+                            dragState.reset()
+                        }
+                    )
+                }
                 .clip(tabShape)
                 .clickable(
                     interactionSource = remember { MutableInteractionSource() },
@@ -560,10 +867,10 @@ private fun ExpressiveSessionTabChip(
                 ),
             shape = tabShape,
             color = bgColor,
-            border = if (isSelected) {
-                BorderStroke(1.dp, (customAccent ?: MaterialTheme.colorScheme.secondary).copy(alpha = 0.55f))
-            } else {
-                null
+            border = when {
+                isDropSlotHighlighted -> BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
+                isSelected -> BorderStroke(1.dp, (customAccent ?: MaterialTheme.colorScheme.secondary).copy(alpha = 0.55f))
+                else -> null
             }
         ) {
             Row(
@@ -645,6 +952,33 @@ private fun ExpressiveSessionTabChip(
                         onReconnect()
                     }
                 )
+                HorizontalDivider()
+            }
+            if (onMoveLeft != null || onMoveRight != null) {
+                if (onMoveLeft != null) {
+                    DropdownMenuItem(
+                        text = { Text(labels.moveTabLeftLabel) },
+                        leadingIcon = {
+                            Icon(Icons.AutoMirrored.Outlined.KeyboardArrowLeft, contentDescription = null)
+                        },
+                        onClick = {
+                            contextMenuOpen = false
+                            onMoveLeft()
+                        }
+                    )
+                }
+                if (onMoveRight != null) {
+                    DropdownMenuItem(
+                        text = { Text(labels.moveTabRightLabel) },
+                        leadingIcon = {
+                            Icon(Icons.AutoMirrored.Outlined.KeyboardArrowRight, contentDescription = null)
+                        },
+                        onClick = {
+                            contextMenuOpen = false
+                            onMoveRight()
+                        }
+                    )
+                }
                 HorizontalDivider()
             }
             DropdownMenuItem(

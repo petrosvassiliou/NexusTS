@@ -197,6 +197,85 @@ class WorkspaceTilingController(
     }
 
     /**
+     * Reorders tabs within [paneId] by moving the tab at [fromIndex] to [toIndex].
+     */
+    fun reorderTab(paneId: String, fromIndex: Int, toIndex: Int): Boolean {
+        val leaf = findLeaf(_rootNode.value, paneId) ?: return false
+        if (fromIndex !in leaf.tabs.indices || toIndex !in leaf.tabs.indices || fromIndex == toIndex) {
+            return false
+        }
+        _rootNode.value = transformLeaf(_rootNode.value, paneId) { current ->
+            val mutable = current.tabs.toMutableList()
+            val moved = mutable.removeAt(fromIndex)
+            mutable.add(toIndex, moved)
+            current.copy(tabs = mutable)
+        }
+        _focusedPaneId.value = paneId
+        return true
+    }
+
+    fun moveTabLeft(paneId: String, tabId: String): Boolean {
+        val leaf = findLeaf(_rootNode.value, paneId) ?: return false
+        val idx = leaf.tabs.indexOfFirst { it.tabId == tabId }
+        if (idx <= 0) return false
+        return reorderTab(paneId, idx, idx - 1)
+    }
+
+    fun moveTabRight(paneId: String, tabId: String): Boolean {
+        val leaf = findLeaf(_rootNode.value, paneId) ?: return false
+        val idx = leaf.tabs.indexOfFirst { it.tabId == tabId }
+        if (idx < 0 || idx >= leaf.tabs.lastIndex) return false
+        return reorderTab(paneId, idx, idx + 1)
+    }
+
+    /**
+     * Moves [tabId] into [targetPaneId] at [targetIndex] (or end of strip if null), collapsing empty source splits.
+     */
+    fun moveTabToPane(tabId: String, targetPaneId: String, targetIndex: Int? = null): Boolean {
+        val currentRoot = _rootNode.value
+        val sourceLeaf = collectLeaves(currentRoot).firstOrNull { leaf ->
+            leaf.tabs.any { it.tabId == tabId }
+        } ?: return false
+        val targetLeaf = findLeaf(currentRoot, targetPaneId) ?: return false
+
+        if (sourceLeaf.nodeId == targetPaneId) {
+            val fromIdx = sourceLeaf.tabs.indexOfFirst { it.tabId == tabId }
+            val destIdx = (targetIndex ?: sourceLeaf.tabs.lastIndex).coerceIn(0, sourceLeaf.tabs.lastIndex)
+            return reorderTab(targetPaneId, fromIdx, destIdx)
+        }
+
+        val movingTab = sourceLeaf.tabs.first { it.tabId == tabId }
+        val updated = mapAllLeaves(currentRoot) { leaf ->
+            when (leaf.nodeId) {
+                sourceLeaf.nodeId -> {
+                    val remaining = leaf.tabs.filterNot { it.tabId == tabId }
+                    val nextActive = if (leaf.activeTabId == tabId) {
+                        remaining.lastOrNull()?.tabId
+                    } else {
+                        leaf.activeTabId
+                    }
+                    leaf.copy(tabs = remaining, activeTabId = nextActive)
+                }
+                targetLeaf.nodeId -> {
+                    val withoutDup = leaf.tabs.filterNot { it.tabId == tabId }.toMutableList()
+                    val insertAt = (targetIndex ?: withoutDup.size).coerceIn(0, withoutDup.size)
+                    withoutDup.add(insertAt, movingTab)
+                    leaf.copy(tabs = withoutDup, activeTabId = movingTab.tabId)
+                }
+                else -> leaf
+            }
+        }
+        val pruned = pruneEmptySplits(updated)
+        _rootNode.value = pruned
+        _focusedPaneId.value = if (findLeaf(pruned, targetPaneId) != null) {
+            targetPaneId
+        } else {
+            firstLeafId(pruned)
+        }
+        return true
+    }
+
+    /**
      * Closes [tabId] and automatically collapses empty split panes so sibling panes reclaim space.
      */
     fun closeTab(tabId: String): WorkspaceSessionTab? {

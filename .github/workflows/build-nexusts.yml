@@ -239,14 +239,14 @@ jobs:
             echo "[OK] Production RSA-4096 upload certificate SHA-256 verified."
           fi
 
-          echo "==> [2/4] Verifying Google Play Protect Compliance (Zero Sideloading Permissions)"
+          echo "==> [2/4] Verifying Google Play Protect Compliance (Zero Sideloading or Broad Storage Permissions)"
           PERMS_OUT="$("${AAPT2}" dump permissions "${RELEASE_APK}")"
           echo "${PERMS_OUT}"
-          if echo "${PERMS_OUT}" | grep -q "REQUEST_INSTALL_PACKAGES"; then
-            echo "FATAL: Forbidden REQUEST_INSTALL_PACKAGES permission detected!" >&2
+          if echo "${PERMS_OUT}" | grep -qE "REQUEST_INSTALL_PACKAGES|MANAGE_EXTERNAL_STORAGE"; then
+            echo "FATAL: Forbidden Play Protect-sensitive permission detected!" >&2
             exit 1
           fi
-          echo "[OK] Zero REQUEST_INSTALL_PACKAGES permissions — 100% Google Play Protect compliant."
+          echo "[OK] Zero REQUEST_INSTALL_PACKAGES / MANAGE_EXTERNAL_STORAGE permissions — 100% Google Play Protect compliant."
 
           echo "==> [3/4] Verifying Package Identity & 6 Bundled Enterprise Locales"
           BADGING_OUT="$("${AAPT2}" dump badging "${RELEASE_APK}")"
@@ -359,11 +359,10 @@ jobs:
             - **`nexusts-upload-certificate.pem` & `oauth-and-mdm-registration.json`**: Public X.509 upload certificate (`SHA-1: A6:AF:15:A9:BF:0B:FE:38:D4:66:46:3E:3E:72:A6:5B:4F:9C:4D:F6`, `SHA-256: 4A:BD:80:F1:20:14:B9:88:09:1C:97:92:2F:87:02:D1:BF:B7:93:9C:73:B6:9A:DB:1A:9B:76:30:6A:30:27:82`) and Managed Google Play `app_restrictions` template.
 
             ### What's New in ${{ steps.stage.outputs.tag_name }}
-            - **Drag-and-Drop Connections Between Folders**: Drag connections smoothly between folders or back to Top Level via desktop mouse, trackpad, touch, or stylus (with auto-expanding collapsed folders on hover, floating preview card, and `"Move to Folder…"` context menu action) without dropping live SSH/RDP sessions.
-            - **Clean Google Material 3 Desktop UI & Clear Folder vs. Connection Hierarchy**: Scaled-up typography, wider sidebars (`324dp` / `340dp`), `64dp` decluttered window header, structured tonal Folder container cards with filled folder badges & connection/session pills, and indented Connection host rows with vertical tree guide rails & `36dp` protocol squircles.
-            - **1-Click Disconnect All in Folder**: Recursively close all active docked and detached sessions inside a folder and its subfolders from the sidebar tree or Overview Dashboard.
-            - **Language Selection Dropdown with Vector Flags**: Anchored Material 3 top-bar dropdown displaying crisp Canvas vector country flags, native/localized names, and ISO language pills across all 6 bundled locales (`EN`, `DE`, `IT`, `ES`, `EL`, `FR`).
-            - **Google Play Protect–Compatible Auto-Update**: Startup & periodic (6h) HTTPS GitHub Release checks with zero `REQUEST_INSTALL_PACKAGES` permissions, trusted system browser handoff, and dual-verified (`SHA256SUMS.txt` + APK Signature Scheme v3/v4 signing certificate) Android `DownloadManager` verification.
+            - **Biometric, Passkey & Hardware Keystore Vault Unlock + Idle Auto-Lock**: Unlock Argon2id `.nxts` vaults via fingerprint, face, passkey, or device credential backed by Android Keystore AES-256-GCM (`BiometricPrompt`), plus 1-tap **Quick-Lock** and a configurable **Idle Auto-Lock Timeout** (`Off`, `1m`, `5m`, `15m`, `30m`) tracked across pointer, stylus, and keyboard activity.
+            - **Nested Folder Drag-and-Drop, Manual Sorting, & Session Tab Reordering / Tear-Off**: Drag folders into other folders (with strict cycle/descendant protection) or back to Top Level, manually sort folders and hosts (`Move Up` / `Move Down` & drag-onto-connection insertion), reorder live session tabs within a tab strip or across split panes, and tear off tabs vertically into native Googlebook OS freeform windows (`DetachedSessionActivity`).
+            - **FreeRDP 3.12 Dynamic Window Auto-Resize (`DISP` Virtual Channel)**: Live desktop resolution auto-fitting (`DispClientContext->SendMonitorLayout` + `DesktopResize`) when resizing Googlebook OS freeform windows or split panes, with a live toolbar mode chip (`Auto-Fit DISP`, `Smart Scale`, `Fixed`).
+            - **Google Play Protect–Compliant SAF Shared Folder Redirection (`RDPDR`)**: Expose chosen local Googlebook OS / Android folders inside remote Windows sessions as `\\tsclient\<ShareName>` via Storage Access Framework (`OpenDocumentTree`) with incremental two-way synchronization and zero `MANAGE_EXTERNAL_STORAGE` permissions.
           files: release-assets/*
 
       - name: Check Optional Google Play Service Account Secret

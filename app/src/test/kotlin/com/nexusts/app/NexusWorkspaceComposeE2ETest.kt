@@ -47,6 +47,7 @@ import com.nexusts.app.feature.workspace.NexusWorkspaceScreen
 import com.nexusts.app.feature.workspace.NexusWorkspaceViewModel
 import com.nexusts.app.feature.workspace.i18n.WorkspaceLocalizedStrings
 import com.nexusts.app.protocols.ssh.bridge.SshNativeBridge
+import com.nexusts.app.security.BiometricVaultUnlockManager
 import com.nexusts.app.updater.GitHubReleaseUpdateChecker
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -65,6 +66,7 @@ import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.zip.GZIPOutputStream
 
 @RunWith(RobolectricTestRunner::class)
@@ -1146,5 +1148,310 @@ class NexusWorkspaceComposeE2ETest {
         assertTextRendered("SHA-256: ${sampleSha.take(24)}")
         assertTextRendered(strings.autoUpdateInstallAction)
     }
+
+    @Test
+    fun biometricUnlockQuickLockIdleTimeoutNestedFolderSortingAndRdpSafDrivesWorkEndToEnd() {
+        val vm = buildRealViewModel()
+        val strings = WorkspaceLocalizedStrings.defaultEnglish()
+        val appContext = ApplicationProvider.getApplicationContext<Context>()
+
+        // Verify MANAGE_EXTERNAL_STORAGE is NEVER requested (100% SAF-only Google Play Protect compliant)
+        val pkgInfo = appContext.packageManager.getPackageInfo(
+            appContext.packageName,
+            android.content.pm.PackageManager.GET_PERMISSIONS
+        )
+        val requestedPerms = pkgInfo.requestedPermissions?.toSet().orEmpty()
+        assertFalse(
+            "App must NEVER request MANAGE_EXTERNAL_STORAGE; RDPDR uses SAF OpenDocumentTree exclusively",
+            "android.permission.MANAGE_EXTERNAL_STORAGE" in requestedPerms
+        )
+
+        // 1. Milestone A: BiometricVaultUnlockManager AES-256-GCM enrollment & Idle Auto-Lock preferences
+        val bioManager = BiometricVaultUnlockManager(appContext)
+        bioManager.clearEnrolledPassphrase()
+        assertFalse(bioManager.hasEnrolledPassphrase())
+        assertFalse(bioManager.isBiometricUnlockEnabled())
+
+        val enrolledOk = bioManager.enrollPassphrase("NexusTS-BioVault-2026!".toCharArray(), enableBiometricUnlock = true)
+        assertTrue(enrolledOk)
+        assertTrue(bioManager.hasEnrolledPassphrase())
+        assertTrue(bioManager.isBiometricUnlockEnabled())
+        assertArrayEquals(
+            "NexusTS-BioVault-2026!".toCharArray(),
+            bioManager.copyEnrolledPassphraseOrNull()
+        )
+
+        bioManager.setIdleAutoLockMinutes(15)
+        assertEquals(15, bioManager.getIdleAutoLockMinutes())
+        bioManager.setIdleAutoLockMinutes(999) // unsupported -> normalizes to 0 (Off)
+        assertEquals(0, bioManager.getIdleAutoLockMinutes())
+
+        val quickLockInvoked = AtomicBoolean(false)
+        val biometricUnlockInvoked = AtomicBoolean(false)
+        val selectedIdleMinutes = AtomicInteger(0)
+        val safSampleUri = "content://com.android.externalstorage.documents/tree/primary%3AEngineeringShare"
+
+        composeRule.runOnIdle {
+            vm.updateBiometricAndAutoLockState(
+                hardwareAvailable = true,
+                biometricEnabled = true,
+                hasSavedPassphrase = true,
+                idleAutoLockMinutes = 5
+            )
+        }
+
+        composeRule.setContent {
+            NexusTSTheme {
+                NexusWorkspaceScreen(
+                    viewModel = vm,
+                    strings = strings,
+                    connectedDisplays = emptyList(),
+                    flexibleUpdateDownloaded = false,
+                    onCompleteFlexibleUpdate = {},
+                    onRequestImportFilePicker = {},
+                    onRequestGoogleDriveSync = {},
+                    onDetachTabToNativeWindow = { _, _ -> },
+                    onRequestBiometricUnlock = {
+                        biometricUnlockInvoked.set(true)
+                        val unsealed = bioManager.copyEnrolledPassphraseOrNull()
+                        if (unsealed != null) {
+                            vm.unlockVaultWithPassphrase(unsealed)
+                        }
+                    },
+                    onQuickLockVault = {
+                        quickLockInvoked.set(true)
+                        val unsealed = bioManager.copyEnrolledPassphraseOrNull()
+                        if (unsealed != null) {
+                            vm.lockVaultWithPassphrase(unsealed)
+                        }
+                    },
+                    onToggleBiometricUnlock = { enabled ->
+                        bioManager.setBiometricUnlockEnabled(enabled)
+                        vm.updateBiometricAndAutoLockState(biometricEnabled = bioManager.isBiometricUnlockEnabled())
+                    },
+                    onEnrollBiometricPassphrase = { chars, bioChecked ->
+                        bioManager.enrollPassphrase(chars, enableBiometricUnlock = bioChecked)
+                    },
+                    onChangeIdleAutoLockMinutes = { minutes ->
+                        selectedIdleMinutes.set(minutes)
+                        bioManager.setIdleAutoLockMinutes(minutes)
+                        vm.updateBiometricAndAutoLockState(idleAutoLockMinutes = minutes)
+                    },
+                    onPickRdpSharedSafFolder = { onFolderPicked ->
+                        onFolderPicked(safSampleUri)
+                    }
+                )
+            }
+        }
+        composeRule.waitForIdle()
+
+        // 2. Milestone B: Nested folder drag/move, cycle rejection, MoveFolderToParentDialog, and manual sorting
+        composeRule.runOnIdle {
+            vm.saveFolderAndCredentialToVault(VaultFolder(id = "fld-alpha", name = "Alpha Cluster"))
+            vm.saveFolderAndCredentialToVault(VaultFolder(id = "fld-beta", name = "Beta Cluster"))
+            vm.saveFolderAndCredentialToVault(VaultFolder(id = "fld-gamma", name = "Gamma Cluster"))
+        }
+        composeRule.waitForIdle()
+
+        // Cannot move folder into itself
+        assertFalse(vm.canMoveFolderToParent("fld-alpha", "fld-alpha"))
+        assertTrue(vm.canMoveFolderToParent("fld-beta", "fld-alpha"))
+
+        // Nest Beta inside Alpha, then verify Alpha CANNOT move into its own descendant Beta (cycle prevention!)
+        composeRule.runOnIdle {
+            assertTrue(vm.moveFolderToParent("fld-beta", "fld-alpha"))
+        }
+        composeRule.waitForIdle()
+        assertEquals(
+            "fld-alpha",
+            vm.uiState.value.vaultDocument.folders.first { it.id == "fld-beta" }.parentFolderId
+        )
+        assertFalse(vm.canMoveFolderToParent("fld-alpha", "fld-beta"))
+        assertFalse(vm.moveFolderToParent("fld-alpha", "fld-beta"))
+
+        // Move Beta back to Top Level via MoveFolderToParentDialog
+        composeRule.runOnIdle {
+            val beta = vm.uiState.value.vaultDocument.folders.first { it.id == "fld-beta" }
+            vm.openMoveFolderDialog(beta)
+        }
+        composeRule.waitForIdle()
+        assertTextRendered("Move Folder")
+        assertTextRendered(strings.moveToRootFolder)
+
+        composeRule
+            .onAllNodesWithText(strings.moveToRootFolder, substring = false)
+            .onFirst()
+            .performClick()
+        composeRule.waitForIdle()
+        assertEquals(
+            null,
+            vm.uiState.value.vaultDocument.folders.first { it.id == "fld-beta" }.parentFolderId
+        )
+
+        // Manual folder sorting: Gamma is after Alpha & Beta; move Gamma up -> swaps ahead of Beta
+        composeRule.runOnIdle {
+            assertTrue(vm.reorderFolder("fld-gamma", moveUp = true))
+        }
+        composeRule.waitForIdle()
+        val gammaSort = vm.uiState.value.vaultDocument.folders.first { it.id == "fld-gamma" }.sortOrder
+        val betaSort = vm.uiState.value.vaultDocument.folders.first { it.id == "fld-beta" }.sortOrder
+        assertTrue("Expected Gamma ($gammaSort) < Beta ($betaSort) after Move Up", gammaSort < betaSort)
+
+        // Manual connection sorting & drag-onto-connection relative insertion
+        composeRule.runOnIdle {
+            vm.saveConnectionToVault(
+                VaultConnection(
+                    id = "conn-1",
+                    parentFolderId = "fld-alpha",
+                    name = "Node-01",
+                    host = "10.30.0.1",
+                    protocol = VaultProtocolType.SSH,
+                    settings = ProtocolSpecificSettings.Ssh()
+                )
+            )
+            vm.saveConnectionToVault(
+                VaultConnection(
+                    id = "conn-2",
+                    parentFolderId = "fld-alpha",
+                    name = "Node-02",
+                    host = "10.30.0.2",
+                    protocol = VaultProtocolType.SSH,
+                    settings = ProtocolSpecificSettings.Ssh()
+                )
+            )
+            vm.saveConnectionToVault(
+                VaultConnection(
+                    id = "conn-3",
+                    parentFolderId = "fld-beta",
+                    name = "Node-03",
+                    host = "10.30.0.3",
+                    protocol = VaultProtocolType.SSH,
+                    settings = ProtocolSpecificSettings.Ssh()
+                )
+            )
+        }
+        composeRule.waitForIdle()
+
+        // Drag conn-3 from fld-beta BEFORE conn-1 in fld-alpha -> moves folder AND places first
+        composeRule.runOnIdle {
+            assertTrue(vm.reorderConnectionRelativeTo("conn-3", "conn-1", placeAfter = false))
+        }
+        composeRule.waitForIdle()
+        val alphaConnsOrdered = vm.uiState.value.vaultDocument.connections
+            .filter { it.parentFolderId == "fld-alpha" }
+            .sortedBy { it.sortOrder }
+            .map { it.id }
+        assertEquals(listOf("conn-3", "conn-1", "conn-2"), alphaConnsOrdered)
+
+        // Move conn-2 up -> [conn-3, conn-2, conn-1]
+        composeRule.runOnIdle {
+            assertTrue(vm.reorderConnection("conn-2", moveUp = true))
+        }
+        composeRule.waitForIdle()
+        val alphaConnsAfterMoveUp = vm.uiState.value.vaultDocument.connections
+            .filter { it.parentFolderId == "fld-alpha" }
+            .sortedBy { it.sortOrder }
+            .map { it.id }
+        assertEquals(listOf("conn-3", "conn-2", "conn-1"), alphaConnsAfterMoveUp)
+
+        // 3. Milestone C: RDP SAF Shared Folder Redirection picker & Inspector summary
+        composeRule.runOnIdle {
+            val rdpConn = VaultConnection(
+                id = "conn-rdp-saf",
+                parentFolderId = "fld-alpha",
+                name = "Win-Eng-Workstation",
+                host = "10.40.0.50",
+                protocol = VaultProtocolType.RDP,
+                settings = ProtocolSpecificSettings.Rdp(redirectDrives = true)
+            )
+            vm.saveConnectionToVault(rdpConn)
+            vm.openEditConnectionDialog(rdpConn)
+        }
+        composeRule.waitForIdle()
+
+        // Switch to RDP Resources tab & pick SAF shared folder
+        composeRule
+            .onAllNodesWithText(strings.rdpTabResources, substring = false)
+            .onFirst()
+            .performClick()
+        composeRule.waitForIdle()
+
+        composeRule
+            .onAllNodesWithText("Select Shared Folder (SAF)…", substring = false)
+            .onFirst()
+            .performScrollTo()
+            .performClick()
+        composeRule.waitForIdle()
+
+        assertTextRendered("EngineeringShare")
+
+        composeRule
+            .onAllNodesWithText(strings.dialogActionSave, substring = false)
+            .onFirst()
+            .performClick()
+        composeRule.waitForIdle()
+
+        val savedRdp = vm.uiState.value.vaultDocument.connections.first { it.id == "conn-rdp-saf" }
+        val rdpSettings = savedRdp.settings as ProtocolSpecificSettings.Rdp
+        assertTrue(rdpSettings.redirectDrives)
+        assertEquals(listOf(safSampleUri), rdpSettings.redirectedDriveSafUris)
+
+        // Select RDP connection in tree, open Inspector, and verify Inspector displays "1 SAF Drive(s)"
+        composeRule.runOnIdle {
+            vm.selectConnectionInTree("conn-rdp-saf")
+            if (!vm.uiState.value.isInspectorVisible) {
+                vm.handleShortcut(NexusShortcutAction.TOGGLE_PROPERTY_INSPECTOR) {}
+            }
+        }
+        composeRule.waitForIdle()
+        assertTextRendered("1 SAF Drive(s)")
+
+        // 4. Milestone A UI flow: Open Lock Vault dialog -> select 15m idle timeout -> Quick Lock Now -> Biometric Unlock!
+        composeRule.runOnIdle {
+            vm.openLockVaultDialog()
+        }
+        composeRule.waitForIdle()
+
+        assertTextRendered("Quick Lock Now")
+        assertTextRendered("Biometric / Passkey Unlock")
+        assertTextRendered("Idle Auto-Lock Timeout")
+
+        composeRule
+            .onAllNodesWithText("15m", substring = false)
+            .onFirst()
+            .performClick()
+        composeRule.waitForIdle()
+        assertEquals(15, selectedIdleMinutes.get())
+        assertEquals(15, vm.uiState.value.idleAutoLockMinutes)
+
+        composeRule
+            .onAllNodesWithText("Quick Lock Now", substring = false)
+            .onFirst()
+            .performClick()
+        composeRule.waitUntil(timeoutMillis = 8_000L) {
+            Shadows.shadowOf(Looper.getMainLooper()).idle()
+            vm.uiState.value.isVaultLocked
+        }
+        composeRule.waitForIdle()
+        assertTrue(quickLockInvoked.get())
+        assertTrue(vm.uiState.value.isVaultLocked)
+
+        // FullScreenVaultUnlockShield renders "Unlock with Biometrics / Passkey" -> click to unseal & restore vault!
+        assertTextRendered("Unlock with Biometrics / Passkey")
+        composeRule
+            .onAllNodesWithText("Unlock with Biometrics / Passkey", substring = false)
+            .onFirst()
+            .performClick()
+        composeRule.waitUntil(timeoutMillis = 8_000L) {
+            Shadows.shadowOf(Looper.getMainLooper()).idle()
+            !vm.uiState.value.isVaultLocked
+        }
+        composeRule.waitForIdle()
+
+        assertTrue(biometricUnlockInvoked.get())
+        assertFalse(vm.uiState.value.isVaultLocked)
+        assertTrue(vm.uiState.value.vaultDocument.connections.any { it.id == "conn-rdp-saf" })
+    }
 }
+
 

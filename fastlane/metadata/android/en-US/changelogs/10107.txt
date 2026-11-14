@@ -1,0 +1,5 @@
+NexusTS v1.1.7:
+• Biometric, passkey & Android Keystore AES-256-GCM vault unlock + 1-tap Quick-Lock & configurable idle auto-lock (1–30m)
+• Drag-and-drop nested folders (with cycle protection), manual folder/host sorting & live session tab drag reordering / freeform window tear-off
+• FreeRDP 3.12 dynamic window auto-resize (DISP channel) + live resize mode chip
+• Google Play Protect–compliant SAF shared folder redirection (\tsclient\Share) via RDPDR

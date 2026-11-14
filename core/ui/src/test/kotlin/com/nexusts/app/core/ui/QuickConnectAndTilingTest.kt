@@ -86,4 +86,75 @@ class QuickConnectAndTilingTest {
         assertEquals(1, controller.allActiveTabs().size)
         assertEquals("tab-1", controller.focusedActiveTab()?.tabId)
     }
+
+    @Test
+    fun `tiling controller reorders session tabs within strip and moves tabs across split panes`() {
+        val controller = WorkspaceTilingController()
+        val tabA = WorkspaceSessionTab(
+            tabId = "tab-a",
+            connectionId = "conn-a",
+            title = "Alpha SSH",
+            subtitleHost = "10.0.1.10",
+            protocol = SessionProtocolKind.SSH
+        )
+        val tabB = WorkspaceSessionTab(
+            tabId = "tab-b",
+            connectionId = "conn-b",
+            title = "Bravo RDP",
+            subtitleHost = "10.0.1.11",
+            protocol = SessionProtocolKind.RDP
+        )
+        val tabC = WorkspaceSessionTab(
+            tabId = "tab-c",
+            connectionId = "conn-c",
+            title = "Charlie VNC",
+            subtitleHost = "10.0.1.12",
+            protocol = SessionProtocolKind.VNC
+        )
+
+        controller.openTab(tabA, "root-leaf")
+        controller.openTab(tabB, "root-leaf")
+        controller.openTab(tabC, "root-leaf")
+
+        assertEquals(
+            listOf("tab-a", "tab-b", "tab-c"),
+            (controller.rootNode.value as PaneNode.Leaf).tabs.map { it.tabId }
+        )
+
+        // Move tab-c left -> [tab-a, tab-c, tab-b]
+        assertTrue(controller.moveTabLeft("root-leaf", "tab-c"))
+        assertEquals(
+            listOf("tab-a", "tab-c", "tab-b"),
+            (controller.rootNode.value as PaneNode.Leaf).tabs.map { it.tabId }
+        )
+        assertFalse(controller.moveTabLeft("root-leaf", "tab-a"))
+        assertFalse(controller.moveTabRight("root-leaf", "tab-b"))
+
+        // Drag reorder index 2 -> 0 -> [tab-b, tab-a, tab-c]
+        assertTrue(controller.reorderTab("root-leaf", fromIndex = 2, toIndex = 0))
+        assertEquals(
+            listOf("tab-b", "tab-a", "tab-c"),
+            (controller.rootNode.value as PaneNode.Leaf).tabs.map { it.tabId }
+        )
+
+        // Split pane: active tab (tab-c) automatically moves to rightPaneId; root-leaf retains [tab-b, tab-a]
+        val rightPaneId = controller.splitPane(orientation = SplitOrientation.HORIZONTAL)
+        assertEquals("tab-c", controller.focusedActiveTab()?.tabId)
+
+        // Drag tab-a into rightPaneId at index 0 -> rightPaneId now has [tab-a, tab-c]
+        assertTrue(controller.moveTabToPane(tabId = "tab-a", targetPaneId = rightPaneId, targetIndex = 0))
+        assertEquals(rightPaneId, controller.focusedPaneId.value)
+        assertEquals("tab-a", controller.focusedActiveTab()?.tabId)
+
+        // Drag tab-a and tab-c back into root-leaf -> rightPaneId empties and automatically collapses!
+        assertTrue(controller.moveTabToPane(tabId = "tab-a", targetPaneId = "root-leaf", targetIndex = 1))
+        assertTrue(controller.rootNode.value is PaneNode.Split) // tab-c still in rightPaneId
+        assertTrue(controller.moveTabToPane(tabId = "tab-c", targetPaneId = "root-leaf", targetIndex = 2))
+        assertTrue(controller.rootNode.value is PaneNode.Leaf)
+        assertEquals(
+            listOf("tab-b", "tab-a", "tab-c"),
+            (controller.rootNode.value as PaneNode.Leaf).tabs.map { it.tabId }
+        )
+    }
 }
+

@@ -4,8 +4,10 @@ import android.app.Activity
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.os.SystemClock
 import android.provider.OpenableColumns
 import android.view.KeyEvent
+import android.view.MotionEvent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -36,8 +38,10 @@ import com.nexusts.app.core.ui.workspace.GooglebookWindowController
 import com.nexusts.app.core.ui.workspace.QuickLaunchPlacement
 import com.nexusts.app.core.ui.workspace.WorkspaceSessionTab
 import com.nexusts.app.core.vault.crypto.NxtsVaultSerializer
+import com.nexusts.app.feature.workspace.ActiveVaultSessionStore
 import com.nexusts.app.feature.workspace.NexusWorkspaceScreen
 import com.nexusts.app.feature.workspace.NexusWorkspaceViewModel
+import com.nexusts.app.security.BiometricVaultUnlockManager
 import com.nexusts.app.service.ActiveSessionsForegroundService
 import com.nexusts.app.updater.GitHubReleaseCheckResult
 import com.nexusts.app.updater.GitHubReleaseUpdateChecker
@@ -52,14 +56,16 @@ import kotlinx.serialization.json.Json
 import javax.inject.Inject
 
 /**
- * Primary Adaptive Googlebook OS & Android Tablet Desktop Window Activity (`v1.1.5`).
+ * Primary Adaptive Googlebook OS & Android Tablet Desktop Window Activity (`v1.1.7`).
  * Handles:
  * - Atomic local `.nxts` vault persistence & cold-start restoration (`nexusts_local_vault.nxts`)
+ * - Hardware-backed Biometric / Passkey / Device-Credential vault unlock (`BiometricVaultUnlockManager`), Quick-Lock, & Idle Auto-Lock
  * - Direct `.nxts`, Royal TS `.rtsz` / `.rtsx` / `.rjson`, KeePass `.kdbx` / XML, Bitwarden JSON, 1Password `.1pux` / `.1pif`, & CSV opening
  * - Window-level hardware keyboard shortcut interception (`Ctrl+K`, `Escape`, `Ctrl+N`, `Ctrl+T`, etc.) even with zero focused Compose node
  * - Dual-Engine Live Google Drive Synchronization:
  *   1. Zero-Cloud-Console Persistent SAF Bridge (`SafLiveGoogleDriveBridge`) + 3-Way Delta Merge
  *   2. Google Drive REST API v3 (`AuthorizationClient` OAuth 2.0 + `GoogleDriveVaultSyncEngine`)
+ * - Persistent SAF Folder Redirection (`OpenDocumentTree` -> FreeRDP `RDPDR` `\\tsclient\<Share>`)
  * - URI scheme launches (`ssh://`, `rdp://`, `vnc://`, `sftp://`, `scp://`, `ftp://`, `ftps://`, `telnet://`, `serial://`, `k8s://`, `kubectl://`, `docker://`, `http://`, `https://`, `nexusts://`)
  * - Multi-monitor & freeform tab detachment into `DetachedSessionActivity` + seamless Re-Dock
  * - Play-Protect-Compliant `AppUpdateManager` & Verified Direct-Install GitHub Releases Auto-Update Coordinator
@@ -88,10 +94,16 @@ class MainActivity : AppCompatActivity() {
     @Inject
     lateinit var vaultSerializer: NxtsVaultSerializer
 
+    @Inject
+    lateinit var biometricUnlockManager: BiometricVaultUnlockManager
+
     private val githubUpdateChecker = GitHubReleaseUpdateChecker()
     private var latestGitHubReleaseCheck: GitHubReleaseCheckResult? = null
     private var triggerFileImportFromActivity: (() -> Unit)? = null
     private val consumedShortcutKeyCodes = mutableSetOf<Int>()
+
+    @Volatile
+    private var lastUserInteractionElapsedRealtimeMs: Long = SystemClock.elapsedRealtime()
 
     private val playUpdateLauncher = registerForActivityResult(
         ActivityResultContracts.StartIntentSenderForResult()
@@ -119,9 +131,15 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+        lastUserInteractionElapsedRealtimeMs = SystemClock.elapsedRealtime()
 
-        // 1. Restore persisted local Argon2id + AES-256-GCM vault container before initializing sync
-        val savedColdStartPass = driveAuthManager.readVaultPassphraseOrNull()
+        // 1. Restore persisted local Argon2id + AES-256-GCM vault container before initializing sync.
+        //    When Biometric Unlock is enabled, require BiometricPrompt or passphrase on cold start.
+        val savedColdStartPass = if (biometricUnlockManager.isBiometricUnlockEnabled()) {
+            null
+        } else {
+            driveAuthManager.readVaultPassphraseOrNull()
+        }
         try {
             workspaceViewModel.sessionStore.loadPersistedVaultIfNeeded(
                 filesDir = filesDir,
@@ -131,6 +149,7 @@ class MainActivity : AppCompatActivity() {
         } finally {
             savedColdStartPass?.fill('\u0000')
         }
+        syncBiometricAndVaultSecurityState()
 
         // 2. Hydrate persisted Google Drive SAF, Keystore Passphrase opt-in, & OAuth 2.0 state
         val (persistedEmail, _) = driveAuthManager.readSignedInAccount()
@@ -310,6 +329,43 @@ class MainActivity : AppCompatActivity() {
                 }
             }
 
+            var pendingRdpSafFolderCallback by remember { mutableStateOf<((String) -> Unit)?>(null) }
+            val pickRdpSafFolderLauncher = rememberLauncherForActivityResult(
+                contract = ActivityResultContracts.OpenDocumentTree()
+            ) { treeUri: Uri? ->
+                val callback = pendingRdpSafFolderCallback
+                pendingRdpSafFolderCallback = null
+                if (treeUri != null && callback != null) {
+                    runCatching {
+                        contentResolver.takePersistableUriPermission(
+                            treeUri,
+                            Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                        )
+                    }
+                    callback(treeUri.toString())
+                }
+            }
+
+            LaunchedEffect(sharedVaultSnapshot.isVaultLocked, sharedVaultSnapshot.mutationRevision) {
+                syncBiometricAndVaultSecurityState()
+            }
+
+            LaunchedEffect(uiState.idleAutoLockMinutes, uiState.isVaultLocked) {
+                if (uiState.isVaultLocked || uiState.idleAutoLockMinutes <= 0) return@LaunchedEffect
+                lastUserInteractionElapsedRealtimeMs = SystemClock.elapsedRealtime()
+                val timeoutMs = uiState.idleAutoLockMinutes * 60_000L
+                while (true) {
+                    delay(5_000L)
+                    val currentState = workspaceViewModel.uiState.value
+                    if (currentState.isVaultLocked || currentState.idleAutoLockMinutes <= 0) break
+                    val idleElapsed = SystemClock.elapsedRealtime() - lastUserInteractionElapsedRealtimeMs
+                    if (idleElapsed >= timeoutMs) {
+                        performQuickOrIdleLock(isIdleAutoLock = true)
+                        break
+                    }
+                }
+            }
+
             NexusTSTheme {
                 NexusWorkspaceScreen(
                     viewModel = workspaceViewModel,
@@ -351,6 +407,7 @@ class MainActivity : AppCompatActivity() {
                         workspaceViewModel.updateDriveAccountAndSafState(
                             rememberVaultPassphrase = driveAuthManager.isRememberVaultPassphraseEnabled()
                         )
+                        syncBiometricAndVaultSecurityState()
                         lifecycleScope.launch(Dispatchers.IO) {
                             try {
                                 workspaceViewModel.sessionStore.persistVaultToDisk(filesDir, vaultSerializer, chars)
@@ -362,6 +419,7 @@ class MainActivity : AppCompatActivity() {
                     onClearVaultSyncPassphrase = {
                         driveAuthManager.clearSavedVaultPassphrase()
                         workspaceViewModel.updateDriveAccountAndSafState(rememberVaultPassphrase = false)
+                        syncBiometricAndVaultSecurityState()
                     },
                     onCreateLiveSafDriveVault = {
                         val baseName = uiState.vaultDocument.name
@@ -432,13 +490,70 @@ class MainActivity : AppCompatActivity() {
                     onSkipUpdateVersion = { tag ->
                         updateCoordinator.setSkippedVersionTag(tag)
                         workspaceViewModel.notifyUserMessage("Skipped update prompt for $tag.")
+                    },
+                    onRequestBiometricUnlock = {
+                        biometricUnlockManager.authenticateAndUnsealPassphrase(
+                            activity = this@MainActivity,
+                            onSuccess = { chars -> workspaceViewModel.unlockVaultWithPassphrase(chars) },
+                            onError = { msg -> workspaceViewModel.notifyUserMessage(msg) }
+                        )
+                    },
+                    onQuickLockVault = {
+                        performQuickOrIdleLock(isIdleAutoLock = false)
+                    },
+                    onToggleBiometricUnlock = { enabled ->
+                        if (!enabled) {
+                            biometricUnlockManager.setBiometricUnlockEnabled(false)
+                        } else if (biometricUnlockManager.hasEnrolledPassphrase()) {
+                            biometricUnlockManager.setBiometricUnlockEnabled(true)
+                        } else {
+                            resolveQuickLockPassphraseOrNull()?.let { pass ->
+                                try {
+                                    biometricUnlockManager.enrollPassphrase(pass, enableBiometricUnlock = true)
+                                } finally {
+                                    pass.fill('\u0000')
+                                }
+                            }
+                        }
+                        syncBiometricAndVaultSecurityState()
+                    },
+                    onEnrollBiometricPassphrase = { chars, biometricChecked ->
+                        try {
+                            biometricUnlockManager.enrollPassphrase(
+                                passphrase = chars,
+                                enableBiometricUnlock = biometricChecked
+                            )
+                            syncBiometricAndVaultSecurityState()
+                        } finally {
+                            chars.fill('\u0000')
+                        }
+                    },
+                    onChangeIdleAutoLockMinutes = { minutes ->
+                        biometricUnlockManager.setIdleAutoLockMinutes(minutes)
+                        lastUserInteractionElapsedRealtimeMs = SystemClock.elapsedRealtime()
+                        syncBiometricAndVaultSecurityState()
+                    },
+                    onPickRdpSharedSafFolder = { onFolderSelected ->
+                        pendingRdpSafFolderCallback = onFolderSelected
+                        pickRdpSafFolderLauncher.launch(null)
                     }
                 )
             }
         }
     }
 
+    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        lastUserInteractionElapsedRealtimeMs = SystemClock.elapsedRealtime()
+        return super.dispatchTouchEvent(ev)
+    }
+
+    override fun dispatchGenericMotionEvent(ev: MotionEvent): Boolean {
+        lastUserInteractionElapsedRealtimeMs = SystemClock.elapsedRealtime()
+        return super.dispatchGenericMotionEvent(ev)
+    }
+
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        lastUserInteractionElapsedRealtimeMs = SystemClock.elapsedRealtime()
         if (event.action == KeyEvent.ACTION_UP && consumedShortcutKeyCodes.remove(event.keyCode)) {
             return true
         }
@@ -482,6 +597,52 @@ class MainActivity : AppCompatActivity() {
         triggerFileImportFromActivity = null
         updateCoordinator.unregisterFlexibleListener()
         super.onDestroy()
+    }
+
+    private fun syncBiometricAndVaultSecurityState() {
+        val defaultChars = ActiveVaultSessionStore.DEFAULT_LOCAL_VAULT_PASSPHRASE.toCharArray()
+        val hasCustomSessionPass = workspaceViewModel.sessionStore.copyActivePassphraseOrNull()?.let { chars ->
+            val isCustom = !chars.contentEquals(defaultChars)
+            chars.fill('\u0000')
+            isCustom
+        } ?: false
+        val hasSavedPassphrase = biometricUnlockManager.hasEnrolledPassphrase() ||
+            hasCustomSessionPass ||
+            driveAuthManager.isRememberVaultPassphraseEnabled()
+        workspaceViewModel.updateBiometricAndAutoLockState(
+            hardwareAvailable = biometricUnlockManager.isBiometricOrDeviceCredentialAvailable(),
+            biometricEnabled = biometricUnlockManager.isBiometricUnlockEnabled(),
+            hasSavedPassphrase = hasSavedPassphrase,
+            idleAutoLockMinutes = biometricUnlockManager.getIdleAutoLockMinutes()
+        )
+    }
+
+    private fun resolveQuickLockPassphraseOrNull(): CharArray? {
+        val defaultChars = ActiveVaultSessionStore.DEFAULT_LOCAL_VAULT_PASSPHRASE.toCharArray()
+        workspaceViewModel.sessionStore.copyActivePassphraseOrNull()?.let { chars ->
+            if (!chars.contentEquals(defaultChars)) {
+                return chars
+            }
+            chars.fill('\u0000')
+        }
+        biometricUnlockManager.copyEnrolledPassphraseOrNull()?.let { return it }
+        val docId = workspaceViewModel.uiState.value.vaultDocument.documentId
+        return driveAuthManager.readVaultPassphraseOrNull(docId)
+    }
+
+    private fun performQuickOrIdleLock(isIdleAutoLock: Boolean) {
+        val pass = resolveQuickLockPassphraseOrNull()
+        if (pass != null) {
+            workspaceViewModel.lockVaultWithPassphrase(pass)
+        } else {
+            lastUserInteractionElapsedRealtimeMs = SystemClock.elapsedRealtime()
+            workspaceViewModel.openLockVaultDialog()
+            if (isIdleAutoLock) {
+                workspaceViewModel.notifyUserMessage(
+                    "Idle auto-lock reached: enter a vault passphrase once to enable automatic vault locking."
+                )
+            }
+        }
     }
 
     private fun launchDetachedTabActivity(tab: WorkspaceSessionTab, targetDisplayId: Int?) {

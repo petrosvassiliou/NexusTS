@@ -1,0 +1,5 @@
+NexusTS v1.1.7:
+• Sblocco cassaforte con biometria/passkey e Android Keystore AES-256-GCM + blocco rapido e auto-blocco per inattività (1–30 min)
+• Drag & drop di cartelle annidate, ordinamento manuale e riordino schede sessione con distacco in finestra libera
+• Ridimensionamento dinamico FreeRDP 3.12 (canale DISP) + selettore modalità scala
+• Condivisione cartelle SAF conforme a Google Play Protect (\tsclient\Share) tramite RDPDR

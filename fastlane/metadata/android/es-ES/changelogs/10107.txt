@@ -1,0 +1,5 @@
+NexusTS v1.1.7:
+• Desbloqueo biométrico/passkey con Android Keystore AES-256-GCM, bloqueo rápido y autobloqueo por inactividad (1–30 min)
+• Arrastrar y soltar carpetas anidadas, orden manual y reordenación/desprendimiento de pestañas en ventanas libres
+• Ajuste dinámico de resolución FreeRDP 3.12 (canal DISP) en vivo
+• Redirección de carpetas SAF compatible con Google Play Protect (\tsclient\Share) vía RDPDR

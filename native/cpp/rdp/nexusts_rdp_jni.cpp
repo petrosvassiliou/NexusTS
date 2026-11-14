@@ -196,7 +196,9 @@ Java_com_nexusts_app_protocols_rdp_bridge_FreeRdpNativeBridge_nativeCreateSessio
     jboolean ignore_certificate,
     jboolean remote_app_mode,
     jstring remote_app_program,
-    jstring remote_app_args
+    jstring remote_app_args,
+    jstring shared_drive_name,
+    jstring shared_drive_local_path
 ) {
     nexusts::rdp::RdpConnectParams params;
     params.host = jstring_to_utf8(env, host);
@@ -236,6 +238,8 @@ Java_com_nexusts_app_protocols_rdp_bridge_FreeRdpNativeBridge_nativeCreateSessio
     params.remote_app_mode = (remote_app_mode == JNI_TRUE);
     params.remote_app_program = jstring_to_utf8(env, remote_app_program);
     params.remote_app_args = jstring_to_utf8(env, remote_app_args);
+    params.shared_drive_name = jstring_to_utf8(env, shared_drive_name);
+    params.shared_drive_local_path = jstring_to_utf8(env, shared_drive_local_path);
 
     auto session = std::make_shared<nexusts::rdp::RdpSessionContext>(std::move(params));
     std::lock_guard<std::mutex> lock(g_sessions_mutex);
