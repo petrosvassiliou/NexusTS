@@ -1145,11 +1145,10 @@ private fun DesktopTopWindowChrome(
                         Icon(Icons.Outlined.SystemUpdateAlt, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            text = if (githubUpdateTag.isNotBlank()) {
-                                "${strings.autoUpdateAvailableBadge} • $githubUpdateTag"
-                            } else {
-                                strings.autoUpdateAvailableBadge
-                            },
+                            text = String.format(
+                                strings.autoUpdateAvailableFormat,
+                                githubUpdateTag.ifBlank { "" }
+                            ).trim(),
                             style = MaterialTheme.typography.labelLarge
                         )
                     }
@@ -2639,9 +2638,9 @@ private fun FolderTreeRow(
                         Box(contentAlignment = Alignment.Center) {
                             Icon(
                                 imageVector = if (isExpanded && hasExpandableChildren) {
-                                    FilledFolderOpenIcon
+                                    Icons.Filled.FilledFolderOpenIcon
                                 } else {
-                                    FilledFolderIcon
+                                    Icons.Filled.FilledFolderIcon
                                 },
                                 contentDescription = null,
                                 tint = folderAccent,
@@ -4150,7 +4149,7 @@ private fun MoveConnectionToFolderDialog(
                                 horizontalArrangement = Arrangement.spacedBy(12.dp)
                             ) {
                                 Icon(
-                                    imageVector = FilledFolderIcon,
+                                    imageVector = Icons.Filled.FilledFolderIcon,
                                     contentDescription = null,
                                     tint = accent,
                                     modifier = Modifier.size(20.dp)
@@ -4271,7 +4270,7 @@ private fun PlayProtectAutoUpdateDialog(
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Text(
-                            text = strings.autoUpdateAutoCheck,
+                            text = strings.autoUpdateAutoCheckToggle,
                             style = MaterialTheme.typography.bodyLarge,
                             modifier = Modifier.weight(1f)
                         )
@@ -4323,8 +4322,14 @@ private fun PlayProtectAutoUpdateDialog(
                             Text(
                                 text = when {
                                     uiState.isCheckingForUpdates -> "Checking GitHub Releases over HTTPS…"
-                                    uiState.updateAvailable -> "${strings.autoUpdateAvailableBadge}: ${uiState.updateLatestTag}"
-                                    else -> strings.autoUpdateUpToDate
+                                    uiState.updateAvailable -> String.format(
+                                        strings.autoUpdateAvailableFormat,
+                                        uiState.updateLatestTag
+                                    ).trim()
+                                    else -> String.format(
+                                        strings.autoUpdateUpToDateFormat,
+                                        uiState.updateCurrentVersion.ifBlank { "1.1.5" }
+                                    )
                                 },
                                 style = MaterialTheme.typography.titleSmall,
                                 color = MaterialTheme.colorScheme.onSurface
@@ -4339,7 +4344,7 @@ private fun PlayProtectAutoUpdateDialog(
                             }
                             Text(
                                 text = "Installed: v${uiState.updateCurrentVersion.ifBlank { "1.1.5" }}  →  Latest: ${uiState.updateLatestTag.ifBlank { "current" }}$sizeMb",
-                                style = NexusTheme.monospace.codeSnippet,
+                                style = NexusTheme.monospace.keycapShortcut,
                                 color = MaterialTheme.colorScheme.secondary
                             )
                         }

@@ -662,7 +662,7 @@ fun ExpressiveVaultOverviewDashboard(
                         label = strings.vaultSectionFolders,
                         value = activeFolders.size.toString(),
                         subtitle = strings.actionNewFolder,
-                        icon = FilledFolderIcon,
+                        icon = Icons.Filled.FilledFolderIcon,
                         accentColor = MaterialTheme.colorScheme.secondary,
                         onClick = onNewFolder,
                         modifier = Modifier.weight(1f)
@@ -978,7 +978,7 @@ fun ExpressiveVaultOverviewDashboard(
                                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
                                     Icon(
-                                        imageVector = FilledFolderIcon,
+                                        imageVector = Icons.Filled.FilledFolderIcon,
                                         contentDescription = null,
                                         tint = MaterialTheme.colorScheme.primary,
                                         modifier = Modifier.size(20.dp)
@@ -1051,7 +1051,7 @@ fun ExpressiveVaultOverviewDashboard(
                                                 ) {
                                                     Box(contentAlignment = Alignment.Center) {
                                                         Icon(
-                                                            imageVector = FilledFolderIcon,
+                                                            imageVector = Icons.Filled.FilledFolderIcon,
                                                             contentDescription = null,
                                                             tint = folderAccent,
                                                             modifier = Modifier.size(21.dp)
