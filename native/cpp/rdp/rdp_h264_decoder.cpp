@@ -107,6 +107,11 @@ bool RdpHardwareH264Decoder::decode_nal_unit(
 
 void RdpHardwareH264Decoder::reconfigure_resolution(uint32_t width, uint32_t height) {
     std::lock_guard<std::mutex> lock(codec_mutex_);
+    width_ = width;
+    height_ = height;
+    if (!initialized_) {
+        return;
+    }
     const bool was_avc444 = avc444_;
     shutdown_locked();
     initialize_locked(width, height, was_avc444);

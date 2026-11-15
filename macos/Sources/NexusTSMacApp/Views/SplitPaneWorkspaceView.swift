@@ -141,6 +141,9 @@ private struct LeafPaneContainerView: View {
                                         openWindow(id: "detached-session", value: detachedId)
                                     }
                                 },
+                                onEnterFullScreen: {
+                                    store.enterFullScreenSession(tabId: tab.id)
+                                },
                                 onDropTabPayload: { payload in
                                     handleTabDropPayload(payload, beforeTabId: tab.id)
                                 }
@@ -154,6 +157,17 @@ private struct LeafPaneContainerView: View {
                 Spacer(minLength: 4)
 
                 HStack(spacing: 6) {
+                    if let activeTab {
+                        Button {
+                            store.enterFullScreenSession(tabId: activeTab.id)
+                        } label: {
+                            Image(systemName: "arrow.up.left.and.arrow.down.right")
+                                .font(.caption)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Full Screen Session Mode")
+                    }
+
                     Button {
                         store.focusedPaneId = paneId
                         store.openLocalTerminal()
@@ -244,6 +258,7 @@ private struct MacTabPillView: View {
     let onSelect: () -> Void
     let onClose: () -> Void
     let onDetachWindow: () -> Void
+    let onEnterFullScreen: () -> Void
     let onDropTabPayload: (String) -> Void
     @State private var isHovering = false
     @State private var isDropTargeted = false
@@ -252,20 +267,26 @@ private struct MacTabPillView: View {
         let accent = HIGColorUtilities.color(fromHex: tab.accentHex) ?? tab.connection.protocolType.appleSystemTint
 
         HStack(spacing: 6) {
-            Image(systemName: tab.isLocalShell ? "apple.terminal" : tab.connection.protocolType.sfSymbolName)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(accent)
+            Button(action: onSelect) {
+                HStack(spacing: 6) {
+                    Image(systemName: tab.isLocalShell ? "apple.terminal" : tab.connection.protocolType.sfSymbolName)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(accent)
 
-            Text(tab.title)
-                .font(.system(size: 12, weight: isActive ? .semibold : .regular))
-                .foregroundStyle(.primary)
-                .lineLimit(1)
+                    Text(tab.title)
+                        .font(.system(size: 12, weight: isActive ? .semibold : .regular))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
 
-            if tab.broadcastEnabled {
-                Image(systemName: "dot.radiowaves.left.and.right")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.orange)
+                    if tab.broadcastEnabled {
+                        Image(systemName: "dot.radiowaves.left.and.right")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.orange)
+                    }
+                }
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
 
             Button(action: onClose) {
                 Image(systemName: "xmark")
@@ -280,7 +301,6 @@ private struct MacTabPillView: View {
         .padding(.vertical, 5)
         .liquidGlassCapsule(tint: accent, isSelected: isActive || isDropTargeted, isHovered: isHovering)
         .contentShape(Capsule(style: .continuous))
-        .onTapGesture(perform: onSelect)
         .onHover { hovering in
             withAnimation(LiquidGlassMetrics.hoverAnimation) {
                 isHovering = hovering
@@ -296,6 +316,7 @@ private struct MacTabPillView: View {
             isDropTargeted = hovering
         }
         .contextMenu {
+            Button("Full Screen Session") { onEnterFullScreen() }
             Button("Move Tab to New Window") { onDetachWindow() }
             Divider()
             Button("Close Tab", role: .destructive) { onClose() }

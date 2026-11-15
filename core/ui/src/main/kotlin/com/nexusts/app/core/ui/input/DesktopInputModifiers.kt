@@ -213,7 +213,8 @@ fun Modifier.nexusInteractiveRow(
                                     val now = System.currentTimeMillis()
                                     val dbl = latestOnDoubleClick.value
                                     if (dbl != null &&
-                                        (now - lastPrimaryClickEpochMs) in 1L..doubleClickIntervalMs &&
+                                        lastPrimaryClickEpochMs > 0L &&
+                                        (now - lastPrimaryClickEpochMs) in 0L..doubleClickIntervalMs &&
                                         (pos - lastPrimaryClickPos).getDistance() <= touchSlopPx * 2f
                                     ) {
                                         lastPrimaryClickEpochMs = 0L
@@ -333,10 +334,67 @@ fun Modifier.nexusTrackpadCanvasGesture(
     }
 }
 
+private const val KEYCODE_SCREENSHOT_API34 = 318 // KeyEvent.KEYCODE_SCREENSHOT (Android 14+)
+private const val EVDEV_KEY_SYSRQ = 99
+private const val EVDEV_KEY_SCALE_SHOW_WINDOWS = 120
+private const val EVDEV_KEY_PRINT = 210
+
+/**
+ * Identifies host OS hardware/system shortcuts (such as Android & Googlebook OS screenshot keys
+ * `KEYCODE_SYSRQ`, `KEYCODE_SCREENSHOT`, `Ctrl+F5` / `Ctrl+Shift+F5` Show-Windows capture,
+ * Android 14+ `Meta+Ctrl+S`, volume, power, brightness, and overview keys) that must NEVER be
+ * swallowed by remote session key capture.
+ */
+fun isSystemPassThroughKey(
+    keyCode: Int,
+    scanCode: Int = 0,
+    isCtrlPressed: Boolean = false,
+    isAltPressed: Boolean = false,
+    isShiftPressed: Boolean = false,
+    isMetaPressed: Boolean = false
+): Boolean {
+    @Suppress("UNUSED_PARAMETER")
+    val unusedShift = isShiftPressed
+    when (keyCode) {
+        AndroidKeyEvent.KEYCODE_SYSRQ,
+        KEYCODE_SCREENSHOT_API34,
+        AndroidKeyEvent.KEYCODE_VOLUME_DOWN,
+        AndroidKeyEvent.KEYCODE_VOLUME_UP,
+        AndroidKeyEvent.KEYCODE_VOLUME_MUTE,
+        AndroidKeyEvent.KEYCODE_POWER,
+        AndroidKeyEvent.KEYCODE_SLEEP,
+        AndroidKeyEvent.KEYCODE_WAKEUP,
+        AndroidKeyEvent.KEYCODE_BRIGHTNESS_DOWN,
+        AndroidKeyEvent.KEYCODE_BRIGHTNESS_UP,
+        AndroidKeyEvent.KEYCODE_APP_SWITCH -> return true
+    }
+    if (scanCode == EVDEV_KEY_SYSRQ || scanCode == EVDEV_KEY_PRINT) {
+        return true
+    }
+    // Googlebook / Chromebook top-row Show Windows screenshot shortcuts (Ctrl+F5, Ctrl+Shift+F5, Ctrl+Alt+F5)
+    if (isCtrlPressed && (keyCode == AndroidKeyEvent.KEYCODE_F5 || scanCode == EVDEV_KEY_SCALE_SHOW_WINDOWS)) {
+        return true
+    }
+    // Standard Android 14+ / Googlebook OS external keyboard screenshot shortcut (Search/Meta + Ctrl + S)
+    if (isMetaPressed && isCtrlPressed && !isAltPressed && keyCode == AndroidKeyEvent.KEYCODE_S) {
+        return true
+    }
+    return unusedShift && false
+}
+
+fun isSystemPassThroughKeyEvent(native: AndroidKeyEvent): Boolean = isSystemPassThroughKey(
+    keyCode = native.keyCode,
+    scanCode = native.scanCode,
+    isCtrlPressed = native.isCtrlPressed,
+    isAltPressed = native.isAltPressed,
+    isShiftPressed = native.isShiftPressed,
+    isMetaPressed = native.isMetaPressed
+)
+
 /**
  * Full Modifier Key Passthrough for active remote sessions (RDP, SSH, VNC).
  * Forwards Alt, Ctrl, Win/Meta, Cmd, Fn, Function keys, and hardware scan codes directly
- * to the native protocol engine unless intercepted by an explicit host escape chord.
+ * to the native protocol engine unless intercepted by an explicit host escape chord or OS system key.
  */
 fun Modifier.nexusRemoteKeyPassthrough(
     captureEnabled: Boolean,
@@ -344,6 +402,11 @@ fun Modifier.nexusRemoteKeyPassthrough(
     onHostShortcut: (NexusShortcutAction) -> Unit,
     onForwardToRemote: (RawHardwareKeyPacket) -> Boolean
 ): Modifier = onPreviewKeyEvent { keyEvent: KeyEvent ->
+    val native = keyEvent.nativeKeyEvent
+    if (isSystemPassThroughKeyEvent(native)) {
+        return@onPreviewKeyEvent false
+    }
+
     if (shortcutEngine.dispatchKeyEvent(
             event = keyEvent,
             remoteCaptureActive = captureEnabled,
@@ -358,7 +421,6 @@ fun Modifier.nexusRemoteKeyPassthrough(
 
     if (!captureEnabled) return@onPreviewKeyEvent false
 
-    val native = keyEvent.nativeKeyEvent
     val isDown = native.action == AndroidKeyEvent.ACTION_DOWN
     val isUp = native.action == AndroidKeyEvent.ACTION_UP
     if (!isDown && !isUp) return@onPreviewKeyEvent false

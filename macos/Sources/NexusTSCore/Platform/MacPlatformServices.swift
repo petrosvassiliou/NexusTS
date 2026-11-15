@@ -586,7 +586,7 @@ public struct MacReleaseUpdateCandidate: Equatable, Sendable {
 }
 
 public enum MacGitHubReleaseUpdater {
-    public static let currentVersion = "1.2.1-beta.1"
+    public static let currentVersion = "1.2.1-beta.2"
 
     public static func checkForUpdates(
         repoSlug: String = "petrosvassiliou/NexusTS"

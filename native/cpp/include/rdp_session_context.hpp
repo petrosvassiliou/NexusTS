@@ -127,7 +127,13 @@ public:
     void push_pcm_playback(const int16_t* pcm_frames, size_t frame_count);
 
     void on_local_clipboard_text(const std::string& utf8_text);
+    void on_remote_clipboard_text(const std::string& utf8_text);
+    std::string local_clipboard_text() const;
     std::string latest_remote_clipboard_text() const;
+    uint64_t remote_clipboard_sequence() const noexcept {
+        return remote_clipboard_seq_.load(std::memory_order_acquire);
+    }
+    void set_local_clipboard_announce_handler(std::function<void(const std::string&)> callback);
 
     std::vector<uint8_t> transmit_smartcard_apdu(const std::vector<uint8_t>& command_apdu);
     void set_smartcard_apdu_handler(
@@ -136,9 +142,12 @@ public:
 
 private:
     mutable std::mutex channel_mutex_;
-    std::string clipboard_utf8_;
+    std::string local_clipboard_utf8_;
+    std::string remote_clipboard_utf8_;
+    std::atomic<uint64_t> remote_clipboard_seq_{0};
     [[maybe_unused]] void* aaudio_out_stream_{nullptr};
     [[maybe_unused]] void* aaudio_in_stream_{nullptr};
+    std::function<void(const std::string&)> clipboard_announce_callback_;
     std::function<std::vector<uint8_t>(const std::vector<uint8_t>&)> apdu_callback_;
 };
 
@@ -160,6 +169,17 @@ public:
         const uint8_t* src_rgba,
         uint32_t src_stride
     );
+    void stage_gdi_dirty_region(
+        const uint8_t* primary_buffer,
+        uint32_t fb_width,
+        uint32_t fb_height,
+        uint32_t fb_stride,
+        uint32_t dirty_x,
+        uint32_t dirty_y,
+        uint32_t dirty_w,
+        uint32_t dirty_h
+    );
+    bool flush_pending_frame();
     void present_frame();
     void present_frame(
         const uint8_t* src_rgba,
@@ -171,6 +191,7 @@ public:
     uint32_t width() const noexcept { return width_.load(); }
     uint32_t height() const noexcept { return height_.load(); }
     uint64_t frame_sequence() const noexcept { return frame_seq_.load(std::memory_order_acquire); }
+    bool has_pending_dirty() const noexcept { return dirty_pending_.load(std::memory_order_acquire); }
 
     size_t copy_shadow_rgba(
         uint8_t* dst_rgba,
@@ -180,13 +201,17 @@ public:
     ) const;
 
 private:
+    void ensure_window_geometry_locked(uint32_t width, uint32_t height);
     void present_locked();
 
     mutable std::mutex surface_mutex_;
     ANativeWindow* native_window_{nullptr};
+    uint32_t configured_geom_w_{0};
+    uint32_t configured_geom_h_{0};
     std::atomic<uint32_t> width_{1920};
     std::atomic<uint32_t> height_{1080};
     std::atomic<uint64_t> frame_seq_{0};
+    std::atomic<bool> dirty_pending_{false};
     std::vector<uint8_t> shadow_rgba_;
 };
 
@@ -203,6 +228,8 @@ public:
 
     void on_surface_bound();
     void set_disp_context(void* disp_context) noexcept;
+    void set_cliprdr_context(void* cliprdr_context);
+    void announce_local_clipboard_to_remote();
 
     /**
      * Sends MS-RDPEDI (`DISP_DVC`) Display Control PDU to dynamically resize remote desktop
@@ -241,6 +268,8 @@ private:
     std::atomic<bool> stop_requested_{false};
     std::atomic<uint32_t> active_scale_percent_{100};
     std::mutex state_mutex_;
+    std::mutex input_mutex_;
+    std::mutex cliprdr_mutex_;
     mutable std::mutex error_mutex_;
     std::string last_error_;
     std::unique_ptr<RdpGdiSurfacePresenter> gdi_presenter_;
@@ -249,6 +278,7 @@ private:
     std::thread event_loop_thread_;
     [[maybe_unused]] void* freerdp_instance_{nullptr};
     std::atomic<void*> disp_context_{nullptr};
+    void* cliprdr_context_{nullptr};
 };
 
 } // namespace nexusts::rdp

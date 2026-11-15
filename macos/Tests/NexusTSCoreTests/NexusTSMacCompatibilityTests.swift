@@ -313,7 +313,7 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
     }
 
     func testV118LocalizationUpgradeVersionAndVaultReplacementCompatibility() throws {
-        XCTAssertEqual(MacGitHubReleaseUpdater.currentVersion, "1.2.1-beta.1")
+        XCTAssertEqual(MacGitHubReleaseUpdater.currentVersion, "1.2.1-beta.2")
 
         for lang in NexusAppLanguage.allCases {
             let catalog = LocalizedWorkspaceStrings.catalog(for: lang)

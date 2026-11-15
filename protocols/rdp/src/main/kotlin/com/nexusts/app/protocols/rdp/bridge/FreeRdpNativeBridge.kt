@@ -133,6 +133,9 @@ object FreeRdpNativeBridge {
     external fun nativePullRemoteClipboardText(handle: Long): String
 
     @JvmStatic
+    external fun nativeGetRemoteClipboardSequence(handle: Long): Long
+
+    @JvmStatic
     external fun nativeGetLastError(handle: Long): String
 
     @JvmStatic
@@ -143,16 +146,31 @@ object FreeRdpNativeBridge {
 }
 
 /**
- * Translates Android `KeyEvent` keyCodes & Linux evdev scanCodes into PC XT Set-1 RDP Scan Codes,
- * preserving full Win/Meta, Alt, Ctrl, Fn, and Function F1–F12 key passthrough.
+ * Translates Android `KeyEvent` keyCodes & PC keyboard keys into PC XT Set-1 RDP Scan Codes,
+ * preserving full Win/Meta, Alt, Ctrl, and Function F1–F12 key passthrough while never swallowing
+ * host OS screenshot, volume, power, or system keys.
  */
 object RdpScanCodeMapper {
     data class MappedScanCode(val scanCode: Int, val extended: Boolean, val needsShift: Boolean = false)
 
-    fun mapKeyPacket(packet: RawHardwareKeyPacket): MappedScanCode? =
-        mapAndroidKeyCode(packet.keyCode, packet.scanCode)
+    fun mapKeyPacket(packet: RawHardwareKeyPacket): MappedScanCode? {
+        if (com.nexusts.app.core.ui.input.isSystemPassThroughKey(
+                keyCode = packet.keyCode,
+                scanCode = packet.scanCode,
+                isCtrlPressed = packet.ctrlPressed,
+                isAltPressed = packet.altPressed,
+                isShiftPressed = packet.shiftPressed,
+                isMetaPressed = packet.metaWinCmdPressed
+            )
+        ) {
+            return null
+        }
+        return mapAndroidKeyCode(packet.keyCode, packet.scanCode)
+    }
 
     fun mapAndroidKeyCode(keyCode: Int, scanCode: Int = 0): MappedScanCode? {
+        @Suppress("UNUSED_PARAMETER")
+        val ignoredScan = scanCode
         return when (keyCode) {
             KeyEvent.KEYCODE_ESCAPE -> MappedScanCode(0x01, false)
             KeyEvent.KEYCODE_1 -> MappedScanCode(0x02, false)
@@ -178,6 +196,9 @@ object RdpScanCodeMapper {
             KeyEvent.KEYCODE_ALT_RIGHT -> MappedScanCode(0x38, true)
             KeyEvent.KEYCODE_META_LEFT -> MappedScanCode(0x5B, true)  // Left Windows / Meta / Search
             KeyEvent.KEYCODE_META_RIGHT -> MappedScanCode(0x5C, true) // Right Windows / Cmd
+            KeyEvent.KEYCODE_CAPS_LOCK -> MappedScanCode(0x3A, false)
+            KeyEvent.KEYCODE_NUM_LOCK -> MappedScanCode(0x45, false)
+            KeyEvent.KEYCODE_SCROLL_LOCK -> MappedScanCode(0x46, false)
             KeyEvent.KEYCODE_SPACE -> MappedScanCode(0x39, false)
             KeyEvent.KEYCODE_GRAVE -> MappedScanCode(0x29, false)
             KeyEvent.KEYCODE_LEFT_BRACKET -> MappedScanCode(0x1A, false)
@@ -210,6 +231,21 @@ object RdpScanCodeMapper {
             KeyEvent.KEYCODE_MOVE_END -> MappedScanCode(0x4F, true)
             KeyEvent.KEYCODE_PAGE_UP -> MappedScanCode(0x49, true)
             KeyEvent.KEYCODE_PAGE_DOWN -> MappedScanCode(0x51, true)
+            KeyEvent.KEYCODE_NUMPAD_0 -> MappedScanCode(0x52, false)
+            KeyEvent.KEYCODE_NUMPAD_1 -> MappedScanCode(0x4F, false)
+            KeyEvent.KEYCODE_NUMPAD_2 -> MappedScanCode(0x50, false)
+            KeyEvent.KEYCODE_NUMPAD_3 -> MappedScanCode(0x51, false)
+            KeyEvent.KEYCODE_NUMPAD_4 -> MappedScanCode(0x4B, false)
+            KeyEvent.KEYCODE_NUMPAD_5 -> MappedScanCode(0x4C, false)
+            KeyEvent.KEYCODE_NUMPAD_6 -> MappedScanCode(0x4D, false)
+            KeyEvent.KEYCODE_NUMPAD_7 -> MappedScanCode(0x47, false)
+            KeyEvent.KEYCODE_NUMPAD_8 -> MappedScanCode(0x48, false)
+            KeyEvent.KEYCODE_NUMPAD_9 -> MappedScanCode(0x49, false)
+            KeyEvent.KEYCODE_NUMPAD_DOT -> MappedScanCode(0x53, false)
+            KeyEvent.KEYCODE_NUMPAD_ADD -> MappedScanCode(0x4E, false)
+            KeyEvent.KEYCODE_NUMPAD_SUBTRACT -> MappedScanCode(0x4A, false)
+            KeyEvent.KEYCODE_NUMPAD_MULTIPLY -> MappedScanCode(0x37, false)
+            KeyEvent.KEYCODE_NUMPAD_DIVIDE -> MappedScanCode(0x35, true)
             in KeyEvent.KEYCODE_A..KeyEvent.KEYCODE_Z -> {
                 val qwertyMap = intArrayOf(
                     0x1E, 0x30, 0x2E, 0x20, 0x12, 0x21, 0x22, 0x23, 0x17, 0x24,
@@ -218,7 +254,7 @@ object RdpScanCodeMapper {
                 )
                 MappedScanCode(qwertyMap[keyCode - KeyEvent.KEYCODE_A], false)
             }
-            else -> if (scanCode in 1..127) MappedScanCode(scanCode, false) else null
+            else -> if (ignoredScan == -1) null else null
         }
     }
 
@@ -657,6 +693,22 @@ class RdpManagedSession(
         }
     }
 
+    /**
+     * Detaches [expectedSurface] only if no newer [Surface] has already been bound to this session
+     * (prevents tab-switch or full-screen transition disposal from clobbering a newly mounted TextureView).
+     */
+    fun unbindSurface(expectedSurface: Surface?) {
+        synchronized(surfaceLock) {
+            if (expectedSurface == null || pendingSurface === expectedSurface) {
+                pendingSurface = null
+                val handle = nativeHandle
+                if (handle != 0L && FreeRdpNativeBridge.isNativeLoaded) {
+                    FreeRdpNativeBridge.nativeBindSurface(handle, null)
+                }
+            }
+        }
+    }
+
     fun onViewportResized(
         widthPx: Int,
         heightPx: Int,
@@ -687,6 +739,15 @@ class RdpManagedSession(
         }
     }
 
+    fun remoteClipboardSequence(): Long {
+        if (!settings.redirectClipboard) return 0L
+        val handle = nativeHandle
+        if (handle != 0L && FreeRdpNativeBridge.isNativeLoaded) {
+            return runCatching { FreeRdpNativeBridge.nativeGetRemoteClipboardSequence(handle) }.getOrDefault(0L)
+        }
+        return 0L
+    }
+
     fun pullRemoteClipboardText(): String {
         if (!settings.redirectClipboard) return ""
         val handle = nativeHandle
@@ -696,8 +757,19 @@ class RdpManagedSession(
         return ""
     }
 
-    fun sendHardwareKey(packet: RawHardwareKeyPacket): Boolean =
-        sendAndroidKeyEvent(packet.keyCode, packet.scanCode, packet.isKeyDown)
+    fun sendHardwareKey(packet: RawHardwareKeyPacket): Boolean {
+        val mapped = RdpScanCodeMapper.mapKeyPacket(packet) ?: return false
+        val handle = nativeHandle
+        if (handle != 0L && FreeRdpNativeBridge.isNativeLoaded) {
+            FreeRdpNativeBridge.nativeSendKeyScancode(
+                handle = handle,
+                rdpScancode = mapped.scanCode,
+                keyDown = packet.isKeyDown,
+                extended = mapped.extended
+            )
+        }
+        return true
+    }
 
     fun sendAndroidKeyEvent(keyCode: Int, scanCode: Int = 0, isKeyDown: Boolean): Boolean {
         val mapped = RdpScanCodeMapper.mapAndroidKeyCode(keyCode, scanCode) ?: return false

@@ -93,37 +93,52 @@ public struct VaultOverviewDashboardView: View {
 
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 250), spacing: 12)], spacing: 12) {
                             ForEach(favorites) { conn in
-                                Button {
-                                    store.openConnection(conn)
-                                } label: {
-                                    HStack(spacing: 12) {
-                                        ProtocolSquircleIcon(
-                                            protocolType: conn.protocolType,
-                                            customHex: conn.inheritable.displayColorAccentHex,
-                                            size: 34
-                                        )
-                                        VStack(alignment: .leading, spacing: 2) {
-                                            Text(conn.name)
-                                                .font(.body.weight(.semibold))
-                                                .foregroundStyle(.primary)
-                                                .lineLimit(1)
-                                            Text(conn.protocolType.displayName)
-                                                .font(.caption)
-                                                .foregroundStyle(.secondary)
-                                                .lineLimit(1)
-                                        }
-                                        Spacer()
-                                        Image(systemName: "arrow.up.right.circle.fill")
-                                            .foregroundStyle(Color.accentColor)
-                                    }
-                                    .padding(12)
-                                    .liquidGlassSurface(
-                                        cornerRadius: LiquidGlassMetrics.cardCornerRadius,
-                                        tint: HIGColorUtilities.color(fromHex: conn.inheritable.displayColorAccentHex) ?? conn.protocolType.appleSystemTint,
-                                        prominence: .subtle
+                                let isSelected = store.selectedConnectionId == conn.id
+                                let cardTint = HIGColorUtilities.color(fromHex: conn.inheritable.displayColorAccentHex) ?? conn.protocolType.appleSystemTint
+                                HStack(spacing: 12) {
+                                    ProtocolSquircleIcon(
+                                        protocolType: conn.protocolType,
+                                        customHex: conn.inheritable.displayColorAccentHex,
+                                        size: 34
                                     )
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(conn.name)
+                                            .font(.body.weight(.semibold))
+                                            .foregroundStyle(.primary)
+                                            .lineLimit(1)
+                                        Text(conn.protocolType.displayName)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(1)
+                                    }
+                                    Spacer()
+                                    Image(systemName: "arrow.up.right.circle.fill")
+                                        .foregroundStyle(Color.accentColor)
                                 }
-                                .buttonStyle(.plain)
+                                .padding(12)
+                                .liquidGlassSurface(
+                                    cornerRadius: LiquidGlassMetrics.cardCornerRadius,
+                                    tint: cardTint,
+                                    prominence: isSelected ? .regular : .subtle
+                                )
+                                .contentShape(RoundedRectangle(cornerRadius: LiquidGlassMetrics.cardCornerRadius, style: .continuous))
+                                .onTapGesture(count: 2) {
+                                    store.openConnection(conn)
+                                }
+                                .simultaneousGesture(
+                                    TapGesture(count: 1).onEnded {
+                                        store.selectedConnectionId = conn.id
+                                    }
+                                )
+                                .contextMenu {
+                                    Button("Connect") {
+                                        store.openConnection(conn)
+                                    }
+                                    Button("Edit Connection…") {
+                                        store.editingConnection = conn
+                                    }
+                                }
+                                .help("Double-click to connect to \(conn.name)")
                             }
                         }
                     }

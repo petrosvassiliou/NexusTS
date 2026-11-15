@@ -149,6 +149,7 @@ data class WorkspaceUiState(
     val updateReleaseHtmlUrl: String = "",
     val updateVerificationMessage: String = "",
     val remoteKeyCaptureEnabled: Boolean = false,
+    val isFullScreenSessionMode: Boolean = false,
     val broadcastModeEnabled: Boolean = false,
     val isVaultLocked: Boolean = false,
     val biometricHardwareAvailable: Boolean = false,
@@ -252,6 +253,7 @@ class NexusWorkspaceViewModel @Inject constructor(
                         selectedConnectionId = validSelectedId,
                         selectedFolderId = validSelectedFolderId,
                         remoteKeyCaptureEnabled = if (shared.isVaultLocked) false else current.remoteKeyCaptureEnabled,
+                        isFullScreenSessionMode = if (shared.isVaultLocked) false else current.isFullScreenSessionMode,
                         isQuickConnectVisible = if (shared.isVaultLocked) false else current.isQuickConnectVisible
                     )
                 }
@@ -1397,7 +1399,7 @@ class NexusWorkspaceViewModel @Inject constructor(
     fun transferTabToDetachedWindow(tabId: String): WorkspaceSessionTab? {
         val extracted = tilingController.extractTabForDetachedWindow(tabId)
         if (extracted != null && tilingController.allActiveTabs().isEmpty()) {
-            _uiState.update { it.copy(remoteKeyCaptureEnabled = false) }
+            _uiState.update { it.copy(remoteKeyCaptureEnabled = false, isFullScreenSessionMode = false) }
         }
         return extracted
     }
@@ -2117,9 +2119,44 @@ class NexusWorkspaceViewModel @Inject constructor(
         activeVaultStore.closeTabResources(tabId)
         tilingController.closeTab(tabId)
         if (tilingController.allActiveTabs().isEmpty()) {
-            _uiState.update { it.copy(remoteKeyCaptureEnabled = false) }
+            _uiState.update { it.copy(remoteKeyCaptureEnabled = false, isFullScreenSessionMode = false) }
         }
         runConfiguredLifecycleTask(conn?.inheritable?.postDisconnectTaskId, "Post-Disconnect")
+    }
+
+    fun selectTabGlobally(tabId: String) {
+        if (tilingController.selectTabById(tabId)) {
+            val selected = tilingController.focusedOrFirstActiveTab()
+            if (selected != null) {
+                _uiState.update { state ->
+                    state.copy(
+                        selectedConnectionId = selected.connectionId,
+                        remoteKeyCaptureEnabled = isInteractiveRemoteKeyProtocol(selected.protocol) || state.remoteKeyCaptureEnabled
+                    )
+                }
+            }
+        }
+    }
+
+    fun enterFullScreenForTab(tabId: String) {
+        if (_uiState.value.isVaultLocked) return
+        if (tilingController.selectTabById(tabId)) {
+            _uiState.update { it.copy(isFullScreenSessionMode = true) }
+            appendLog("[Workspace] Entered full-screen session mode")
+        }
+    }
+
+    fun toggleFullScreenSessionMode() {
+        if (_uiState.value.isVaultLocked) return
+        val hasTabs = tilingController.allActiveTabs().isNotEmpty()
+        _uiState.update { current ->
+            val next = if (!hasTabs) false else !current.isFullScreenSessionMode
+            current.copy(isFullScreenSessionMode = next)
+        }
+    }
+
+    fun exitFullScreenSessionMode() {
+        _uiState.update { it.copy(isFullScreenSessionMode = false) }
     }
 
     fun handleShortcut(
@@ -2193,6 +2230,8 @@ class NexusWorkspaceViewModel @Inject constructor(
                     transferTabToDetachedWindow(activeTab.tabId)?.let(onDetachActiveTab)
                 }
             }
+            NexusShortcutAction.TOGGLE_FULLSCREEN_SESSION ->
+                toggleFullScreenSessionMode()
             NexusShortcutAction.ZOOM_IN_SESSION ->
                 tilingController.adjustFocusedTabZoom(+0.15f)
             NexusShortcutAction.ZOOM_OUT_SESSION ->
@@ -3129,6 +3168,7 @@ class NexusWorkspaceViewModel @Inject constructor(
                         movingFolderTarget = null,
                         isAutoUpdateDialogVisible = false,
                         remoteKeyCaptureEnabled = false,
+                        isFullScreenSessionMode = false,
                         isQuickConnectVisible = false,
                         hydratedDynamicConnections = emptyMap()
                     )
@@ -3677,6 +3717,8 @@ class NexusWorkspaceViewModel @Inject constructor(
                 activeGatewayLeases = emptyList(),
                 isResetDatabaseDialogVisible = false,
                 isVaultLocked = false,
+                isFullScreenSessionMode = false,
+                remoteKeyCaptureEnabled = false,
                 vaultUnlockError = null,
                 hasSavedVaultLockPassphrase = false,
                 biometricUnlockEnabled = false,

@@ -40,6 +40,7 @@ import com.nexusts.app.core.ui.components.ExpressiveMorphingIconButton
 import com.nexusts.app.core.ui.input.LocalNexusShortcutEngine
 import com.nexusts.app.core.ui.input.NexusShortcutAction
 import com.nexusts.app.core.ui.input.RawHardwareKeyPacket
+import com.nexusts.app.core.ui.input.isSystemPassThroughKeyEvent
 import com.nexusts.app.core.ui.input.nexusRemoteKeyPassthrough
 import com.nexusts.app.core.ui.theme.NexusTSTheme
 import com.nexusts.app.core.ui.workspace.GooglebookWindowController
@@ -210,6 +211,9 @@ class DetachedSessionActivity : AppCompatActivity() {
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (isSystemPassThroughKeyEvent(event)) {
+            return super.dispatchKeyEvent(event)
+        }
         if (event.action == KeyEvent.ACTION_UP && consumedShortcutKeyCodes.remove(event.keyCode)) {
             return true
         }

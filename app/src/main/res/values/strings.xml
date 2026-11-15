@@ -119,7 +119,7 @@
     <string name="rdp_tab_experience_security">Experience &amp; Security</string>
     <string name="rdp_opt_connect_console">Connect to Console / Admin Session (/admin)</string>
     <string name="rdp_opt_hidpi_scaling">HiDPI / Retina Display Scaling</string>
-    <string name="rdp_opt_clipboard_sharing">Clipboard Sharing (Bidirectional)</string>
+    <string name="rdp_opt_clipboard_sharing">Automatic Clipboard Sync (Bidirectional)</string>
     <string name="rdp_opt_audio_redirection">Audio Output Redirection</string>
     <string name="rdp_audio_local">Play on This Device</string>
     <string name="rdp_audio_remote">Leave on Remote Host</string>
@@ -137,7 +137,7 @@
     <string name="rdp_opt_restricted_admin">Restricted Admin Mode (/restrictedAdmin)</string>
     <string name="rdp_opt_ignore_cert">Ignore Server Certificate Warnings</string>
     <string name="rdp_opt_rd_gateway">RD Gateway Hostname</string>
-    <string name="rdp_sync_clipboard_chip">Clipboard</string>
+    <string name="rdp_sync_clipboard_chip">Clipboard Sync</string>
     <string name="rdp_console_badge">Console /admin</string>
 
     <!-- Royal TS Enterprise Parity: Templates, Connect with Options, TOTP, Favorites, Overview & To-Dos -->

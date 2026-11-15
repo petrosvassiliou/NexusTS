@@ -156,5 +156,115 @@ class QuickConnectAndTilingTest {
             (controller.rootNode.value as PaneNode.Leaf).tabs.map { it.tabId }
         )
     }
+
+    @Test
+    fun `tiling controller selectTabById switches active RDP tabs across single and split panes`() {
+        val controller = WorkspaceTilingController()
+        val rdp1 = WorkspaceSessionTab(
+            tabId = "tab-rdp-1",
+            connectionId = "conn-rdp-1",
+            title = "RDP Server 1",
+            subtitleHost = "10.0.10.11",
+            protocol = SessionProtocolKind.RDP
+        )
+        val rdp2 = WorkspaceSessionTab(
+            tabId = "tab-rdp-2",
+            connectionId = "conn-rdp-2",
+            title = "RDP Server 2",
+            subtitleHost = "10.0.10.12",
+            protocol = SessionProtocolKind.RDP
+        )
+        controller.openTab(rdp1, "root-leaf")
+        controller.openTab(rdp2, "root-leaf")
+        assertEquals("tab-rdp-2", controller.focusedOrFirstActiveTab()?.tabId)
+
+        assertTrue(controller.selectTabById("tab-rdp-1"))
+        assertEquals("tab-rdp-1", controller.focusedOrFirstActiveTab()?.tabId)
+
+        val secondPaneId = controller.splitPane(orientation = SplitOrientation.HORIZONTAL)
+        // Splitting moved active tab (tab-rdp-1) into secondPaneId; root-leaf has tab-rdp-2
+        assertEquals(secondPaneId, controller.focusedPaneId.value)
+        assertEquals("tab-rdp-1", controller.focusedOrFirstActiveTab()?.tabId)
+
+        assertTrue(controller.selectTabById("tab-rdp-2"))
+        assertEquals("root-leaf", controller.focusedPaneId.value)
+        assertEquals("tab-rdp-2", controller.focusedOrFirstActiveTab()?.tabId)
+        assertFalse(controller.selectTabById("non-existent-tab"))
+    }
+
+    @Test
+    fun `isSystemPassThroughKey passes Android and Googlebook OS screenshot shortcuts to host OS`() {
+        // Dedicated PrintScreen / SysRq (120) and Android 14+ KEYCODE_SCREENSHOT (318)
+        assertTrue(
+            com.nexusts.app.core.ui.input.isSystemPassThroughKey(
+                keyCode = android.view.KeyEvent.KEYCODE_SYSRQ,
+                isCtrlPressed = false,
+                isAltPressed = false,
+                isMetaPressed = false
+            )
+        )
+        assertTrue(
+            com.nexusts.app.core.ui.input.isSystemPassThroughKey(
+                keyCode = 318,
+                isCtrlPressed = false,
+                isAltPressed = false,
+                isMetaPressed = false
+            )
+        )
+        // Googlebook / ChromeOS Show-Windows screenshot shortcuts: Ctrl+F5 and Ctrl+Shift+F5
+        assertTrue(
+            com.nexusts.app.core.ui.input.isSystemPassThroughKey(
+                keyCode = android.view.KeyEvent.KEYCODE_F5,
+                isCtrlPressed = true,
+                isAltPressed = false,
+                isMetaPressed = false
+            )
+        )
+        // Android Desktop Mode Meta+Ctrl+S screenshot shortcut and hardware Volume/Power keys
+        assertTrue(
+            com.nexusts.app.core.ui.input.isSystemPassThroughKey(
+                keyCode = android.view.KeyEvent.KEYCODE_S,
+                isCtrlPressed = true,
+                isAltPressed = false,
+                isMetaPressed = true
+            )
+        )
+        assertTrue(
+            com.nexusts.app.core.ui.input.isSystemPassThroughKey(
+                keyCode = android.view.KeyEvent.KEYCODE_VOLUME_DOWN,
+                isCtrlPressed = false,
+                isAltPressed = false,
+                isMetaPressed = false
+            )
+        )
+
+        // Normal remote session keys (bare F5, Ctrl+C, letters) MUST continue routing to remote session
+        assertFalse(
+            com.nexusts.app.core.ui.input.isSystemPassThroughKey(
+                keyCode = android.view.KeyEvent.KEYCODE_F5,
+                isCtrlPressed = false,
+                isAltPressed = false,
+                isMetaPressed = false
+            )
+        )
+        assertFalse(
+            com.nexusts.app.core.ui.input.isSystemPassThroughKey(
+                keyCode = android.view.KeyEvent.KEYCODE_C,
+                isCtrlPressed = true,
+                isAltPressed = false,
+                isMetaPressed = false
+            )
+        )
+
+        // TOGGLE_FULLSCREEN_SESSION binding is registered with bypassesRemoteCapture = true
+        val fullScreenBinding = com.nexusts.app.core.ui.input.NexusShortcutEngine.defaultEnterpriseBindings()
+            .firstOrNull {
+                it.action == com.nexusts.app.core.ui.input.NexusShortcutAction.TOGGLE_FULLSCREEN_SESSION &&
+                    it.chord.ctrl && it.chord.alt
+            }
+        assertNotNull(fullScreenBinding)
+        assertTrue(fullScreenBinding!!.bypassesRemoteCapture)
+    }
 }
+
 

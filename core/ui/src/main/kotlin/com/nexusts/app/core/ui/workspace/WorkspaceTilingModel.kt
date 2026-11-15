@@ -324,6 +324,17 @@ class WorkspaceTilingController(
     fun focusedActiveTab(): WorkspaceSessionTab? =
         findLeaf(_rootNode.value, _focusedPaneId.value)?.activeTab
 
+    fun focusedOrFirstActiveTab(): WorkspaceSessionTab? =
+        focusedActiveTab() ?: allActiveTabs().firstOrNull()
+
+    fun selectTabById(tabId: String): Boolean {
+        val targetLeaf = collectLeaves(_rootNode.value).firstOrNull { leaf ->
+            leaf.tabs.any { it.tabId == tabId }
+        } ?: return false
+        selectTab(targetLeaf.nodeId, tabId)
+        return true
+    }
+
     /**
      * Splits [paneId] along [orientation], moving [tabForNewPane] into the newly created sibling pane.
      */

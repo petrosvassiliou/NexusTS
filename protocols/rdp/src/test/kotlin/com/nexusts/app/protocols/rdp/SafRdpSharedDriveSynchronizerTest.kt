@@ -114,4 +114,43 @@ class SafRdpSharedDriveSynchronizerTest {
             mirrorDir.deleteRecursively()
         }
     }
+
+    @Test
+    fun `RdpScanCodeMapper maps standard and numpad keys and never swallows OS screenshot keys`() {
+        val enter = com.nexusts.app.protocols.rdp.bridge.RdpScanCodeMapper.mapAndroidKeyCode(
+            android.view.KeyEvent.KEYCODE_ENTER
+        )
+        assertNotNull(enter)
+        assertEquals(0x1C, enter!!.scanCode)
+        assertEquals(false, enter.extended)
+
+        val numpadEnter = com.nexusts.app.protocols.rdp.bridge.RdpScanCodeMapper.mapAndroidKeyCode(
+            android.view.KeyEvent.KEYCODE_NUMPAD_ENTER
+        )
+        assertNotNull(numpadEnter)
+        assertEquals(0x1C, numpadEnter!!.scanCode)
+        assertEquals(true, numpadEnter.extended)
+
+        val f12 = com.nexusts.app.protocols.rdp.bridge.RdpScanCodeMapper.mapAndroidKeyCode(
+            android.view.KeyEvent.KEYCODE_F12
+        )
+        assertNotNull(f12)
+        assertEquals(0x58, f12!!.scanCode)
+
+        // OS screenshot / hardware media keys must return null so Android/Googlebook handles them
+        assertNull(
+            com.nexusts.app.protocols.rdp.bridge.RdpScanCodeMapper.mapAndroidKeyCode(
+                android.view.KeyEvent.KEYCODE_SYSRQ
+            )
+        )
+        assertNull(
+            com.nexusts.app.protocols.rdp.bridge.RdpScanCodeMapper.mapAndroidKeyCode(318)
+        )
+        assertNull(
+            com.nexusts.app.protocols.rdp.bridge.RdpScanCodeMapper.mapAndroidKeyCode(
+                android.view.KeyEvent.KEYCODE_VOLUME_DOWN
+            )
+        )
+    }
 }
+

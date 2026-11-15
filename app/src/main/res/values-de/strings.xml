@@ -119,7 +119,7 @@
     <string name="rdp_tab_experience_security">Leistung &amp; Sicherheit</string>
     <string name="rdp_opt_connect_console">Mit Konsole / Admin-Sitzung verbinden (/admin)</string>
     <string name="rdp_opt_hidpi_scaling">HiDPI- / Retina-Skalierung</string>
-    <string name="rdp_opt_clipboard_sharing">Zwischenablage teilen (Bidirektional)</string>
+    <string name="rdp_opt_clipboard_sharing">Automatische Zwischenablage-Sync (Bidirektional)</string>
     <string name="rdp_opt_audio_redirection">Audio-Ausgabeumleitung</string>
     <string name="rdp_audio_local">Auf diesem Gerät wiedergeben</string>
     <string name="rdp_audio_remote">Auf Remotecomputer belassen</string>
@@ -137,7 +137,7 @@
     <string name="rdp_opt_restricted_admin">Restricted-Admin-Modus (/restrictedAdmin)</string>
     <string name="rdp_opt_ignore_cert">Zertifikatswarnungen ignorieren</string>
     <string name="rdp_opt_rd_gateway">RD-Gateway-Hostname</string>
-    <string name="rdp_sync_clipboard_chip">Zwischenablage</string>
+    <string name="rdp_sync_clipboard_chip">Zwischenablage-Sync</string>
     <string name="rdp_console_badge">Konsole /admin</string>
 
     <!-- Royal TS Enterprise Parity -->

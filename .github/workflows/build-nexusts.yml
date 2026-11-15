@@ -319,7 +319,7 @@ jobs:
           set -euo pipefail
           TAG_NAME="${GITHUB_REF_NAME}"
           if [[ "${TAG_NAME}" != v* ]]; then
-            TAG_NAME="${{ inputs.release_tag || 'v1.2.1-beta.1' }}"
+            TAG_NAME="${{ inputs.release_tag || 'v1.2.1-beta.2' }}"
           fi
           echo "tag_name=${TAG_NAME}" >> "${GITHUB_OUTPUT}"
 
@@ -346,7 +346,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.stage.outputs.tag_name }}
-          name: "NexusTS ${{ steps.stage.outputs.tag_name }} — RDP Connectivity Fix (Beta Pre-Release)"
+          name: "NexusTS ${{ steps.stage.outputs.tag_name }} — Multi-Session RDP, Performance, Clipboard Sync & Full-Screen Mode (Beta Pre-Release)"
           draft: false
           prerelease: ${{ contains(steps.stage.outputs.tag_name, '-') }}
           generate_release_notes: true
@@ -354,20 +354,23 @@ jobs:
             ## NexusTS ${{ steps.stage.outputs.tag_name }} (`com.nexusts.app` / `com.nexusts.app.macos`)
             **Native Enterprise Remote Management & Connection Manager for Googlebook OS, Android Tablets & macOS**
 
-            > **Beta Channel Notice**: This pre-release (`versionCode = 10201`, `1.2.1-beta.1`) delivers the native FreeRDP 3.12 RDP session initialization, graphics pipeline, TLS certificate, and NLA authentication fixes for verification prior to promoting `v1.2.1` to the stable channel. Installed beta builds automatically detect newer betas and the final `v1.2.1` release.
+            > **Beta Channel Notice**: This pre-release (`versionCode = 10202`, `1.2.1-beta.2`) delivers multi-session tabbed RDP switching, native FreeRDP rendering performance optimizations, external RDP session controls, hamburger sidebar toggle, double-click-only connection initiation, automatic bidirectional clipboard sync, OS screenshot shortcut pass-through, and full-screen session mode with active session switching and folder hierarchy server launching.
 
             ### Signed Deliverables (100% In-Place Upgrade Compatible with `v1.2.0` & Prior Releases)
-            - **`NexusTS-${{ steps.stage.outputs.tag_name }}-googlebook-android-release.apk`**: Cryptographically signed (APK Signature Scheme v2/v3/v4, RSA-4096) universal `arm64-v8a` + `x86_64` APK with 16 KB ELF page alignment (`0x4000`) and 100% Google Play Protect compliance. Upgrades `v1.2.0` directly in place while preserving all `.nxts` v2 vaults & Android Keystore secrets.
+            - **`NexusTS-${{ steps.stage.outputs.tag_name }}-googlebook-android-release.apk`**: Cryptographically signed (APK Signature Scheme v2/v3/v4, RSA-4096) universal `arm64-v8a` + `x86_64` APK with 16 KB ELF page alignment (`0x4000`) and 100% Google Play Protect compliance. Upgrades `v1.2.0` / `v1.2.1-beta.1` directly in place while preserving all `.nxts` v2 vaults & Android Keystore secrets.
             - **`NexusTS-${{ steps.stage.outputs.tag_name }}-playstore-release.aab`**: Signed Android App Bundle for optional Managed Google Play / internal distribution.
             - **`NexusTS-${{ steps.stage.outputs.tag_name }}-macOS-Universal.dmg` & `.zip`**: Universal2 (`arm64` + `x86_64`) macOS application bundle with bundled OpenSSL 3.4 + FreeRDP 3.12.
             - **`nexusts-upload-certificate.pem` & `oauth-and-mdm-registration.json`**: Public X.509 upload certificate (`SHA-1: A6:AF:15:A9:BF:0B:FE:38:D4:66:46:3E:3E:72:A6:5B:4F:9C:4D:F6`, `SHA-256: 4A:BD:80:F1:20:14:B9:88:09:1C:97:92:2F:87:02:D1:BF:B7:93:9C:73:B6:9A:DB:1A:9B:76:30:6A:30:27:82`) and Managed Google Play `app_restrictions` template.
 
-            ### What's Fixed in ${{ steps.stage.outputs.tag_name }}
-            - **Fixed `INTERNAL: freerdp_context_new() initialization failed.` on Android & Googlebook OS**: Provisioned writable app-private FreeRDP runtime directories (`HOME`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`, `TMPDIR`, `.config/freerdp/certs`, `.config/freerdp/server`) via both POSIX `setenv` and WinPR `SetEnvironmentVariableA` prior to `freerdp_context_new()`.
-            - **Builtin Static Virtual Channels & `RDPGFX` Graphics Pipeline Binding**: Registered `freerdp_channels_load_static_addin_entry` for statically compiled FreeRDP 3.12 channels (`drdynvc`, `rdpgfx`, `disp`, `cliprdr`, `rdpdr`, `rdpsnd`, `audin`, `smartcard`), wired `RDPGFX_DVC_CHANNEL_NAME` to `gdi_graphics_pipeline_init`/`uninit` with `SoftwareGdi` + `BeginPaint`/`EndPaint`, and added runtime `h264_context_new(FALSE)` probing with automatic Progressive/RemoteFX/NSCodec fallback.
-            - **Self-Signed Windows LAN TLS Certificates & OpenSSL 3.4 Compatibility**: Implemented Trust-On-First-Use (TOFU) X.509 host verification (`known_hosts2` persistence + `VerifyChangedCertificateEx` MITM protection) and set `FreeRDP_TlsSecLevel = 0` so legacy SHA-1 / RSA-1024 Windows RDP certificates succeed cleanly under OpenSSL 3.4.
-            - **Smart Credential Normalization & Non-Blocking `AuthenticateEx`**: Automatically splits `DOMAIN\username` credentials when the domain field is blank, disables blocking `stdio` prompts (`FreeRDP_UseCommonStdioCallbacks = false`), negotiates TLS interactive Windows logon when no vault credentials are provided, and preserves callback error diagnostics.
-            - **Accurate `NexusErrorClassifier` & SemVer 2.0 Beta Auto-Updater**: Classified `INTERNAL:` / `freerdp_context_new` / `gdi_init` under `NexusErrorCategory.INTERNAL`, `TLS_CERTIFICATE_CHANGED` under `TLS_CERTIFICATE`, `HYBRID_REQUIRED` under `AUTHENTICATION_FAILED`, and added SemVer 2.0 pre-release feed support so beta testers seamlessly upgrade to `v1.2.1` final.
+            ### What's New & Fixed in ${{ steps.stage.outputs.tag_name }}
+            - **Fixed Main-Window Tabbed Interface & Multi-Session RDP Switching**: Fixed Compose/native surface keying (`key(activeTab.tabId)` + `key(session)` + race-free `unbindSurface(expectedSurface)` + non-consuming `PointerEventPass.Initial` pane focus tracking + unified `ExpressiveSessionTabChip` click/drag gestures) so multiple concurrent RDP sessions to different servers switch cleanly in the main window.
+            - **High-Throughput Native FreeRDP Rendering Pipeline**: Eliminated per-tile `ANativeWindow_setBuffersGeometry` calls and full-screen double `memcpy` stalls via dirty-rect-only staging (`stage_gdi_dirty_region`), opaque `0xFF` alpha channel enforcement, 8 ms (~120 Hz) frame-coalesced `flush_pending_frame()`, SIMD `RDPGFX` Progressive/RemoteFX/NSCodec fast-path rendering without Android `AMediaCodec` slot exhaustion, and dedicated `input_mutex_` isolation.
+            - **External RDP Connection Info & Control Bar**: Moved the RDP telemetry and control bar (`Auto-Fit DISP` / `Smart Scale` / `Fixed`, `HiDPI`, `Keys`, `Ctrl+Alt+Del`, `Full Screen`, etc.) strictly outside (above) the remote desktop viewport so it never covers or interferes with the RDP session.
+            - **Double-Click Only to Connect**: Single-clicking a connection in the sidebar or Favorites strictly selects it; only double-clicking (or explicit Connect menu/button actions) initiates a connection.
+            - **Hamburger Menu Sidebar Toggle**: Added a standard hamburger menu button in the top bar to show/hide the left sidebar.
+            - **Automated Bidirectional Clipboard Sync (`CLIPRDR`)**: Replaced manual Push/Pull Clipboard buttons with automatic bidirectional FreeRDP `CliprdrClientContext` + OS clipboard synchronization controlled per connection in Connection Properties.
+            - **Standard Android / Googlebook OS Screenshot Shortcuts**: Passed OS screenshot shortcuts (`SYSRQ`/`PrintScreen`, `KEYCODE_SCREENSHOT`, `Ctrl+F5` / `Ctrl+Shift+F5`, `Meta+Ctrl+S`, hardware volume/power keys) directly to the host OS even during active remote key capture, backed by `TextureView` GPU composition for clean desktop screenshot capture.
+            - **Full-Screen Session Mode with Active Session Switcher & Folder Tree Server Launcher**: Any session can expand to full screen (`Ctrl+Alt+F` or Full Screen button) with a collapsible top bar outside the viewport for switching active sessions and browsing folders/intelligent folders to launch new server sessions.
           files: release-assets/*
 
       - name: Check Optional Google Play Service Account Secret

@@ -7,6 +7,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -37,6 +39,7 @@ import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.filled.Folder as FilledFolderIcon
 import androidx.compose.material.icons.filled.FolderOpen as FilledFolderOpenIcon
+import androidx.compose.material.icons.outlined.AccountTree
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.ArrowDownward
 import androidx.compose.material.icons.outlined.ArrowUpward
@@ -61,15 +64,19 @@ import androidx.compose.material.icons.outlined.ExpandLess
 import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.Fingerprint
 import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material.icons.outlined.Fullscreen
+import androidx.compose.material.icons.outlined.FullscreenExit
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.HorizontalSplit
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.outlined.Keyboard
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
+import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.material.icons.outlined.Language
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.LockOpen
+import androidx.compose.material.icons.outlined.Menu
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Podcasts
@@ -119,6 +126,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -144,6 +152,7 @@ import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
@@ -165,6 +174,7 @@ import com.nexusts.app.core.ui.input.NexusShortcutAction
 import com.nexusts.app.core.ui.input.nexusDesktopPointerButtons
 import com.nexusts.app.core.ui.input.nexusHoverTracker
 import com.nexusts.app.core.ui.input.nexusInteractiveRow
+import com.nexusts.app.core.ui.input.nexusRemoteKeyPassthrough
 import com.nexusts.app.core.ui.input.rememberDesktopHoverState
 import com.nexusts.app.core.ui.theme.NexusTheme
 import com.nexusts.app.core.ui.workspace.ExternalDisplayDescriptor
@@ -383,28 +393,67 @@ fun NexusWorkspaceScreen(
         NexusLocaleController.currentSupportedLocale()
     }
 
+    val activeFullScreenTab = remember(rootPane, focusedPaneId) {
+        viewModel.tilingController.focusedOrFirstActiveTab()
+    }
+    val onShortcutAction: (NexusShortcutAction) -> Unit = { action ->
+        viewModel.handleShortcut(
+            action = action,
+            onOpenVaultPicker = onRequestImportFilePicker,
+            onSyncDriveNow = onRequestGoogleDriveSync
+        ) { tab -> onDetachTabToNativeWindow(tab, null) }
+    }
+
     CompositionLocalProvider(LocalNexusShortcutEngine provides viewModel.shortcutEngine) {
-        NexusAdaptiveDesktopScaffold(
-            destinations = destinations,
-            selectedDestinationId = uiState.activeRailId,
-            onSelectDestination = viewModel::selectRailDestination,
-            isSidebarVisible = uiState.isSidebarVisible,
-            isInspectorVisible = uiState.isInspectorVisible,
-            isBottomDrawerVisible = uiState.isBottomDrawerVisible,
-            remoteKeyCaptureActive = uiState.remoteKeyCaptureEnabled,
-            onShortcutTriggered = { action ->
-                viewModel.handleShortcut(
-                    action = action,
-                    onOpenVaultPicker = onRequestImportFilePicker,
-                    onSyncDriveNow = onRequestGoogleDriveSync
-                ) { tab -> onDetachTabToNativeWindow(tab, null) }
-            },
-            onForwardRawKeyToActiveSession = viewModel::forwardRawKeyToFocusedSession,
-            topWindowBar = {
-                DesktopTopWindowChrome(
-                    vaultName = uiState.vaultDocument.name,
-                    vaultRevision = uiState.vaultDocument.revision,
+        Box(modifier = modifier.fillMaxSize()) {
+            if (uiState.isFullScreenSessionMode && activeFullScreenTab != null) {
+                FullScreenSessionWorkspace(
+                    activeTab = activeFullScreenTab,
+                    allActiveTabs = activeDockedTabs,
+                    uiState = uiState,
+                    strings = strings,
+                    remoteKeyCaptureActive = uiState.remoteKeyCaptureEnabled,
+                    onShortcutTriggered = onShortcutAction,
+                    onForwardRawKeyToActiveSession = viewModel::forwardRawKeyToFocusedSession,
+                    onSelectTab = viewModel::selectTabGlobally,
+                    onCloseTab = viewModel::closeSessionTab,
+                    onExitFullScreen = viewModel::exitFullScreenSessionMode,
+                    onOpenQuickConnect = {
+                        viewModel.handleShortcut(NexusShortcutAction.QUICK_CONNECT_PALETTE) {}
+                    },
+                    onNewConnection = viewModel::openNewConnectionDialog,
+                    smartFolderConnectionsProvider = viewModel::evaluateSmartFolderConnections,
+                    onSelectConnection = viewModel::selectConnectionInTree,
+                    onLaunchConnection = { conn ->
+                        viewModel.launchConnection(conn, QuickLaunchPlacement.ACTIVE_PANE_TAB)
+                    },
+                    sessionContent = { tab ->
+                        key(tab.tabId) {
+                            ActiveProtocolSessionDispatcher(
+                                tab = tab,
+                                isFocused = true,
+                                viewModel = viewModel,
+                                strings = strings
+                            )
+                        }
+                    }
+                )
+            } else {
+                NexusAdaptiveDesktopScaffold(
                     destinations = destinations,
+                    selectedDestinationId = uiState.activeRailId,
+                    onSelectDestination = viewModel::selectRailDestination,
+                    isSidebarVisible = uiState.isSidebarVisible,
+                    isInspectorVisible = uiState.isInspectorVisible,
+                    isBottomDrawerVisible = uiState.isBottomDrawerVisible,
+                    remoteKeyCaptureActive = uiState.remoteKeyCaptureEnabled,
+                    onShortcutTriggered = onShortcutAction,
+                    onForwardRawKeyToActiveSession = viewModel::forwardRawKeyToFocusedSession,
+                    topWindowBar = {
+                        DesktopTopWindowChrome(
+                            vaultName = uiState.vaultDocument.name,
+                            vaultRevision = uiState.vaultDocument.revision,
+                            destinations = destinations,
                     selectedDestinationId = uiState.activeRailId,
                     onSelectDestination = viewModel::selectRailDestination,
                     isDriveLinked = isDriveLinked,
@@ -683,6 +732,9 @@ fun NexusWorkspaceScreen(
                         onMoveTabToPane = { tabId, targetPaneId, targetIdx ->
                             viewModel.tilingController.moveTabToPane(tabId, targetPaneId, targetIdx)
                         },
+                        onEnterFullScreen = { tab ->
+                            viewModel.enterFullScreenForTab(tab.tabId)
+                        },
                         emptyStateContent = {
                             ExpressiveVaultOverviewDashboard(
                                 vaultDocument = uiState.vaultDocument,
@@ -783,8 +835,12 @@ fun NexusWorkspaceScreen(
                     onClearLogs = viewModel::clearAuditLogs
                 )
             },
-            floatingOverlayContent = {
-                QuickConnectCommandPalette(
+            floatingOverlayContent = {},
+            modifier = Modifier.fillMaxSize()
+                )
+            }
+
+            QuickConnectCommandPalette(
                     visible = uiState.isQuickConnectVisible,
                     vaultCandidates = remember(uiState.vaultDocument, uiState.hydratedDynamicConnections) {
                         viewModel.buildQuickConnectCandidates()
@@ -1016,9 +1072,771 @@ fun NexusWorkspaceScreen(
                         modifier = Modifier.padding(16.dp)
                     )
                 }
-            },
-            modifier = modifier
-        )
+        }
+    }
+}
+
+@Composable
+private fun FullScreenSessionWorkspace(
+    activeTab: WorkspaceSessionTab,
+    allActiveTabs: List<WorkspaceSessionTab>,
+    uiState: WorkspaceUiState,
+    strings: WorkspaceLocalizedStrings,
+    remoteKeyCaptureActive: Boolean,
+    onShortcutTriggered: (NexusShortcutAction) -> Unit,
+    onForwardRawKeyToActiveSession: (com.nexusts.app.core.ui.input.RawHardwareKeyPacket) -> Boolean,
+    onSelectTab: (String) -> Unit,
+    onCloseTab: (String) -> Unit,
+    onExitFullScreen: () -> Unit,
+    onOpenQuickConnect: () -> Unit,
+    onNewConnection: () -> Unit,
+    smartFolderConnectionsProvider: (SmartFolder) -> List<VaultConnection>,
+    onSelectConnection: (String) -> Unit,
+    onLaunchConnection: (VaultConnection) -> Unit,
+    sessionContent: @Composable (WorkspaceSessionTab) -> Unit
+) {
+    val shortcutEngine = LocalNexusShortcutEngine.current
+    var isToolbarCollapsed by remember { mutableStateOf(false) }
+    var isFolderBrowserOpen by remember { mutableStateOf(false) }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(NexusTheme.extendedColors.terminalCanvasBackground)
+            .nexusRemoteKeyPassthrough(
+                captureEnabled = remoteKeyCaptureActive,
+                shortcutEngine = shortcutEngine,
+                onHostShortcut = onShortcutTriggered,
+                onForwardToRemote = onForwardRawKeyToActiveSession
+            )
+    ) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            // Top Full-Screen Session Switcher & Folder Tree Toolbar (strictly outside session viewport)
+            if (isToolbarCollapsed) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(22.dp)
+                        .background(Color(0xFF0A0F1A))
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(horizontal = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(4.dp))
+                                .clickable { isToolbarCollapsed = false }
+                                .padding(horizontal = 4.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.KeyboardArrowDown,
+                                contentDescription = "Expand Full-Screen Toolbar",
+                                tint = Color(0xFF7DD3FC),
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Text(
+                                text = "${activeTab.title} (${allActiveTabs.size} active)",
+                                style = NexusTheme.monospace.keycapShortcut,
+                                color = Color(0xFFE2E8F0),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text(
+                                text = "Exit Full Screen",
+                                style = NexusTheme.monospace.keycapShortcut,
+                                color = Color(0xFF93C5FD),
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(4.dp))
+                                    .clickable(onClick = onExitFullScreen)
+                                    .padding(horizontal = 6.dp, vertical = 1.dp)
+                            )
+                        }
+                    }
+                }
+            } else {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(38.dp)
+                        .background(Color(0xFF0A0F1A))
+                ) {
+                    Column(modifier = Modifier.fillMaxSize()) {
+                        Row(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxWidth()
+                                .padding(horizontal = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            // 1. Hierarchical Folder Structure / Connect Server Trigger
+                            val folderBtnShape = RoundedCornerShape(8.dp)
+                            Row(
+                                modifier = Modifier
+                                    .height(28.dp)
+                                    .clip(folderBtnShape)
+                                    .background(
+                                        if (isFolderBrowserOpen) {
+                                            Color(0xFF0284C7).copy(alpha = 0.30f)
+                                        } else {
+                                            Color(0xFF1E293B)
+                                        },
+                                        folderBtnShape
+                                    )
+                                    .border(
+                                        0.8.dp,
+                                        if (isFolderBrowserOpen) Color(0xFF38BDF8) else Color(0xFF334155),
+                                        folderBtnShape
+                                    )
+                                    .clickable { isFolderBrowserOpen = !isFolderBrowserOpen }
+                                    .padding(horizontal = 9.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(5.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Outlined.AccountTree,
+                                    contentDescription = "Browse Folders & Servers",
+                                    tint = Color(0xFF7DD3FC),
+                                    modifier = Modifier.size(15.dp)
+                                )
+                                Text(
+                                    text = "${strings.vaultSectionFolders} & Servers",
+                                    style = NexusTheme.monospace.keycapShortcut,
+                                    color = Color(0xFFF1F5F9),
+                                    maxLines = 1
+                                )
+                                Icon(
+                                    imageVector = if (isFolderBrowserOpen) {
+                                        Icons.Outlined.KeyboardArrowUp
+                                    } else {
+                                        Icons.Outlined.KeyboardArrowDown
+                                    },
+                                    contentDescription = null,
+                                    tint = Color(0xFF94A3B8),
+                                    modifier = Modifier.size(14.dp)
+                                )
+                            }
+
+                            IconButton(
+                                onClick = onOpenQuickConnect,
+                                modifier = Modifier.size(28.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Outlined.Search,
+                                    contentDescription = strings.quickConnectButton,
+                                    tint = Color(0xFFCBD5E1),
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+
+                            Box(
+                                modifier = Modifier
+                                    .width(1.dp)
+                                    .height(18.dp)
+                                    .background(Color(0xFF334155))
+                            )
+
+                            // 2. Active Sessions Switcher Strip
+                            Row(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .horizontalScroll(rememberScrollState()),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(5.dp)
+                            ) {
+                                allActiveTabs.forEach { tab ->
+                                    key(tab.tabId) {
+                                        val isCurrent = tab.tabId == activeTab.tabId
+                                        val accent = parseHexColorOrNull(tab.customColorHex)
+                                            ?: protocolAccentColor(tab.protocol)
+                                        val chipShape = RoundedCornerShape(8.dp)
+                                        Row(
+                                            modifier = Modifier
+                                                .height(28.dp)
+                                                .clip(chipShape)
+                                                .background(
+                                                    if (isCurrent) {
+                                                        accent.copy(alpha = 0.22f)
+                                                    } else {
+                                                        Color(0xFF162032)
+                                                    },
+                                                    chipShape
+                                                )
+                                                .border(
+                                                    width = if (isCurrent) 1.dp else 0.7.dp,
+                                                    color = if (isCurrent) accent else Color(0xFF293548),
+                                                    shape = chipShape
+                                                )
+                                                .padding(end = 4.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(3.dp)
+                                        ) {
+                                            Row(
+                                                modifier = Modifier
+                                                    .fillMaxHeight()
+                                                    .clickable {
+                                                        isFolderBrowserOpen = false
+                                                        onSelectTab(tab.tabId)
+                                                    }
+                                                    .padding(start = 8.dp, end = 4.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = protocolIcon(tab.protocol),
+                                                    contentDescription = null,
+                                                    tint = accent,
+                                                    modifier = Modifier.size(13.dp)
+                                                )
+                                                Text(
+                                                    text = tab.title,
+                                                    style = MaterialTheme.typography.labelMedium,
+                                                    color = if (isCurrent) Color.White else Color(0xFFCBD5E1),
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis,
+                                                    modifier = Modifier.widthIn(max = 160.dp)
+                                                )
+                                            }
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(18.dp)
+                                                    .clip(CircleShape)
+                                                    .semantics(mergeDescendants = true) {
+                                                        onClick {
+                                                            onCloseTab(tab.tabId)
+                                                            true
+                                                        }
+                                                    }
+                                                    .pointerInput(tab.tabId) {
+                                                        detectTapGestures { onCloseTab(tab.tabId) }
+                                                    },
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Outlined.Close,
+                                                    contentDescription = "${strings.closeTab}: ${tab.title}",
+                                                    tint = Color(0xFF94A3B8),
+                                                    modifier = Modifier.size(11.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // 3. Collapse Bar & Exit Full Screen Controls
+                            IconButton(
+                                onClick = {
+                                    isFolderBrowserOpen = false
+                                    isToolbarCollapsed = true
+                                },
+                                modifier = Modifier.size(28.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Outlined.KeyboardArrowUp,
+                                    contentDescription = "Collapse Full-Screen Toolbar",
+                                    tint = Color(0xFF94A3B8),
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+
+                            val exitBtnShape = RoundedCornerShape(8.dp)
+                            Row(
+                                modifier = Modifier
+                                    .height(28.dp)
+                                    .clip(exitBtnShape)
+                                    .background(Color(0xFF1E293B), exitBtnShape)
+                                    .border(0.8.dp, Color(0xFF475569), exitBtnShape)
+                                    .clickable(onClick = onExitFullScreen)
+                                    .padding(horizontal = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Outlined.FullscreenExit,
+                                    contentDescription = "Exit Full Screen",
+                                    tint = Color(0xFF7DD3FC),
+                                    modifier = Modifier.size(15.dp)
+                                )
+                                Text(
+                                    text = "Exit Full Screen",
+                                    style = NexusTheme.monospace.keycapShortcut,
+                                    color = Color(0xFFF1F5F9),
+                                    maxLines = 1
+                                )
+                            }
+                        }
+                        HorizontalDivider(thickness = 0.6.dp, color = Color(0xFF1E293B))
+                    }
+                }
+            }
+
+            // Full-Screen Session Viewport + Optional Folder Tree Launcher Overlay
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+            ) {
+                sessionContent(activeTab)
+
+                if (isFolderBrowserOpen && !isToolbarCollapsed) {
+                    // Scrim to dismiss folder launcher when clicking outside
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(Color.Black.copy(alpha = 0.32f))
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null
+                            ) {
+                                isFolderBrowserOpen = false
+                            }
+                    )
+                    FullScreenFolderStructurePanel(
+                        uiState = uiState,
+                        strings = strings,
+                        activeConnectionIds = remember(allActiveTabs) {
+                            allActiveTabs.map { it.connectionId }.toSet()
+                        },
+                        smartFolderConnectionsProvider = smartFolderConnectionsProvider,
+                        onSelectConnection = onSelectConnection,
+                        onLaunchConnection = { conn ->
+                            isFolderBrowserOpen = false
+                            onLaunchConnection(conn)
+                        },
+                        onNewConnection = {
+                            isFolderBrowserOpen = false
+                            onNewConnection()
+                        },
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .padding(start = 8.dp, top = 4.dp, bottom = 16.dp)
+                            .width(340.dp)
+                            .heightIn(max = 540.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun FullScreenFolderStructurePanel(
+    uiState: WorkspaceUiState,
+    strings: WorkspaceLocalizedStrings,
+    activeConnectionIds: Set<String>,
+    smartFolderConnectionsProvider: (SmartFolder) -> List<VaultConnection>,
+    onSelectConnection: (String) -> Unit,
+    onLaunchConnection: (VaultConnection) -> Unit,
+    onNewConnection: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val doc = uiState.vaultDocument
+    val tombstones = doc.tombstonedObjectIds
+    var filterQuery by remember { mutableStateOf("") }
+    val expandedFolderIds = remember { mutableStateMapOf<String, Boolean>() }
+    val expandedSmartIds = remember { mutableStateMapOf<String, Boolean>() }
+
+    val activeFolders = remember(doc.folders, tombstones) {
+        doc.folders.filter {
+            it.id !in tombstones && it.id != VaultHierarchySanitizer.SYSTEM_CREDENTIALS_FOLDER_ID
+        }.sortedWith(compareBy<VaultFolder> { it.sortOrder }.thenBy { it.name.lowercase() })
+    }
+    val activeConnections = remember(doc.connections, tombstones) {
+        doc.connections.filter {
+            it.id !in tombstones && it.parentFolderId != VaultHierarchySanitizer.SYSTEM_CREDENTIALS_FOLDER_ID
+        }.sortedWith(compareBy<VaultConnection> { it.sortOrder }.thenBy { it.name.lowercase() })
+    }
+    val activeSmartFolders = remember(doc.smartFolders, tombstones) {
+        doc.smartFolders.filter { it.id !in tombstones }
+    }
+
+    val normalizedQuery = filterQuery.trim().lowercase()
+    fun matchesConnection(conn: VaultConnection): Boolean {
+        if (normalizedQuery.isEmpty()) return true
+        return conn.name.lowercase().contains(normalizedQuery) ||
+            conn.host.lowercase().contains(normalizedQuery) ||
+            conn.protocol.name.lowercase().contains(normalizedQuery)
+    }
+
+    data class FlatTreeEntry(
+        val key: String,
+        val indent: Int,
+        val folder: VaultFolder? = null,
+        val smartFolder: SmartFolder? = null,
+        val connection: VaultConnection? = null,
+        val childCount: Int = 0,
+        val isExpanded: Boolean = false
+    )
+
+    val entries = remember(
+        activeFolders,
+        activeConnections,
+        activeSmartFolders,
+        normalizedQuery,
+        expandedFolderIds.toMap(),
+        expandedSmartIds.toMap()
+    ) {
+        val list = mutableListOf<FlatTreeEntry>()
+        val validFolderIds = activeFolders.map { it.id }.toSet()
+
+        fun countSubtreeConnections(folderId: String): Int {
+            val direct = activeConnections.count { it.parentFolderId == folderId && matchesConnection(it) }
+            val sub = activeFolders
+                .filter { it.parentFolderId == folderId }
+                .sumOf { countSubtreeConnections(it.id) }
+            return direct + sub
+        }
+
+        fun appendFolderSubtree(parentId: String?, depth: Int) {
+            val childFolders = activeFolders.filter { folder ->
+                val normalizedParent = folder.parentFolderId?.takeIf { it in validFolderIds }
+                normalizedParent == parentId
+            }
+            childFolders.forEach { folder ->
+                val count = countSubtreeConnections(folder.id)
+                if (normalizedQuery.isEmpty() || count > 0 || folder.name.lowercase().contains(normalizedQuery)) {
+                    val expanded = if (normalizedQuery.isNotEmpty()) {
+                        true
+                    } else {
+                        expandedFolderIds[folder.id] ?: true
+                    }
+                    list += FlatTreeEntry(
+                        key = "fs-fld-${folder.id}",
+                        indent = depth,
+                        folder = folder,
+                        childCount = count,
+                        isExpanded = expanded
+                    )
+                    if (expanded) {
+                        appendFolderSubtree(folder.id, depth + 1)
+                        activeConnections
+                            .filter { it.parentFolderId == folder.id && matchesConnection(it) }
+                            .forEach { conn ->
+                                list += FlatTreeEntry(
+                                    key = "fs-conn-${folder.id}-${conn.id}",
+                                    indent = depth + 1,
+                                    connection = conn
+                                )
+                            }
+                    }
+                }
+            }
+        }
+
+        appendFolderSubtree(parentId = null, depth = 0)
+
+        // Root-level connections
+        activeConnections
+            .filter { conn ->
+                val normalizedParent = conn.parentFolderId?.takeIf { it in validFolderIds }
+                normalizedParent == null && matchesConnection(conn)
+            }
+            .forEach { conn ->
+                list += FlatTreeEntry(
+                    key = "fs-root-conn-${conn.id}",
+                    indent = 0,
+                    connection = conn
+                )
+            }
+
+        // Intelligent / Smart Folders
+        activeSmartFolders.forEach { smart ->
+            val matched = smartFolderConnectionsProvider(smart).filter(::matchesConnection)
+            if (normalizedQuery.isEmpty() || matched.isNotEmpty() || smart.name.lowercase().contains(normalizedQuery)) {
+                val expanded = if (normalizedQuery.isNotEmpty()) {
+                    true
+                } else {
+                    expandedSmartIds[smart.id] ?: false
+                }
+                list += FlatTreeEntry(
+                    key = "fs-smart-${smart.id}",
+                    indent = 0,
+                    smartFolder = smart,
+                    childCount = matched.size,
+                    isExpanded = expanded
+                )
+                if (expanded) {
+                    matched.forEach { conn ->
+                        list += FlatTreeEntry(
+                            key = "fs-smart-conn-${smart.id}-${conn.id}",
+                            indent = 1,
+                            connection = conn
+                        )
+                    }
+                }
+            }
+        }
+
+        list
+    }
+
+    Surface(
+        modifier = modifier.shadow(16.dp, RoundedCornerShape(14.dp)),
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(10.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column {
+                    Text(
+                        text = strings.navConnections,
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        text = "Double-click a server to connect",
+                        style = NexusTheme.monospace.keycapShortcut,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                IconButton(
+                    onClick = onNewConnection,
+                    modifier = Modifier.size(28.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.Add,
+                        contentDescription = strings.actionNewConnection,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+
+            OutlinedTextField(
+                value = filterQuery,
+                onValueChange = { filterQuery = it },
+                placeholder = {
+                    Text(
+                        text = strings.sidebarFilterPlaceholder,
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                },
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Outlined.Search,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            LazyColumn(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                items(entries, key = { it.key }) { item ->
+                    when {
+                        item.folder != null -> {
+                            val folder = item.folder
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable {
+                                        val current = expandedFolderIds[folder.id] ?: true
+                                        expandedFolderIds[folder.id] = !current
+                                    }
+                                    .padding(
+                                        start = (6 + item.indent * 14).dp,
+                                        end = 8.dp,
+                                        top = 6.dp,
+                                        bottom = 6.dp
+                                    ),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Icon(
+                                    imageVector = if (item.isExpanded) {
+                                        Icons.Outlined.ExpandMore
+                                    } else {
+                                        Icons.Outlined.ChevronRight
+                                    },
+                                    contentDescription = null,
+                                    modifier = Modifier.size(15.dp),
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Icon(
+                                    imageVector = if (item.isExpanded) {
+                                        Icons.Filled.FilledFolderOpenIcon
+                                    } else {
+                                        Icons.Filled.FilledFolderIcon
+                                    },
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp),
+                                    tint = parseHexColorOrNull(folder.inheritable.displayColorAccentHex)
+                                        ?: MaterialTheme.colorScheme.primary
+                                )
+                                Text(
+                                    text = folder.name,
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Text(
+                                    text = "${item.childCount}",
+                                    style = NexusTheme.monospace.keycapShortcut,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+
+                        item.smartFolder != null -> {
+                            val smart = item.smartFolder
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable {
+                                        val current = expandedSmartIds[smart.id] ?: false
+                                        expandedSmartIds[smart.id] = !current
+                                    }
+                                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Icon(
+                                    imageVector = if (item.isExpanded) {
+                                        Icons.Outlined.ExpandMore
+                                    } else {
+                                        Icons.Outlined.ChevronRight
+                                    },
+                                    contentDescription = null,
+                                    modifier = Modifier.size(15.dp),
+                                    tint = MaterialTheme.colorScheme.secondary
+                                )
+                                Icon(
+                                    imageVector = Icons.Outlined.AutoAwesome,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(15.dp),
+                                    tint = MaterialTheme.colorScheme.secondary
+                                )
+                                Text(
+                                    text = smart.name,
+                                    style = MaterialTheme.typography.labelLarge,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Text(
+                                    text = "${item.childCount}",
+                                    style = NexusTheme.monospace.keycapShortcut,
+                                    color = MaterialTheme.colorScheme.secondary
+                                )
+                            }
+                        }
+
+                        item.connection != null -> {
+                            val conn = item.connection
+                            val isSelected = uiState.selectedConnectionId == conn.id
+                            val isActive = conn.id in activeConnectionIds
+                            val rowShape = RoundedCornerShape(8.dp)
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(rowShape)
+                                    .background(
+                                        if (isSelected) {
+                                            MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.65f)
+                                        } else {
+                                            Color.Transparent
+                                        },
+                                        rowShape
+                                    )
+                                    .nexusInteractiveRow(
+                                        rowKey = "fs-launch-${item.key}",
+                                        onClick = { onSelectConnection(conn.id) },
+                                        onDoubleClick = {
+                                            onSelectConnection(conn.id)
+                                            onLaunchConnection(conn)
+                                        }
+                                    )
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(
+                                            start = (10 + item.indent * 14).dp,
+                                            end = 6.dp,
+                                            top = 5.dp,
+                                            bottom = 5.dp
+                                        ),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    if (isActive) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(6.dp)
+                                                .clip(CircleShape)
+                                                .background(MaterialTheme.colorScheme.primary)
+                                        )
+                                    }
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = conn.name,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurface,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Text(
+                                            text = "${conn.protocol.name} • ${conn.host}",
+                                            style = NexusTheme.monospace.keycapShortcut,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                    IconButton(
+                                        onClick = {
+                                            onSelectConnection(conn.id)
+                                            onLaunchConnection(conn)
+                                        },
+                                        modifier = Modifier.size(24.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Outlined.PlayArrow,
+                                            contentDescription = "Connect ${conn.name}",
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(15.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1052,6 +1870,8 @@ fun ActiveProtocolSessionDispatcher(
                 consoleBadgeLabel = strings.rdpConsoleBadge,
                 externalZoomFactor = tab.zoomFactor,
                 onZoomFactorChanged = onZoomChanged,
+                isFullScreen = uiState.isFullScreenSessionMode,
+                onToggleFullScreen = viewModel::toggleFullScreenSessionMode,
                 onEditConnection = conn?.let { target ->
                     { viewModel.openEditConnectionDialog(target) }
                 }
@@ -1244,7 +2064,7 @@ private fun DesktopTopWindowChrome(
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 ExpressiveMorphingIconButton(
-                    icon = Icons.Outlined.ViewSidebar,
+                    icon = Icons.Outlined.Menu,
                     contentDescription = "Toggle Sidebar",
                     isActive = isSidebarVisible,
                     onClick = onToggleSidebar
@@ -4909,6 +5729,9 @@ private fun ConnectionTreeRow(
                             rowKey = "conn-${connection.id}",
                             onClick = {
                                 onSelect()
+                            },
+                            onDoubleClick = {
+                                onSelect()
                                 onLaunch(QuickLaunchPlacement.ACTIVE_PANE_TAB)
                             },
                             onSecondaryClick = { pos ->
@@ -6802,7 +7625,7 @@ private fun PlayProtectAutoUpdateDialog(
                                     ).trim()
                                     else -> String.format(
                                         strings.autoUpdateUpToDateFormat,
-                                        uiState.updateCurrentVersion.ifBlank { "1.2.1-beta.1" }
+                                        uiState.updateCurrentVersion.ifBlank { "1.2.1-beta.2" }
                                     )
                                 },
                                 style = MaterialTheme.typography.titleSmall,
@@ -6817,7 +7640,7 @@ private fun PlayProtectAutoUpdateDialog(
                                 ""
                             }
                             Text(
-                                text = "Installed: v${uiState.updateCurrentVersion.ifBlank { "1.2.1-beta.1" }}  →  Latest: ${uiState.updateLatestTag.ifBlank { "current" }}$sizeMb",
+                                text = "Installed: v${uiState.updateCurrentVersion.ifBlank { "1.2.1-beta.2" }}  →  Latest: ${uiState.updateLatestTag.ifBlank { "current" }}$sizeMb",
                                 style = NexusTheme.monospace.keycapShortcut,
                                 color = MaterialTheme.colorScheme.secondary
                             )

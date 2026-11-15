@@ -1,6 +1,7 @@
 #include "rdp_session_context.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -27,9 +28,11 @@
 #include <freerdp/gdi/gdi.h>
 #include <freerdp/gdi/gfx.h>
 #include <freerdp/channels/channels.h>
+#include <freerdp/channels/cliprdr.h>
 #include <freerdp/channels/rdpdr.h>
 #include <freerdp/channels/rdpgfx.h>
 #include <freerdp/client/channels.h>
+#include <freerdp/client/cliprdr.h>
 #include <freerdp/client/cmdline.h>
 #include <freerdp/client/disp.h>
 #include <freerdp/client/rdpgfx.h>
@@ -48,8 +51,14 @@ constexpr uint32_t align_even_h264_dimension(uint32_t raw, uint32_t min_val, uin
 }
 
 #if defined(NEXUSTS_HAS_FREERDP3_BINARY) && NEXUSTS_HAS_FREERDP3_BINARY == 1
+constexpr UINT32 kWinCfText = 1u;
+constexpr UINT32 kWinCfOemText = 7u;
+constexpr UINT32 kWinCfUnicodeText = 13u;
+
 std::mutex g_freerdp_env_mutex;
 bool g_addin_provider_registered = false;
+bool g_env_initialized = false;
+std::string g_cached_resolved_home;
 
 void set_posix_and_winpr_env(const char* key, const std::string& value) {
     if (!key || value.empty()) {
@@ -61,13 +70,141 @@ void set_posix_and_winpr_env(const char* key, const std::string& value) {
     SetEnvironmentVariableA(key, value.c_str());
 }
 
+void append_utf8_cp(std::string& out, uint32_t cp) {
+    if (cp <= 0x7Fu) {
+        out.push_back(static_cast<char>(cp));
+    } else if (cp <= 0x7FFu) {
+        out.push_back(static_cast<char>(0xC0u | (cp >> 6)));
+        out.push_back(static_cast<char>(0x80u | (cp & 0x3Fu)));
+    } else if (cp <= 0xFFFFu) {
+        out.push_back(static_cast<char>(0xE0u | (cp >> 12)));
+        out.push_back(static_cast<char>(0x80u | ((cp >> 6) & 0x3Fu)));
+        out.push_back(static_cast<char>(0x80u | (cp & 0x3Fu)));
+    } else if (cp <= 0x10FFFFu) {
+        out.push_back(static_cast<char>(0xF0u | (cp >> 18)));
+        out.push_back(static_cast<char>(0x80u | ((cp >> 12) & 0x3Fu)));
+        out.push_back(static_cast<char>(0x80u | ((cp >> 6) & 0x3Fu)));
+        out.push_back(static_cast<char>(0x80u | (cp & 0x3Fu)));
+    } else {
+        out.push_back('?');
+    }
+}
+
+std::string decode_utf16le_clipboard_to_utf8(const BYTE* bytes, size_t byte_len) {
+    if (!bytes || byte_len < 2u) {
+        return {};
+    }
+    const size_t unit_count = byte_len / 2u;
+    std::string utf8;
+    utf8.reserve(unit_count);
+    for (size_t i = 0; i < unit_count; ++i) {
+        const uint16_t u0 = static_cast<uint16_t>(bytes[i * 2u]) |
+                            (static_cast<uint16_t>(bytes[i * 2u + 1u]) << 8);
+        if (u0 == 0u) {
+            break;
+        }
+        if (u0 == '\r') {
+            if (i + 1u < unit_count) {
+                const uint16_t next_u = static_cast<uint16_t>(bytes[(i + 1u) * 2u]) |
+                                        (static_cast<uint16_t>(bytes[(i + 1u) * 2u + 1u]) << 8);
+                if (next_u == '\n') {
+                    continue; // Normalize CRLF -> LF
+                }
+            }
+            utf8.push_back('\n');
+            continue;
+        }
+        uint32_t cp = u0;
+        if (u0 >= 0xD800u && u0 <= 0xDBFFu && i + 1u < unit_count) {
+            const uint16_t u1 = static_cast<uint16_t>(bytes[(i + 1u) * 2u]) |
+                                (static_cast<uint16_t>(bytes[(i + 1u) * 2u + 1u]) << 8);
+            if (u1 >= 0xDC00u && u1 <= 0xDFFFu) {
+                cp = 0x10000u + (((static_cast<uint32_t>(u0) - 0xD800u) << 10) |
+                                 (static_cast<uint32_t>(u1) - 0xDC00u));
+                ++i;
+            } else {
+                cp = 0xFFFDu;
+            }
+        } else if (u0 >= 0xDC00u && u0 <= 0xDFFFu) {
+            cp = 0xFFFDu;
+        }
+        append_utf8_cp(utf8, cp);
+    }
+    return utf8;
+}
+
+std::vector<BYTE> encode_utf8_to_utf16le_crlf(const std::string& utf8) {
+    std::vector<uint16_t> units;
+    units.reserve(utf8.size() + 8u);
+    const auto* src = reinterpret_cast<const uint8_t*>(utf8.data());
+    const size_t n = utf8.size();
+    size_t i = 0;
+    while (i < n) {
+        const uint8_t b0 = src[i];
+        if (b0 == '\r') {
+            units.push_back('\r');
+            units.push_back('\n');
+            if (i + 1u < n && src[i + 1u] == '\n') {
+                i += 2u;
+            } else {
+                i += 1u;
+            }
+            continue;
+        }
+        if (b0 == '\n') {
+            units.push_back('\r');
+            units.push_back('\n');
+            ++i;
+            continue;
+        }
+        uint32_t cp = 0xFFFDu;
+        size_t step = 1u;
+        if (b0 < 0x80u) {
+            cp = b0;
+        } else if ((b0 & 0xE0u) == 0xC0u && i + 1u < n && (src[i + 1u] & 0xC0u) == 0x80u) {
+            cp = ((static_cast<uint32_t>(b0 & 0x1Fu) << 6) | static_cast<uint32_t>(src[i + 1u] & 0x3Fu));
+            step = 2u;
+        } else if ((b0 & 0xF0u) == 0xE0u && i + 2u < n &&
+                   (src[i + 1u] & 0xC0u) == 0x80u && (src[i + 2u] & 0xC0u) == 0x80u) {
+            cp = ((static_cast<uint32_t>(b0 & 0x0Fu) << 12) |
+                  (static_cast<uint32_t>(src[i + 1u] & 0x3Fu) << 6) |
+                  static_cast<uint32_t>(src[i + 2u] & 0x3Fu));
+            step = 3u;
+        } else if ((b0 & 0xF8u) == 0xF0u && i + 3u < n &&
+                   (src[i + 1u] & 0xC0u) == 0x80u &&
+                   (src[i + 2u] & 0xC0u) == 0x80u &&
+                   (src[i + 3u] & 0xC0u) == 0x80u) {
+            cp = ((static_cast<uint32_t>(b0 & 0x07u) << 18) |
+                  (static_cast<uint32_t>(src[i + 1u] & 0x3Fu) << 12) |
+                  (static_cast<uint32_t>(src[i + 2u] & 0x3Fu) << 6) |
+                  static_cast<uint32_t>(src[i + 3u] & 0x3Fu));
+            step = 4u;
+        }
+        if (cp <= 0xFFFFu) {
+            units.push_back(static_cast<uint16_t>(cp));
+        } else if (cp <= 0x10FFFFu) {
+            const uint32_t adj = cp - 0x10000u;
+            units.push_back(static_cast<uint16_t>(0xD800u + (adj >> 10)));
+            units.push_back(static_cast<uint16_t>(0xDC00u + (adj & 0x3FFu)));
+        }
+        i += step;
+    }
+    units.push_back(0u); // Required UTF-16LE NUL terminator for CF_UNICODETEXT
+
+    std::vector<BYTE> out(units.size() * 2u);
+    for (size_t idx = 0; idx < units.size(); ++idx) {
+        out[idx * 2u] = static_cast<BYTE>(units[idx] & 0xFFu);
+        out[idx * 2u + 1u] = static_cast<BYTE>((units[idx] >> 8) & 0xFFu);
+    }
+    return out;
+}
+
 std::string detect_android_fallback_files_dir() {
 #ifdef __ANDROID__
     std::ifstream cmdline("/proc/self/cmdline", std::ios::binary);
     if (cmdline.is_open()) {
         std::string pkg;
         std::getline(cmdline, pkg, '\0');
-        // Strip optional Android ":process" suffix
         const auto colon = pkg.find(':');
         if (colon != std::string::npos) {
             pkg.resize(colon);
@@ -90,12 +227,18 @@ std::string detect_android_fallback_files_dir() {
 
 /**
  * Ensures `HOME`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`, and `TMPDIR` point to
- * writable app-private directories BEFORE `freerdp_context_new()` runs (`freerdp_settings_new()`
- * fails immediately on Android/Googlebook OS when `GetKnownPath(KNOWN_PATH_HOME)` is NULL).
- * Also registers FreeRDP's static builtin virtual channel addin table (`tables.c`).
+ * writable app-private directories ONCE per process so concurrent FreeRDP sessions never race
+ * `setenv()` against `getenv()` on background threads.
  */
 bool ensure_freerdp_runtime_environment(const std::string& preferred_home_dir, std::string* out_resolved_home) {
     std::lock_guard<std::mutex> lock(g_freerdp_env_mutex);
+
+    if (g_env_initialized && !g_cached_resolved_home.empty()) {
+        if (out_resolved_home) {
+            *out_resolved_home = g_cached_resolved_home;
+        }
+        return true;
+    }
 
     std::string base_dir = preferred_home_dir;
     if (base_dir.empty()) {
@@ -148,10 +291,15 @@ bool ensure_freerdp_runtime_environment(const std::string& preferred_home_dir, s
         }
     }
 
-    if (out_resolved_home) {
-        *out_resolved_home = home_path.string();
+    if (std::filesystem::exists(home_path, ec)) {
+        g_cached_resolved_home = home_path.string();
+        g_env_initialized = true;
+        if (out_resolved_home) {
+            *out_resolved_home = g_cached_resolved_home;
+        }
+        return true;
     }
-    return std::filesystem::exists(home_path, ec);
+    return false;
 }
 
 char* dup_cstr_malloc(const std::string& s) {
@@ -228,6 +376,172 @@ FreeRdpCallbackState lookup_freerdp_callbacks(freerdp* instance) {
     return (it != g_freerdp_callbacks.end()) ? it->second : FreeRdpCallbackState{};
 }
 
+UINT cliprdr_send_client_format_list(CliprdrClientContext* cliprdr) {
+    if (!cliprdr || !cliprdr->ClientFormatList) {
+        return CHANNEL_RC_OK;
+    }
+    CLIPRDR_FORMAT formats[2]{};
+    formats[0].formatId = kWinCfUnicodeText;
+    formats[0].formatName = nullptr;
+    formats[1].formatId = kWinCfText;
+    formats[1].formatName = nullptr;
+
+    CLIPRDR_FORMAT_LIST format_list{};
+    format_list.common.msgType = CB_FORMAT_LIST;
+    format_list.common.msgFlags = 0;
+    format_list.numFormats = 2u;
+    format_list.formats = formats;
+    return cliprdr->ClientFormatList(cliprdr, &format_list);
+}
+
+UINT cliprdr_on_monitor_ready(CliprdrClientContext* cliprdr, const CLIPRDR_MONITOR_READY* /*monitor_ready*/) {
+    if (!cliprdr) {
+        return ERROR_INVALID_PARAMETER;
+    }
+    if (cliprdr->ClientCapabilities) {
+        CLIPRDR_GENERAL_CAPABILITY_SET gen_caps{};
+        gen_caps.capabilitySetType = CB_CAPSTYPE_GENERAL;
+        gen_caps.capabilitySetLength = CB_CAPSTYPE_GENERAL_LEN;
+        gen_caps.version = CB_CAPS_VERSION_2;
+        gen_caps.generalFlags = CB_USE_LONG_FORMAT_NAMES;
+
+        CLIPRDR_CAPABILITIES caps{};
+        caps.common.msgType = CB_CLIP_CAPS;
+        caps.cCapabilitiesSets = 1u;
+        caps.capabilitySets = reinterpret_cast<CLIPRDR_CAPABILITY_SET*>(&gen_caps);
+        cliprdr->ClientCapabilities(cliprdr, &caps);
+    }
+    auto* owner = static_cast<RdpSessionContext*>(cliprdr->custom);
+    if (owner && !owner->channels().local_clipboard_text().empty()) {
+        return cliprdr_send_client_format_list(cliprdr);
+    }
+    return CHANNEL_RC_OK;
+}
+
+UINT cliprdr_on_server_capabilities(CliprdrClientContext* /*cliprdr*/, const CLIPRDR_CAPABILITIES* /*caps*/) {
+    return CHANNEL_RC_OK;
+}
+
+UINT cliprdr_on_server_format_list(CliprdrClientContext* cliprdr, const CLIPRDR_FORMAT_LIST* format_list) {
+    if (!cliprdr || !format_list) {
+        return ERROR_INVALID_PARAMETER;
+    }
+    if (cliprdr->ClientFormatListResponse) {
+        CLIPRDR_FORMAT_LIST_RESPONSE resp{};
+        resp.common.msgType = CB_FORMAT_LIST_RESPONSE;
+        resp.common.msgFlags = CB_RESPONSE_OK;
+        cliprdr->ClientFormatListResponse(cliprdr, &resp);
+    }
+
+    bool has_unicode = false;
+    bool has_ansi = false;
+    for (UINT32 i = 0; i < format_list->numFormats; ++i) {
+        const UINT32 fmt_id = format_list->formats[i].formatId;
+        if (fmt_id == kWinCfUnicodeText) {
+            has_unicode = true;
+        } else if (fmt_id == kWinCfText || fmt_id == kWinCfOemText) {
+            has_ansi = true;
+        }
+    }
+
+    if ((has_unicode || has_ansi) && cliprdr->ClientFormatDataRequest) {
+        const UINT32 req_fmt = has_unicode ? kWinCfUnicodeText : kWinCfText;
+        cliprdr->lastRequestedFormatId = req_fmt;
+        CLIPRDR_FORMAT_DATA_REQUEST req{};
+        req.common.msgType = CB_FORMAT_DATA_REQUEST;
+        req.requestedFormatId = req_fmt;
+        return cliprdr->ClientFormatDataRequest(cliprdr, &req);
+    }
+    return CHANNEL_RC_OK;
+}
+
+UINT cliprdr_on_server_format_list_response(
+    CliprdrClientContext* /*cliprdr*/,
+    const CLIPRDR_FORMAT_LIST_RESPONSE* /*resp*/
+) {
+    return CHANNEL_RC_OK;
+}
+
+UINT cliprdr_on_server_format_data_request(
+    CliprdrClientContext* cliprdr,
+    const CLIPRDR_FORMAT_DATA_REQUEST* request
+) {
+    if (!cliprdr || !request || !cliprdr->ClientFormatDataResponse) {
+        return ERROR_INVALID_PARAMETER;
+    }
+    auto* owner = static_cast<RdpSessionContext*>(cliprdr->custom);
+    const std::string local_utf8 = owner ? owner->channels().local_clipboard_text() : std::string();
+
+    CLIPRDR_FORMAT_DATA_RESPONSE resp{};
+    resp.common.msgType = CB_FORMAT_DATA_RESPONSE;
+
+    if (request->requestedFormatId == kWinCfUnicodeText) {
+        const std::vector<BYTE> utf16 = encode_utf8_to_utf16le_crlf(local_utf8);
+        resp.common.msgFlags = CB_RESPONSE_OK;
+        resp.common.dataLen = static_cast<UINT32>(utf16.size());
+        resp.requestedFormatData = utf16.data();
+        return cliprdr->ClientFormatDataResponse(cliprdr, &resp);
+    }
+    if (request->requestedFormatId == kWinCfText || request->requestedFormatId == kWinCfOemText) {
+        std::vector<BYTE> ansi;
+        ansi.reserve(local_utf8.size() + 8u);
+        for (size_t i = 0; i < local_utf8.size(); ++i) {
+            if (local_utf8[i] == '\n' && (i == 0 || local_utf8[i - 1] != '\r')) {
+                ansi.push_back(static_cast<BYTE>('\r'));
+            }
+            ansi.push_back(static_cast<BYTE>(local_utf8[i]));
+        }
+        ansi.push_back(0u);
+        resp.common.msgFlags = CB_RESPONSE_OK;
+        resp.common.dataLen = static_cast<UINT32>(ansi.size());
+        resp.requestedFormatData = ansi.data();
+        return cliprdr->ClientFormatDataResponse(cliprdr, &resp);
+    }
+
+    resp.common.msgFlags = CB_RESPONSE_FAIL;
+    resp.common.dataLen = 0u;
+    resp.requestedFormatData = nullptr;
+    return cliprdr->ClientFormatDataResponse(cliprdr, &resp);
+}
+
+UINT cliprdr_on_server_format_data_response(
+    CliprdrClientContext* cliprdr,
+    const CLIPRDR_FORMAT_DATA_RESPONSE* response
+) {
+    if (!cliprdr || !response) {
+        return ERROR_INVALID_PARAMETER;
+    }
+    if ((response->common.msgFlags & CB_RESPONSE_OK) == 0 ||
+        !response->requestedFormatData ||
+        response->common.dataLen == 0u) {
+        return CHANNEL_RC_OK;
+    }
+    auto* owner = static_cast<RdpSessionContext*>(cliprdr->custom);
+    if (!owner) {
+        return CHANNEL_RC_OK;
+    }
+
+    std::string decoded;
+    if (cliprdr->lastRequestedFormatId == kWinCfUnicodeText) {
+        decoded = decode_utf16le_clipboard_to_utf8(response->requestedFormatData, response->common.dataLen);
+    } else {
+        const auto* chars = reinterpret_cast<const char*>(response->requestedFormatData);
+        size_t len = 0u;
+        while (len < response->common.dataLen && chars[len] != '\0') {
+            if (chars[len] == '\r' && len + 1u < response->common.dataLen && chars[len + 1u] == '\n') {
+                ++len;
+                continue;
+            }
+            decoded.push_back(chars[len] == '\r' ? '\n' : chars[len]);
+            ++len;
+        }
+    }
+    if (!decoded.empty()) {
+        owner->channels().on_remote_clipboard_text(decoded);
+    }
+    return CHANNEL_RC_OK;
+}
+
 void freerdp_on_channel_connected(void* context, const ChannelConnectedEventArgs* e) {
     if (!context || !e || !e->name) {
         return;
@@ -250,6 +564,20 @@ void freerdp_on_channel_connected(void* context, const ChannelConnectedEventArgs
             cb.owner->set_disp_context(e->pInterface);
             NX_RDP_LOGI("Attached FreeRDP DISP_DVC dynamic display channel (%s)", e->name);
         }
+    } else if (std::strcmp(e->name, CLIPRDR_SVC_CHANNEL_NAME) == 0 && e->pInterface) {
+        const auto cb = lookup_freerdp_callbacks(rdp_ctx->instance);
+        if (cb.owner) {
+            auto* cliprdr = static_cast<CliprdrClientContext*>(e->pInterface);
+            cliprdr->custom = cb.owner;
+            cliprdr->MonitorReady = &cliprdr_on_monitor_ready;
+            cliprdr->ServerCapabilities = &cliprdr_on_server_capabilities;
+            cliprdr->ServerFormatList = &cliprdr_on_server_format_list;
+            cliprdr->ServerFormatListResponse = &cliprdr_on_server_format_list_response;
+            cliprdr->ServerFormatDataRequest = &cliprdr_on_server_format_data_request;
+            cliprdr->ServerFormatDataResponse = &cliprdr_on_server_format_data_response;
+            cb.owner->set_cliprdr_context(cliprdr);
+            NX_RDP_LOGI("Attached FreeRDP CLIPRDR bidirectional clipboard channel (%s)", e->name);
+        }
     }
 }
 
@@ -269,6 +597,11 @@ void freerdp_on_channel_disconnected(void* context, const ChannelDisconnectedEve
         const auto cb = lookup_freerdp_callbacks(rdp_ctx->instance);
         if (cb.owner) {
             cb.owner->set_disp_context(nullptr);
+        }
+    } else if (std::strcmp(e->name, CLIPRDR_SVC_CHANNEL_NAME) == 0) {
+        const auto cb = lookup_freerdp_callbacks(rdp_ctx->instance);
+        if (cb.owner) {
+            cb.owner->set_cliprdr_context(nullptr);
         }
     }
 }
@@ -306,15 +639,50 @@ BOOL freerdp_on_end_paint(rdpContext* context) {
         return FALSE;
     }
     rdpGdi* gdi = context->gdi;
+    const HGDI_RGN invalid =
+        (gdi->primary && gdi->primary->hdc && gdi->primary->hdc->hwnd)
+            ? gdi->primary->hdc->hwnd->invalid
+            : nullptr;
+
+    if (invalid && invalid->null) {
+        return TRUE;
+    }
+
     const auto cb = lookup_freerdp_callbacks(context->instance);
     if (cb.owner && gdi->width > 0 && gdi->height > 0) {
-        const uint32_t w = static_cast<uint32_t>(gdi->width);
-        const uint32_t h = static_cast<uint32_t>(gdi->height);
-        const uint32_t stride = gdi->stride > 0 ? gdi->stride : (w * 4u);
-        cb.owner->presenter().present_frame(gdi->primary_buffer, w, h, stride);
+        const uint32_t fb_w = static_cast<uint32_t>(gdi->width);
+        const uint32_t fb_h = static_cast<uint32_t>(gdi->height);
+        const uint32_t stride = gdi->stride > 0 ? gdi->stride : (fb_w * 4u);
+
+        uint32_t dx = 0u;
+        uint32_t dy = 0u;
+        uint32_t dw = fb_w;
+        uint32_t dh = fb_h;
+        if (invalid && invalid->w > 0 && invalid->h > 0) {
+            const int32_t ix = std::max<int32_t>(0, invalid->x);
+            const int32_t iy = std::max<int32_t>(0, invalid->y);
+            const int32_t right = std::min<int32_t>(gdi->width, invalid->x + invalid->w);
+            const int32_t bottom = std::min<int32_t>(gdi->height, invalid->y + invalid->h);
+            if (right > ix && bottom > iy) {
+                dx = static_cast<uint32_t>(ix);
+                dy = static_cast<uint32_t>(iy);
+                dw = static_cast<uint32_t>(right - ix);
+                dh = static_cast<uint32_t>(bottom - iy);
+            }
+        }
+        cb.owner->presenter().stage_gdi_dirty_region(
+            gdi->primary_buffer,
+            fb_w,
+            fb_h,
+            stride,
+            dx,
+            dy,
+            dw,
+            dh
+        );
     }
-    if (gdi->primary && gdi->primary->hdc && gdi->primary->hdc->hwnd && gdi->primary->hdc->hwnd->invalid) {
-        gdi->primary->hdc->hwnd->invalid->null = TRUE;
+    if (invalid) {
+        invalid->null = TRUE;
         gdi->primary->hdc->hwnd->ninvalid = 0;
     }
     return TRUE;
@@ -340,11 +708,11 @@ BOOL freerdp_on_post_connect(freerdp* instance) {
     if (!instance || !instance->context) {
         return FALSE;
     }
-    if (!gdi_init(instance, PIXEL_FORMAT_RGBA32)) {
-        NX_RDP_LOGE("FreeRDP gdi_init(PIXEL_FORMAT_RGBA32) failed");
+    if (!gdi_init(instance, PIXEL_FORMAT_RGBX32)) {
+        NX_RDP_LOGE("FreeRDP gdi_init(PIXEL_FORMAT_RGBX32) failed");
         const auto cb = lookup_freerdp_callbacks(instance);
         if (cb.owner) {
-            cb.owner->set_last_error("INTERNAL: FreeRDP gdi_init(PIXEL_FORMAT_RGBA32) failed.");
+            cb.owner->set_last_error("INTERNAL: FreeRDP gdi_init(PIXEL_FORMAT_RGBX32) failed.");
         }
         return FALSE;
     }
@@ -354,7 +722,15 @@ BOOL freerdp_on_post_connect(freerdp* instance) {
         instance->context->update->DesktopResize = &freerdp_on_desktop_resize;
     }
     if (instance->context->gdi && instance->context->gdi->primary_buffer) {
-        freerdp_on_end_paint(instance->context);
+        const auto cb = lookup_freerdp_callbacks(instance);
+        if (cb.owner && instance->context->gdi->width > 0 && instance->context->gdi->height > 0) {
+            const uint32_t w = static_cast<uint32_t>(instance->context->gdi->width);
+            const uint32_t h = static_cast<uint32_t>(instance->context->gdi->height);
+            const uint32_t stride = instance->context->gdi->stride > 0
+                ? instance->context->gdi->stride
+                : (w * 4u);
+            cb.owner->presenter().present_frame(instance->context->gdi->primary_buffer, w, h, stride);
+        }
     }
     return TRUE;
 }
@@ -368,6 +744,7 @@ void freerdp_on_post_disconnect(freerdp* instance) {
         const auto cb = lookup_freerdp_callbacks(instance);
         if (cb.owner) {
             cb.owner->set_disp_context(nullptr);
+            cb.owner->set_cliprdr_context(nullptr);
         }
         gdi_free(instance);
     }
@@ -507,6 +884,11 @@ RdpSessionContext::RdpSessionContext(RdpConnectParams params)
     const uint32_t w = align_even_h264_dimension(params_.initial_width, 320, 8192);
     const uint32_t h = align_even_h264_dimension(params_.initial_height, 240, 8192);
     gdi_presenter_->resize_shadow_framebuffer(w, h);
+    if (params_.redirect_clipboard) {
+        channels_.set_local_clipboard_announce_handler([this](const std::string&) {
+            announce_local_clipboard_to_remote();
+        });
+    }
 #if !defined(NEXUSTS_HAS_FREERDP3_BINARY) || NEXUSTS_HAS_FREERDP3_BINARY == 0
     render_diagnostic_surface_frame(w, h);
 #endif
@@ -530,6 +912,24 @@ void RdpSessionContext::on_surface_bound() {
 
 void RdpSessionContext::set_disp_context(void* disp_context) noexcept {
     disp_context_.store(disp_context, std::memory_order_release);
+}
+
+void RdpSessionContext::set_cliprdr_context(void* cliprdr_context) {
+    std::lock_guard<std::mutex> lock(cliprdr_mutex_);
+    cliprdr_context_ = cliprdr_context;
+}
+
+void RdpSessionContext::announce_local_clipboard_to_remote() {
+    if (!params_.redirect_clipboard || !connected_.load(std::memory_order_acquire)) {
+        return;
+    }
+#if defined(NEXUSTS_HAS_FREERDP3_BINARY) && NEXUSTS_HAS_FREERDP3_BINARY == 1
+    std::lock_guard<std::mutex> lock(cliprdr_mutex_);
+    if (cliprdr_context_) {
+        auto* cliprdr = static_cast<CliprdrClientContext*>(cliprdr_context_);
+        cliprdr_send_client_format_list(cliprdr);
+    }
+#endif
 }
 
 void RdpSessionContext::render_diagnostic_surface_frame(uint32_t width, uint32_t height) {
@@ -605,9 +1005,11 @@ bool RdpSessionContext::connect() {
     const uint32_t h = gdi_presenter_->height();
     const bool local_audio_out = params_.redirect_audio_out && (params_.audio_redirection_mode == 0);
 
+#if !defined(NEXUSTS_HAS_FREERDP3_BINARY) || NEXUSTS_HAS_FREERDP3_BINARY == 0
     if (params_.enable_h264_avc444) {
         h264_decoder_.initialize(w, h, /*avc444_chroma=*/true);
     }
+#endif
     if (local_audio_out || params_.redirect_mic_in) {
         channels_.start_audio_streams(local_audio_out, params_.redirect_mic_in, 48000);
     }
@@ -679,6 +1081,14 @@ bool RdpSessionContext::connect() {
     freerdp_settings_set_uint32(settings, FreeRDP_TlsSecLevel, 0u);
     freerdp_settings_set_uint32(settings, FreeRDP_TcpConnectTimeout, 15000u);
 
+    // High-throughput FastPath & FrameMarker settings for low-latency desktop rendering
+    freerdp_settings_set_bool(settings, FreeRDP_FastPathInput, TRUE);
+    freerdp_settings_set_bool(settings, FreeRDP_FastPathOutput, TRUE);
+    freerdp_settings_set_bool(settings, FreeRDP_FrameMarkerCommandEnabled, TRUE);
+    freerdp_settings_set_bool(settings, FreeRDP_SurfaceFrameMarkerEnabled, TRUE);
+    freerdp_settings_set_bool(settings, FreeRDP_BitmapCacheEnabled, TRUE);
+    freerdp_settings_set_uint32(settings, FreeRDP_OffscreenSupportLevel, 1u);
+
     freerdp_settings_set_string(settings, FreeRDP_ServerHostname, params_.host.c_str());
     freerdp_settings_set_uint32(settings, FreeRDP_ServerPort, params_.port);
     freerdp_settings_set_uint32(settings, FreeRDP_DesktopWidth, w);
@@ -694,20 +1104,23 @@ bool RdpSessionContext::connect() {
     }
 
     bool h264_runtime_supported = false;
+#ifndef __ANDROID__
+    // On Android, FreeRDP's synchronous per-tile AMediaCodec H.264/AVC444 decoder exhausts hardware
+    // decoder slots on multi-session RDP tabs and lacks High 4:4:4 profile support. Using SIMD
+    // RDPGFX Progressive/ProgressiveV2 + RemoteFX + NSCodec delivers zero-stall concurrent sessions.
     if (params_.enable_gfx_pipeline && params_.enable_h264_avc444) {
         H264_CONTEXT* probe_h264 = h264_context_new(FALSE);
         if (probe_h264) {
             h264_runtime_supported = true;
             h264_context_free(probe_h264);
-        } else {
-            NX_RDP_LOGI("FreeRDP H.264 subsystem unavailable on this device; falling back to Progressive/RemoteFX/NSCodec");
         }
     }
+#endif
 
     freerdp_settings_set_bool(settings, FreeRDP_SupportGraphicsPipeline, params_.enable_gfx_pipeline);
     freerdp_settings_set_bool(settings, FreeRDP_GfxH264, h264_runtime_supported);
-    freerdp_settings_set_bool(settings, FreeRDP_GfxAVC444, h264_runtime_supported);
-    freerdp_settings_set_bool(settings, FreeRDP_GfxAVC444v2, h264_runtime_supported);
+    freerdp_settings_set_bool(settings, FreeRDP_GfxAVC444, FALSE);
+    freerdp_settings_set_bool(settings, FreeRDP_GfxAVC444v2, FALSE);
     freerdp_settings_set_bool(settings, FreeRDP_GfxProgressive, params_.enable_gfx_pipeline);
     freerdp_settings_set_bool(settings, FreeRDP_GfxProgressiveV2, params_.enable_gfx_pipeline);
     freerdp_settings_set_bool(settings, FreeRDP_RemoteFxCodec, params_.enable_remotefx);
@@ -784,6 +1197,7 @@ bool RdpSessionContext::connect() {
     }
 
     disp_context_.store(nullptr, std::memory_order_release);
+    set_cliprdr_context(nullptr);
     if (!freerdp_connect(instance)) {
         const std::string callback_err = last_error();
         const std::string freerdp_err = format_freerdp_last_error(instance->context, params_.host, params_.port);
@@ -802,17 +1216,22 @@ bool RdpSessionContext::connect() {
         NX_RDP_LOGE("FreeRDP 3.x connection failed to %s:%u (%s)",
                     params_.host.c_str(), params_.port, captured.c_str());
         disp_context_.store(nullptr, std::memory_order_release);
+        set_cliprdr_context(nullptr);
         unregister_freerdp_callbacks(instance);
         freerdp_context_free(instance);
         freerdp_free(instance);
         return false;
     }
 
-    freerdp_instance_ = instance;
+    {
+        std::lock_guard<std::mutex> input_lock(input_mutex_);
+        freerdp_instance_ = instance;
+    }
     connected_.store(true, std::memory_order_release);
 
     event_loop_thread_ = std::thread([this, instance]() {
         HANDLE handles[64]{};
+        auto last_present_tp = std::chrono::steady_clock::now() - std::chrono::milliseconds(16);
         while (!stop_requested_.load(std::memory_order_acquire)) {
             if (!instance->context || freerdp_shall_disconnect_context(instance->context)) {
                 break;
@@ -821,7 +1240,8 @@ bool RdpSessionContext::connect() {
             if (count == 0) {
                 break;
             }
-            const DWORD wait_status = WaitForMultipleObjects(count, handles, FALSE, 100);
+            const DWORD wait_ms = gdi_presenter_->has_pending_dirty() ? 8u : 60u;
+            const DWORD wait_status = WaitForMultipleObjects(count, handles, FALSE, wait_ms);
             if (wait_status == WAIT_FAILED) {
                 break;
             }
@@ -831,7 +1251,16 @@ bool RdpSessionContext::connect() {
             if (!freerdp_check_event_handles(instance->context)) {
                 break;
             }
+            if (gdi_presenter_->has_pending_dirty()) {
+                const auto now = std::chrono::steady_clock::now();
+                if (now - last_present_tp >= std::chrono::milliseconds(8)) {
+                    if (gdi_presenter_->flush_pending_frame()) {
+                        last_present_tp = now;
+                    }
+                }
+            }
         }
+        gdi_presenter_->flush_pending_frame();
         if (!stop_requested_.load(std::memory_order_acquire) && instance->context) {
             const std::string drop_err = format_freerdp_last_error(instance->context, params_.host, params_.port);
             if (!drop_err.empty()) {
@@ -845,9 +1274,9 @@ bool RdpSessionContext::connect() {
     connected_.store(true, std::memory_order_release);
 #endif
 
-    NX_RDP_LOGI("NexusTS RDP session active (%ux%u @ %u%% HiDPI, Console=%d, H264=%d, DISP_DVC=%d, Drive=%d)",
+    NX_RDP_LOGI("NexusTS RDP session active (%ux%u @ %u%% HiDPI, Console=%d, DISP_DVC=%d, ClipSync=%d, Drive=%d)",
                 w, h, active_scale_percent_.load(), params_.connect_to_console,
-                params_.enable_h264_avc444, params_.enable_dynamic_resize, params_.redirect_drives);
+                params_.enable_dynamic_resize, params_.redirect_clipboard, params_.redirect_drives);
     return true;
 }
 
@@ -882,6 +1311,7 @@ void RdpSessionContext::disconnect() {
     std::lock_guard<std::mutex> lock(state_mutex_);
     const bool was_connected = connected_.exchange(false);
     disp_context_.store(nullptr, std::memory_order_release);
+    set_cliprdr_context(nullptr);
     if (!was_connected && !freerdp_instance_) {
         return;
     }
@@ -890,14 +1320,18 @@ void RdpSessionContext::disconnect() {
     h264_decoder_.shutdown();
 
 #if defined(NEXUSTS_HAS_FREERDP3_BINARY) && NEXUSTS_HAS_FREERDP3_BINARY == 1
-    if (freerdp_instance_) {
-        auto* instance = static_cast<freerdp*>(freerdp_instance_);
-        freerdp_disconnect(instance);
-        unregister_freerdp_callbacks(instance);
-        gdi_free(instance);
-        freerdp_context_free(instance);
-        freerdp_free(instance);
+    freerdp* instance_to_free = nullptr;
+    {
+        std::lock_guard<std::mutex> input_lock(input_mutex_);
+        instance_to_free = static_cast<freerdp*>(freerdp_instance_);
         freerdp_instance_ = nullptr;
+    }
+    if (instance_to_free) {
+        freerdp_disconnect(instance_to_free);
+        unregister_freerdp_callbacks(instance_to_free);
+        gdi_free(instance_to_free);
+        freerdp_context_free(instance_to_free);
+        freerdp_free(instance_to_free);
     }
 #endif
     gdi_presenter_->detach_native_window();
@@ -1027,14 +1461,20 @@ void RdpSessionContext::send_keyboard_scancode(
         return;
     }
 #if defined(NEXUSTS_HAS_FREERDP3_BINARY) && NEXUSTS_HAS_FREERDP3_BINARY == 1
-    std::lock_guard<std::mutex> lock(state_mutex_);
+    std::lock_guard<std::mutex> lock(input_mutex_);
     if (freerdp_instance_) {
         auto* instance = static_cast<freerdp*>(freerdp_instance_);
-        UINT16 flags = key_down ? 0 : KBD_FLAGS_RELEASE;
-        if (extended_key) {
-            flags |= KBD_FLAGS_EXTENDED;
+        if (instance->context && instance->context->input) {
+            UINT16 flags = key_down ? 0 : KBD_FLAGS_RELEASE;
+            if (extended_key) {
+                flags |= KBD_FLAGS_EXTENDED;
+            }
+            freerdp_input_send_keyboard_event(
+                instance->context->input,
+                flags,
+                static_cast<UINT8>(rdp_scancode & 0xFF)
+            );
         }
-        freerdp_input_send_keyboard_event(instance->context->input, flags, static_cast<UINT8>(rdp_scancode & 0xFF));
     }
 #else
     (void)rdp_scancode;
@@ -1052,10 +1492,12 @@ void RdpSessionContext::send_pointer_event(
         return;
     }
 #if defined(NEXUSTS_HAS_FREERDP3_BINARY) && NEXUSTS_HAS_FREERDP3_BINARY == 1
-    std::lock_guard<std::mutex> lock(state_mutex_);
+    std::lock_guard<std::mutex> lock(input_mutex_);
     if (freerdp_instance_) {
         auto* instance = static_cast<freerdp*>(freerdp_instance_);
-        freerdp_input_send_mouse_event(instance->context->input, pointer_flags, x, y);
+        if (instance->context && instance->context->input) {
+            freerdp_input_send_mouse_event(instance->context->input, pointer_flags, x, y);
+        }
     }
 #else
     (void)pointer_flags;

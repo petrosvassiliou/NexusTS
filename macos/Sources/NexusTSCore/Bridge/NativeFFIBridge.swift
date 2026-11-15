@@ -940,6 +940,10 @@ public final class NativeRdpSession: @unchecked Sendable {
         handle > 0 ? nexusts_rdp_frame_sequence(handle) : 0
     }
 
+    public var remoteClipboardSequence: UInt64 {
+        handle > 0 ? nexusts_rdp_remote_clipboard_sequence(handle) : 0
+    }
+
     public func copyLatestFrame() -> (rgba: Data, width: Int, height: Int)? {
         guard handle > 0 else { return nil }
         var w: UInt32 = 0

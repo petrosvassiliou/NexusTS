@@ -375,6 +375,18 @@ Java_com_nexusts_app_protocols_rdp_bridge_FreeRdpNativeBridge_nativePullRemoteCl
     return utf8_to_jstring(env, "");
 }
 
+JNIEXPORT jlong JNICALL
+Java_com_nexusts_app_protocols_rdp_bridge_FreeRdpNativeBridge_nativeGetRemoteClipboardSequence(
+    JNIEnv* /*env*/,
+    jclass /*clazz*/,
+    jlong handle
+) {
+    if (const auto session = lookup_session_shared(handle)) {
+        return static_cast<jlong>(session->channels().remote_clipboard_sequence());
+    }
+    return 0;
+}
+
 JNIEXPORT jstring JNICALL
 Java_com_nexusts_app_protocols_rdp_bridge_FreeRdpNativeBridge_nativeGetLastError(
     JNIEnv* env,

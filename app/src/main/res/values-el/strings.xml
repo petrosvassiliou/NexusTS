@@ -119,7 +119,7 @@
     <string name="rdp_tab_experience_security">Απόδοση &amp; ασφάλεια</string>
     <string name="rdp_opt_connect_console">Σύνδεση σε συνεδρία Κονσόλας / Admin (/admin)</string>
     <string name="rdp_opt_hidpi_scaling">Κλιμάκωση οθόνης HiDPI / Retina</string>
-    <string name="rdp_opt_clipboard_sharing">Κοινή χρήση προχείρου (Αμφίδρομη)</string>
+    <string name="rdp_opt_clipboard_sharing">Αυτόματος συγχρονισμός προχείρου (Αμφίδρομος)</string>
     <string name="rdp_opt_audio_redirection">Ανακατεύθυνση εξόδου ήχου</string>
     <string name="rdp_audio_local">Αναπαραγωγή σε αυτή τη συσκευή</string>
     <string name="rdp_audio_remote">Παραμονή στον απομακρυσμένο υπολογιστή</string>

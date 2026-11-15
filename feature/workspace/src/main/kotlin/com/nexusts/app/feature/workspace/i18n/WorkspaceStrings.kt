@@ -334,7 +334,7 @@ data class WorkspaceLocalizedStrings(
             rdpTabExperienceSecurity = "Security & Gateway",
             rdpOptConnectConsole = "Connect to Console / Admin Session (/admin)",
             rdpOptHiDpiScaling = "HiDPI Retina Scaling",
-            rdpOptClipboardSharing = "Bidirectional Clipboard Sharing",
+            rdpOptClipboardSharing = "Automatic Clipboard Sync (Bidirectional)",
             rdpOptAudioRedirection = "Remote Audio Playback",
             rdpAudioLocal = "Play on This Device",
             rdpAudioRemote = "Play on Remote PC",
@@ -352,7 +352,7 @@ data class WorkspaceLocalizedStrings(
             rdpOptRestrictedAdmin = "Restricted Admin Mode (Pass-the-Hash Safe)",
             rdpOptIgnoreCert = "Ignore TLS Certificate Mismatch",
             rdpOptRdGateway = "RD Gateway Hostname (HTTPS)",
-            rdpSyncClipboardChip = "Clipboard",
+            rdpSyncClipboardChip = "Clipboard Sync",
             rdpConsoleBadge = "Console /admin"
         )
     }

@@ -163,6 +163,29 @@ public indirect enum WorkspacePaneNode: Equatable, Identifiable, Sendable {
         }
     }
 
+    public func activatingTabGlobally(_ tabId: UUID) -> (updatedTree: WorkspacePaneNode, paneId: UUID?) {
+        guard let targetPaneId = leafContaining(tabId: tabId) else {
+            return (self, nil)
+        }
+        return (activatingTab(tabId, in: targetPaneId), targetPaneId)
+    }
+
+    public func focusedOrFirstActiveTab(focusedPaneId: UUID?) -> WorkspaceSessionTab? {
+        func findActiveInLeaf(_ targetId: UUID, node: WorkspacePaneNode) -> WorkspaceSessionTab? {
+            switch node {
+            case .leaf(let paneId, let tabs, let activeTabId):
+                guard paneId == targetId else { return nil }
+                return tabs.first(where: { $0.id == activeTabId }) ?? tabs.first
+            case .split(_, _, _, let first, let second):
+                return findActiveInLeaf(targetId, node: first) ?? findActiveInLeaf(targetId, node: second)
+            }
+        }
+        if let focusedPaneId, let active = findActiveInLeaf(focusedPaneId, node: self) {
+            return active
+        }
+        return allTabs.first
+    }
+
     public func updatingTab(_ tabId: UUID, transform: (inout WorkspaceSessionTab) -> Void) -> WorkspacePaneNode {
         switch self {
         case .leaf(let paneId, var tabs, let activeId):

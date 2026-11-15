@@ -893,6 +893,11 @@ fun NewOrEditConnectionDialog(
 
                     if (selectedProto == VaultProtocolType.RDP) {
                         RdpOptionSwitchRow(
+                            label = strings.rdpOptClipboardSharing,
+                            checked = redirectClipboard,
+                            onCheckedChange = { redirectClipboard = it }
+                        )
+                        RdpOptionSwitchRow(
                             label = strings.rdpOptConnectConsole,
                             checked = connectToConsole,
                             onCheckedChange = { connectToConsole = it }

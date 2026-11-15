@@ -89,13 +89,49 @@ void RdpVirtualChannelHub::push_pcm_playback(const int16_t* pcm_frames, size_t f
 }
 
 void RdpVirtualChannelHub::on_local_clipboard_text(const std::string& utf8_text) {
+    std::function<void(const std::string&)> announce_cb;
+    {
+        std::lock_guard<std::mutex> lock(channel_mutex_);
+        if (local_clipboard_utf8_ == utf8_text) {
+            return;
+        }
+        local_clipboard_utf8_ = utf8_text;
+        announce_cb = clipboard_announce_callback_;
+    }
+    if (announce_cb && !utf8_text.empty()) {
+        announce_cb(utf8_text);
+    }
+}
+
+void RdpVirtualChannelHub::on_remote_clipboard_text(const std::string& utf8_text) {
+    if (utf8_text.empty()) {
+        return;
+    }
     std::lock_guard<std::mutex> lock(channel_mutex_);
-    clipboard_utf8_ = utf8_text;
+    if (remote_clipboard_utf8_ == utf8_text) {
+        return;
+    }
+    remote_clipboard_utf8_ = utf8_text;
+    // Mirror into local_clipboard_utf8_ so pasting back without a new local copy never overwrites remote text
+    local_clipboard_utf8_ = utf8_text;
+    remote_clipboard_seq_.fetch_add(1u, std::memory_order_release);
+}
+
+std::string RdpVirtualChannelHub::local_clipboard_text() const {
+    std::lock_guard<std::mutex> lock(channel_mutex_);
+    return local_clipboard_utf8_;
 }
 
 std::string RdpVirtualChannelHub::latest_remote_clipboard_text() const {
     std::lock_guard<std::mutex> lock(channel_mutex_);
-    return clipboard_utf8_;
+    return remote_clipboard_utf8_;
+}
+
+void RdpVirtualChannelHub::set_local_clipboard_announce_handler(
+    std::function<void(const std::string&)> callback
+) {
+    std::lock_guard<std::mutex> lock(channel_mutex_);
+    clipboard_announce_callback_ = std::move(callback);
 }
 
 std::vector<uint8_t> RdpVirtualChannelHub::transmit_smartcard_apdu(

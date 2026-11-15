@@ -25,6 +25,13 @@ public struct NexusMainWindowView: View {
             if store.isVaultLocked {
                 ZeroKnowledgeLockShieldView()
                     .transition(.opacity)
+            } else if store.isFullScreenSessionMode && !store.paneTree.allTabs.isEmpty {
+                FullScreenSessionMacWorkspaceView()
+
+                if store.isQuickConnectPresented {
+                    QuickConnectSpotlightOverlay()
+                        .zIndex(20)
+                }
             } else {
                 NavigationSplitView(columnVisibility: $store.columnVisibility) {
                     SidebarHierarchyView()
@@ -296,6 +303,13 @@ public struct NexusMainWindowView: View {
     @ToolbarContentBuilder
     private var unifiedMacToolbar: some ToolbarContent {
         ToolbarItemGroup(placement: .navigation) {
+            Button {
+                store.toggleSidebarVisibility()
+            } label: {
+                Label("Toggle Sidebar", systemImage: "line.3.horizontal")
+            }
+            .help("Show / Hide Sidebar")
+
             if store.activeSection != .sessions {
                 Button {
                     store.activeSection = .sessions
@@ -818,3 +832,302 @@ struct ExportedFileDocument: FileDocument {
         FileWrapper(regularFileWithContents: data)
     }
 }
+
+// MARK: - Full-Screen Session Workspace with Active Session Switcher & Folder Hierarchy Launcher
+
+private struct FullScreenSessionMacWorkspaceView: View {
+    @EnvironmentObject private var store: WorkspaceStore
+    @State private var isToolbarExpanded: Bool = true
+    @State private var isFolderBrowserPresented: Bool = false
+
+    var body: some View {
+        let allTabs = store.paneTree.allTabs
+        let activeTab = store.focusedOrFirstActiveTab
+
+        VStack(spacing: 0) {
+            if isToolbarExpanded {
+                HStack(spacing: 8) {
+                    Button {
+                        isFolderBrowserPresented.toggle()
+                    } label: {
+                        Label("Folders & Servers", systemImage: "folder.fill")
+                            .font(.caption.weight(.semibold))
+                    }
+                    .controlSize(.small)
+                    .popover(isPresented: $isFolderBrowserPresented, arrowEdge: .bottom) {
+                        FullScreenFolderLauncherPopover(isPresented: $isFolderBrowserPresented)
+                            .environmentObject(store)
+                    }
+
+                    Divider().frame(height: 16)
+
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(allTabs) { tab in
+                                let isSelected = tab.id == activeTab?.id
+                                let accent = HIGColorUtilities.color(fromHex: tab.accentHex)
+                                    ?? tab.connection.protocolType.appleSystemTint
+                                HStack(spacing: 6) {
+                                    Button {
+                                        store.selectTabGlobally(tab.id)
+                                    } label: {
+                                        HStack(spacing: 5) {
+                                            Image(systemName: tab.isLocalShell ? "apple.terminal" : tab.connection.protocolType.sfSymbolName)
+                                                .font(.system(size: 11, weight: .semibold))
+                                                .foregroundStyle(accent)
+                                            Text(tab.title)
+                                                .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
+                                                .lineLimit(1)
+                                        }
+                                        .contentShape(Rectangle())
+                                    }
+                                    .buttonStyle(.plain)
+
+                                    Button {
+                                        store.closeTab(tab.id)
+                                    } label: {
+                                        Image(systemName: "xmark")
+                                            .font(.system(size: 9, weight: .bold))
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 4)
+                                .liquidGlassCapsule(tint: accent, isSelected: isSelected, isHovered: false)
+                            }
+                        }
+                    }
+
+                    Spacer(minLength: 8)
+
+                    Button {
+                        isToolbarExpanded = false
+                    } label: {
+                        Image(systemName: "chevron.up")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Collapse Full-Screen Session Bar")
+
+                    Button {
+                        store.exitFullScreenSession()
+                    } label: {
+                        Label("Exit Full Screen", systemImage: "arrow.down.right.and.arrow.up.left")
+                            .font(.caption.weight(.semibold))
+                    }
+                    .controlSize(.small)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(.bar)
+                Divider()
+            } else {
+                HStack(spacing: 8) {
+                    Text("\(activeTab?.title ?? "") • \(allTabs.count) active")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button {
+                        isToolbarExpanded = true
+                    } label: {
+                        Label("Sessions & Folders", systemImage: "chevron.down")
+                            .font(.caption2)
+                    }
+                    .buttonStyle(.plain)
+
+                    Button {
+                        store.exitFullScreenSession()
+                    } label: {
+                        Image(systemName: "arrow.down.right.and.arrow.up.left")
+                            .font(.caption2)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Exit Full Screen")
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 3)
+                .background(.bar)
+                Divider()
+            }
+
+            if let activeTab {
+                SessionCanvasRouterView(tab: activeTab)
+                    .id(activeTab.id)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+    }
+}
+
+private struct FullScreenFolderLauncherPopover: View {
+    @EnvironmentObject private var store: WorkspaceStore
+    @Binding var isPresented: Bool
+    @State private var filterQuery: String = ""
+    @State private var collapsedFolderIds: Set<String> = []
+
+    var body: some View {
+        let trimmed = filterQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Label("Connect to Server", systemImage: "folder.fill")
+                    .font(.headline)
+                Spacer()
+                Text("Double-click or ▶ to connect")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            TextField("Filter folders or servers…", text: $filterQuery)
+                .textFieldStyle(.roundedBorder)
+
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 2) {
+                    if !trimmed.isEmpty {
+                        let matching = store.activeConnections.filter {
+                            $0.name.lowercased().contains(trimmed) || $0.host.lowercased().contains(trimmed)
+                        }
+                        ForEach(matching) { conn in
+                            connectionLauncherRow(conn, depth: 0)
+                        }
+                    } else {
+                        let rootFolders = store.activeFolders.filter { $0.parentFolderId == nil }
+                        ForEach(rootFolders) { folder in
+                            AnyView(folderSubtreeRows(folder: folder, depth: 0))
+                        }
+                        let rootConnections = store.activeConnections
+                            .filter { $0.parentFolderId == nil }
+                            .sorted { $0.sortOrder < $1.sortOrder }
+                        ForEach(rootConnections) { conn in
+                            connectionLauncherRow(conn, depth: 0)
+                        }
+
+                        if !store.activeSmartFolders.isEmpty {
+                            Divider().padding(.vertical, 4)
+                            Text("Intelligent Folders")
+                                .font(.caption2.weight(.bold))
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 6)
+                            ForEach(store.activeSmartFolders) { sf in
+                                let sfKey = "sf:\(sf.id)"
+                                let expanded = !collapsedFolderIds.contains(sfKey)
+                                let matches = PropertyInheritanceResolver.evaluateSmartFolder(sf, in: store.document)
+                                Button {
+                                    if expanded {
+                                        collapsedFolderIds.insert(sfKey)
+                                    } else {
+                                        collapsedFolderIds.remove(sfKey)
+                                    }
+                                } label: {
+                                    HStack(spacing: 6) {
+                                        Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                                            .font(.caption2)
+                                        Image(systemName: "sparkles.rectangle.stack")
+                                            .foregroundStyle(.purple)
+                                        Text("\(sf.name) (\(matches.count))")
+                                            .font(.callout.weight(.medium))
+                                        Spacer()
+                                    }
+                                    .padding(.vertical, 4)
+                                    .padding(.horizontal, 6)
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+
+                                if expanded {
+                                    ForEach(matches) { conn in
+                                        connectionLauncherRow(conn, depth: 1)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .frame(width: 340, height: 380)
+        }
+        .padding(12)
+    }
+
+    @ViewBuilder
+    private func folderSubtreeRows(folder: VaultFolder, depth: Int) -> some View {
+        let expanded = !collapsedFolderIds.contains(folder.id)
+        let childFolders = store.activeFolders.filter { $0.parentFolderId == folder.id }
+        let childConns = store.activeConnections
+            .filter { $0.parentFolderId == folder.id }
+            .sorted { $0.sortOrder < $1.sortOrder }
+
+        Button {
+            if expanded {
+                collapsedFolderIds.insert(folder.id)
+            } else {
+                collapsedFolderIds.remove(folder.id)
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                    .font(.caption2)
+                Image(systemName: "folder.fill")
+                    .foregroundStyle(Color.accentColor)
+                Text(folder.name)
+                    .font(.callout.weight(.medium))
+                Spacer()
+            }
+            .padding(.leading, CGFloat(depth) * 14)
+            .padding(.vertical, 4)
+            .padding(.horizontal, 6)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+
+        if expanded {
+            ForEach(childFolders) { sub in
+                AnyView(folderSubtreeRows(folder: sub, depth: depth + 1))
+            }
+            ForEach(childConns) { conn in
+                connectionLauncherRow(conn, depth: depth + 1)
+            }
+        }
+    }
+
+    private func connectionLauncherRow(_ conn: VaultConnection, depth: Int) -> some View {
+        let isSelected = store.selectedConnectionId == conn.id
+        return HStack(spacing: 6) {
+            Image(systemName: conn.protocolType.sfSymbolName)
+                .font(.caption)
+                .foregroundStyle(conn.protocolType.appleSystemTint)
+            Text(conn.name)
+                .font(.callout)
+                .lineLimit(1)
+            Spacer()
+            Button {
+                store.openConnection(conn)
+                isPresented = false
+            } label: {
+                Image(systemName: "play.fill")
+                    .font(.caption2)
+            }
+            .buttonStyle(.borderless)
+            .help("Connect to \(conn.name)")
+        }
+        .padding(.leading, CGFloat(depth) * 14 + 12)
+        .padding(.vertical, 4)
+        .padding(.horizontal, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(isSelected ? Color.accentColor.opacity(0.16) : Color.clear)
+        )
+        .contentShape(Rectangle())
+        .onTapGesture(count: 2) {
+            store.openConnection(conn)
+            isPresented = false
+        }
+        .simultaneousGesture(
+            TapGesture(count: 1).onEnded {
+                store.selectedConnectionId = conn.id
+            }
+        )
+    }
+}
+

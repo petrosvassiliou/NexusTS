@@ -97,6 +97,7 @@ import com.nexusts.app.core.ui.components.NexusChoiceChip
 import com.nexusts.app.core.ui.components.parseHexColorOrNull
 import com.nexusts.app.core.ui.input.nexusDesktopPointerButtons
 import com.nexusts.app.core.ui.input.nexusHoverTracker
+import com.nexusts.app.core.ui.input.nexusInteractiveRow
 import com.nexusts.app.core.ui.input.rememberDesktopHoverState
 import com.nexusts.app.core.ui.theme.MorphContainerState
 import com.nexusts.app.core.ui.theme.NexusTheme
@@ -756,26 +757,30 @@ fun ExpressiveVaultOverviewDashboard(
                             var favMenuOpen by remember(fav.id) { mutableStateOf(false) }
 
                             Box {
-                                Surface(
-                                    shape = RoundedCornerShape(20.dp),
-                                    color = if (favHover.value.isHovered) {
-                                        MaterialTheme.colorScheme.surfaceContainerHigh
-                                    } else {
-                                        MaterialTheme.colorScheme.surfaceContainer
-                                    },
-                                    border = BorderStroke(
-                                        1.dp,
-                                        accent.copy(alpha = if (favHover.value.isHovered) 0.65f else 0.35f)
-                                    ),
+                                val favShape = RoundedCornerShape(20.dp)
+                                Box(
                                     modifier = Modifier
                                         .width(268.dp)
                                         .nexusHoverTracker(favHover, PointerIcon.Hand)
-                                        .nexusDesktopPointerButtons(onSecondaryClick = { favMenuOpen = true })
-                                        .clip(RoundedCornerShape(20.dp))
-                                        .clickable(
-                                            interactionSource = favInteraction,
-                                            indication = null,
-                                            onClick = { onLaunchConnection(fav) }
+                                        .clip(favShape)
+                                        .background(
+                                            if (favHover.value.isHovered) {
+                                                MaterialTheme.colorScheme.surfaceContainerHigh
+                                            } else {
+                                                MaterialTheme.colorScheme.surfaceContainer
+                                            },
+                                            favShape
+                                        )
+                                        .border(
+                                            1.dp,
+                                            accent.copy(alpha = if (favHover.value.isHovered) 0.65f else 0.35f),
+                                            favShape
+                                        )
+                                        .nexusInteractiveRow(
+                                            rowKey = "fav-${fav.id}",
+                                            onClick = {},
+                                            onDoubleClick = { onLaunchConnection(fav) },
+                                            onSecondaryClick = { favMenuOpen = true }
                                         )
                                 ) {
                                     Column(

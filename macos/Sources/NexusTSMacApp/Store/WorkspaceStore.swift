@@ -420,6 +420,7 @@ public final class WorkspaceStore: ObservableObject {
     @Published public var paneTree: WorkspacePaneNode = .initialEmpty()
     @Published public var focusedPaneId: UUID? = nil
     @Published public var detachedWindowTabs: [UUID: WorkspaceSessionTab] = [:]
+    @Published public var isFullScreenSessionMode: Bool = false
 
     // Broadcast, Preferences & Sync
     @Published public var broadcastInputEnabled: Bool = false
@@ -603,6 +604,7 @@ public final class WorkspaceStore: ObservableObject {
         rdpSessions.removeAll()
         paneTree = .initialEmpty()
         detachedWindowTabs.removeAll()
+        isFullScreenSessionMode = false
         NativeSshCryptoBridge.clearAgentKeys()
         isVaultLocked = true
         unlockErrorText = nil
@@ -675,6 +677,7 @@ public final class WorkspaceStore: ObservableObject {
         rdpSessions.removeAll()
         paneTree = .initialEmpty()
         detachedWindowTabs.removeAll()
+        isFullScreenSessionMode = false
         dynamicFolderCache.removeAll()
         NativeSshCryptoBridge.clearAgentKeys()
         MacKeychainAndBiometrics.shared.deleteAllVaultPassphrases()
@@ -741,6 +744,38 @@ public final class WorkspaceStore: ObservableObject {
             return nil
         }
         return activeConnections.first { $0.id == id }
+    }
+
+    public func toggleSidebarVisibility() {
+        columnVisibility = (columnVisibility == .detailOnly) ? .all : .detailOnly
+    }
+
+    public var focusedOrFirstActiveTab: WorkspaceSessionTab? {
+        paneTree.focusedOrFirstActiveTab(focusedPaneId: focusedPaneId)
+    }
+
+    public func selectTabGlobally(_ tabId: UUID) {
+        let (updated, paneId) = paneTree.activatingTabGlobally(tabId)
+        paneTree = updated
+        if let paneId {
+            focusedPaneId = paneId
+        }
+        if let tab = paneTree.findTab(id: tabId), !tab.isLocalShell {
+            selectedConnectionId = tab.connection.id
+        }
+    }
+
+    public func enterFullScreenSession(tabId: UUID? = nil) {
+        if let tabId {
+            selectTabGlobally(tabId)
+        }
+        guard !paneTree.allTabs.isEmpty else { return }
+        activeSection = .sessions
+        isFullScreenSessionMode = true
+    }
+
+    public func exitFullScreenSession() {
+        isFullScreenSessionMode = false
     }
 
     public func openConnection(
@@ -813,6 +848,9 @@ public final class WorkspaceStore: ObservableObject {
         if let focused = focusedPaneId, !paneTree.allLeafIds.contains(focused) {
             focusedPaneId = paneTree.allLeafIds.first
         }
+        if paneTree.allTabs.isEmpty {
+            isFullScreenSessionMode = false
+        }
     }
 
     /// Detaches a live session tab into a secondary macOS window WITHOUT dropping the SSH/RDP stream.
@@ -820,6 +858,9 @@ public final class WorkspaceStore: ObservableObject {
         guard let tab = paneTree.findTab(id: tabId) else { return nil }
         detachedWindowTabs[tabId] = tab
         paneTree = paneTree.removingTab(tabId)
+        if paneTree.allTabs.isEmpty {
+            isFullScreenSessionMode = false
+        }
         appendAudit("Window", "Detached '\(tab.title)' into separate macOS window.")
         return tabId
     }

@@ -105,6 +105,7 @@ void nexusts_rdp_send_pointer_event(
 
 void nexusts_rdp_set_local_clipboard(int64_t handle, const char* utf8_text);
 char* nexusts_rdp_copy_remote_clipboard(int64_t handle);
+uint64_t nexusts_rdp_remote_clipboard_sequence(int64_t handle);
 char* nexusts_rdp_copy_last_error(int64_t handle);
 void nexusts_rdp_free_cstr(char* ptr);
 

@@ -211,6 +211,13 @@ char* nexusts_rdp_copy_remote_clipboard(int64_t handle) {
     return nullptr;
 }
 
+uint64_t nexusts_rdp_remote_clipboard_sequence(int64_t handle) {
+    if (auto ctx = lookup_session(handle)) {
+        return ctx->channels().remote_clipboard_sequence();
+    }
+    return 0;
+}
+
 char* nexusts_rdp_copy_last_error(int64_t handle) {
     if (auto ctx = lookup_session(handle)) {
         const std::string err = ctx->last_error();

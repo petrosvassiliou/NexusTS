@@ -9,6 +9,7 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onFirst
+import androidx.compose.ui.test.onLast
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.test.core.app.ApplicationProvider
@@ -1499,10 +1500,10 @@ class NexusWorkspaceComposeE2ETest {
 
     @Test
     fun compactFlushLeftSidebarFolderContextMenusStartAllRdpRenameDeleteAndV117UpgradeParity() {
-        assertEquals(10201, BuildConfig.VERSION_CODE)
+        assertEquals(10202, BuildConfig.VERSION_CODE)
         assertTrue(
-            "Expected BuildConfig.VERSION_NAME (${BuildConfig.VERSION_NAME}) to start with 1.2.1-beta.1",
-            BuildConfig.VERSION_NAME.startsWith("1.2.1-beta.1")
+            "Expected BuildConfig.VERSION_NAME (${BuildConfig.VERSION_NAME}) to start with 1.2.1-beta.2",
+            BuildConfig.VERSION_NAME.startsWith("1.2.1-beta.2")
         )
 
         val serializer = buildFastSerializer()
@@ -2090,4 +2091,174 @@ class NexusWorkspaceComposeE2ETest {
             resetDir.deleteRecursively()
         }
     }
+
+    @Test
+    fun v121Beta2DoubleClickOnlyMultiTabRdpSwitchingHamburgerAndFullScreenSession() {
+        val vm = buildRealViewModel()
+        val strings = WorkspaceLocalizedStrings.defaultEnglish()
+
+        composeRule.setContent {
+            NexusTSTheme {
+                NexusWorkspaceScreen(
+                    viewModel = vm,
+                    strings = strings,
+                    connectedDisplays = emptyList(),
+                    flexibleUpdateDownloaded = false,
+                    onCompleteFlexibleUpdate = {},
+                    onRequestImportFilePicker = {},
+                    onRequestGoogleDriveSync = {},
+                    onDetachTabToNativeWindow = { _, _ -> }
+                )
+            }
+        }
+        composeRule.waitForIdle()
+
+        val dcFolder = VaultFolder(
+            id = "folder-dc-eu",
+            name = "DataCenter EU"
+        )
+        val rdpConn1 = VaultConnection(
+            id = "conn-rdp-beta2-01",
+            parentFolderId = dcFolder.id,
+            name = "WinServer-Alpha",
+            host = "10.20.30.11",
+            protocol = VaultProtocolType.RDP,
+            favorite = true,
+            settings = ProtocolSpecificSettings.Rdp(redirectClipboard = true)
+        )
+        val rdpConn2 = VaultConnection(
+            id = "conn-rdp-beta2-02",
+            parentFolderId = dcFolder.id,
+            name = "WinServer-Bravo",
+            host = "10.20.30.12",
+            protocol = VaultProtocolType.RDP,
+            favorite = false,
+            settings = ProtocolSpecificSettings.Rdp(redirectClipboard = true)
+        )
+        composeRule.runOnIdle {
+            vm.saveFolderAndCredentialToVault(dcFolder)
+            vm.saveConnectionToVault(rdpConn1)
+            vm.saveConnectionToVault(rdpConn2)
+        }
+        composeRule.waitForIdle()
+
+        // 1. Hamburger menu button toggles sidebar visibility cleanly
+        assertTrue(vm.uiState.value.isSidebarVisible)
+        composeRule.onAllNodesWithContentDescription("Toggle Sidebar").onFirst().performClick()
+        composeRule.waitForIdle()
+        assertFalse(vm.uiState.value.isSidebarVisible)
+
+        composeRule.onAllNodesWithContentDescription("Toggle Sidebar").onFirst().performClick()
+        composeRule.waitForIdle()
+        assertTrue(vm.uiState.value.isSidebarVisible)
+
+        // 2. Single-clicking a connection in the sidebar ONLY selects it and NEVER initiates an RDP session
+        composeRule
+            .onAllNodesWithText("WinServer-Alpha", substring = false)
+            .onFirst()
+            .performClick()
+        composeRule.waitForIdle()
+        assertEquals("conn-rdp-beta2-01", vm.uiState.value.selectedConnectionId)
+        assertTrue(
+            "Single-click MUST NOT open a session tab",
+            vm.tilingController.allActiveTabs().isEmpty()
+        )
+
+        // Wait past doubleClickIntervalMs (420ms) by advancing system wall clock? No: Thread.sleep(450) ensures next pair starts fresh!
+        Thread.sleep(460L)
+
+        // 3. Double-clicking WinServer-Alpha opens the 1st RDP session tab; double-clicking WinServer-Bravo opens the 2nd RDP session tab
+        composeRule
+            .onAllNodesWithText("WinServer-Alpha", substring = false)
+            .onFirst()
+            .performClick()
+        composeRule
+            .onAllNodesWithText("WinServer-Alpha", substring = false)
+            .onFirst()
+            .performClick()
+        composeRule.waitForIdle()
+        assertEquals(1, vm.tilingController.allActiveTabs().size)
+        assertEquals("conn-rdp-beta2-01", vm.tilingController.focusedActiveTab()?.connectionId)
+
+        composeRule
+            .onAllNodesWithText("WinServer-Bravo", substring = false)
+            .onFirst()
+            .performClick()
+        composeRule
+            .onAllNodesWithText("WinServer-Bravo", substring = false)
+            .onFirst()
+            .performClick()
+        composeRule.waitForIdle()
+        assertEquals(2, vm.tilingController.allActiveTabs().size)
+        assertEquals("conn-rdp-beta2-02", vm.tilingController.focusedActiveTab()?.connectionId)
+        assertTextRendered("WinServer-Bravo • ")
+        assertEquals(
+            "Inactive 1st RDP session must not stay displayed when 2nd tab is active",
+            0,
+            composeRule.onAllNodesWithText("WinServer-Alpha • ", substring = true).fetchSemanticsNodes().size
+        )
+
+        // 4. External RDP control bar shows automatic "Clipboard Sync" status (no manual Push/Pull Clipboard buttons)
+        assertTextRendered("Clipboard Sync")
+        assertEquals(0, composeRule.onAllNodesWithText("Push Clipboard", substring = false).fetchSemanticsNodes().size)
+        assertEquals(0, composeRule.onAllNodesWithText("Pull Clipboard", substring = false).fetchSemanticsNodes().size)
+
+        // 5. Clicking the 1st tab chip directly in the main-window tabbed interface switches display to WinServer-Alpha
+        val alphaTabId = vm.tilingController.allActiveTabs().first { it.connectionId == "conn-rdp-beta2-01" }.tabId
+        val bravoTabId = vm.tilingController.allActiveTabs().first { it.connectionId == "conn-rdp-beta2-02" }.tabId
+        composeRule
+            .onAllNodesWithText("WinServer-Alpha", substring = false)
+            .onLast()
+            .performClick()
+        composeRule.waitForIdle()
+        assertEquals("conn-rdp-beta2-01", vm.tilingController.focusedActiveTab()?.connectionId)
+        assertTextRendered("WinServer-Alpha • ")
+        assertEquals(
+            0,
+            composeRule.onAllNodesWithText("WinServer-Bravo • ", substring = true).fetchSemanticsNodes().size
+        )
+
+        // Switch back to WinServer-Bravo tab chip via direct UI click on the tab chip
+        composeRule
+            .onAllNodesWithText("WinServer-Bravo", substring = false)
+            .onLast()
+            .performClick()
+        composeRule.waitForIdle()
+        assertEquals("conn-rdp-beta2-02", vm.tilingController.focusedActiveTab()?.connectionId)
+        assertTextRendered("WinServer-Bravo • ")
+
+        // 6. Enter Full-Screen Session Mode: active session switches cleanly and Folder Structure launcher opens
+        composeRule.runOnIdle {
+            vm.enterFullScreenForTab(bravoTabId)
+        }
+        composeRule.waitForIdle()
+        assertTrue(vm.uiState.value.isFullScreenSessionMode)
+        assertTextRendered("Folders & Servers")
+
+        // Switch to WinServer-Alpha directly from the Full-Screen top session bar
+        composeRule
+            .onAllNodesWithText("WinServer-Alpha", substring = false)
+            .onFirst()
+            .performClick()
+        composeRule.waitForIdle()
+        assertEquals(alphaTabId, vm.tilingController.focusedOrFirstActiveTab()?.tabId)
+        assertTextRendered("WinServer-Alpha • ")
+
+        // Open Full-Screen Folder Structure Server Launcher and verify hierarchical folder tree is displayed
+        composeRule
+            .onAllNodesWithText("Folders & Servers", substring = false)
+            .onFirst()
+            .performClick()
+        composeRule.waitForIdle()
+        assertTextRendered("Double-click a server to connect")
+        assertTextRendered("DataCenter EU")
+
+        // Exit Full-Screen Session Mode via Ctrl+Alt+F shortcut action
+        composeRule.runOnIdle {
+            vm.handleShortcut(NexusShortcutAction.TOGGLE_FULLSCREEN_SESSION) {}
+        }
+        composeRule.waitForIdle()
+        assertFalse(vm.uiState.value.isFullScreenSessionMode)
+    }
 }
+

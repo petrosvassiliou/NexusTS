@@ -37,6 +37,7 @@ enum class NexusShortcutAction {
     TOGGLE_PROPERTY_INSPECTOR,
     TOGGLE_BOTTOM_LOG_DRAWER,
     TOGGLE_BROADCAST_INPUT,
+    TOGGLE_FULLSCREEN_SESSION,
     RELEASE_REMOTE_KEY_CAPTURE,
     ZOOM_IN_SESSION,
     ZOOM_OUT_SESSION,
@@ -124,6 +125,8 @@ data class KeyChord(
             AndroidKeyEvent.KEYCODE_J -> "J"
             AndroidKeyEvent.KEYCODE_M -> "M"
             AndroidKeyEvent.KEYCODE_D -> "D"
+            AndroidKeyEvent.KEYCODE_F -> "F"
+            AndroidKeyEvent.KEYCODE_F11 -> "F11"
             AndroidKeyEvent.KEYCODE_TAB -> "Tab"
             AndroidKeyEvent.KEYCODE_BACKSLASH -> "\\"
             AndroidKeyEvent.KEYCODE_MINUS -> "-"
@@ -172,7 +175,8 @@ class NexusShortcutEngine(
         action: NexusShortcutAction,
         newChord: KeyChord,
         bypassesRemoteCapture: Boolean = action == NexusShortcutAction.RELEASE_REMOTE_KEY_CAPTURE ||
-            action == NexusShortcutAction.QUICK_CONNECT_PALETTE
+            action == NexusShortcutAction.QUICK_CONNECT_PALETTE ||
+            action == NexusShortcutAction.TOGGLE_FULLSCREEN_SESSION
     ): NexusShortcutAction? {
         val current = _bindings.value
         val conflict = current.values.firstOrNull { it.action != action && it.chord == newChord }?.action
@@ -219,6 +223,7 @@ class NexusShortcutEngine(
         onAction: ((NexusShortcutAction) -> Boolean)? = null
     ): Boolean {
         if (native.action != AndroidKeyEvent.ACTION_DOWN) return false
+        if (isSystemPassThroughKeyEvent(native)) return false
         // Prevent accidental key-repeat toggling when holding a shortcut chord like Ctrl+K
         if (native.repeatCount > 0) return false
 
@@ -246,7 +251,7 @@ class NexusShortcutEngine(
         val matchedAction: NexusShortcutAction = _bindings.value.values.firstOrNull { binding ->
             (!remoteCaptureActive || binding.bypassesRemoteCapture) && binding.chord.matchesAndroidKeyEvent(native)
         }?.action ?: run {
-            // Secondary universal desktop tab-switching chords: Ctrl+Tab and Ctrl+Shift+Tab
+            // Secondary universal desktop tab-switching chords: Ctrl+Tab, Ctrl+Shift+Tab, and F11 fullscreen
             if (!remoteCaptureActive &&
                 native.keyCode == AndroidKeyEvent.KEYCODE_TAB &&
                 native.isCtrlPressed &&
@@ -254,6 +259,14 @@ class NexusShortcutEngine(
                 !native.isMetaPressed
             ) {
                 if (native.isShiftPressed) NexusShortcutAction.PREVIOUS_TAB else NexusShortcutAction.NEXT_TAB
+            } else if (!remoteCaptureActive &&
+                native.keyCode == AndroidKeyEvent.KEYCODE_F11 &&
+                !native.isCtrlPressed &&
+                !native.isAltPressed &&
+                !native.isMetaPressed &&
+                !native.isShiftPressed
+            ) {
+                NexusShortcutAction.TOGGLE_FULLSCREEN_SESSION
             } else {
                 return false
             }
@@ -280,6 +293,11 @@ class NexusShortcutEngine(
             ShortcutBinding(
                 action = NexusShortcutAction.RELEASE_REMOTE_KEY_CAPTURE,
                 chord = KeyChord(AndroidKeyEvent.KEYCODE_MOVE_HOME, ctrl = true, alt = true),
+                bypassesRemoteCapture = true
+            ),
+            ShortcutBinding(
+                action = NexusShortcutAction.TOGGLE_FULLSCREEN_SESSION,
+                chord = KeyChord(AndroidKeyEvent.KEYCODE_F, ctrl = true, alt = true),
                 bypassesRemoteCapture = true
             ),
             ShortcutBinding(

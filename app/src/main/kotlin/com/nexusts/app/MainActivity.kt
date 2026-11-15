@@ -23,6 +23,9 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.lifecycleScope
 import com.nexusts.app.core.gdrivesync.auth.GoogleDriveAuthManager
 import com.nexusts.app.core.gdrivesync.auth.GoogleDriveConsentResolutionRequiredException
@@ -32,6 +35,7 @@ import com.nexusts.app.core.gdrivesync.sync.SafDriveSyncOutcome
 import com.nexusts.app.core.gdrivesync.sync.SafLiveGoogleDriveBridge
 import com.nexusts.app.core.gdrivesync.sync.VaultSyncResult
 import com.nexusts.app.core.ui.input.NexusShortcutAction
+import com.nexusts.app.core.ui.input.isSystemPassThroughKeyEvent
 import com.nexusts.app.core.ui.theme.NexusTSTheme
 import com.nexusts.app.core.ui.workspace.AdHocConnectionSyntaxParser
 import com.nexusts.app.core.ui.workspace.GooglebookWindowController
@@ -377,6 +381,17 @@ class MainActivity : AppCompatActivity() {
                 }
             }
 
+            LaunchedEffect(uiState.isFullScreenSessionMode) {
+                val controller = WindowCompat.getInsetsController(window, window.decorView)
+                if (uiState.isFullScreenSessionMode) {
+                    controller.systemBarsBehavior =
+                        WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                    controller.hide(WindowInsetsCompat.Type.systemBars())
+                } else {
+                    controller.show(WindowInsetsCompat.Type.systemBars())
+                }
+            }
+
             NexusTSTheme {
                 NexusWorkspaceScreen(
                     viewModel = workspaceViewModel,
@@ -594,6 +609,9 @@ class MainActivity : AppCompatActivity() {
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         lastUserInteractionElapsedRealtimeMs = SystemClock.elapsedRealtime()
+        if (isSystemPassThroughKeyEvent(event)) {
+            return super.dispatchKeyEvent(event)
+        }
         if (event.action == KeyEvent.ACTION_UP && consumedShortcutKeyCodes.remove(event.keyCode)) {
             return true
         }

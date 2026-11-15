@@ -36,6 +36,7 @@ import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.CloudQueue
 import androidx.compose.material.icons.outlined.Computer
 import androidx.compose.material.icons.outlined.FolderShared
+import androidx.compose.material.icons.outlined.Fullscreen
 import androidx.compose.material.icons.outlined.Language
 import androidx.compose.material.icons.outlined.Podcasts
 import androidx.compose.material.icons.outlined.Refresh
@@ -56,6 +57,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -69,18 +71,23 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.PointerIcon
+import androidx.compose.ui.input.pointer.isSecondaryPressed
+import androidx.compose.ui.input.pointer.isTertiaryPressed
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import com.nexusts.app.core.ui.components.parseHexColorOrNull
-import com.nexusts.app.core.ui.input.nexusDesktopPointerButtons
 import com.nexusts.app.core.ui.input.nexusHoverTracker
 import com.nexusts.app.core.ui.input.nexusResizeCursor
 import com.nexusts.app.core.ui.input.rememberDesktopHoverState
@@ -97,6 +104,7 @@ data class SplitWorkspaceLabels(
     val detachNewWindowLabel: String,
     val detachToDisplayPrefix: String,
     val toggleBroadcastLabel: String,
+    val fullScreenLabel: String = "Full Screen",
     val reconnectTabLabel: String = "Reconnect",
     val moveTabLeftLabel: String = "Move Tab Left",
     val moveTabRightLabel: String = "Move Tab Right",
@@ -181,6 +189,7 @@ fun SplitPaneWorkspaceContainer(
     onResizeSplit: (splitId: String, newRatio: Float) -> Unit,
     onDetachTabToWindow: (tab: WorkspaceSessionTab, displayId: Int?) -> Unit,
     onToggleTabBroadcast: (tab: WorkspaceSessionTab) -> Unit,
+    onEnterFullScreen: ((tab: WorkspaceSessionTab) -> Unit)? = null,
     onReconnectTab: ((tab: WorkspaceSessionTab) -> Unit)? = null,
     onCloseEmptyPane: ((paneId: String) -> Unit)? = null,
     onReorderTab: ((paneId: String, fromIndex: Int, toIndex: Int) -> Unit)? = null,
@@ -268,6 +277,7 @@ fun SplitPaneWorkspaceContainer(
                         onSplit = { orientation -> onSplitPane(node.nodeId, orientation) },
                         onDetachToWindow = onDetachTabToWindow,
                         onToggleBroadcast = onToggleTabBroadcast,
+                        onEnterFullScreen = onEnterFullScreen,
                         onReconnectTab = onReconnectTab,
                         onReorderTab = onReorderTab,
                         onMoveTabToPane = onMoveTabToPane,
@@ -296,6 +306,7 @@ fun SplitPaneWorkspaceContainer(
                                 onResizeSplit = onResizeSplit,
                                 onDetachTabToWindow = onDetachTabToWindow,
                                 onToggleTabBroadcast = onToggleTabBroadcast,
+                                onEnterFullScreen = onEnterFullScreen,
                                 onReconnectTab = onReconnectTab,
                                 onCloseEmptyPane = onCloseEmptyPane,
                                 onReorderTab = onReorderTab,
@@ -329,6 +340,7 @@ fun SplitPaneWorkspaceContainer(
                                 onResizeSplit = onResizeSplit,
                                 onDetachTabToWindow = onDetachTabToWindow,
                                 onToggleTabBroadcast = onToggleTabBroadcast,
+                                onEnterFullScreen = onEnterFullScreen,
                                 onReconnectTab = onReconnectTab,
                                 onCloseEmptyPane = onCloseEmptyPane,
                                 onReorderTab = onReorderTab,
@@ -355,6 +367,7 @@ fun SplitPaneWorkspaceContainer(
                                 onResizeSplit = onResizeSplit,
                                 onDetachTabToWindow = onDetachTabToWindow,
                                 onToggleTabBroadcast = onToggleTabBroadcast,
+                                onEnterFullScreen = onEnterFullScreen,
                                 onReconnectTab = onReconnectTab,
                                 onCloseEmptyPane = onCloseEmptyPane,
                                 onReorderTab = onReorderTab,
@@ -388,6 +401,7 @@ fun SplitPaneWorkspaceContainer(
                                 onResizeSplit = onResizeSplit,
                                 onDetachTabToWindow = onDetachTabToWindow,
                                 onToggleTabBroadcast = onToggleTabBroadcast,
+                                onEnterFullScreen = onEnterFullScreen,
                                 onReconnectTab = onReconnectTab,
                                 onCloseEmptyPane = onCloseEmptyPane,
                                 onReorderTab = onReorderTab,
@@ -491,6 +505,7 @@ private fun LeafSessionPane(
     onSplit: (SplitOrientation) -> Unit,
     onDetachToWindow: (WorkspaceSessionTab, Int?) -> Unit,
     onToggleBroadcast: (WorkspaceSessionTab) -> Unit,
+    onEnterFullScreen: ((WorkspaceSessionTab) -> Unit)? = null,
     onReconnectTab: ((WorkspaceSessionTab) -> Unit)? = null,
     onReorderTab: ((String, Int, Int) -> Unit)? = null,
     onMoveTabToPane: ((String, String, Int?) -> Unit)? = null,
@@ -498,6 +513,8 @@ private fun LeafSessionPane(
     modifier: Modifier = Modifier
 ) {
     val extendedColors = NexusTheme.extendedColors
+    val latestIsFocused by rememberUpdatedState(isFocused)
+    val latestOnFocus by rememberUpdatedState(onFocus)
     val isHeaderDropTarget = dragState.draggedTab != null &&
         dragState.hoveredPaneHeaderId() == leaf.nodeId &&
         dragState.sourcePaneId != leaf.nodeId
@@ -534,7 +551,16 @@ private fun LeafSessionPane(
                 shape = paneShape
             )
             .clip(paneShape)
-            .clickable(interactionSource = null, indication = null, onClick = onFocus),
+            .pointerInput(leaf.nodeId) {
+                awaitPointerEventScope {
+                    while (true) {
+                        val ev = awaitPointerEvent(PointerEventPass.Initial)
+                        if (ev.type == PointerEventType.Press && !latestIsFocused) {
+                            latestOnFocus()
+                        }
+                    }
+                }
+            },
         color = MaterialTheme.colorScheme.surfaceContainerLow,
         shape = paneShape
     ) {
@@ -618,6 +644,12 @@ private fun LeafSessionPane(
                             },
                             onDetachToWindow = { displayId -> onDetachToWindow(tab, displayId) },
                             onToggleBroadcast = { onToggleBroadcast(tab) },
+                            onEnterFullScreen = onEnterFullScreen?.let { cb ->
+                                {
+                                    onSelectTab(tab.tabId)
+                                    cb(tab)
+                                }
+                            },
                             onReconnect = onReconnectTab?.let { cb -> { cb(tab) } }
                         )
                     }
@@ -666,6 +698,20 @@ private fun LeafSessionPane(
                 }
 
                 leaf.activeTab?.let { active ->
+                    if (onEnterFullScreen != null) {
+                        IconButton(
+                            onClick = { onEnterFullScreen(active) },
+                            modifier = Modifier.size(28.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.Fullscreen,
+                                contentDescription = labels.fullScreenLabel,
+                                modifier = Modifier.size(17.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+
                     IconButton(
                         onClick = { onDetachToWindow(active, null) },
                         modifier = Modifier.size(28.dp)
@@ -731,8 +777,10 @@ private fun LeafSessionPane(
                     }
                 }
 
-                Box(modifier = Modifier.fillMaxSize()) {
-                    sessionRenderer(activeTab, isFocused)
+                Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                    key(activeTab.tabId) {
+                        sessionRenderer(activeTab, isFocused)
+                    }
                 }
             }
         }
@@ -762,15 +810,21 @@ private fun ExpressiveSessionTabChip(
     onSplitDown: () -> Unit,
     onDetachToWindow: (Int?) -> Unit,
     onToggleBroadcast: () -> Unit,
+    onEnterFullScreen: (() -> Unit)? = null,
     onReconnect: (() -> Unit)? = null
 ) {
+    @Suppress("UNUSED_PARAMETER")
+    val ignoredTotalTabs = totalTabs
     val hoverState = rememberDesktopHoverState()
     var contextMenuOpen by remember { mutableStateOf(false) }
     var chipCoordinates by remember { mutableStateOf<LayoutCoordinates?>(null) }
     val customAccent = parseHexColorOrNull(tab.customColorHex)
     val isBeingDragged = dragState.draggedTab?.tabId == tab.tabId
 
+    val latestTab by rememberUpdatedState(tab)
     val latestTabIndex by rememberUpdatedState(tabIndex)
+    val latestOnSelect by rememberUpdatedState(onSelect)
+    val latestOnClose by rememberUpdatedState(onClose)
     val latestOnReorderTab by rememberUpdatedState(onReorderTab)
     val latestOnMoveTabToPane by rememberUpdatedState(onMoveTabToPane)
     val latestOnDetachToWindow by rememberUpdatedState(onDetachToWindow)
@@ -798,144 +852,216 @@ private fun ExpressiveSessionTabChip(
         label = "TabChipBg"
     )
 
+    val tabBorder = when {
+        isDropSlotHighlighted -> BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
+        isSelected -> BorderStroke(1.dp, (customAccent ?: MaterialTheme.colorScheme.secondary).copy(alpha = 0.55f))
+        else -> null
+    }
+
     Box {
-        Surface(
+        Row(
             modifier = Modifier
                 .height(32.dp)
-                .alpha(if (isBeingDragged) 0.45f else 1f)
+                .alpha(if (isBeingDragged && ignoredTotalTabs >= 0) 0.45f else 1f)
                 .onGloballyPositioned { coords ->
                     chipCoordinates = coords
                     dragState.tabChipBounds[dragState.chipKey(paneId, tab.tabId)] = coords.boundsInRoot()
                 }
-                .nexusHoverTracker(hoverState, PointerIcon.Hand)
-                .nexusDesktopPointerButtons(
-                    onSecondaryClick = { contextMenuOpen = true },
-                    onTertiaryMiddleClick = { onClose() }
+                .clip(tabShape)
+                .background(bgColor, tabShape)
+                .then(
+                    if (tabBorder != null) {
+                        Modifier.border(tabBorder, tabShape)
+                    } else {
+                        Modifier
+                    }
                 )
-                .pointerInput(paneId, tab.tabId, totalTabs) {
-                    detectDragGestures(
-                        onDragStart = { startOffset ->
-                            val rootOrigin = chipCoordinates?.boundsInRoot()?.topLeft ?: Offset.Zero
-                            dragState.draggedTab = tab
-                            dragState.sourcePaneId = paneId
-                            dragState.sourceTabIndex = latestTabIndex
-                            dragState.pointerInRoot = rootOrigin + startOffset
-                        },
-                        onDrag = { change, dragAmount ->
-                            change.consume()
-                            dragState.pointerInRoot += dragAmount
-                        },
-                        onDragCancel = {
-                            dragState.reset()
-                        },
-                        onDragEnd = {
-                            val dragged = dragState.draggedTab
-                            val srcPane = dragState.sourcePaneId
-                            val srcIdx = dragState.sourceTabIndex
-                            if (dragged != null && srcPane != null) {
-                                val targetHeaderPane = dragState.hoveredPaneHeaderId()
-                                val targetEmptyPane = dragState.hoveredEmptyPaneId()
-                                when {
-                                    targetHeaderPane != null && targetHeaderPane == srcPane -> {
-                                        val destIdx = dragState.computeTargetIndexInPane(srcPane)
-                                        if (destIdx != null && destIdx != srcIdx) {
-                                            latestOnReorderTab?.invoke(srcPane, srcIdx, destIdx)
-                                                ?: latestOnMoveTabToPane?.invoke(dragged.tabId, srcPane, destIdx)
+                .semantics(mergeDescendants = true) {
+                    onClick {
+                        latestOnSelect()
+                        true
+                    }
+                }
+                .nexusHoverTracker(hoverState, PointerIcon.Hand)
+                .pointerInput(paneId, tab.tabId) {
+                    val slopPx = viewConfiguration.touchSlop
+                    awaitPointerEventScope {
+                        var primaryDownPos: Offset? = null
+                        var draggingActive = false
+                        var swallowRelease = false
+
+                        while (true) {
+                            val event = awaitPointerEvent(PointerEventPass.Main)
+                            val first = event.changes.firstOrNull() ?: continue
+                            val pos = first.position
+
+                            when (event.type) {
+                                PointerEventType.Press -> {
+                                    if (event.changes.any { it.isConsumed }) {
+                                        primaryDownPos = null
+                                        draggingActive = false
+                                        continue
+                                    }
+                                    when {
+                                        event.buttons.isSecondaryPressed -> {
+                                            event.changes.forEach { it.consume() }
+                                            primaryDownPos = null
+                                            draggingActive = false
+                                            swallowRelease = true
+                                            contextMenuOpen = true
+                                        }
+                                        event.buttons.isTertiaryPressed -> {
+                                            event.changes.forEach { it.consume() }
+                                            primaryDownPos = null
+                                            draggingActive = false
+                                            swallowRelease = true
+                                            latestOnClose()
+                                        }
+                                        else -> {
+                                            primaryDownPos = pos
+                                            draggingActive = false
                                         }
                                     }
-                                    targetHeaderPane != null && targetHeaderPane != srcPane -> {
-                                        val destIdx = dragState.computeTargetIndexInPane(targetHeaderPane)
-                                        latestOnMoveTabToPane?.invoke(dragged.tabId, targetHeaderPane, destIdx)
+                                }
+
+                                PointerEventType.Move -> {
+                                    val startPos = primaryDownPos
+                                    if (startPos != null) {
+                                        if (!draggingActive && (pos - startPos).getDistance() > slopPx) {
+                                            draggingActive = true
+                                            val rootOrigin = chipCoordinates?.boundsInRoot()?.topLeft ?: Offset.Zero
+                                            dragState.draggedTab = latestTab
+                                            dragState.sourcePaneId = paneId
+                                            dragState.sourceTabIndex = latestTabIndex
+                                            dragState.pointerInRoot = rootOrigin + pos
+                                            event.changes.forEach { it.consume() }
+                                        } else if (draggingActive) {
+                                            val rootOrigin = chipCoordinates?.boundsInRoot()?.topLeft ?: Offset.Zero
+                                            dragState.pointerInRoot = rootOrigin + pos
+                                            event.changes.forEach { it.consume() }
+                                        }
                                     }
-                                    targetEmptyPane != null && targetEmptyPane != srcPane -> {
-                                        latestOnMoveTabToPane?.invoke(dragged.tabId, targetEmptyPane, 0)
+                                }
+
+                                PointerEventType.Release -> {
+                                    if (swallowRelease) {
+                                        event.changes.forEach { it.consume() }
+                                        swallowRelease = false
+                                        primaryDownPos = null
+                                        draggingActive = false
+                                        continue
                                     }
-                                    dragState.isTearOffCandidate(tearOffThresholdPx) -> {
-                                        latestOnDetachToWindow(null)
+                                    val hadPrimaryDown = primaryDownPos != null
+                                    val wasDragging = draggingActive
+                                    primaryDownPos = null
+                                    draggingActive = false
+
+                                    if (wasDragging) {
+                                        event.changes.forEach { it.consume() }
+                                        val dragged = dragState.draggedTab
+                                        val srcPane = dragState.sourcePaneId
+                                        val srcIdx = dragState.sourceTabIndex
+                                        if (dragged != null && srcPane != null) {
+                                            val targetHeaderPane = dragState.hoveredPaneHeaderId()
+                                            val targetEmptyPane = dragState.hoveredEmptyPaneId()
+                                            when {
+                                                targetHeaderPane != null && targetHeaderPane == srcPane -> {
+                                                    val destIdx = dragState.computeTargetIndexInPane(srcPane)
+                                                    if (destIdx != null && destIdx != srcIdx) {
+                                                        latestOnReorderTab?.invoke(srcPane, srcIdx, destIdx)
+                                                            ?: latestOnMoveTabToPane?.invoke(dragged.tabId, srcPane, destIdx)
+                                                    }
+                                                }
+                                                targetHeaderPane != null && targetHeaderPane != srcPane -> {
+                                                    val destIdx = dragState.computeTargetIndexInPane(targetHeaderPane)
+                                                    latestOnMoveTabToPane?.invoke(dragged.tabId, targetHeaderPane, destIdx)
+                                                }
+                                                targetEmptyPane != null && targetEmptyPane != srcPane -> {
+                                                    latestOnMoveTabToPane?.invoke(dragged.tabId, targetEmptyPane, 0)
+                                                }
+                                                dragState.isTearOffCandidate(tearOffThresholdPx) -> {
+                                                    latestOnDetachToWindow(null)
+                                                }
+                                            }
+                                        }
+                                        dragState.reset()
+                                    } else if (hadPrimaryDown && event.changes.none { it.isConsumed }) {
+                                        val inBounds = pos.x in 0f..size.width.toFloat() &&
+                                            pos.y in 0f..size.height.toFloat()
+                                        if (inBounds) {
+                                            event.changes.forEach { it.consume() }
+                                            latestOnSelect()
+                                        }
                                     }
                                 }
                             }
-                            dragState.reset()
                         }
-                    )
+                    }
                 }
-                .clip(tabShape)
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                    onClick = onSelect
-                ),
-            shape = tabShape,
-            color = bgColor,
-            border = when {
-                isDropSlotHighlighted -> BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
-                isSelected -> BorderStroke(1.dp, (customAccent ?: MaterialTheme.colorScheme.secondary).copy(alpha = 0.55f))
-                else -> null
-            }
+                .padding(start = 10.dp, end = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            Row(
-                modifier = Modifier.padding(start = 10.dp, end = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                if (customAccent != null) {
-                    Box(
-                        modifier = Modifier
-                            .width(3.dp)
-                            .height(14.dp)
-                            .clip(RoundedCornerShape(99.dp))
-                            .background(customAccent)
-                    )
-                }
-
-                // Live Status Indicator Dot
-                val statusColor = statusDotColor(tab.status)
+            if (customAccent != null) {
                 Box(
                     modifier = Modifier
-                        .size(7.dp)
-                        .clip(CircleShape)
-                        .background(statusColor)
+                        .width(3.dp)
+                        .height(14.dp)
+                        .clip(RoundedCornerShape(99.dp))
+                        .background(customAccent)
                 )
+            }
 
+            // Live Status Indicator Dot
+            val statusColor = statusDotColor(tab.status)
+            Box(
+                modifier = Modifier
+                    .size(7.dp)
+                    .clip(CircleShape)
+                    .background(statusColor)
+            )
+
+            Icon(
+                imageVector = protocolIcon(tab.protocol),
+                contentDescription = null,
+                modifier = Modifier.size(15.dp),
+                tint = customAccent ?: protocolAccentColor(tab.protocol)
+            )
+
+            Text(
+                text = tab.title,
+                style = MaterialTheme.typography.labelLarge,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                color = if (isSelected) {
+                    MaterialTheme.colorScheme.onSurface
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                }
+            )
+
+            if (tab.broadcastEnabled) {
                 Icon(
-                    imageVector = protocolIcon(tab.protocol),
+                    imageVector = Icons.Outlined.Podcasts,
                     contentDescription = null,
-                    modifier = Modifier.size(15.dp),
-                    tint = customAccent ?: protocolAccentColor(tab.protocol)
+                    modifier = Modifier.size(13.dp),
+                    tint = NexusTheme.extendedColors.broadcastActiveBanner
                 )
+            }
 
-                Text(
-                    text = tab.title,
-                    style = MaterialTheme.typography.labelLarge,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    color = if (isSelected) {
-                        MaterialTheme.colorScheme.onSurface
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    }
+            Box(
+                modifier = Modifier
+                    .size(20.dp)
+                    .clip(CircleShape)
+                    .clickable(onClick = onClose),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.Close,
+                    contentDescription = labels.closeTabLabel,
+                    modifier = Modifier.size(13.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
-
-                if (tab.broadcastEnabled) {
-                    Icon(
-                        imageVector = Icons.Outlined.Podcasts,
-                        contentDescription = null,
-                        modifier = Modifier.size(13.dp),
-                        tint = NexusTheme.extendedColors.broadcastActiveBanner
-                    )
-                }
-
-                IconButton(
-                    onClick = onClose,
-                    modifier = Modifier.size(20.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Outlined.Close,
-                        contentDescription = labels.closeTabLabel,
-                        modifier = Modifier.size(13.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
             }
         }
 
@@ -943,6 +1069,17 @@ private fun ExpressiveSessionTabChip(
             expanded = contextMenuOpen,
             onDismissRequest = { contextMenuOpen = false }
         ) {
+            if (onEnterFullScreen != null) {
+                DropdownMenuItem(
+                    text = { Text(labels.fullScreenLabel) },
+                    leadingIcon = { Icon(Icons.Outlined.Fullscreen, contentDescription = null) },
+                    onClick = {
+                        contextMenuOpen = false
+                        onEnterFullScreen()
+                    }
+                )
+                HorizontalDivider()
+            }
             if (onReconnect != null) {
                 DropdownMenuItem(
                     text = { Text(labels.reconnectTabLabel) },
