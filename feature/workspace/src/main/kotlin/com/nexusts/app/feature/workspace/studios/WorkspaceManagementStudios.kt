@@ -3563,7 +3563,7 @@ fun DriveSyncAndConflictStudioView(
     }
 }
 
-internal data class NexusSelectOption<T>(
+internal class NexusSelectOption<out T>(
     val value: T,
     val title: String,
     val subtitle: String? = null,
