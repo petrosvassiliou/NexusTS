@@ -27,6 +27,7 @@
 #include <freerdp/codec/h264.h>
 #include <freerdp/gdi/gdi.h>
 #include <freerdp/gdi/gfx.h>
+#include <freerdp/graphics.h>
 #include <freerdp/channels/channels.h>
 #include <freerdp/channels/cliprdr.h>
 #include <freerdp/channels/rdpdr.h>
@@ -704,18 +705,57 @@ BOOL freerdp_on_pre_connect(freerdp* instance) {
     return TRUE;
 }
 
+BOOL nexusts_pointer_new(rdpContext* /*context*/, rdpPointer* /*pointer*/) {
+    return TRUE;
+}
+
+void nexusts_pointer_free(rdpContext* /*context*/, rdpPointer* /*pointer*/) {
+}
+
+BOOL nexusts_pointer_set(rdpContext* /*context*/, rdpPointer* /*pointer*/) {
+    return TRUE;
+}
+
+BOOL nexusts_pointer_set_null(rdpContext* /*context*/) {
+    return TRUE;
+}
+
+BOOL nexusts_pointer_set_default(rdpContext* /*context*/) {
+    return TRUE;
+}
+
+BOOL nexusts_pointer_set_position(rdpContext* /*context*/, UINT32 /*x*/, UINT32 /*y*/) {
+    return TRUE;
+}
+
+void register_safe_pointer_callbacks(rdpGraphics* graphics) {
+    if (!graphics) {
+        return;
+    }
+    rdpPointer pointer{};
+    pointer.size = sizeof(pointer);
+    pointer.New = &nexusts_pointer_new;
+    pointer.Free = &nexusts_pointer_free;
+    pointer.Set = &nexusts_pointer_set;
+    pointer.SetNull = &nexusts_pointer_set_null;
+    pointer.SetDefault = &nexusts_pointer_set_default;
+    pointer.SetPosition = &nexusts_pointer_set_position;
+    graphics_register_pointer(graphics, &pointer);
+}
+
 BOOL freerdp_on_post_connect(freerdp* instance) {
     if (!instance || !instance->context) {
         return FALSE;
     }
-    if (!gdi_init(instance, PIXEL_FORMAT_RGBX32)) {
-        NX_RDP_LOGE("FreeRDP gdi_init(PIXEL_FORMAT_RGBX32) failed");
+    if (!gdi_init(instance, PIXEL_FORMAT_RGBA32)) {
+        NX_RDP_LOGE("FreeRDP gdi_init(PIXEL_FORMAT_RGBA32) failed");
         const auto cb = lookup_freerdp_callbacks(instance);
         if (cb.owner) {
-            cb.owner->set_last_error("INTERNAL: FreeRDP gdi_init(PIXEL_FORMAT_RGBX32) failed.");
+            cb.owner->set_last_error("INTERNAL: FreeRDP gdi_init(PIXEL_FORMAT_RGBA32) failed.");
         }
         return FALSE;
     }
+    register_safe_pointer_callbacks(instance->context->graphics);
     if (instance->context->update) {
         instance->context->update->BeginPaint = &freerdp_on_begin_paint;
         instance->context->update->EndPaint = &freerdp_on_end_paint;
@@ -995,7 +1035,34 @@ bool RdpSessionContext::connect() {
 
     std::lock_guard<std::mutex> lock(state_mutex_);
     set_last_error("");
-    if (params_.host.empty()) {
+    auto trim_ascii = [](const std::string& raw) -> std::string {
+        const auto first = raw.find_first_not_of(" \t\r\n");
+        if (first == std::string::npos) {
+            return {};
+        }
+        const auto last = raw.find_last_not_of(" \t\r\n");
+        return raw.substr(first, last - first + 1u);
+    };
+    std::string effective_host = trim_ascii(params_.host);
+    uint16_t effective_port = params_.port == 0u ? 3389u : params_.port;
+    if (effective_host.size() >= 2u && effective_host.front() == '[' && effective_host.back() == ']') {
+        effective_host = effective_host.substr(1u, effective_host.size() - 2u);
+    } else {
+        const auto first_colon = effective_host.find(':');
+        if (first_colon != std::string::npos && effective_host.find(':', first_colon + 1u) == std::string::npos) {
+            const std::string port_str = trim_ascii(effective_host.substr(first_colon + 1u));
+            const std::string host_part = trim_ascii(effective_host.substr(0u, first_colon));
+            if (!host_part.empty() && !port_str.empty() &&
+                std::all_of(port_str.begin(), port_str.end(), [](unsigned char c) { return c >= '0' && c <= '9'; })) {
+                const unsigned long parsed_port = std::strtoul(port_str.c_str(), nullptr, 10);
+                if (parsed_port >= 1ul && parsed_port <= 65535ul) {
+                    effective_host = host_part;
+                    effective_port = static_cast<uint16_t>(parsed_port);
+                }
+            }
+        }
+    }
+    if (effective_host.empty()) {
         set_last_error("DNS_NAME_NOT_FOUND: Hostname is empty.");
         return false;
     }
@@ -1018,8 +1085,9 @@ bool RdpSessionContext::connect() {
     std::string resolved_home;
     const bool env_ready = ensure_freerdp_runtime_environment(params_.app_home_dir, &resolved_home);
 
-    std::string effective_username = params_.username;
-    std::string effective_domain = params_.domain;
+    std::string effective_username = trim_ascii(params_.username);
+    std::string effective_domain = trim_ascii(params_.domain);
+    const std::string effective_gateway_host = trim_ascii(params_.rd_gateway_host);
     if (effective_domain.empty()) {
         const auto bs_pos = effective_username.find('\\');
         if (bs_pos != std::string::npos) {
@@ -1080,17 +1148,13 @@ bool RdpSessionContext::connect() {
     freerdp_settings_set_bool(settings, FreeRDP_UseCommonStdioCallbacks, FALSE);
     freerdp_settings_set_uint32(settings, FreeRDP_TlsSecLevel, 0u);
     freerdp_settings_set_uint32(settings, FreeRDP_TcpConnectTimeout, 15000u);
+    if (effective_gateway_host.empty()) {
+        // Prevent FreeRDP proxy_prepare() from hijacking direct LAN RDP sockets via OS HTTPS_PROXY env vars
+        freerdp_settings_set_uint32(settings, FreeRDP_ProxyType, PROXY_TYPE_IGNORE);
+    }
 
-    // High-throughput FastPath & FrameMarker settings for low-latency desktop rendering
-    freerdp_settings_set_bool(settings, FreeRDP_FastPathInput, TRUE);
-    freerdp_settings_set_bool(settings, FreeRDP_FastPathOutput, TRUE);
-    freerdp_settings_set_bool(settings, FreeRDP_FrameMarkerCommandEnabled, TRUE);
-    freerdp_settings_set_bool(settings, FreeRDP_SurfaceFrameMarkerEnabled, TRUE);
-    freerdp_settings_set_bool(settings, FreeRDP_BitmapCacheEnabled, TRUE);
-    freerdp_settings_set_uint32(settings, FreeRDP_OffscreenSupportLevel, 1u);
-
-    freerdp_settings_set_string(settings, FreeRDP_ServerHostname, params_.host.c_str());
-    freerdp_settings_set_uint32(settings, FreeRDP_ServerPort, params_.port);
+    freerdp_settings_set_string(settings, FreeRDP_ServerHostname, effective_host.c_str());
+    freerdp_settings_set_uint32(settings, FreeRDP_ServerPort, effective_port);
     freerdp_settings_set_uint32(settings, FreeRDP_DesktopWidth, w);
     freerdp_settings_set_uint32(settings, FreeRDP_DesktopHeight, h);
     freerdp_settings_set_uint32(settings, FreeRDP_ColorDepth, params_.color_depth_bits);
@@ -1185,9 +1249,9 @@ bool RdpSessionContext::connect() {
     if (!effective_domain.empty()) {
         freerdp_settings_set_string(settings, FreeRDP_Domain, effective_domain.c_str());
     }
-    if (!params_.rd_gateway_host.empty()) {
+    if (!effective_gateway_host.empty()) {
         freerdp_settings_set_bool(settings, FreeRDP_GatewayEnabled, TRUE);
-        freerdp_settings_set_string(settings, FreeRDP_GatewayHostname, params_.rd_gateway_host.c_str());
+        freerdp_settings_set_string(settings, FreeRDP_GatewayHostname, effective_gateway_host.c_str());
         freerdp_settings_set_uint32(settings, FreeRDP_GatewayPort, params_.rd_gateway_port);
         freerdp_settings_set_bool(settings, FreeRDP_GatewayUseSameCredentials, TRUE);
     }
@@ -1200,7 +1264,7 @@ bool RdpSessionContext::connect() {
     set_cliprdr_context(nullptr);
     if (!freerdp_connect(instance)) {
         const std::string callback_err = last_error();
-        const std::string freerdp_err = format_freerdp_last_error(instance->context, params_.host, params_.port);
+        const std::string freerdp_err = format_freerdp_last_error(instance->context, effective_host, effective_port);
         std::string captured;
         if (!callback_err.empty() && !freerdp_err.empty()) {
             captured = callback_err + " [" + freerdp_err + "]";
@@ -1210,11 +1274,11 @@ bool RdpSessionContext::connect() {
             captured = freerdp_err;
         } else {
             captured = "CONNECT_TRANSPORT_FAILED: FreeRDP 3.x connection failed to " +
-                params_.host + ":" + std::to_string(params_.port);
+                effective_host + ":" + std::to_string(effective_port);
         }
         set_last_error(captured);
         NX_RDP_LOGE("FreeRDP 3.x connection failed to %s:%u (%s)",
-                    params_.host.c_str(), params_.port, captured.c_str());
+                    effective_host.c_str(), effective_port, captured.c_str());
         disp_context_.store(nullptr, std::memory_order_release);
         set_cliprdr_context(nullptr);
         unregister_freerdp_callbacks(instance);

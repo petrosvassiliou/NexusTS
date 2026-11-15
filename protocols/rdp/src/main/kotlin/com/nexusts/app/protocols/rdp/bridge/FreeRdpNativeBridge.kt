@@ -563,14 +563,28 @@ class RdpManagedSession(
                 ?.let { java.io.File(it, "freerdp_runtime").apply { mkdirs() }.absolutePath }
                 .orEmpty()
 
+            val trimmedHostRaw = connection.host.trim()
+            val colonCount = trimmedHostRaw.count { it == ':' }
+            val parsedHostAndPort = if (colonCount == 1) {
+                val hostPart = trimmedHostRaw.substringBefore(':').trim()
+                val portPart = trimmedHostRaw.substringAfter(':').trim().toIntOrNull()
+                if (hostPart.isNotEmpty() && portPart != null && portPart in 1..65535) {
+                    hostPart to portPart
+                } else {
+                    trimmedHostRaw to settings.port
+                }
+            } else {
+                trimmedHostRaw.removeSurrounding("[", "]") to settings.port
+            }
+
             // Negotiate DISP_DVC channel capability at connect time so live resize mode toggles work without reconnecting
             val createdHandle = FreeRdpNativeBridge.nativeCreateSession(
-                host = connection.host,
-                port = settings.port,
-                username = secret.username,
+                host = parsedHostAndPort.first,
+                port = parsedHostAndPort.second,
+                username = secret.username.trim(),
                 password = secret.password,
-                domain = secret.domain,
-                gatewayHost = settings.rdGatewayHostname,
+                domain = secret.domain.trim(),
+                gatewayHost = settings.rdGatewayHostname.trim(),
                 gatewayPort = settings.rdGatewayPort,
                 initialWidth = startW,
                 initialHeight = startH,

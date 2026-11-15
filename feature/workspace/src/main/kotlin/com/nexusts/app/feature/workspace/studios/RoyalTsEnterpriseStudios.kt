@@ -353,13 +353,22 @@ fun ExpressiveVaultOverviewDashboard(
     activeConnectionIds: Set<String> = emptySet(),
     modifier: Modifier = Modifier
 ) {
+    @Suppress("UNUSED_PARAMETER")
+    val ignoredFolderCallbacks = listOf<Any>(
+        onConnectAllInFolder,
+        onNewRdpInFolder,
+        onNewSshInFolder,
+        onNewSubfolder,
+        onEditFolder,
+        onDuplicateFolder,
+        onDeleteFolder,
+        onDisconnectAllInFolder
+    )
     val clipboard = LocalClipboardManager.current
     var newTodoTitle by remember { mutableStateOf("") }
+    var showAddTodoComposer by remember { mutableStateOf(false) }
     var overviewBgMenuOpen by remember { mutableStateOf(false) }
 
-    val activeFolders = remember(vaultDocument.folders, vaultDocument.tombstonedObjectIds) {
-        vaultDocument.folders.filterNot { it.id in vaultDocument.tombstonedObjectIds }
-    }
     val activeConnections = remember(vaultDocument.connections, vaultDocument.tombstonedObjectIds) {
         vaultDocument.connections.filterNot { it.id in vaultDocument.tombstonedObjectIds }
     }
@@ -373,30 +382,10 @@ fun ExpressiveVaultOverviewDashboard(
         activeTodos.count { !it.completed }
     }
 
-    val folderSubtreeStats = remember(activeFolders, activeConnections, activeConnectionIds) {
-        val childrenByParent = activeFolders.groupBy { it.parentFolderId }
-        val connsByFolder = activeConnections.groupBy { it.parentFolderId }
-
-        fun collectSubtreeFolderIds(rootId: String, visited: MutableSet<String>) {
-            if (!visited.add(rootId)) return
-            childrenByParent[rootId].orEmpty().forEach { child ->
-                collectSubtreeFolderIds(child.id, visited)
-            }
-        }
-
-        activeFolders.associate { folder ->
-            val subtreeIds = mutableSetOf<String>()
-            collectSubtreeFolderIds(folder.id, subtreeIds)
-            val subtreeConns = subtreeIds.flatMap { fid -> connsByFolder[fid].orEmpty() }
-            val activeInSubtree = subtreeConns.count { it.id in activeConnectionIds }
-            folder.id to (subtreeConns.size to activeInSubtree)
-        }
-    }
-
-    val isVaultCleanEmpty = activeConnections.isEmpty() && activeFolders.isEmpty() && activeTodos.isEmpty()
+    val isVaultCleanEmpty = activeConnections.isEmpty() && activeTodos.isEmpty()
 
     if (isVaultCleanEmpty) {
-        // Serene, spacious Google Material 3 Welcome State for a clean empty workspace
+        // Serene, spacious Google Material 3 Welcome State for an empty workspace
         Box(
             modifier = modifier
                 .fillMaxSize()
@@ -425,7 +414,7 @@ fun ExpressiveVaultOverviewDashboard(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(18.dp)
                 ) {
-                    NexusBrandEmblem(size = 76.dp, cornerRadius = 22.dp)
+                    NexusBrandEmblem(size = 72.dp, cornerRadius = 20.dp)
 
                     Spacer(modifier = Modifier.height(2.dp))
 
@@ -464,10 +453,10 @@ fun ExpressiveVaultOverviewDashboard(
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(strings.quickConnectButton)
                         }
-                        OutlinedButton(onClick = onNewFolder) {
-                            Icon(Icons.Outlined.CreateNewFolder, contentDescription = null, modifier = Modifier.size(18.dp))
+                        OutlinedButton(onClick = onLaunchLocalShell) {
+                            Icon(Icons.Outlined.Terminal, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text(strings.actionNewFolder)
+                            Text("Local Terminal")
                         }
                         if (onImportVault != null) {
                             OutlinedButton(onClick = onImportVault) {
@@ -557,26 +546,30 @@ fun ExpressiveVaultOverviewDashboard(
         return
     }
 
-    // Populated Vault Overview — spacious modern Google Material 3 layout
+    // Populated Workspace Launchpad — clean, focused, zero duplicate folder clutter in the center canvas
     BoxWithConstraints(
         modifier = modifier
             .fillMaxSize()
-            .nexusDesktopPointerButtons(onSecondaryClick = { overviewBgMenuOpen = true })
+            .nexusDesktopPointerButtons(onSecondaryClick = { overviewBgMenuOpen = true }),
+        contentAlignment = Alignment.TopCenter
     ) {
         val isWide = maxWidth >= 680.dp
+        val quickSearchHover = rememberDesktopHoverState()
+        val quickSearchShape = RoundedCornerShape(16.dp)
 
         Column(
             modifier = Modifier
-                .fillMaxSize()
+                .widthIn(max = 1040.dp)
+                .fillMaxWidth()
                 .verticalScroll(rememberScrollState())
-                .padding(28.dp),
-            verticalArrangement = Arrangement.spacedBy(24.dp)
+                .padding(horizontal = if (isWide) 32.dp else 20.dp, vertical = 28.dp),
+            verticalArrangement = Arrangement.spacedBy(22.dp)
         ) {
-            // Hero Workspace Header Card
+            // 1. Sleek Workspace Command Launchpad Card
             val heroShape = rememberMorphingContainerShape(
                 MorphContainerState.Resting,
-                restingRadius = 26.dp,
-                hoveredRadius = 30.dp
+                restingRadius = 24.dp,
+                hoveredRadius = 28.dp
             )
             Surface(
                 shape = heroShape,
@@ -587,146 +580,163 @@ fun ExpressiveVaultOverviewDashboard(
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 26.dp, vertical = 22.dp),
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                        .padding(horizontal = 24.dp, vertical = 22.dp),
+                    verticalArrangement = Arrangement.spacedBy(18.dp)
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(16.dp)
+                        horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        NexusBrandEmblem(size = 50.dp, cornerRadius = 15.dp)
-                        Column(
+                        Row(
                             modifier = Modifier.weight(1f),
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(14.dp)
                         ) {
-                            Text(
-                                text = vaultDocument.name,
-                                style = MaterialTheme.typography.headlineSmall,
-                                color = MaterialTheme.colorScheme.onSurface
+                            NexusBrandEmblem(size = 46.dp, cornerRadius = 14.dp)
+                            Column(
+                                modifier = Modifier.weight(1f),
+                                verticalArrangement = Arrangement.spacedBy(3.dp)
+                            ) {
+                                Text(
+                                    text = vaultDocument.name,
+                                    style = MaterialTheme.typography.headlineSmall,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = "${activeConnections.size} ${strings.navConnections.lowercase()} • ${activeSessionCount} ${strings.overviewActiveSessions.lowercase()}",
+                                    style = NexusTheme.monospace.keycapShortcut,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+
+                        if (isWide) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                OutlinedButton(onClick = onLaunchLocalShell) {
+                                    Icon(Icons.Outlined.Terminal, contentDescription = null, modifier = Modifier.size(17.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Local Terminal")
+                                }
+                                Button(onClick = onNewConnection) {
+                                    Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(strings.actionNewConnection)
+                                }
+                            }
+                        }
+                    }
+
+                    // Interactive Spotlight / Quick Connect Trigger Bar
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .nexusHoverTracker(quickSearchHover, PointerIcon.Hand)
+                            .clip(quickSearchShape)
+                            .background(
+                                if (quickSearchHover.value.isHovered) {
+                                    MaterialTheme.colorScheme.surfaceContainerHighest
+                                } else {
+                                    MaterialTheme.colorScheme.surfaceContainer
+                                },
+                                quickSearchShape
+                            )
+                            .border(
+                                1.dp,
+                                if (quickSearchHover.value.isHovered) {
+                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.55f)
+                                } else {
+                                    MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.42f)
+                                },
+                                quickSearchShape
+                            )
+                            .clickable(onClick = onOpenQuickConnect)
+                            .padding(horizontal = 16.dp, vertical = 13.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.Search,
+                                contentDescription = strings.quickConnectButton,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(20.dp)
                             )
                             Text(
-                                text = strings.emptyWorkspaceSubtitle,
+                                text = "${strings.quickConnectButton} — search servers, hosts, or protocols…",
                                 style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                                .border(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
+                                .padding(horizontal = 8.dp, vertical = 4.dp)
+                        ) {
+                            Text(
+                                text = "Ctrl+K",
+                                style = NexusTheme.monospace.keycapShortcut,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                     }
 
+                    // Compact Secondary Action Row
                     FlowRow(
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                         verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        Button(onClick = onNewConnection) {
-                            Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(strings.actionNewConnection)
+                        if (!isWide) {
+                            Button(onClick = onNewConnection) {
+                                Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(strings.actionNewConnection)
+                            }
+                            FilledTonalButton(onClick = onLaunchLocalShell) {
+                                Icon(Icons.Outlined.Terminal, contentDescription = null, modifier = Modifier.size(17.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Local Terminal")
+                            }
                         }
-                        FilledTonalButton(onClick = onOpenQuickConnect) {
-                            Icon(Icons.Outlined.Search, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(strings.quickConnectButton)
-                        }
-                        OutlinedButton(onClick = onNewFolder) {
-                            Icon(Icons.Outlined.CreateNewFolder, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(strings.actionNewFolder)
+                        if (vaultDocument.templates.isNotEmpty()) {
+                            FilledTonalButton(onClick = onOpenTemplates) {
+                                Icon(Icons.Outlined.Bookmarks, contentDescription = null, modifier = Modifier.size(17.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("${strings.navTemplates} (${vaultDocument.templates.size})")
+                            }
                         }
                         if (onImportVault != null) {
                             OutlinedButton(onClick = onImportVault) {
-                                Icon(Icons.Outlined.UploadFile, contentDescription = null, modifier = Modifier.size(18.dp))
-                                Spacer(modifier = Modifier.width(8.dp))
+                                Icon(Icons.Outlined.UploadFile, contentDescription = null, modifier = Modifier.size(17.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
                                 Text(strings.actionImportRtsz)
+                            }
+                        }
+                        if (activeTodos.isEmpty() && !showAddTodoComposer) {
+                            TextButton(onClick = { showAddTodoComposer = true }) {
+                                Icon(Icons.Outlined.CheckCircle, contentDescription = null, modifier = Modifier.size(17.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(strings.actionAddTodo)
                             }
                         }
                     }
                 }
             }
 
-            // Clean, Uncluttered Google M3 Metric Summary Strip (3 balanced cards on wide screens, 4th only if templates/todos exist)
-            val showFourthMetric = vaultDocument.templates.isNotEmpty() || activeTodos.isNotEmpty()
-            if (isWide) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(14.dp)
-                ) {
-                    ExpressiveMetricCard(
-                        label = strings.navConnections,
-                        value = activeConnections.size.toString(),
-                        subtitle = strings.actionNewConnection,
-                        icon = Icons.Outlined.Terminal,
-                        accentColor = MaterialTheme.colorScheme.primary,
-                        onClick = onNewConnection,
-                        modifier = Modifier.weight(1f)
-                    )
-                    ExpressiveMetricCard(
-                        label = strings.vaultSectionFolders,
-                        value = activeFolders.size.toString(),
-                        subtitle = strings.actionNewFolder,
-                        icon = Icons.Filled.FilledFolderIcon,
-                        accentColor = MaterialTheme.colorScheme.secondary,
-                        onClick = onNewFolder,
-                        modifier = Modifier.weight(1f)
-                    )
-                    ExpressiveMetricCard(
-                        label = strings.overviewActiveSessions,
-                        value = activeSessionCount.toString(),
-                        subtitle = strings.quickConnectButton,
-                        icon = Icons.Outlined.PlayArrow,
-                        accentColor = MaterialTheme.colorScheme.tertiary,
-                        onClick = onOpenQuickConnect,
-                        modifier = Modifier.weight(1f)
-                    )
-                    if (showFourthMetric) {
-                        if (vaultDocument.templates.isNotEmpty()) {
-                            ExpressiveMetricCard(
-                                label = strings.navTemplates,
-                                value = vaultDocument.templates.size.toString(),
-                                subtitle = strings.actionNewTemplate,
-                                icon = Icons.Outlined.Bookmarks,
-                                accentColor = MaterialTheme.colorScheme.primary,
-                                onClick = onOpenTemplates,
-                                modifier = Modifier.weight(1f)
-                            )
-                        } else {
-                            ExpressiveMetricCard(
-                                label = strings.inspectorTodoItems,
-                                value = pendingTodos.toString(),
-                                subtitle = "${activeTodos.size}",
-                                icon = Icons.Outlined.CheckCircle,
-                                accentColor = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.weight(1f)
-                            )
-                        }
-                    }
-                }
-            } else {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    ExpressiveMetricCard(
-                        label = strings.navConnections,
-                        value = activeConnections.size.toString(),
-                        subtitle = "${activeFolders.size} ${strings.vaultSectionFolders}",
-                        icon = Icons.Outlined.Terminal,
-                        accentColor = MaterialTheme.colorScheme.primary,
-                        onClick = onNewConnection,
-                        modifier = Modifier.weight(1f)
-                    )
-                    ExpressiveMetricCard(
-                        label = strings.overviewActiveSessions,
-                        value = activeSessionCount.toString(),
-                        subtitle = strings.quickConnectButton,
-                        icon = Icons.Outlined.PlayArrow,
-                        accentColor = MaterialTheme.colorScheme.secondary,
-                        onClick = onOpenQuickConnect,
-                        modifier = Modifier.weight(1f)
-                    )
-                }
-            }
-
-            // Pinned Favorites Quick-Launch Strip
+            // 2. Pinned Favorites Quick-Launch Grid (Double-Click to Connect)
             if (favorites.isNotEmpty()) {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Row(
@@ -744,20 +754,20 @@ fun ExpressiveVaultOverviewDashboard(
                             style = MaterialTheme.typography.titleMedium
                         )
                     }
-                    Row(
-                        modifier = Modifier.horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(14.dp)
+                    FlowRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(14.dp)
                     ) {
                         favorites.forEach { fav ->
                             val accent = parseHexColorOrNull(fav.inheritable.displayColorAccentHex)
                                 ?: MaterialTheme.colorScheme.primary
                             val isFavActive = fav.id in activeConnectionIds
                             val favHover = rememberDesktopHoverState()
-                            val favInteraction = remember { MutableInteractionSource() }
                             var favMenuOpen by remember(fav.id) { mutableStateOf(false) }
 
                             Box {
-                                val favShape = RoundedCornerShape(20.dp)
+                                val favShape = RoundedCornerShape(18.dp)
                                 Box(
                                     modifier = Modifier
                                         .width(268.dp)
@@ -951,463 +961,192 @@ fun ExpressiveVaultOverviewDashboard(
                         }
                     }
                 }
+            } else {
+                // Subtle single-line hint when no favorites are starred yet
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.72f),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 18.dp, vertical = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Star,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.tertiary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Text(
+                            text = "Double-click any server in the sidebar to launch a session, or right-click a connection to pin it to Favorites.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
             }
 
-            // Adaptive Bottom Deck: Folders (with unmistakable folder container cards & Disconnect All) + To-Do Checklist
-            if (activeFolders.isNotEmpty() || activeTodos.isNotEmpty()) {
-                val foldersCard: @Composable (Modifier) -> Unit = { cardMod ->
-                    Surface(
-                        shape = RoundedCornerShape(24.dp),
-                        color = MaterialTheme.colorScheme.surfaceContainerLow,
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)),
-                        modifier = cardMod
+            // 3. Optional Workspace Checklist Card (only shown when tasks exist or user opened task composer)
+            if (activeTodos.isNotEmpty() || showAddTodoComposer) {
+                Surface(
+                    shape = RoundedCornerShape(22.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerLow,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(18.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        Column(
-                            modifier = Modifier.padding(20.dp),
-                            verticalArrangement = Arrangement.spacedBy(12.dp)
-                        ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Filled.FilledFolderIcon,
-                                        contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.size(20.dp)
-                                    )
-                                    Text(strings.vaultSectionFolders, style = MaterialTheme.typography.titleMedium)
-                                }
-                                IconButton(
-                                    onClick = onNewFolder,
-                                    modifier = Modifier.size(36.dp)
-                                ) {
-                                    Icon(
-                                        Icons.Outlined.CreateNewFolder,
-                                        contentDescription = strings.actionNewFolder,
-                                        tint = MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.size(20.dp)
-                                    )
-                                }
-                            }
-                            activeFolders.forEach { folder ->
-                                val (subtreeCount, subtreeActiveCount) = folderSubtreeStats[folder.id] ?: (0 to 0)
-                                val folderAccent = parseHexColorOrNull(folder.inheritable.displayColorAccentHex)
-                                    ?: MaterialTheme.colorScheme.primary
-                                val folderHover = rememberDesktopHoverState()
-                                val folderInteraction = remember { MutableInteractionSource() }
-                                var folderMenuOpen by remember(folder.id) { mutableStateOf(false) }
-
-                                Box(modifier = Modifier.fillMaxWidth()) {
-                                    Surface(
-                                        shape = RoundedCornerShape(16.dp),
-                                        color = if (folderHover.value.isHovered) {
-                                            MaterialTheme.colorScheme.surfaceContainerHigh
-                                        } else {
-                                            MaterialTheme.colorScheme.surfaceContainer
-                                        },
-                                        border = BorderStroke(
-                                            1.dp,
-                                            if (folderHover.value.isHovered) {
-                                                folderAccent.copy(alpha = 0.50f)
-                                            } else {
-                                                MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.30f)
-                                            }
-                                        ),
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .nexusHoverTracker(folderHover, PointerIcon.Hand)
-                                            .nexusDesktopPointerButtons(onSecondaryClick = { folderMenuOpen = true })
-                                            .clip(RoundedCornerShape(16.dp))
-                                            .clickable(
-                                                interactionSource = folderInteraction,
-                                                indication = null,
-                                                onClick = { onEditFolder(folder) }
-                                            )
-                                    ) {
-                                        Row(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .padding(horizontal = 14.dp, vertical = 12.dp),
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.SpaceBetween
-                                        ) {
-                                            Row(
-                                                modifier = Modifier.weight(1f),
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.spacedBy(12.dp)
-                                            ) {
-                                                Surface(
-                                                    shape = RoundedCornerShape(11.dp),
-                                                    color = folderAccent.copy(alpha = 0.16f),
-                                                    modifier = Modifier.size(38.dp)
-                                                ) {
-                                                    Box(contentAlignment = Alignment.Center) {
-                                                        Icon(
-                                                            imageVector = Icons.Filled.FilledFolderIcon,
-                                                            contentDescription = null,
-                                                            tint = folderAccent,
-                                                            modifier = Modifier.size(21.dp)
-                                                        )
-                                                    }
-                                                }
-                                                Column(
-                                                    modifier = Modifier.weight(1f),
-                                                    verticalArrangement = Arrangement.spacedBy(2.dp)
-                                                ) {
-                                                    Text(
-                                                        text = folder.name,
-                                                        style = MaterialTheme.typography.titleMedium,
-                                                        maxLines = 1,
-                                                        overflow = TextOverflow.Ellipsis
-                                                    )
-                                                    Row(
-                                                        verticalAlignment = Alignment.CenterVertically,
-                                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                                    ) {
-                                                        Text(
-                                                            text = "$subtreeCount ${strings.navConnections.lowercase()}",
-                                                            style = NexusTheme.monospace.keycapShortcut,
-                                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                        )
-                                                        if (subtreeActiveCount > 0) {
-                                                            Surface(
-                                                                shape = RoundedCornerShape(99.dp),
-                                                                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f)
-                                                            ) {
-                                                                Text(
-                                                                    text = "● $subtreeActiveCount active",
-                                                                    style = NexusTheme.monospace.keycapShortcut,
-                                                                    color = MaterialTheme.colorScheme.onPrimaryContainer,
-                                                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
-                                                                )
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                            Spacer(modifier = Modifier.width(10.dp))
-                                            Row(
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                            ) {
-                                                FilledTonalIconButton(
-                                                    onClick = { onNewRdpInFolder(folder.id) },
-                                                    modifier = Modifier.size(34.dp)
-                                                ) {
-                                                    Icon(
-                                                        imageVector = Icons.Outlined.Add,
-                                                        contentDescription = "New RDP Connection in ${folder.name}",
-                                                        modifier = Modifier.size(18.dp)
-                                                    )
-                                                }
-                                                if (subtreeActiveCount > 0) {
-                                                    OutlinedButton(
-                                                        onClick = { onDisconnectAllInFolder(folder.id) }
-                                                    ) {
-                                                        Icon(
-                                                            Icons.Outlined.PowerSettingsNew,
-                                                            contentDescription = strings.actionDisconnectAllFolder,
-                                                            tint = MaterialTheme.colorScheme.error,
-                                                            modifier = Modifier.size(16.dp)
-                                                        )
-                                                        Spacer(modifier = Modifier.width(6.dp))
-                                                        Text(
-                                                            text = strings.actionDisconnectAllFolder,
-                                                            style = MaterialTheme.typography.labelSmall,
-                                                            color = MaterialTheme.colorScheme.error,
-                                                            maxLines = 1
-                                                        )
-                                                    }
-                                                }
-                                                FilledTonalButton(
-                                                    enabled = subtreeCount > 0,
-                                                    onClick = { onConnectAllInFolder(folder.id) }
-                                                ) {
-                                                    Icon(Icons.Outlined.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
-                                                    Spacer(modifier = Modifier.width(6.dp))
-                                                    Text(
-                                                        text = strings.actionConnectAllFolder,
-                                                        style = MaterialTheme.typography.labelSmall,
-                                                        maxLines = 1
-                                                    )
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    DropdownMenu(
-                                        expanded = folderMenuOpen,
-                                        onDismissRequest = { folderMenuOpen = false }
-                                    ) {
-                                        DropdownMenuItem(
-                                            text = { Text("+ New RDP Connection") },
-                                            leadingIcon = { Icon(Icons.Outlined.DesktopWindows, contentDescription = null, modifier = Modifier.size(18.dp)) },
-                                            onClick = {
-                                                folderMenuOpen = false
-                                                onNewRdpInFolder(folder.id)
-                                            }
-                                        )
-                                        DropdownMenuItem(
-                                            text = { Text("+ New SSH Connection") },
-                                            leadingIcon = { Icon(Icons.Outlined.Terminal, contentDescription = null, modifier = Modifier.size(18.dp)) },
-                                            onClick = {
-                                                folderMenuOpen = false
-                                                onNewSshInFolder(folder.id)
-                                            }
-                                        )
-                                        DropdownMenuItem(
-                                            text = { Text("+ New Subfolder") },
-                                            leadingIcon = { Icon(Icons.Outlined.CreateNewFolder, contentDescription = null, modifier = Modifier.size(18.dp)) },
-                                            onClick = {
-                                                folderMenuOpen = false
-                                                onNewSubfolder(folder.id)
-                                            }
-                                        )
-                                        if (subtreeCount > 0) {
-                                            DropdownMenuItem(
-                                                text = { Text(strings.actionConnectAllFolder) },
-                                                leadingIcon = { Icon(Icons.Outlined.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp)) },
-                                                onClick = {
-                                                    folderMenuOpen = false
-                                                    onConnectAllInFolder(folder.id)
-                                                }
-                                            )
-                                            DropdownMenuItem(
-                                                text = {
-                                                    Text(
-                                                        text = strings.actionDisconnectAllFolder,
-                                                        color = if (subtreeActiveCount > 0) {
-                                                            MaterialTheme.colorScheme.error
-                                                        } else {
-                                                            MaterialTheme.colorScheme.onSurface
-                                                        }
-                                                    )
-                                                },
-                                                leadingIcon = {
-                                                    Icon(
-                                                        Icons.Outlined.PowerSettingsNew,
-                                                        contentDescription = null,
-                                                        tint = if (subtreeActiveCount > 0) {
-                                                            MaterialTheme.colorScheme.error
-                                                        } else {
-                                                            MaterialTheme.colorScheme.onSurfaceVariant
-                                                        },
-                                                        modifier = Modifier.size(18.dp)
-                                                    )
-                                                },
-                                                onClick = {
-                                                    folderMenuOpen = false
-                                                    onDisconnectAllInFolder(folder.id)
-                                                }
-                                            )
-                                        }
-                                        HorizontalDivider()
-                                        DropdownMenuItem(
-                                            text = { Text(strings.actionEditFolderCredentials) },
-                                            leadingIcon = { Icon(Icons.Outlined.Key, contentDescription = null, modifier = Modifier.size(18.dp)) },
-                                            onClick = {
-                                                folderMenuOpen = false
-                                                onEditFolder(folder)
-                                            }
-                                        )
-                                        DropdownMenuItem(
-                                            text = { Text("Duplicate Folder") },
-                                            leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp)) },
-                                            onClick = {
-                                                folderMenuOpen = false
-                                                onDuplicateFolder(folder)
-                                            }
-                                        )
-                                        HorizontalDivider()
-                                        DropdownMenuItem(
-                                            text = { Text("Delete Folder", color = MaterialTheme.colorScheme.error) },
-                                            leadingIcon = {
-                                                Icon(
-                                                    Icons.Outlined.Delete,
-                                                    contentDescription = null,
-                                                    tint = MaterialTheme.colorScheme.error,
-                                                    modifier = Modifier.size(18.dp)
-                                                )
-                                            },
-                                            onClick = {
-                                                folderMenuOpen = false
-                                                onDeleteFolder(folder.id)
-                                            }
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                val todosCard: @Composable (Modifier) -> Unit = { cardMod ->
-                    Surface(
-                        shape = RoundedCornerShape(22.dp),
-                        color = MaterialTheme.colorScheme.surfaceContainerLow,
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)),
-                        modifier = cardMod
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(16.dp),
-                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             Text(strings.inspectorTodoItems, style = MaterialTheme.typography.titleMedium)
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                OutlinedTextField(
-                                    value = newTodoTitle,
-                                    onValueChange = { newTodoTitle = it },
-                                    placeholder = { Text(strings.actionAddTodo, style = MaterialTheme.typography.bodySmall) },
-                                    singleLine = true,
-                                    modifier = Modifier.weight(1f)
+                            if (pendingTodos > 0) {
+                                Text(
+                                    text = "$pendingTodos open",
+                                    style = NexusTheme.monospace.keycapShortcut,
+                                    color = MaterialTheme.colorScheme.primary
                                 )
-                                FilledTonalButton(
-                                    enabled = newTodoTitle.isNotBlank(),
-                                    onClick = {
-                                        onAddTodo(newTodoTitle)
-                                        newTodoTitle = ""
-                                    }
-                                ) {
-                                    Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                                }
                             }
-                            activeTodos.forEach { todo ->
-                                val todoHover = rememberDesktopHoverState()
-                                val todoInteraction = remember { MutableInteractionSource() }
-                                var todoMenuOpen by remember(todo.id) { mutableStateOf(false) }
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedTextField(
+                                value = newTodoTitle,
+                                onValueChange = { newTodoTitle = it },
+                                placeholder = { Text(strings.actionAddTodo, style = MaterialTheme.typography.bodySmall) },
+                                singleLine = true,
+                                modifier = Modifier.weight(1f)
+                            )
+                            FilledTonalButton(
+                                enabled = newTodoTitle.isNotBlank(),
+                                onClick = {
+                                    onAddTodo(newTodoTitle)
+                                    newTodoTitle = ""
+                                }
+                            ) {
+                                Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                            }
+                        }
+                        activeTodos.forEach { todo ->
+                            val todoHover = rememberDesktopHoverState()
+                            val todoInteraction = remember { MutableInteractionSource() }
+                            var todoMenuOpen by remember(todo.id) { mutableStateOf(false) }
 
-                                Box(modifier = Modifier.fillMaxWidth()) {
+                            Box(modifier = Modifier.fillMaxWidth()) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .nexusHoverTracker(todoHover, PointerIcon.Hand)
+                                        .nexusDesktopPointerButtons(onSecondaryClick = { todoMenuOpen = true })
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(
+                                            if (todoHover.value.isHovered) {
+                                                MaterialTheme.colorScheme.surfaceContainerHigh
+                                            } else {
+                                                Color.Transparent
+                                            }
+                                        )
+                                        .clickable(
+                                            interactionSource = todoInteraction,
+                                            indication = null,
+                                            onClick = { onToggleTodo(todo.id) }
+                                        )
+                                        .padding(horizontal = 6.dp, vertical = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
                                     Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .nexusHoverTracker(todoHover, PointerIcon.Hand)
-                                            .nexusDesktopPointerButtons(onSecondaryClick = { todoMenuOpen = true })
-                                            .clip(RoundedCornerShape(10.dp))
-                                            .background(
-                                                if (todoHover.value.isHovered) {
-                                                    MaterialTheme.colorScheme.surfaceContainerHigh
-                                                } else {
-                                                    Color.Transparent
-                                                }
-                                            )
-                                            .clickable(
-                                                interactionSource = todoInteraction,
-                                                indication = null,
-                                                onClick = { onToggleTodo(todo.id) }
-                                            )
-                                            .padding(horizontal = 6.dp, vertical = 4.dp),
+                                        modifier = Modifier.weight(1f),
                                         verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.SpaceBetween
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                                     ) {
-                                        Row(
-                                            modifier = Modifier.weight(1f),
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        Icon(
+                                            imageVector = if (todo.completed) Icons.Outlined.CheckCircle else Icons.Outlined.RadioButtonUnchecked,
+                                            contentDescription = null,
+                                            tint = if (todo.completed) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                        Text(
+                                            text = todo.title,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            textDecoration = if (todo.completed) TextDecoration.LineThrough else TextDecoration.None,
+                                            color = if (todo.completed) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                    }
+                                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                        Text(
+                                            text = todo.priority,
+                                            style = NexusTheme.monospace.keycapShortcut,
+                                            color = if (todo.priority == "HIGH") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                        IconButton(
+                                            onClick = { onDeleteTodo(todo.id) },
+                                            modifier = Modifier.size(24.dp)
                                         ) {
                                             Icon(
-                                                imageVector = if (todo.completed) Icons.Outlined.CheckCircle else Icons.Outlined.RadioButtonUnchecked,
-                                                contentDescription = null,
-                                                tint = if (todo.completed) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurfaceVariant,
-                                                modifier = Modifier.size(18.dp)
-                                            )
-                                            Text(
-                                                text = todo.title,
-                                                style = MaterialTheme.typography.bodyMedium,
-                                                textDecoration = if (todo.completed) TextDecoration.LineThrough else TextDecoration.None,
-                                                color = if (todo.completed) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis,
-                                                modifier = Modifier.weight(1f)
+                                                Icons.Outlined.Delete,
+                                                contentDescription = "Delete To-Do",
+                                                tint = MaterialTheme.colorScheme.error,
+                                                modifier = Modifier.size(14.dp)
                                             )
                                         }
-                                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                            Text(
-                                                text = todo.priority,
-                                                style = NexusTheme.monospace.keycapShortcut,
-                                                color = if (todo.priority == "HIGH") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
-                                            IconButton(
-                                                onClick = { onDeleteTodo(todo.id) },
-                                                modifier = Modifier.size(24.dp)
-                                            ) {
-                                                Icon(
-                                                    Icons.Outlined.Delete,
-                                                    contentDescription = "Delete To-Do",
-                                                    tint = MaterialTheme.colorScheme.error,
-                                                    modifier = Modifier.size(14.dp)
-                                                )
-                                            }
-                                        }
-                                    }
-
-                                    DropdownMenu(
-                                        expanded = todoMenuOpen,
-                                        onDismissRequest = { todoMenuOpen = false }
-                                    ) {
-                                        DropdownMenuItem(
-                                            text = { Text(if (todo.completed) "Mark Incomplete" else "Mark Complete") },
-                                            leadingIcon = { Icon(Icons.Outlined.CheckCircle, contentDescription = null, modifier = Modifier.size(18.dp)) },
-                                            onClick = {
-                                                todoMenuOpen = false
-                                                onToggleTodo(todo.id)
-                                            }
-                                        )
-                                        DropdownMenuItem(
-                                            text = { Text("Copy Task Title") },
-                                            leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp)) },
-                                            onClick = {
-                                                todoMenuOpen = false
-                                                clipboard.setText(AnnotatedString(todo.title))
-                                            }
-                                        )
-                                        HorizontalDivider()
-                                        DropdownMenuItem(
-                                            text = { Text("Delete", color = MaterialTheme.colorScheme.error) },
-                                            leadingIcon = {
-                                                Icon(
-                                                    Icons.Outlined.Delete,
-                                                    contentDescription = null,
-                                                    tint = MaterialTheme.colorScheme.error,
-                                                    modifier = Modifier.size(18.dp)
-                                                )
-                                            },
-                                            onClick = {
-                                                todoMenuOpen = false
-                                                onDeleteTodo(todo.id)
-                                            }
-                                        )
                                     }
                                 }
-                            }
-                        }
-                    }
-                }
 
-                if (isWide && activeFolders.isNotEmpty() && activeTodos.isNotEmpty()) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(16.dp)
-                    ) {
-                        foldersCard(Modifier.weight(1f))
-                        todosCard(Modifier.weight(1f))
-                    }
-                } else {
-                    Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                        if (activeFolders.isNotEmpty()) {
-                            foldersCard(Modifier.fillMaxWidth())
-                        }
-                        if (activeTodos.isNotEmpty()) {
-                            todosCard(Modifier.fillMaxWidth())
+                                DropdownMenu(
+                                    expanded = todoMenuOpen,
+                                    onDismissRequest = { todoMenuOpen = false }
+                                ) {
+                                    DropdownMenuItem(
+                                        text = { Text(if (todo.completed) "Mark Incomplete" else "Mark Complete") },
+                                        leadingIcon = { Icon(Icons.Outlined.CheckCircle, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                                        onClick = {
+                                            todoMenuOpen = false
+                                            onToggleTodo(todo.id)
+                                        }
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("Copy Task Title") },
+                                        leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                                        onClick = {
+                                            todoMenuOpen = false
+                                            clipboard.setText(AnnotatedString(todo.title))
+                                        }
+                                    )
+                                    HorizontalDivider()
+                                    DropdownMenuItem(
+                                        text = { Text("Delete", color = MaterialTheme.colorScheme.error) },
+                                        leadingIcon = {
+                                            Icon(
+                                                Icons.Outlined.Delete,
+                                                contentDescription = null,
+                                                tint = MaterialTheme.colorScheme.error,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                        },
+                                        onClick = {
+                                            todoMenuOpen = false
+                                            onDeleteTodo(todo.id)
+                                        }
+                                    )
+                                }
+                            }
                         }
                     }
                 }

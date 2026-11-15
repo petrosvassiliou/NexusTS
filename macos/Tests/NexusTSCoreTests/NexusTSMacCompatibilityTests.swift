@@ -301,19 +301,19 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
                 manifestText: wrongManifest
             )
         )
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("1.1.8", isNewerThan: "1.1.7"))
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("1.1.9", isNewerThan: "1.1.8"))
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("1.2.0", isNewerThan: "1.1.9"))
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("1.2.1-beta.1", isNewerThan: "1.2.0"))
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("1.2.1-beta.2", isNewerThan: "1.2.1-beta.1"))
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("1.2.1-beta.10", isNewerThan: "1.2.1-beta.2"))
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("1.2.1", isNewerThan: "1.2.1-beta.1"))
-        XCTAssertFalse(MacGitHubReleaseUpdater.compareSemver("1.2.1-beta.1", isNewerThan: "1.2.1"))
-        XCTAssertFalse(MacGitHubReleaseUpdater.compareSemver("1.2.0", isNewerThan: "1.2.0"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.3.0-beta.2", isNewerThan: "0.3.0-beta.1"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.3.0-beta.10", isNewerThan: "0.3.0-beta.2"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.3.0", isNewerThan: "0.3.0-beta.1"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.4.0", isNewerThan: "0.3.0"))
+        XCTAssertFalse(MacGitHubReleaseUpdater.compareSemver("0.3.0-beta.1", isNewerThan: "0.3.0"))
+        XCTAssertFalse(MacGitHubReleaseUpdater.compareSemver("1.2.0", isNewerThan: "0.3.0-beta.1"))
+        XCTAssertFalse(MacGitHubReleaseUpdater.compareSemver("1.2.1-beta.2", isNewerThan: "0.3.0-beta.1"))
+        XCTAssertFalse(MacGitHubReleaseUpdater.compareSemver("1.1.9", isNewerThan: "0.3.0"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("1.3.0", isNewerThan: "0.3.0"))
     }
 
     func testV118LocalizationUpgradeVersionAndVaultReplacementCompatibility() throws {
-        XCTAssertEqual(MacGitHubReleaseUpdater.currentVersion, "1.2.1-beta.2")
+        XCTAssertEqual(MacGitHubReleaseUpdater.currentVersion, "0.3.0-beta.1")
 
         for lang in NexusAppLanguage.allCases {
             let catalog = LocalizedWorkspaceStrings.catalog(for: lang)

@@ -291,7 +291,19 @@ public enum NexusErrorClassifier {
             )
         }
 
-        if upper.contains("CONNECT_TRANSPORT_FAILED")
+        if upper.contains("ERRCONNECT_CONNECT_TRANSPORT_FAILED") {
+            return NexusAppError(
+                category: .networkUnreachable,
+                title: "RDP Transport Negotiation Dropped (\(host):\(port))",
+                userMessage: "The RDP server closed the connection during security or capability activation.",
+                remediationHint: "Verify NLA / TLS settings, ensure the account has Remote Desktop log-on rights on \(host), or toggle 'Ignore Self-Signed TLS Certificate Warnings' in RDP settings.",
+                technicalDetails: cleaned,
+                recoveryConnectionId: connectionId
+            )
+        }
+
+        if upper.contains("ERRCONNECT_CONNECT_FAILED")
+            || upper.contains("CONNECT_TRANSPORT_FAILED")
             || upper.contains("CONNECT_CANCELLED")
             || upper.contains("MCS_CONNECT_INITIAL_ERROR")
             || upper.contains("PEER_DISCONNECTED") {

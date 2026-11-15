@@ -128,7 +128,7 @@ class GitHubReleaseUpdateChecker(
     private fun fetchNewestReleaseObjectFromFeed(currentVersionName: String): kotlinx.serialization.json.JsonObject? =
         runCatching {
             val req = Request.Builder()
-                .url("https://api.github.com/repos/$repositorySlug/releases?per_page=10")
+                .url("https://api.github.com/repos/$repositorySlug/releases?per_page=15")
                 .header("Accept", "application/vnd.github+json")
                 .header("User-Agent", "NexusTS/$currentVersionName (Googlebook-OS)")
                 .get()
@@ -138,6 +138,10 @@ class GitHubReleaseUpdateChecker(
                 val arr = lenientJson.parseToJsonElement(resp.body?.string().orEmpty()) as? JsonArray ?: return null
                 arr.map { it.jsonObject }
                     .filter { it["draft"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() != true }
+                    .filterNot {
+                        val tag = it["tag_name"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                        !isLegacyPreRebaseVersion(currentVersionName) && isLegacyPreRebaseVersion(tag)
+                    }
                     .maxWithOrNull { a, b ->
                         val tagA = a["tag_name"]?.jsonPrimitive?.contentOrNull.orEmpty()
                         val tagB = b["tag_name"]?.jsonPrimitive?.contentOrNull.orEmpty()
@@ -176,7 +180,24 @@ class GitHubReleaseUpdateChecker(
             "release-assets.githubusercontent.com"
         )
 
+        /**
+         * Historical tags published prior to rebasing NexusTS to the honest `0.3.x` beta series.
+         * Rebased `0.x` (and future post-rebase) builds ignore these historical tags so the
+         * in-app updater never falsely flags old pre-rebase `1.0.0`–`1.2.1` tags as updates.
+         */
+        private val LEGACY_PRE_REBASE_VERSIONS = setOf(
+            "1.0.0",
+            "1.1.0", "1.1.1", "1.1.2", "1.1.3", "1.1.4",
+            "1.1.5", "1.1.6", "1.1.7", "1.1.8", "1.1.9",
+            "1.2.0", "1.2.1-beta.1", "1.2.1-beta.2"
+        )
+
         private val SHA256_LINE_REGEX = Regex("^([0-9a-fA-F]{64})\\s+\\*?(.+)$")
+
+        internal fun isLegacyPreRebaseVersion(rawVersion: String): Boolean {
+            val cleaned = rawVersion.removePrefix("v").removePrefix("V").trim()
+            return cleaned in LEGACY_PRE_REBASE_VERSIONS
+        }
 
         internal fun isAllowedGitHubHttpsUrl(url: String): Boolean {
             val parsed = url.trim().toHttpUrlOrNull() ?: return false
@@ -208,6 +229,9 @@ class GitHubReleaseUpdateChecker(
             val candTrim = candidate.removePrefix("v").removePrefix("V").trim()
             val currTrim = current.removePrefix("v").removePrefix("V").trim()
             if (candTrim.isBlank() || currTrim.isBlank()) return false
+            if (!isLegacyPreRebaseVersion(currTrim) && isLegacyPreRebaseVersion(candTrim)) {
+                return false
+            }
 
             val candCore = candTrim.substringBefore('-').substringBefore('+')
             val currCore = currTrim.substringBefore('-').substringBefore('+')

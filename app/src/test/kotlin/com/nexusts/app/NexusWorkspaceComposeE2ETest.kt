@@ -446,16 +446,18 @@ class NexusWorkspaceComposeE2ETest {
         }
         assertTextRendered("Bitwarden Production Postgres")
 
-        // Verify semantic version comparator in Play-Protect-safe GitHub Release Checker (including beta -> final progression)
-        assertTrue(GitHubReleaseUpdateChecker.isNewerSemanticVersion("1.2.0", "1.1.0"))
-        assertTrue(GitHubReleaseUpdateChecker.isNewerSemanticVersion("1.2.1-beta.1", "1.2.0"))
-        assertTrue(GitHubReleaseUpdateChecker.isNewerSemanticVersion("1.2.1-beta.2", "1.2.1-beta.1"))
-        assertTrue(GitHubReleaseUpdateChecker.isNewerSemanticVersion("1.2.1-beta.10", "1.2.1-beta.2"))
-        assertTrue(GitHubReleaseUpdateChecker.isNewerSemanticVersion("1.2.1", "1.2.1-beta.1"))
-        assertFalse(GitHubReleaseUpdateChecker.isNewerSemanticVersion("1.2.1-beta.1", "1.2.1"))
-        assertFalse(GitHubReleaseUpdateChecker.isNewerSemanticVersion("1.2.1-beta.1", "1.2.1-beta.1"))
-        assertFalse(GitHubReleaseUpdateChecker.isNewerSemanticVersion("1.1.0", "1.1.0"))
-        assertFalse(GitHubReleaseUpdateChecker.isNewerSemanticVersion("1.0.9", "1.1.0"))
+        // Verify semantic version comparator in Play-Protect-safe GitHub Release Checker (0.3.x beta series + legacy tag filtering)
+        assertTrue(GitHubReleaseUpdateChecker.isNewerSemanticVersion("0.3.0-beta.2", "0.3.0-beta.1"))
+        assertTrue(GitHubReleaseUpdateChecker.isNewerSemanticVersion("0.3.0-beta.10", "0.3.0-beta.2"))
+        assertTrue(GitHubReleaseUpdateChecker.isNewerSemanticVersion("0.3.0", "0.3.0-beta.1"))
+        assertTrue(GitHubReleaseUpdateChecker.isNewerSemanticVersion("0.4.0", "0.3.0"))
+        assertTrue(GitHubReleaseUpdateChecker.isNewerSemanticVersion("1.3.0", "0.3.0"))
+        assertFalse(GitHubReleaseUpdateChecker.isNewerSemanticVersion("0.3.0-beta.1", "0.3.0"))
+        assertFalse(GitHubReleaseUpdateChecker.isNewerSemanticVersion("0.3.0-beta.1", "0.3.0-beta.1"))
+        // Historical pre-rebase tags (1.0.0–1.2.1-beta.2) must never be flagged as updates over 0.3.x
+        assertFalse(GitHubReleaseUpdateChecker.isNewerSemanticVersion("v1.2.0", "0.3.0-beta.1"))
+        assertFalse(GitHubReleaseUpdateChecker.isNewerSemanticVersion("v1.2.1-beta.2", "0.3.0-beta.1"))
+        assertFalse(GitHubReleaseUpdateChecker.isNewerSemanticVersion("1.1.9", "0.3.0"))
     }
 
     @Test
@@ -1500,10 +1502,10 @@ class NexusWorkspaceComposeE2ETest {
 
     @Test
     fun compactFlushLeftSidebarFolderContextMenusStartAllRdpRenameDeleteAndV117UpgradeParity() {
-        assertEquals(10202, BuildConfig.VERSION_CODE)
+        assertEquals(10300, BuildConfig.VERSION_CODE)
         assertTrue(
-            "Expected BuildConfig.VERSION_NAME (${BuildConfig.VERSION_NAME}) to start with 1.2.1-beta.2",
-            BuildConfig.VERSION_NAME.startsWith("1.2.1-beta.2")
+            "Expected BuildConfig.VERSION_NAME (${BuildConfig.VERSION_NAME}) to start with 0.3.0-beta.1",
+            BuildConfig.VERSION_NAME.startsWith("0.3.0-beta.1")
         )
 
         val serializer = buildFastSerializer()
@@ -1615,6 +1617,17 @@ class NexusWorkspaceComposeE2ETest {
             assertTextRendered("Windows RDS Tier")
             assertTextRendered("DC-Core-RDP-01")
             assertTextRendered(strings.navStudiosMenu)
+            // Verify folders appear ONLY once (in the left sidebar) and NEVER duplicated in the center overview screen
+            assertEquals(
+                "Folder row must appear strictly once (in sidebar, never duplicated in center overview)",
+                1,
+                composeRule.onAllNodesWithText("EU-Central Datacenter", substring = false).fetchSemanticsNodes().size
+            )
+            assertEquals(
+                "Center overview must not render Connect All in Folder cards",
+                0,
+                composeRule.onAllNodesWithText(strings.actionConnectAllFolder, substring = false).fetchSemanticsNodes().size
+            )
             // Connection list must NEVER display IP addresses next to connection names
             for (ip in listOf("10.80.1.10", "10.80.2.20", "10.80.2.99", "10.90.0.15")) {
                 assertEquals(
@@ -1624,13 +1637,18 @@ class NexusWorkspaceComposeE2ETest {
                 )
             }
 
-            // Switch sidebar quick filter to Favorites -> shows favorite connection, hides non-favorite folder rows
+            // Switch sidebar quick filter to Favorites -> shows favorite connection, hides non-favorite folder rows everywhere
             composeRule.runOnIdle {
                 vm.setSidebarQuickFilter(SidebarQuickFilter.FAVORITES)
             }
             composeRule.waitForIdle()
             assertEquals(SidebarQuickFilter.FAVORITES, vm.uiState.value.sidebarQuickFilter)
             assertTextRendered("DC-Core-RDP-01")
+            assertEquals(
+                "No folder rows should appear in center overview when sidebar is filtered to Favorites",
+                0,
+                composeRule.onAllNodesWithText("EU-Central Datacenter", substring = false).fetchSemanticsNodes().size
+            )
 
             composeRule.runOnIdle {
                 vm.setSidebarQuickFilter(SidebarQuickFilter.ALL)

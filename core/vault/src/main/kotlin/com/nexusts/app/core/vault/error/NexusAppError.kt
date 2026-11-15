@@ -272,7 +272,17 @@ object NexusErrorClassifier {
                 recoveryConnectionId = connectionId
             )
 
-            upper.contains("CONNECT_TRANSPORT_FAILED") ||
+            upper.contains("ERRCONNECT_CONNECT_TRANSPORT_FAILED") -> NexusAppError(
+                category = NexusErrorCategory.NETWORK_UNREACHABLE,
+                title = "RDP Transport Negotiation Dropped ($host:$port)",
+                userMessage = "The RDP server closed the connection during security or capability activation.",
+                remediationHint = "Verify NLA / TLS settings, ensure the account has Remote Desktop log-on rights on $host, or toggle 'Ignore Certificate Warnings' in RDP settings.",
+                technicalDetails = cleaned,
+                recoveryConnectionId = connectionId
+            )
+
+            upper.contains("ERRCONNECT_CONNECT_FAILED") ||
+                upper.contains("CONNECT_TRANSPORT_FAILED") ||
                 upper.contains("CONNECT_CANCELLED") ||
                 upper.contains("MCS_CONNECT_INITIAL_ERROR") ||
                 upper.contains("PEER_DISCONNECTED") -> NexusAppError(
