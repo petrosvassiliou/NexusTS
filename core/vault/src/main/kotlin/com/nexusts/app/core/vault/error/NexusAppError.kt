@@ -202,6 +202,18 @@ object NexusErrorClassifier {
                 recoveryConnectionId = connectionId
             )
 
+            upper.startsWith("INTERNAL:") ||
+                upper.contains("FREERDP_CONTEXT_NEW") ||
+                upper.contains("FREERDP_NEW") ||
+                upper.contains("GDI_INIT") -> NexusAppError(
+                category = NexusErrorCategory.INTERNAL,
+                title = "RDP Native Engine Error ($host:$port)",
+                userMessage = "The local FreeRDP 3.x session engine failed to initialize.",
+                remediationHint = "Close and reopen the session tab or restart NexusTS. Technical diagnostics are included below.",
+                technicalDetails = cleaned,
+                recoveryConnectionId = connectionId
+            )
+
             upper.contains("DNS_NAME_NOT_FOUND") || upper.contains("NAME_NOT_FOUND") -> NexusAppError(
                 category = NexusErrorCategory.NETWORK_UNREACHABLE,
                 title = "Hostname Not Found ($host)",
@@ -211,16 +223,24 @@ object NexusErrorClassifier {
                 recoveryConnectionId = connectionId
             )
 
+            upper.contains("HYBRID_REQUIRED") -> NexusAppError(
+                category = NexusErrorCategory.AUTHENTICATION_FAILED,
+                title = "Windows NLA Credentials Required ($host)",
+                userMessage = "This Windows host requires Network Level Authentication (NLA / CredSSP) before displaying the desktop.",
+                remediationHint = "Assign a username and password credential to this connection (or parent folder) and click Reconnect.",
+                technicalDetails = cleaned,
+                recoveryConnectionId = connectionId
+            )
+
             upper.contains("AUTHENTICATION_FAILED") ||
                 upper.contains("LOGON_FAILURE") ||
                 upper.contains("WRONG_PASSWORD") ||
                 upper.contains("STATUS_LOGON_FAILURE") ||
-                upper.contains("SEC_E_INVALID_TOKEN") ||
-                upper.contains("HYBRID_REQUIRED") -> NexusAppError(
+                upper.contains("SEC_E_INVALID_TOKEN") -> NexusAppError(
                 category = NexusErrorCategory.AUTHENTICATION_FAILED,
                 title = "RDP Authentication Failed ($host)",
                 userMessage = "Windows / NLA (CredSSP) rejected the username, domain, or password.",
-                remediationHint = "Edit the connection or its assigned credential in the Credentials folder, or verify NLA settings.",
+                remediationHint = "Edit the connection or its assigned credential in the Credentials folder, or verify DOMAIN\\username format and NLA settings.",
                 technicalDetails = cleaned,
                 recoveryConnectionId = connectionId
             )
@@ -234,11 +254,20 @@ object NexusErrorClassifier {
                 recoveryConnectionId = connectionId
             )
 
+            upper.contains("TLS_CERTIFICATE_CHANGED") -> NexusAppError(
+                category = NexusErrorCategory.TLS_CERTIFICATE,
+                title = "RDP Host Certificate Changed ($host)",
+                userMessage = "The X.509 certificate fingerprint presented by $host:$port changed since a previous connection.",
+                remediationHint = "Verify that the Windows server certificate was intentionally rotated (no MITM), or enable 'Ignore Certificate Warnings' in RDP Security settings to accept the rotated certificate.",
+                technicalDetails = cleaned,
+                recoveryConnectionId = connectionId
+            )
+
             upper.contains("TLS_CONNECT_FAILED") || upper.contains("CERT") || upper.contains("SSL") -> NexusAppError(
                 category = NexusErrorCategory.TLS_CERTIFICATE,
                 title = "TLS / Certificate Handshake Rejected ($host)",
-                userMessage = "The RDP server's TLS certificate could not be verified.",
-                remediationHint = "Enable 'Ignore Certificate Warnings' in the connection's RDP Security settings if this host uses a self-signed certificate.",
+                userMessage = "The RDP server's TLS handshake or certificate could not be verified.",
+                remediationHint = "Enable 'Ignore Certificate Warnings' in the connection's RDP Security settings if this host uses a custom/legacy certificate.",
                 technicalDetails = cleaned,
                 recoveryConnectionId = connectionId
             )

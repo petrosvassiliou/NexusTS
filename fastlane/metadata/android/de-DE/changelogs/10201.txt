@@ -1,0 +1,5 @@
+• Fehler bei der FreeRDP-3.12-Initialisierung (freerdp_context_new / HOME-Pfad) unter Android & Googlebook OS behoben
+• Statische virtuelle Kanäle, RDPGFX-Grafikpipeline und H.264/Progressive-Fallback aktiviert
+• Trust-On-First-Use (TOFU) für selbstsignierte Windows-RDP-Zertifikate & OpenSSL-3.4-TLS-Kompatibilität
+• Automatische DOMAIN\Benutzername-Aufteilung sowie präzise NLA-/Fehlerdiagnose
+• Unterstützung für Beta-Updates über GitHub Releases

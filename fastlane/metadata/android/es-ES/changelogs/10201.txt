@@ -1,0 +1,5 @@
+• Corregido el fallo de inicialización de FreeRDP 3.12 (freerdp_context_new) en Android y Googlebook OS
+• Activados los canales estáticos integrados, la canalización gráfica RDPGFX y el respaldo H.264/Progressive
+• Confianza en el primer uso (TOFU) para certificados RDP autofirmados de Windows y compatibilidad TLS con OpenSSL 3.4
+• División automática de DOMINIO\usuario y diagnóstico preciso de errores RDP
+• Soporte para actualizaciones beta desde GitHub Releases

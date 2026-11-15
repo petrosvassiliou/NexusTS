@@ -446,5 +446,26 @@ class VaultV120FeaturesAndErrorClassifierTest {
             rawNativeError = "[0x00020015] ERRCONNECT_ACCOUNT_LOCKED_OUT"
         )
         assertEquals(NexusErrorCategory.AUTHENTICATION_FAILED, rdpLocked.category)
+
+        val rdpInternal = NexusErrorClassifier.classifyRdpError(
+            host = "10.2.200.27",
+            port = 3389,
+            rawNativeError = "INTERNAL: freerdp_context_new() initialization failed."
+        )
+        assertEquals(NexusErrorCategory.INTERNAL, rdpInternal.category)
+
+        val rdpCertChanged = NexusErrorClassifier.classifyRdpError(
+            host = "10.2.200.27",
+            port = 3389,
+            rawNativeError = "TLS_CERTIFICATE_CHANGED: X.509 certificate fingerprint changed for 10.2.200.27:3389"
+        )
+        assertEquals(NexusErrorCategory.TLS_CERTIFICATE, rdpCertChanged.category)
+
+        val rdpHybridRequired = NexusErrorClassifier.classifyRdpError(
+            host = "10.2.200.27",
+            port = 3389,
+            rawNativeError = "HYBRID_REQUIRED_BY_SERVER (0x0002000C)"
+        )
+        assertEquals(NexusErrorCategory.AUTHENTICATION_FAILED, rdpHybridRequired.category)
     }
 }

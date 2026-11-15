@@ -51,69 +51,104 @@ class GitHubReleaseUpdateChecker(
         withContext(Dispatchers.IO) {
             runCatching {
                 val normalizedCurrent = currentVersionName.removePrefix("v").trim()
-                val req = Request.Builder()
-                    .url("https://api.github.com/repos/$repositorySlug/releases/latest")
-                    .header("Accept", "application/vnd.github+json")
-                    .header("User-Agent", "NexusTS/$currentVersionName (Googlebook-OS)")
-                    .get()
-                    .build()
+                val isBetaChannel = normalizedCurrent.contains('-') &&
+                    !normalizedCurrent.substringAfter('-').equals("dev", ignoreCase = true)
 
-                httpClient.newCall(req).execute().use { resp ->
-                    if (!resp.isSuccessful) {
-                        error("GitHub Releases API returned HTTP ${resp.code}")
-                    }
-                    val body = resp.body?.string().orEmpty()
-                    val obj = lenientJson.parseToJsonElement(body).jsonObject
-                    val tagName = obj["tag_name"]?.jsonPrimitive?.contentOrNull.orEmpty()
-                    val releaseTitle = obj["name"]?.jsonPrimitive?.contentOrNull.orEmpty()
-                    val releaseNotes = obj["body"]?.jsonPrimitive?.contentOrNull.orEmpty()
-                    val htmlUrl = obj["html_url"]?.jsonPrimitive?.contentOrNull
-                        ?.takeIf(::isAllowedGitHubHttpsUrl)
-                        ?: "https://github.com/$repositorySlug/releases/latest"
-                    val publishedAt = obj["published_at"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                val obj = (if (isBetaChannel) {
+                    fetchNewestReleaseObjectFromFeed(currentVersionName)
+                } else {
+                    null
+                }) ?: fetchLatestStableReleaseObject(currentVersionName)
 
-                    var apkAssetUrl: String? = null
-                    var apkAssetName = ""
-                    var apkAssetSize = 0L
-                    var sha256SumsUrl: String? = null
+                val tagName = obj["tag_name"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                val releaseTitle = obj["name"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                val releaseNotes = obj["body"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                val htmlUrl = obj["html_url"]?.jsonPrimitive?.contentOrNull
+                    ?.takeIf(::isAllowedGitHubHttpsUrl)
+                    ?: "https://github.com/$repositorySlug/releases/latest"
+                val publishedAt = obj["published_at"]?.jsonPrimitive?.contentOrNull.orEmpty()
 
-                    (obj["assets"] as? JsonArray)?.forEach { assetEl ->
-                        val asset = assetEl.jsonObject
-                        val name = asset["name"]?.jsonPrimitive?.contentOrNull.orEmpty()
-                        val dl = asset["browser_download_url"]?.jsonPrimitive?.contentOrNull
-                        val size = asset["size"]?.jsonPrimitive?.longOrNull ?: 0L
-                        if (!dl.isNullOrBlank() && isAllowedGitHubHttpsUrl(dl)) {
-                            if (name.endsWith("-release.apk", ignoreCase = true)) {
-                                apkAssetUrl = dl
-                                apkAssetName = name
-                                apkAssetSize = size
-                            } else if (name.equals("SHA256SUMS.txt", ignoreCase = true)) {
-                                sha256SumsUrl = dl
-                            }
+                var apkAssetUrl: String? = null
+                var apkAssetName = ""
+                var apkAssetSize = 0L
+                var sha256SumsUrl: String? = null
+
+                (obj["assets"] as? JsonArray)?.forEach { assetEl ->
+                    val asset = assetEl.jsonObject
+                    val name = asset["name"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                    val dl = asset["browser_download_url"]?.jsonPrimitive?.contentOrNull
+                    val size = asset["size"]?.jsonPrimitive?.longOrNull ?: 0L
+                    if (!dl.isNullOrBlank() && isAllowedGitHubHttpsUrl(dl)) {
+                        if (name.endsWith("-release.apk", ignoreCase = true)) {
+                            apkAssetUrl = dl
+                            apkAssetName = name
+                            apkAssetSize = size
+                        } else if (name.equals("SHA256SUMS.txt", ignoreCase = true)) {
+                            sha256SumsUrl = dl
                         }
                     }
-
-                    val expectedSha256 = sha256SumsUrl?.let { url ->
-                        runCatching { fetchExpectedSha256(url, apkAssetName, currentVersionName) }.getOrNull()
-                    }
-
-                    val normalizedLatest = tagName.removePrefix("v").trim()
-                    GitHubReleaseCheckResult(
-                        latestTag = tagName.ifBlank { "v$normalizedCurrent" },
-                        currentVersion = currentVersionName,
-                        isUpdateAvailable = isNewerSemanticVersion(normalizedLatest, normalizedCurrent),
-                        releaseHtmlUrl = htmlUrl,
-                        signedApkDownloadUrl = apkAssetUrl,
-                        publishedAtIso = publishedAt,
-                        releaseTitle = releaseTitle.ifBlank { tagName },
-                        releaseNotes = releaseNotes.trim(),
-                        apkFileName = apkAssetName,
-                        apkSizeBytes = apkAssetSize,
-                        expectedApkSha256Hex = expectedSha256
-                    )
                 }
+
+                val expectedSha256 = sha256SumsUrl?.let { url ->
+                    runCatching { fetchExpectedSha256(url, apkAssetName, currentVersionName) }.getOrNull()
+                }
+
+                val normalizedLatest = tagName.removePrefix("v").trim()
+                GitHubReleaseCheckResult(
+                    latestTag = tagName.ifBlank { "v$normalizedCurrent" },
+                    currentVersion = currentVersionName,
+                    isUpdateAvailable = isNewerSemanticVersion(normalizedLatest, normalizedCurrent),
+                    releaseHtmlUrl = htmlUrl,
+                    signedApkDownloadUrl = apkAssetUrl,
+                    publishedAtIso = publishedAt,
+                    releaseTitle = releaseTitle.ifBlank { tagName },
+                    releaseNotes = releaseNotes.trim(),
+                    apkFileName = apkAssetName,
+                    apkSizeBytes = apkAssetSize,
+                    expectedApkSha256Hex = expectedSha256
+                )
             }
         }
+
+    private fun fetchLatestStableReleaseObject(currentVersionName: String): kotlinx.serialization.json.JsonObject {
+        val req = Request.Builder()
+            .url("https://api.github.com/repos/$repositorySlug/releases/latest")
+            .header("Accept", "application/vnd.github+json")
+            .header("User-Agent", "NexusTS/$currentVersionName (Googlebook-OS)")
+            .get()
+            .build()
+        httpClient.newCall(req).execute().use { resp ->
+            if (!resp.isSuccessful) {
+                error("GitHub Releases API returned HTTP ${resp.code}")
+            }
+            return lenientJson.parseToJsonElement(resp.body?.string().orEmpty()).jsonObject
+        }
+    }
+
+    private fun fetchNewestReleaseObjectFromFeed(currentVersionName: String): kotlinx.serialization.json.JsonObject? =
+        runCatching {
+            val req = Request.Builder()
+                .url("https://api.github.com/repos/$repositorySlug/releases?per_page=10")
+                .header("Accept", "application/vnd.github+json")
+                .header("User-Agent", "NexusTS/$currentVersionName (Googlebook-OS)")
+                .get()
+                .build()
+            httpClient.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return null
+                val arr = lenientJson.parseToJsonElement(resp.body?.string().orEmpty()) as? JsonArray ?: return null
+                arr.map { it.jsonObject }
+                    .filter { it["draft"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() != true }
+                    .maxWithOrNull { a, b ->
+                        val tagA = a["tag_name"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                        val tagB = b["tag_name"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                        when {
+                            isNewerSemanticVersion(tagA, tagB) -> 1
+                            isNewerSemanticVersion(tagB, tagA) -> -1
+                            else -> 0
+                        }
+                    }
+            }
+        }.getOrNull()
 
     private fun fetchExpectedSha256(
         sumsUrl: String,
@@ -170,14 +205,14 @@ class GitHubReleaseUpdateChecker(
         }
 
         internal fun isNewerSemanticVersion(candidate: String, current: String): Boolean {
-            val candTrim = candidate.removePrefix("v").trim()
-            val currTrim = current.removePrefix("v").trim()
+            val candTrim = candidate.removePrefix("v").removePrefix("V").trim()
+            val currTrim = current.removePrefix("v").removePrefix("V").trim()
             if (candTrim.isBlank() || currTrim.isBlank()) return false
 
             val candCore = candTrim.substringBefore('-').substringBefore('+')
             val currCore = currTrim.substringBefore('-').substringBefore('+')
-            val candPre = candTrim.substringAfter('-', "").substringBefore('+')
-            val currPre = currTrim.substringAfter('-', "").substringBefore('+')
+            val candPre = candTrim.substringBefore('+').substringAfter('-', "")
+            val currPre = currTrim.substringBefore('+').substringAfter('-', "")
 
             val candParts = candCore.split('.').map { it.toIntOrNull() ?: 0 }
             val currParts = currCore.split('.').map { it.toIntOrNull() ?: 0 }
@@ -188,14 +223,34 @@ class GitHubReleaseUpdateChecker(
                 if (c > cur) return true
                 if (c < cur) return false
             }
-            // Same numeric core (e.g. 1.1.1 vs 1.1.1-dev or 1.1.1-alpha1): stable > pre-release (except local -dev debug suffix if same release)
+            // Same numeric core (e.g. 1.2.1 vs 1.2.1-beta.1): stable > pre-release (except local -dev debug suffix if same release)
             if (candPre.isEmpty() && currPre.isNotEmpty() && !currPre.equals("dev", ignoreCase = true)) {
                 return true
             }
             if (candPre.isNotEmpty() && currPre.isEmpty()) {
                 return false
             }
-            return candPre > currPre && candPre.isNotEmpty()
+            if (candPre.isEmpty() && currPre.isEmpty()) {
+                return false
+            }
+            // Compare dot-separated SemVer 2.0.0 pre-release identifiers (numeric segments compared numerically: beta.10 > beta.2)
+            val candPreSegs = candPre.split('.')
+            val currPreSegs = currPre.split('.')
+            val minSegs = minOf(candPreSegs.size, currPreSegs.size)
+            for (i in 0 until minSegs) {
+                val cs = candPreSegs[i]
+                val us = currPreSegs[i]
+                if (cs == us) continue
+                val cn = cs.toLongOrNull()
+                val un = us.toLongOrNull()
+                return when {
+                    cn != null && un != null -> cn > un
+                    cn != null && un == null -> false // SemVer 2.0: numeric identifiers have lower precedence than non-numeric
+                    cn == null && un != null -> true
+                    else -> cs > us
+                }
+            }
+            return candPreSegs.size > currPreSegs.size
         }
     }
 }

@@ -1,0 +1,5 @@
+• Fixed FreeRDP 3.12 runtime HOME/XDG initialization failure (freerdp_context_new) on Android & Googlebook OS
+• Enabled static builtin virtual channels, RDPGFX graphics pipeline binding, and runtime H.264/Progressive fallback
+• Added Trust-On-First-Use (TOFU) self-signed Windows RDP certificate handling & OpenSSL 3.4 TLS compatibility
+• Automatic DOMAIN\username credential splitting & non-blocking NLA/TLS logon handling
+• Accurate INTERNAL & certificate-changed diagnostics + beta update support

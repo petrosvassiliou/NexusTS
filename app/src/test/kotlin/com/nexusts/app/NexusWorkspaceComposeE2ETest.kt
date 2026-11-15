@@ -445,8 +445,14 @@ class NexusWorkspaceComposeE2ETest {
         }
         assertTextRendered("Bitwarden Production Postgres")
 
-        // Verify semantic version comparator in Play-Protect-safe GitHub Release Checker
+        // Verify semantic version comparator in Play-Protect-safe GitHub Release Checker (including beta -> final progression)
         assertTrue(GitHubReleaseUpdateChecker.isNewerSemanticVersion("1.2.0", "1.1.0"))
+        assertTrue(GitHubReleaseUpdateChecker.isNewerSemanticVersion("1.2.1-beta.1", "1.2.0"))
+        assertTrue(GitHubReleaseUpdateChecker.isNewerSemanticVersion("1.2.1-beta.2", "1.2.1-beta.1"))
+        assertTrue(GitHubReleaseUpdateChecker.isNewerSemanticVersion("1.2.1-beta.10", "1.2.1-beta.2"))
+        assertTrue(GitHubReleaseUpdateChecker.isNewerSemanticVersion("1.2.1", "1.2.1-beta.1"))
+        assertFalse(GitHubReleaseUpdateChecker.isNewerSemanticVersion("1.2.1-beta.1", "1.2.1"))
+        assertFalse(GitHubReleaseUpdateChecker.isNewerSemanticVersion("1.2.1-beta.1", "1.2.1-beta.1"))
         assertFalse(GitHubReleaseUpdateChecker.isNewerSemanticVersion("1.1.0", "1.1.0"))
         assertFalse(GitHubReleaseUpdateChecker.isNewerSemanticVersion("1.0.9", "1.1.0"))
     }
@@ -1493,10 +1499,10 @@ class NexusWorkspaceComposeE2ETest {
 
     @Test
     fun compactFlushLeftSidebarFolderContextMenusStartAllRdpRenameDeleteAndV117UpgradeParity() {
-        assertEquals(10200, BuildConfig.VERSION_CODE)
+        assertEquals(10201, BuildConfig.VERSION_CODE)
         assertTrue(
-            "Expected BuildConfig.VERSION_NAME (${BuildConfig.VERSION_NAME}) to start with 1.2.0",
-            BuildConfig.VERSION_NAME.startsWith("1.2.0")
+            "Expected BuildConfig.VERSION_NAME (${BuildConfig.VERSION_NAME}) to start with 1.2.1-beta.1",
+            BuildConfig.VERSION_NAME.startsWith("1.2.1-beta.1")
         )
 
         val serializer = buildFastSerializer()

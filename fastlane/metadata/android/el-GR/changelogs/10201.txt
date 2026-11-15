@@ -1,0 +1,5 @@
+• Διορθώθηκε η αποτυχία αρχικοποίησης FreeRDP 3.12 (freerdp_context_new) σε Android & Googlebook OS
+• Ενεργοποίηση στατικών καναλιών RDPGFX και αυτόματης εναλλαγής H.264/Progressive
+• Υποστήριξη αυτο-υπογεγραμμένων πιστοποιητικών Windows RDP (TOFU) & συμβατότητας TLS OpenSSL 3.4
+• Αυτόματος διαχωρισμός DOMAIN\χρήστη και ακριβής διάγνωση σφαλμάτων RDP
+• Υποστήριξη ενημερώσεων Beta μέσω GitHub Releases

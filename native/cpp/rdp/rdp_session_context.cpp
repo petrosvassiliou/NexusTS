@@ -1,7 +1,11 @@
 #include "rdp_session_context.hpp"
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <system_error>
 #include <unordered_map>
 
 #ifdef __ANDROID__
@@ -15,17 +19,23 @@
 
 #if defined(NEXUSTS_HAS_FREERDP3_BINARY) && NEXUSTS_HAS_FREERDP3_BINARY == 1
 #include <cstdio>
+#include <freerdp/addin.h>
 #include <freerdp/freerdp.h>
 #include <freerdp/error.h>
 #include <freerdp/event.h>
+#include <freerdp/codec/h264.h>
 #include <freerdp/gdi/gdi.h>
+#include <freerdp/gdi/gfx.h>
 #include <freerdp/channels/channels.h>
 #include <freerdp/channels/rdpdr.h>
+#include <freerdp/channels/rdpgfx.h>
 #include <freerdp/client/channels.h>
 #include <freerdp/client/cmdline.h>
 #include <freerdp/client/disp.h>
+#include <freerdp/client/rdpgfx.h>
 #include <freerdp/input.h>
 #include <freerdp/settings.h>
+#include <winpr/environment.h>
 #include <winpr/synch.h>
 #endif
 
@@ -38,6 +48,120 @@ constexpr uint32_t align_even_h264_dimension(uint32_t raw, uint32_t min_val, uin
 }
 
 #if defined(NEXUSTS_HAS_FREERDP3_BINARY) && NEXUSTS_HAS_FREERDP3_BINARY == 1
+std::mutex g_freerdp_env_mutex;
+bool g_addin_provider_registered = false;
+
+void set_posix_and_winpr_env(const char* key, const std::string& value) {
+    if (!key || value.empty()) {
+        return;
+    }
+#if !defined(_WIN32)
+    ::setenv(key, value.c_str(), 1);
+#endif
+    SetEnvironmentVariableA(key, value.c_str());
+}
+
+std::string detect_android_fallback_files_dir() {
+#ifdef __ANDROID__
+    std::ifstream cmdline("/proc/self/cmdline", std::ios::binary);
+    if (cmdline.is_open()) {
+        std::string pkg;
+        std::getline(cmdline, pkg, '\0');
+        // Strip optional Android ":process" suffix
+        const auto colon = pkg.find(':');
+        if (colon != std::string::npos) {
+            pkg.resize(colon);
+        }
+        if (!pkg.empty() && pkg.find('/') == std::string::npos) {
+            std::error_code ec;
+            const std::filesystem::path user0_dir = std::filesystem::path("/data/user/0") / pkg / "files";
+            if (std::filesystem::exists(user0_dir, ec)) {
+                return (user0_dir / "freerdp_runtime").string();
+            }
+            const std::filesystem::path legacy_dir = std::filesystem::path("/data/data") / pkg / "files";
+            if (std::filesystem::exists(legacy_dir, ec)) {
+                return (legacy_dir / "freerdp_runtime").string();
+            }
+        }
+    }
+#endif
+    return {};
+}
+
+/**
+ * Ensures `HOME`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`, and `TMPDIR` point to
+ * writable app-private directories BEFORE `freerdp_context_new()` runs (`freerdp_settings_new()`
+ * fails immediately on Android/Googlebook OS when `GetKnownPath(KNOWN_PATH_HOME)` is NULL).
+ * Also registers FreeRDP's static builtin virtual channel addin table (`tables.c`).
+ */
+bool ensure_freerdp_runtime_environment(const std::string& preferred_home_dir, std::string* out_resolved_home) {
+    std::lock_guard<std::mutex> lock(g_freerdp_env_mutex);
+
+    std::string base_dir = preferred_home_dir;
+    if (base_dir.empty()) {
+        const char* existing_home = std::getenv("HOME");
+        if (existing_home && existing_home[0] != '\0' && std::strcmp(existing_home, "/") != 0) {
+            base_dir = existing_home;
+        }
+    }
+    if (base_dir.empty()) {
+        base_dir = detect_android_fallback_files_dir();
+    }
+    if (base_dir.empty()) {
+        std::error_code tmp_ec;
+        const auto sys_tmp = std::filesystem::temp_directory_path(tmp_ec);
+        if (!tmp_ec && !sys_tmp.empty()) {
+            base_dir = (sys_tmp / "nexusts_freerdp").string();
+        }
+    }
+    if (base_dir.empty()) {
+        return false;
+    }
+
+    const std::filesystem::path home_path(base_dir);
+    const std::filesystem::path xdg_config = home_path / ".config";
+    const std::filesystem::path freerdp_certs = xdg_config / "freerdp" / "certs";
+    const std::filesystem::path freerdp_server = xdg_config / "freerdp" / "server";
+    const std::filesystem::path xdg_data = home_path / ".local" / "share";
+    const std::filesystem::path xdg_cache = home_path / ".cache";
+    const std::filesystem::path tmp_dir = home_path / "tmp";
+
+    std::error_code ec;
+    std::filesystem::create_directories(freerdp_certs, ec);
+    std::filesystem::create_directories(freerdp_server, ec);
+    std::filesystem::create_directories(xdg_data, ec);
+    std::filesystem::create_directories(xdg_cache, ec);
+    std::filesystem::create_directories(tmp_dir, ec);
+
+    set_posix_and_winpr_env("HOME", home_path.string());
+    set_posix_and_winpr_env("XDG_CONFIG_HOME", xdg_config.string());
+    set_posix_and_winpr_env("XDG_DATA_HOME", xdg_data.string());
+    set_posix_and_winpr_env("XDG_CACHE_HOME", xdg_cache.string());
+    set_posix_and_winpr_env("TMPDIR", tmp_dir.string());
+
+    if (!g_addin_provider_registered) {
+        if (freerdp_register_addin_provider(freerdp_channels_load_static_addin_entry, 0) == CHANNEL_RC_OK) {
+            g_addin_provider_registered = true;
+            NX_RDP_LOGI("Registered FreeRDP 3.x static builtin channel addin provider");
+        } else {
+            NX_RDP_LOGE("freerdp_register_addin_provider(freerdp_channels_load_static_addin_entry) returned non-OK");
+        }
+    }
+
+    if (out_resolved_home) {
+        *out_resolved_home = home_path.string();
+    }
+    return std::filesystem::exists(home_path, ec);
+}
+
+char* dup_cstr_malloc(const std::string& s) {
+    char* copy = static_cast<char*>(std::calloc(s.size() + 1u, sizeof(char)));
+    if (copy && !s.empty()) {
+        std::memcpy(copy, s.data(), s.size());
+    }
+    return copy;
+}
+
 std::string format_freerdp_last_error(rdpContext* context, const std::string& host, uint16_t port) {
     if (!context) {
         return "CONNECT_TRANSPORT_FAILED: FreeRDP context unavailable (" + host + ":" + std::to_string(port) + ")";
@@ -60,17 +184,37 @@ std::string format_freerdp_last_error(rdpContext* context, const std::string& ho
     }
     return out;
 }
+
 struct FreeRdpCallbackState {
     RdpSessionContext* owner{nullptr};
     bool ignore_cert_warnings{false};
+    bool cert_store_writable{false};
+    std::string username;
+    std::string password;
+    std::string domain;
 };
 
 std::mutex g_freerdp_cb_mutex;
 std::unordered_map<freerdp*, FreeRdpCallbackState> g_freerdp_callbacks;
 
-void register_freerdp_callbacks(freerdp* instance, RdpSessionContext* owner, bool ignore_certs) {
+void register_freerdp_callbacks(
+    freerdp* instance,
+    RdpSessionContext* owner,
+    bool ignore_certs,
+    bool cert_store_writable,
+    const std::string& username,
+    const std::string& password,
+    const std::string& domain
+) {
     std::lock_guard<std::mutex> lock(g_freerdp_cb_mutex);
-    g_freerdp_callbacks[instance] = FreeRdpCallbackState{owner, ignore_certs};
+    g_freerdp_callbacks[instance] = FreeRdpCallbackState{
+        owner,
+        ignore_certs,
+        cert_store_writable,
+        username,
+        password,
+        domain
+    };
 }
 
 void unregister_freerdp_callbacks(freerdp* instance) {
@@ -92,7 +236,15 @@ void freerdp_on_channel_connected(void* context, const ChannelConnectedEventArgs
     if (!rdp_ctx->instance) {
         return;
     }
-    if (std::strcmp(e->name, DISP_DVC_CHANNEL_NAME) == 0) {
+    if (std::strcmp(e->name, RDPGFX_DVC_CHANNEL_NAME) == 0) {
+        if (rdp_ctx->gdi && e->pInterface) {
+            if (gdi_graphics_pipeline_init(rdp_ctx->gdi, static_cast<RdpgfxClientContext*>(e->pInterface))) {
+                NX_RDP_LOGI("Attached FreeRDP RDPGFX graphics pipeline (%s)", e->name);
+            } else {
+                NX_RDP_LOGE("gdi_graphics_pipeline_init failed for channel %s", e->name);
+            }
+        }
+    } else if (std::strcmp(e->name, DISP_DVC_CHANNEL_NAME) == 0) {
         const auto cb = lookup_freerdp_callbacks(rdp_ctx->instance);
         if (cb.owner) {
             cb.owner->set_disp_context(e->pInterface);
@@ -109,7 +261,11 @@ void freerdp_on_channel_disconnected(void* context, const ChannelDisconnectedEve
     if (!rdp_ctx->instance) {
         return;
     }
-    if (std::strcmp(e->name, DISP_DVC_CHANNEL_NAME) == 0) {
+    if (std::strcmp(e->name, RDPGFX_DVC_CHANNEL_NAME) == 0) {
+        if (rdp_ctx->gdi && e->pInterface) {
+            gdi_graphics_pipeline_uninit(rdp_ctx->gdi, static_cast<RdpgfxClientContext*>(e->pInterface));
+        }
+    } else if (std::strcmp(e->name, DISP_DVC_CHANNEL_NAME) == 0) {
         const auto cb = lookup_freerdp_callbacks(rdp_ctx->instance);
         if (cb.owner) {
             cb.owner->set_disp_context(nullptr);
@@ -132,6 +288,16 @@ BOOL freerdp_on_desktop_resize(rdpContext* context) {
         cb.owner->presenter().resize_shadow_framebuffer(new_w, new_h);
         cb.owner->decoder().reconfigure_resolution(new_w, new_h);
     }
+    return TRUE;
+}
+
+BOOL freerdp_on_begin_paint(rdpContext* context) {
+    if (!context || !context->gdi || !context->gdi->primary || !context->gdi->primary->hdc ||
+        !context->gdi->primary->hdc->hwnd || !context->gdi->primary->hdc->hwnd->invalid) {
+        return FALSE;
+    }
+    context->gdi->primary->hdc->hwnd->invalid->null = TRUE;
+    context->gdi->primary->hdc->hwnd->ninvalid = 0;
     return TRUE;
 }
 
@@ -176,9 +342,14 @@ BOOL freerdp_on_post_connect(freerdp* instance) {
     }
     if (!gdi_init(instance, PIXEL_FORMAT_RGBA32)) {
         NX_RDP_LOGE("FreeRDP gdi_init(PIXEL_FORMAT_RGBA32) failed");
+        const auto cb = lookup_freerdp_callbacks(instance);
+        if (cb.owner) {
+            cb.owner->set_last_error("INTERNAL: FreeRDP gdi_init(PIXEL_FORMAT_RGBA32) failed.");
+        }
         return FALSE;
     }
     if (instance->context->update) {
+        instance->context->update->BeginPaint = &freerdp_on_begin_paint;
         instance->context->update->EndPaint = &freerdp_on_end_paint;
         instance->context->update->DesktopResize = &freerdp_on_desktop_resize;
     }
@@ -202,6 +373,58 @@ void freerdp_on_post_disconnect(freerdp* instance) {
     }
 }
 
+BOOL freerdp_on_authenticate_ex(
+    freerdp* instance,
+    char** username,
+    char** password,
+    char** domain,
+    rdp_auth_reason reason
+) {
+    if (!username || !password || !domain) {
+        return FALSE;
+    }
+    const auto cb = lookup_freerdp_callbacks(instance);
+    if ((!*username || (*username)[0] == '\0') && !cb.username.empty()) {
+        std::free(*username);
+        *username = dup_cstr_malloc(cb.username);
+    }
+    if ((!*domain || (*domain)[0] == '\0') && !cb.domain.empty()) {
+        std::free(*domain);
+        *domain = dup_cstr_malloc(cb.domain);
+    }
+    if ((!*password || (*password)[0] == '\0') && !cb.password.empty()) {
+        std::free(*password);
+        *password = dup_cstr_malloc(cb.password);
+    }
+
+    const bool has_user = (*username && (*username)[0] != '\0');
+    const bool has_pass = (*password && (*password)[0] != '\0');
+
+    if (reason == AUTH_NLA || reason == GW_AUTH_HTTP || reason == GW_AUTH_RDG || reason == GW_AUTH_RPC) {
+        if (!has_user && !has_pass) {
+            if (cb.owner) {
+                cb.owner->set_last_error(
+                    "AUTHENTICATION_FAILED: Network Level Authentication (NLA) requires a username and password. "
+                    "Assign a credential to this connection or disable NLA in RDP Security settings."
+                );
+            }
+            return FALSE;
+        }
+    }
+
+    // For classic TLS/RDP interactive Windows logon screens, FreeRDP requires non-NULL empty strings with TRUE
+    if (!*username) {
+        *username = dup_cstr_malloc("");
+    }
+    if (!*domain) {
+        *domain = dup_cstr_malloc("");
+    }
+    if (!*password) {
+        *password = dup_cstr_malloc("");
+    }
+    return TRUE;
+}
+
 DWORD freerdp_on_verify_certificate_ex(
     freerdp* instance,
     const char* host,
@@ -212,18 +435,65 @@ DWORD freerdp_on_verify_certificate_ex(
     const char* fingerprint,
     DWORD flags
 ) {
+    (void)host;
+    (void)port;
     (void)common_name;
     (void)subject;
     (void)issuer;
+    (void)fingerprint;
     (void)flags;
     const auto cb = lookup_freerdp_callbacks(instance);
     if (cb.ignore_cert_warnings) {
         NX_RDP_LOGI("Accepting certificate for %s:%u (%s) per ignore_cert_warnings",
                     host ? host : "", port, fingerprint ? fingerprint : "");
-        return 2u; // Accept temporarily for this session without mutating disk known_hosts
+        return 2u; // Accept temporarily for this session without mutating disk known_hosts2
     }
-    NX_RDP_LOGE("Rejected untrusted X.509 certificate for %s:%u (%s)",
+    // Trust-On-First-Use (TOFU) for newly encountered self-signed Windows RDP hosts:
+    // Save fingerprint in app-private known_hosts2 (1u) when writable so subsequent MITM changes are caught by VerifyChangedCertificateEx.
+    NX_RDP_LOGI("Trust-On-First-Use (TOFU) accepting X.509 certificate for %s:%u (%s)",
                 host ? host : "", port, fingerprint ? fingerprint : "");
+    return cb.cert_store_writable ? 1u : 2u;
+}
+
+DWORD freerdp_on_verify_changed_certificate_ex(
+    freerdp* instance,
+    const char* host,
+    UINT16 port,
+    const char* common_name,
+    const char* subject,
+    const char* issuer,
+    const char* new_fingerprint,
+    const char* old_subject,
+    const char* old_issuer,
+    const char* old_fingerprint,
+    DWORD flags
+) {
+    (void)common_name;
+    (void)subject;
+    (void)issuer;
+    (void)old_subject;
+    (void)old_issuer;
+    (void)flags;
+    const auto cb = lookup_freerdp_callbacks(instance);
+    if (cb.ignore_cert_warnings) {
+        NX_RDP_LOGI("Accepting changed X.509 certificate for %s:%u (%s -> %s) per ignore_cert_warnings",
+                    host ? host : "", port,
+                    old_fingerprint ? old_fingerprint : "",
+                    new_fingerprint ? new_fingerprint : "");
+        return 2u;
+    }
+    const std::string host_str = host ? host : "";
+    const std::string new_fp = new_fingerprint ? new_fingerprint : "unknown";
+    const std::string old_fp = old_fingerprint ? old_fingerprint : "unknown";
+    if (cb.owner) {
+        cb.owner->set_last_error(
+            "TLS_CERTIFICATE_CHANGED: X.509 certificate fingerprint changed for " +
+            host_str + ":" + std::to_string(port) +
+            " (new=" + new_fp + ", previous=" + old_fp + ")."
+        );
+    }
+    NX_RDP_LOGE("Rejected changed X.509 certificate for %s:%u (old=%s, new=%s)",
+                host_str.c_str(), port, old_fp.c_str(), new_fp.c_str());
     return 0u;
 }
 #endif
@@ -343,6 +613,19 @@ bool RdpSessionContext::connect() {
     }
 
 #if defined(NEXUSTS_HAS_FREERDP3_BINARY) && NEXUSTS_HAS_FREERDP3_BINARY == 1
+    std::string resolved_home;
+    const bool env_ready = ensure_freerdp_runtime_environment(params_.app_home_dir, &resolved_home);
+
+    std::string effective_username = params_.username;
+    std::string effective_domain = params_.domain;
+    if (effective_domain.empty()) {
+        const auto bs_pos = effective_username.find('\\');
+        if (bs_pos != std::string::npos) {
+            effective_domain = effective_username.substr(0, bs_pos);
+            effective_username = effective_username.substr(bs_pos + 1u);
+        }
+    }
+
     freerdp* instance = freerdp_new();
     if (!instance) {
         set_last_error("INTERNAL: freerdp_new() allocation failed.");
@@ -352,16 +635,50 @@ bool RdpSessionContext::connect() {
     instance->PreConnect = &freerdp_on_pre_connect;
     instance->PostConnect = &freerdp_on_post_connect;
     instance->PostDisconnect = &freerdp_on_post_disconnect;
+    instance->AuthenticateEx = &freerdp_on_authenticate_ex;
     instance->VerifyCertificateEx = &freerdp_on_verify_certificate_ex;
+    instance->VerifyChangedCertificateEx = &freerdp_on_verify_changed_certificate_ex;
+
+    register_freerdp_callbacks(
+        instance,
+        this,
+        params_.ignore_certificate,
+        env_ready,
+        effective_username,
+        params_.password,
+        effective_domain
+    );
 
     if (!freerdp_context_new(instance)) {
-        set_last_error("INTERNAL: freerdp_context_new() initialization failed.");
+        set_last_error(
+            "INTERNAL: freerdp_context_new() initialization failed (HOME=" +
+            (resolved_home.empty() ? std::string("<unset>") : resolved_home) + ")."
+        );
+        NX_RDP_LOGE("freerdp_context_new() failed (resolved_home='%s', env_ready=%d)",
+                    resolved_home.c_str(), env_ready ? 1 : 0);
+        unregister_freerdp_callbacks(instance);
         freerdp_free(instance);
         return false;
     }
-    register_freerdp_callbacks(instance, this, params_.ignore_certificate);
 
     rdpSettings* settings = instance->context->settings;
+    if (!resolved_home.empty()) {
+        const char* cur_home = freerdp_settings_get_string(settings, FreeRDP_HomePath);
+        if (!cur_home || cur_home[0] == '\0') {
+            freerdp_settings_set_string(settings, FreeRDP_HomePath, resolved_home.c_str());
+        }
+        const char* cur_cfg = freerdp_settings_get_string(settings, FreeRDP_ConfigPath);
+        if (!cur_cfg || cur_cfg[0] == '\0') {
+            const std::string cfg_dir = (std::filesystem::path(resolved_home) / ".config" / "freerdp").string();
+            freerdp_settings_set_string(settings, FreeRDP_ConfigPath, cfg_dir.c_str());
+        }
+    }
+
+    freerdp_settings_set_bool(settings, FreeRDP_SoftwareGdi, TRUE);
+    freerdp_settings_set_bool(settings, FreeRDP_UseCommonStdioCallbacks, FALSE);
+    freerdp_settings_set_uint32(settings, FreeRDP_TlsSecLevel, 0u);
+    freerdp_settings_set_uint32(settings, FreeRDP_TcpConnectTimeout, 15000u);
+
     freerdp_settings_set_string(settings, FreeRDP_ServerHostname, params_.host.c_str());
     freerdp_settings_set_uint32(settings, FreeRDP_ServerPort, params_.port);
     freerdp_settings_set_uint32(settings, FreeRDP_DesktopWidth, w);
@@ -376,10 +693,26 @@ bool RdpSessionContext::connect() {
         freerdp_settings_set_uint32(settings, FreeRDP_DeviceScaleFactor, dev_scale);
     }
 
+    bool h264_runtime_supported = false;
+    if (params_.enable_gfx_pipeline && params_.enable_h264_avc444) {
+        H264_CONTEXT* probe_h264 = h264_context_new(FALSE);
+        if (probe_h264) {
+            h264_runtime_supported = true;
+            h264_context_free(probe_h264);
+        } else {
+            NX_RDP_LOGI("FreeRDP H.264 subsystem unavailable on this device; falling back to Progressive/RemoteFX/NSCodec");
+        }
+    }
+
     freerdp_settings_set_bool(settings, FreeRDP_SupportGraphicsPipeline, params_.enable_gfx_pipeline);
-    freerdp_settings_set_bool(settings, FreeRDP_GfxH264, params_.enable_h264_avc444);
-    freerdp_settings_set_bool(settings, FreeRDP_GfxAVC444, params_.enable_h264_avc444);
+    freerdp_settings_set_bool(settings, FreeRDP_GfxH264, h264_runtime_supported);
+    freerdp_settings_set_bool(settings, FreeRDP_GfxAVC444, h264_runtime_supported);
+    freerdp_settings_set_bool(settings, FreeRDP_GfxAVC444v2, h264_runtime_supported);
+    freerdp_settings_set_bool(settings, FreeRDP_GfxProgressive, params_.enable_gfx_pipeline);
+    freerdp_settings_set_bool(settings, FreeRDP_GfxProgressiveV2, params_.enable_gfx_pipeline);
     freerdp_settings_set_bool(settings, FreeRDP_RemoteFxCodec, params_.enable_remotefx);
+    freerdp_settings_set_bool(settings, FreeRDP_NSCodec, TRUE);
+
     const bool enable_disp_channel =
         params_.enable_dynamic_resize || params_.hidpi_enabled || params_.multi_monitor_spanning;
     freerdp_settings_set_bool(settings, FreeRDP_SupportDisplayControl, enable_disp_channel);
@@ -421,25 +754,29 @@ bool RdpSessionContext::connect() {
     freerdp_settings_set_bool(settings, FreeRDP_DisableThemes, !params_.enable_themes);
     freerdp_settings_set_bool(settings, FreeRDP_CompressionEnabled, params_.compression_enabled);
 
-    freerdp_settings_set_bool(settings, FreeRDP_NlaSecurity, params_.nla_security);
+    const bool has_credentials =
+        !effective_username.empty() || !params_.password.empty() || params_.restricted_admin_mode;
+    const bool effective_nla = params_.nla_security && has_credentials;
+    freerdp_settings_set_bool(settings, FreeRDP_NlaSecurity, effective_nla);
     freerdp_settings_set_bool(settings, FreeRDP_TlsSecurity, params_.tls_security);
     freerdp_settings_set_bool(settings, FreeRDP_RestrictedAdminModeRequired, params_.restricted_admin_mode);
     freerdp_settings_set_bool(settings, FreeRDP_IgnoreCertificate, params_.ignore_certificate);
     freerdp_settings_set_bool(settings, FreeRDP_RemoteApplicationMode, params_.remote_app_mode);
 
-    if (!params_.username.empty()) {
-        freerdp_settings_set_string(settings, FreeRDP_Username, params_.username.c_str());
+    if (!effective_username.empty()) {
+        freerdp_settings_set_string(settings, FreeRDP_Username, effective_username.c_str());
     }
     if (!params_.password.empty()) {
         freerdp_settings_set_string(settings, FreeRDP_Password, params_.password.c_str());
     }
-    if (!params_.domain.empty()) {
-        freerdp_settings_set_string(settings, FreeRDP_Domain, params_.domain.c_str());
+    if (!effective_domain.empty()) {
+        freerdp_settings_set_string(settings, FreeRDP_Domain, effective_domain.c_str());
     }
     if (!params_.rd_gateway_host.empty()) {
-        freerdp_settings_set_bool(settings, FreeRDP_GatewayEnabled, true);
+        freerdp_settings_set_bool(settings, FreeRDP_GatewayEnabled, TRUE);
         freerdp_settings_set_string(settings, FreeRDP_GatewayHostname, params_.rd_gateway_host.c_str());
         freerdp_settings_set_uint32(settings, FreeRDP_GatewayPort, params_.rd_gateway_port);
+        freerdp_settings_set_bool(settings, FreeRDP_GatewayUseSameCredentials, TRUE);
     }
     if (params_.remote_app_mode && !params_.remote_app_program.empty()) {
         freerdp_settings_set_string(settings, FreeRDP_RemoteApplicationProgram, params_.remote_app_program.c_str());
@@ -448,8 +785,16 @@ bool RdpSessionContext::connect() {
 
     disp_context_.store(nullptr, std::memory_order_release);
     if (!freerdp_connect(instance)) {
-        std::string captured = format_freerdp_last_error(instance->context, params_.host, params_.port);
-        if (captured.empty()) {
+        const std::string callback_err = last_error();
+        const std::string freerdp_err = format_freerdp_last_error(instance->context, params_.host, params_.port);
+        std::string captured;
+        if (!callback_err.empty() && !freerdp_err.empty()) {
+            captured = callback_err + " [" + freerdp_err + "]";
+        } else if (!callback_err.empty()) {
+            captured = callback_err;
+        } else if (!freerdp_err.empty()) {
+            captured = freerdp_err;
+        } else {
             captured = "CONNECT_TRANSPORT_FAILED: FreeRDP 3.x connection failed to " +
                 params_.host + ":" + std::to_string(params_.port);
         }
@@ -547,8 +892,8 @@ void RdpSessionContext::disconnect() {
 #if defined(NEXUSTS_HAS_FREERDP3_BINARY) && NEXUSTS_HAS_FREERDP3_BINARY == 1
     if (freerdp_instance_) {
         auto* instance = static_cast<freerdp*>(freerdp_instance_);
-        unregister_freerdp_callbacks(instance);
         freerdp_disconnect(instance);
+        unregister_freerdp_callbacks(instance);
         gdi_free(instance);
         freerdp_context_free(instance);
         freerdp_free(instance);

@@ -21,7 +21,7 @@ on:
       release_tag:
         description: "Tag name when publishing via workflow_dispatch"
         required: false
-        default: "v1.2.0"
+        default: "v1.2.1-beta.1"
         type: string
 
 permissions:
@@ -105,7 +105,8 @@ jobs:
             native/cpp/rdp/rdp_session_context.cpp \
             native/cpp/rdp/rdp_gdi_surface.cpp \
             native/cpp/rdp/rdp_channels.cpp \
-            native/cpp/rdp/rdp_h264_decoder.cpp
+            native/cpp/rdp/rdp_h264_decoder.cpp \
+            native/cpp/rdp/nexusts_rdp_macos.cpp
 
       - name: Validate NDK & Provisioning Shell Scripts
         run: |
@@ -318,7 +319,7 @@ jobs:
           set -euo pipefail
           TAG_NAME="${GITHUB_REF_NAME}"
           if [[ "${TAG_NAME}" != v* ]]; then
-            TAG_NAME="${{ inputs.release_tag || 'v1.2.0' }}"
+            TAG_NAME="${{ inputs.release_tag || 'v1.2.1-beta.1' }}"
           fi
           echo "tag_name=${TAG_NAME}" >> "${GITHUB_OUTPUT}"
 
@@ -345,28 +346,28 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.stage.outputs.tag_name }}
-          name: "NexusTS ${{ steps.stage.outputs.tag_name }} — Googlebook OS, Android & macOS Enterprise Release"
+          name: "NexusTS ${{ steps.stage.outputs.tag_name }} — RDP Connectivity Fix (Beta Pre-Release)"
           draft: false
-          prerelease: false
+          prerelease: ${{ contains(steps.stage.outputs.tag_name, '-') }}
           generate_release_notes: true
           body: |
             ## NexusTS ${{ steps.stage.outputs.tag_name }} (`com.nexusts.app` / `com.nexusts.app.macos`)
             **Native Enterprise Remote Management & Connection Manager for Googlebook OS, Android Tablets & macOS**
 
-            ### Signed Deliverables (100% In-Place Upgrade Compatible with Prior Releases)
-            - **`NexusTS-${{ steps.stage.outputs.tag_name }}-googlebook-android-release.apk`**: Cryptographically signed (APK Signature Scheme v2/v3/v4, RSA-4096) universal `arm64-v8a` + `x86_64` APK with 16 KB ELF page alignment (`0x4000`) and 100% Google Play Protect compliance. Upgrades `v1.1.7`–`v1.1.9` directly in place while preserving all `.nxts` v2 vaults & Android Keystore secrets.
-            - **`NexusTS-${{ steps.stage.outputs.tag_name }}-playstore-release.aab`**: Signed Android App Bundle for optional future Google Play / Managed Google Play distribution.
+            > **Beta Channel Notice**: This pre-release (`versionCode = 10201`, `1.2.1-beta.1`) delivers the native FreeRDP 3.12 RDP session initialization, graphics pipeline, TLS certificate, and NLA authentication fixes for verification prior to promoting `v1.2.1` to the stable channel. Installed beta builds automatically detect newer betas and the final `v1.2.1` release.
+
+            ### Signed Deliverables (100% In-Place Upgrade Compatible with `v1.2.0` & Prior Releases)
+            - **`NexusTS-${{ steps.stage.outputs.tag_name }}-googlebook-android-release.apk`**: Cryptographically signed (APK Signature Scheme v2/v3/v4, RSA-4096) universal `arm64-v8a` + `x86_64` APK with 16 KB ELF page alignment (`0x4000`) and 100% Google Play Protect compliance. Upgrades `v1.2.0` directly in place while preserving all `.nxts` v2 vaults & Android Keystore secrets.
+            - **`NexusTS-${{ steps.stage.outputs.tag_name }}-playstore-release.aab`**: Signed Android App Bundle for optional Managed Google Play / internal distribution.
             - **`NexusTS-${{ steps.stage.outputs.tag_name }}-macOS-Universal.dmg` & `.zip`**: Universal2 (`arm64` + `x86_64`) macOS application bundle with bundled OpenSSL 3.4 + FreeRDP 3.12.
             - **`nexusts-upload-certificate.pem` & `oauth-and-mdm-registration.json`**: Public X.509 upload certificate (`SHA-1: A6:AF:15:A9:BF:0B:FE:38:D4:66:46:3E:3E:72:A6:5B:4F:9C:4D:F6`, `SHA-256: 4A:BD:80:F1:20:14:B9:88:09:1C:97:92:2F:87:02:D1:BF:B7:93:9C:73:B6:9A:DB:1A:9B:76:30:6A:30:27:82`) and Managed Google Play `app_restrictions` template.
 
-            ### What's New in ${{ steps.stage.outputs.tag_name }}
-            - **Clean Empty Vault & Demo Sanitization**: Removed all example projects, demo connections, folders, credentials, tasks, templates, and to-dos; existing vaults automatically strip legacy demo entries on load while preserving user data. Sidebar connection rows display only connection names without IP addresses.
-            - **Royal TS (`.rtsz` / `.rtsx` / `.rjson`) Import Placement Picker**: Choose whether imported connections are placed in a **new folder**, **merged at the root** of the hierarchy, or **replace all existing connections**.
-            - **Full Drag & Drop for Folders & Connections**: Reorder sibling folders (`BEFORE` / `INSIDE` / `AFTER`), nest folders with cycle protection, drag items to the root hierarchy, and reorder connections.
-            - **Dedicated Bottom-Pinned `"Credentials"` System Folder**: Restricted exclusively to credentials, pinned permanently at the bottom of the left sidebar, and automatically absorbs Royal TS `Credentials` containers on import.
-            - **Robust Folder Selection & Right-Click `Edit Connection…`**: Fixed cursor right-click targeting across nested folders and connections so right-clicking always targets the exact item under the cursor without opening parent folder properties; added direct **Edit Connection…** context-menu support.
-            - **Full Intelligent Folders (`SmartFolder`) & Dynamic Folder Management**: Create, edit, duplicate, and delete Intelligent Folders with multi-protocol filters, folder subtree scope, include/exclude tags, live regex validation, and live matched-connection previews.
-            - **Confirmation-Protected Database Reset & Structured Error Diagnostics**: Added a confirmation-gated **Reset NexusTS Database** flow (with one-click `.nxts` backup export), corrupt local vault quarantine recovery, and structured error classification (`NexusAppError` + native FreeRDP 3.x `freerdp_get_last_error` diagnostic cards).
+            ### What's Fixed in ${{ steps.stage.outputs.tag_name }}
+            - **Fixed `INTERNAL: freerdp_context_new() initialization failed.` on Android & Googlebook OS**: Provisioned writable app-private FreeRDP runtime directories (`HOME`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`, `TMPDIR`, `.config/freerdp/certs`, `.config/freerdp/server`) via both POSIX `setenv` and WinPR `SetEnvironmentVariableA` prior to `freerdp_context_new()`.
+            - **Builtin Static Virtual Channels & `RDPGFX` Graphics Pipeline Binding**: Registered `freerdp_channels_load_static_addin_entry` for statically compiled FreeRDP 3.12 channels (`drdynvc`, `rdpgfx`, `disp`, `cliprdr`, `rdpdr`, `rdpsnd`, `audin`, `smartcard`), wired `RDPGFX_DVC_CHANNEL_NAME` to `gdi_graphics_pipeline_init`/`uninit` with `SoftwareGdi` + `BeginPaint`/`EndPaint`, and added runtime `h264_context_new(FALSE)` probing with automatic Progressive/RemoteFX/NSCodec fallback.
+            - **Self-Signed Windows LAN TLS Certificates & OpenSSL 3.4 Compatibility**: Implemented Trust-On-First-Use (TOFU) X.509 host verification (`known_hosts2` persistence + `VerifyChangedCertificateEx` MITM protection) and set `FreeRDP_TlsSecLevel = 0` so legacy SHA-1 / RSA-1024 Windows RDP certificates succeed cleanly under OpenSSL 3.4.
+            - **Smart Credential Normalization & Non-Blocking `AuthenticateEx`**: Automatically splits `DOMAIN\username` credentials when the domain field is blank, disables blocking `stdio` prompts (`FreeRDP_UseCommonStdioCallbacks = false`), negotiates TLS interactive Windows logon when no vault credentials are provided, and preserves callback error diagnostics.
+            - **Accurate `NexusErrorClassifier` & SemVer 2.0 Beta Auto-Updater**: Classified `INTERNAL:` / `freerdp_context_new` / `gdi_init` under `NexusErrorCategory.INTERNAL`, `TLS_CERTIFICATE_CHANGED` under `TLS_CERTIFICATE`, `HYBRID_REQUIRED` under `AUTHENTICATION_FAILED`, and added SemVer 2.0 pre-release feed support so beta testers seamlessly upgrade to `v1.2.1` final.
           files: release-assets/*
 
       - name: Check Optional Google Play Service Account Secret
@@ -381,7 +382,7 @@ jobs:
           fi
 
       - name: Upload Signed AAB & 6-Locale Metadata to Google Play Internal Track
-        if: ${{ steps.play-check.outputs.enabled == 'true' }}
+        if: ${{ steps.play-check.outputs.enabled == 'true' && !contains(steps.stage.outputs.tag_name, '-') }}
         uses: r0adkll/upload-google-play@v1
         with:
           serviceAccountJsonPlainText: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}

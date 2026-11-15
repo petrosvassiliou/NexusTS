@@ -85,6 +85,7 @@ struct RdpConnectParams {
     std::string remote_app_args;
     std::string shared_drive_name;
     std::string shared_drive_local_path;
+    std::string app_home_dir;
     std::vector<RdpMonitorLayout> monitors;
 };
 

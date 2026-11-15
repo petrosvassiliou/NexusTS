@@ -586,21 +586,11 @@ public struct MacReleaseUpdateCandidate: Equatable, Sendable {
 }
 
 public enum MacGitHubReleaseUpdater {
-    public static let currentVersion = "1.2.0"
+    public static let currentVersion = "1.2.1-beta.1"
 
     public static func checkForUpdates(
         repoSlug: String = "petrosvassiliou/NexusTS"
     ) async throws -> MacReleaseUpdateCandidate? {
-        guard let url = URL(string: "https://api.github.com/repos/\(repoSlug)/releases/latest") else {
-            return nil
-        }
-        var req = URLRequest(url: url)
-        req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-        req.setValue("NexusTS-macOS/\(currentVersion)", forHTTPHeaderField: "User-Agent")
-
-        let (data, resp) = try await URLSession.shared.data(for: req)
-        guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else { return nil }
-
         struct ReleasePayload: Decodable {
             struct Asset: Decodable {
                 let name: String
@@ -610,9 +600,36 @@ public enum MacGitHubReleaseUpdater {
             let name: String?
             let html_url: String
             let body: String?
+            let draft: Bool?
             let assets: [Asset]?
         }
-        let rel = try JSONDecoder().decode(ReleasePayload.self, from: data)
+
+        let isBetaChannel = currentVersion.contains("-")
+        let endpoint = isBetaChannel
+            ? "https://api.github.com/repos/\(repoSlug)/releases?per_page=10"
+            : "https://api.github.com/repos/\(repoSlug)/releases/latest"
+        guard let url = URL(string: endpoint) else {
+            return nil
+        }
+        var req = URLRequest(url: url)
+        req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        req.setValue("NexusTS-macOS/\(currentVersion)", forHTTPHeaderField: "User-Agent")
+
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else { return nil }
+
+        let rel: ReleasePayload
+        if isBetaChannel {
+            let list = try JSONDecoder().decode([ReleasePayload].self, from: data)
+                .filter { $0.draft != true }
+            guard let newest = list.max(by: { compareSemver($1.tag_name, isNewerThan: $0.tag_name) }) else {
+                return nil
+            }
+            rel = newest
+        } else {
+            rel = try JSONDecoder().decode(ReleasePayload.self, from: data)
+        }
+
         let remoteClean = rel.tag_name.trimmingCharacters(in: CharacterSet(charactersIn: "vV"))
         guard compareSemver(remoteClean, isNewerThan: currentVersion),
               let htmlUrl = URL(string: rel.html_url) else {
@@ -695,14 +712,49 @@ public enum MacGitHubReleaseUpdater {
     }
 
     public static func compareSemver(_ candidate: String, isNewerThan current: String) -> Bool {
-        let lhs = candidate.split(separator: ".").map { Int($0.prefix(while: \.isNumber)) ?? 0 }
-        let rhs = current.split(separator: ".").map { Int($0.prefix(while: \.isNumber)) ?? 0 }
-        let count = max(lhs.count, rhs.count)
-        for i in 0..<count {
-            let l = i < lhs.count ? lhs[i] : 0
-            let r = i < rhs.count ? rhs[i] : 0
+        let candTrim = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "vV"))
+        let currTrim = current.trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "vV"))
+        guard !candTrim.isEmpty, !currTrim.isEmpty else { return false }
+
+        let candNoBuild = String(candTrim.split(separator: "+", maxSplits: 1).first ?? "")
+        let currNoBuild = String(currTrim.split(separator: "+", maxSplits: 1).first ?? "")
+
+        let candMainAndPre = candNoBuild.split(separator: "-", maxSplits: 1, omittingEmptySubsequences: false)
+        let currMainAndPre = currNoBuild.split(separator: "-", maxSplits: 1, omittingEmptySubsequences: false)
+
+        let candCore = candMainAndPre[0].split(separator: ".").map { Int($0) ?? 0 }
+        let currCore = currMainAndPre[0].split(separator: ".").map { Int($0) ?? 0 }
+        let maxCore = max(candCore.count, currCore.count)
+        for i in 0..<maxCore {
+            let l = i < candCore.count ? candCore[i] : 0
+            let r = i < currCore.count ? currCore[i] : 0
             if l != r { return l > r }
         }
-        return false
+
+        let candPre = candMainAndPre.count > 1 ? String(candMainAndPre[1]) : ""
+        let currPre = currMainAndPre.count > 1 ? String(currMainAndPre[1]) : ""
+
+        // Stable release has higher precedence than pre-release of the same core version (1.2.1 > 1.2.1-beta.1)
+        if candPre.isEmpty && !currPre.isEmpty { return true }
+        if !candPre.isEmpty && currPre.isEmpty { return false }
+        if candPre.isEmpty && currPre.isEmpty { return false }
+
+        let candSegs = candPre.split(separator: ".").map(String.init)
+        let currSegs = currPre.split(separator: ".").map(String.init)
+        let minSegs = min(candSegs.count, currSegs.count)
+        for i in 0..<minSegs {
+            let cs = candSegs[i]
+            let us = currSegs[i]
+            if cs == us { continue }
+            if let cn = Int(cs), let un = Int(us) {
+                return cn > un
+            }
+            if Int(cs) != nil && Int(us) == nil { return false }
+            if Int(cs) == nil && Int(us) != nil { return true }
+            return cs > us
+        }
+        return candSegs.count > currSegs.count
     }
 }

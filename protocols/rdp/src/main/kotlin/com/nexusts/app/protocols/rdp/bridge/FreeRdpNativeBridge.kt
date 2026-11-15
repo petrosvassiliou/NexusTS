@@ -92,7 +92,8 @@ object FreeRdpNativeBridge {
         remoteAppProgram: String,
         remoteAppArgs: String,
         sharedDriveName: String,
-        sharedDriveLocalPath: String
+        sharedDriveLocalPath: String,
+        appHomeDir: String
     ): Long
 
     @JvmStatic
@@ -522,6 +523,10 @@ class RdpManagedSession(
             val effectiveMicRedirect = settings.redirectMicrophone && micPermissionGranted
             isMicrophoneRedirected = effectiveMicRedirect
 
+            val runtimeHomeDir = (appContext ?: context)?.filesDir
+                ?.let { java.io.File(it, "freerdp_runtime").apply { mkdirs() }.absolutePath }
+                .orEmpty()
+
             // Negotiate DISP_DVC channel capability at connect time so live resize mode toggles work without reconnecting
             val createdHandle = FreeRdpNativeBridge.nativeCreateSession(
                 host = connection.host,
@@ -559,7 +564,8 @@ class RdpManagedSession(
                 remoteAppProgram = settings.remoteAppProgram,
                 remoteAppArgs = settings.remoteAppArguments,
                 sharedDriveName = stagedDrive?.shareName.orEmpty(),
-                sharedDriveLocalPath = stagedDrive?.localPosixDirectory?.absolutePath.orEmpty()
+                sharedDriveLocalPath = stagedDrive?.localPosixDirectory?.absolutePath.orEmpty(),
+                appHomeDir = runtimeHomeDir
             )
             nativeHandle = createdHandle
             synchronized(surfaceLock) {

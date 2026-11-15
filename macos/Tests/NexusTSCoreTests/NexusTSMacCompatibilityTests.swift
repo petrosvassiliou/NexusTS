@@ -304,11 +304,16 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
         XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("1.1.8", isNewerThan: "1.1.7"))
         XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("1.1.9", isNewerThan: "1.1.8"))
         XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("1.2.0", isNewerThan: "1.1.9"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("1.2.1-beta.1", isNewerThan: "1.2.0"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("1.2.1-beta.2", isNewerThan: "1.2.1-beta.1"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("1.2.1-beta.10", isNewerThan: "1.2.1-beta.2"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("1.2.1", isNewerThan: "1.2.1-beta.1"))
+        XCTAssertFalse(MacGitHubReleaseUpdater.compareSemver("1.2.1-beta.1", isNewerThan: "1.2.1"))
         XCTAssertFalse(MacGitHubReleaseUpdater.compareSemver("1.2.0", isNewerThan: "1.2.0"))
     }
 
     func testV118LocalizationUpgradeVersionAndVaultReplacementCompatibility() throws {
-        XCTAssertEqual(MacGitHubReleaseUpdater.currentVersion, "1.2.0")
+        XCTAssertEqual(MacGitHubReleaseUpdater.currentVersion, "1.2.1-beta.1")
 
         for lang in NexusAppLanguage.allCases {
             let catalog = LocalizedWorkspaceStrings.catalog(for: lang)
@@ -324,7 +329,7 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
             XCTAssertFalse(catalog.editConnection.isEmpty)
         }
 
-        // Verify a persisted v1.1.7 .nxts v2 vault with nested folders + RDP/SSH hosts upgrades seamlessly in v1.2.0
+        // Verify a persisted v1.1.7 .nxts v2 vault with nested folders + RDP/SSH hosts upgrades seamlessly in v1.2.1-beta.1
         let rootFolder = VaultFolder(id: "f-dc", name: "Datacenter Europe", sortOrder: 0)
         let subFolder = VaultFolder(id: "f-win", parentFolderId: rootFolder.id, name: "Windows RDS Farm", sortOrder: 1)
         let rdp1 = VaultConnection(id: "c-rdp-1", parentFolderId: rootFolder.id, name: "DC01", host: "10.10.1.10", protocolType: .RDP)
@@ -451,5 +456,19 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
         )
         XCTAssertEqual(rdpErr.category, .authenticationFailed)
         XCTAssertEqual(rdpErr.recoveryConnectionId, "r-c1")
+
+        let rdpInternal = NexusErrorClassifier.classifyRdpError(
+            host: "10.2.200.27",
+            port: 3389,
+            rawNativeError: "INTERNAL: freerdp_context_new() initialization failed."
+        )
+        XCTAssertEqual(rdpInternal.category, .internal)
+
+        let rdpCertChanged = NexusErrorClassifier.classifyRdpError(
+            host: "10.2.200.27",
+            port: 3389,
+            rawNativeError: "TLS_CERTIFICATE_CHANGED: X.509 certificate fingerprint changed"
+        )
+        XCTAssertEqual(rdpCertChanged.category, .tlsCertificate)
     }
 }
