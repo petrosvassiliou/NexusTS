@@ -7653,7 +7653,7 @@ private fun PlayProtectAutoUpdateDialog(
                                     ).trim()
                                     else -> String.format(
                                         strings.autoUpdateUpToDateFormat,
-                                        uiState.updateCurrentVersion.ifBlank { "0.3.0-beta.2" }
+                                        uiState.updateCurrentVersion.ifBlank { "0.3.0-beta.3" }
                                     )
                                 },
                                 style = MaterialTheme.typography.titleSmall,
@@ -7668,7 +7668,7 @@ private fun PlayProtectAutoUpdateDialog(
                                 ""
                             }
                             Text(
-                                text = "Installed: v${uiState.updateCurrentVersion.ifBlank { "0.3.0-beta.2" }}  →  Latest: ${uiState.updateLatestTag.ifBlank { "current" }}$sizeMb",
+                                text = "Installed: v${uiState.updateCurrentVersion.ifBlank { "0.3.0-beta.3" }}  →  Latest: ${uiState.updateLatestTag.ifBlank { "current" }}$sizeMb",
                                 style = NexusTheme.monospace.keycapShortcut,
                                 color = MaterialTheme.colorScheme.secondary
                             )

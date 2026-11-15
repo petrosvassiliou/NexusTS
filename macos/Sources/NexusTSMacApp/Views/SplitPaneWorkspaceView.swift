@@ -165,7 +165,7 @@ private struct LeafPaneContainerView: View {
                                 .font(.caption)
                         }
                         .buttonStyle(.plain)
-                        .help("Full Screen Session Mode")
+                        .help("\(MacWorkspaceShortcut.fullScreenSession.title(in: store.strings)) (\(MacWorkspaceShortcut.fullScreenSession.keycap))")
                     }
 
                     Button {
@@ -176,7 +176,7 @@ private struct LeafPaneContainerView: View {
                             .font(.caption.weight(.semibold))
                     }
                     .buttonStyle(.plain)
-                    .help("New Local Terminal Tab in Pane")
+                    .help("\(MacWorkspaceShortcut.localTerminal.title(in: store.strings)) (\(MacWorkspaceShortcut.localTerminal.keycap))")
 
                     Button {
                         let (updated, newId) = store.paneTree.splittingPane(
@@ -191,7 +191,7 @@ private struct LeafPaneContainerView: View {
                             .font(.caption)
                     }
                     .buttonStyle(.plain)
-                    .help("Split Pane Right")
+                    .help("\(MacWorkspaceShortcut.splitRight.title(in: store.strings)) (\(MacWorkspaceShortcut.splitRight.keycap))")
                 }
                 .foregroundStyle(.secondary)
                 .padding(.trailing, 10)

@@ -39,13 +39,15 @@ cp "${MACOS_DIR}/Info.plist" "${APP_BUNDLE}/Contents/Info.plist"
 printf "APPL????" > "${APP_BUNDLE}/Contents/PkgInfo"
 
 FREERDP_MAC_LIB_DIR="${REPO_ROOT}/native/third_party/freerdp3/macos/lib"
-if [[ -e "${FREERDP_MAC_LIB_DIR}/libfreerdp3.dylib" ]]; then
-    echo "==> Embedding Universal2 FreeRDP 3.x + OpenSSL 3.4 frameworks..."
+if [[ ! -f "${FREERDP_MAC_LIB_DIR}/libfreerdp3.a" && -e "${FREERDP_MAC_LIB_DIR}/libfreerdp3.dylib" ]]; then
+    echo "==> Embedding Universal2 FreeRDP 3.x dynamic libraries..."
     mkdir -p "${APP_BUNDLE}/Contents/Frameworks"
     cp -a "${FREERDP_MAC_LIB_DIR}/"*.dylib "${APP_BUNDLE}/Contents/Frameworks/"
+else
+    echo "==> FreeRDP 3.x + OpenSSL 3.4 statically linked into Contents/MacOS/NexusTS (zero external dylibs)."
 fi
 
-echo "==> Generating Apple HIG squircle AppIcon.icns..."
+echo "==> Generating Apple HIG squircle AppIcon.icns matching Android NexusTS icon..."
 ICONSET_DIR="${DIST_DIR}/AppIcon.iconset"
 mkdir -p "${ICONSET_DIR}"
 
@@ -68,6 +70,13 @@ let specs: [(String, Int)] = [
     ("icon_512x512@2x.png", 1024)
 ]
 
+func rgba(_ hex: UInt32, alpha: CGFloat = 1.0) -> CGColor {
+    let r = CGFloat((hex >> 16) & 0xFF) / 255.0
+    let g = CGFloat((hex >> 8) & 0xFF) / 255.0
+    let b = CGFloat(hex & 0xFF) / 255.0
+    return CGColor(red: r, green: g, blue: b, alpha: alpha)
+}
+
 for (filename, px) in specs {
     let rep = NSBitmapImageRep(
         bitmapDataPlanes: nil,
@@ -85,33 +94,173 @@ for (filename, px) in specs {
     NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
     let ctx = NSGraphicsContext.current!.cgContext
     let size = CGFloat(px)
-    let inset = size * 0.08
-    let rect = CGRect(x: inset, y: inset, width: size - inset * 2, height: size - inset * 2)
-    let path = CGPath(roundedRect: rect, cornerWidth: size * 0.22, cornerHeight: size * 0.22, transform: nil)
-    ctx.addPath(path)
+
+    // Flip to top-down coordinate system matching Android VectorDrawable (0,0 = top-left)
+    ctx.translateBy(x: 0, y: size)
+    ctx.scaleBy(x: 1, y: -1)
+
+    // Standard macOS Big Sur / Sonoma / Sequoia squircle inset (824/1024 ≈ 80.5%)
+    let inset = size * 0.095
+    let squircleRect = CGRect(x: inset, y: inset, width: size - inset * 2, height: size - inset * 2)
+    let squircleRadius = squircleRect.width * 0.224
+    let squirclePath = CGPath(
+        roundedRect: squircleRect,
+        cornerWidth: squircleRadius,
+        cornerHeight: squircleRadius,
+        transform: nil
+    )
+
+    // Subtle macOS Dock drop shadow for >= 64px icons
+    if px >= 64 {
+        ctx.saveGState()
+        ctx.setShadow(
+            offset: CGSize(width: 0, height: size * 0.018),
+            blur: size * 0.032,
+            color: CGColor(red: 0, green: 0, blue: 0, alpha: 0.32)
+        )
+        ctx.setFillColor(rgba(0x081124))
+        ctx.addPath(squirclePath)
+        ctx.fillPath()
+        ctx.restoreGState()
+    }
+
+    ctx.saveGState()
+    ctx.addPath(squirclePath)
     ctx.clip()
 
-    let colors = [
-        CGColor(red: 0.05, green: 0.16, blue: 0.42, alpha: 1.0),
-        CGColor(red: 0.04, green: 0.52, blue: 1.00, alpha: 1.0)
-    ] as CFArray
-    let grad = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors, locations: [0.0, 1.0])!
-    ctx.drawLinearGradient(grad, start: CGPoint(x: 0, y: 0), end: CGPoint(x: size, y: size), options: [])
+    // Map Android Adaptive Icon visible viewport (x=16..92, y=16..92 of 108x108) into macOS squircle
+    let cropOrigin: CGFloat = 16.0
+    let cropSpan: CGFloat = 76.0
+    let scale = squircleRect.width / cropSpan
+    ctx.translateBy(x: squircleRect.minX - cropOrigin * scale, y: squircleRect.minY - cropOrigin * scale)
+    ctx.scaleBy(x: scale, y: scale)
 
-    // Terminal prompt chevron ">_"
-    ctx.setStrokeColor(CGColor(red: 0.35, green: 0.96, blue: 0.76, alpha: 1.0))
-    ctx.setLineWidth(max(2.0, size * 0.07))
-    ctx.setLineCap(.round)
-    ctx.setLineJoin(.round)
-    ctx.move(to: CGPoint(x: size * 0.28, y: size * 0.64))
-    ctx.addLine(to: CGPoint(x: size * 0.46, y: size * 0.50))
-    ctx.addLine(to: CGPoint(x: size * 0.28, y: size * 0.36))
-    ctx.strokePath()
+    // --- 1. ic_launcher_background.xml ---
+    // Deep Midnight Sapphire Base (#081124)
+    ctx.setFillColor(rgba(0x081124))
+    ctx.fill(CGRect(x: 0, y: 0, width: 108, height: 108))
 
-    ctx.setStrokeColor(CGColor(red: 1.0, green: 1.0, blue: 1.0, alpha: 0.95))
-    ctx.move(to: CGPoint(x: size * 0.52, y: size * 0.36))
-    ctx.addLine(to: CGPoint(x: size * 0.73, y: size * 0.36))
+    // Expressive Tonal Horizon Sweep (#102347): M0,0 L108,0 L108,66 C78,80 34,68 0,88 Z
+    let sweep = CGMutablePath()
+    sweep.move(to: CGPoint(x: 0, y: 0))
+    sweep.addLine(to: CGPoint(x: 108, y: 0))
+    sweep.addLine(to: CGPoint(x: 108, y: 66))
+    sweep.addCurve(to: CGPoint(x: 0, y: 88), control1: CGPoint(x: 78, y: 80), control2: CGPoint(x: 34, y: 68))
+    sweep.closeSubpath()
+    ctx.setFillColor(rgba(0x102347))
+    ctx.addPath(sweep)
+    ctx.fillPath()
+
+    // Ambient Royal Sapphire Glow (#173673, alpha 0.55)
+    let glow = CGMutablePath()
+    glow.move(to: CGPoint(x: 54, y: 12))
+    glow.addCurve(to: CGPoint(x: 98, y: 52), control1: CGPoint(x: 82, y: 12), control2: CGPoint(x: 98, y: 28))
+    glow.addCurve(to: CGPoint(x: 54, y: 78), control1: CGPoint(x: 98, y: 72), control2: CGPoint(x: 78, y: 84))
+    glow.addCurve(to: CGPoint(x: 24, y: 34), control1: CGPoint(x: 30, y: 72), control2: CGPoint(x: 18, y: 54))
+    glow.addCurve(to: CGPoint(x: 54, y: 12), control1: CGPoint(x: 29, y: 18), control2: CGPoint(x: 40, y: 12))
+    glow.closeSubpath()
+    ctx.setFillColor(rgba(0x173673, alpha: 0.55))
+    ctx.addPath(glow)
+    ctx.fillPath()
+
+    // --- 2. ic_launcher_foreground.xml ---
+    // Remote Desktop Display Outer Bezel (#E2EEFF): x=25..83, y=27..67, rx=7
+    let bezelPath = CGPath(roundedRect: CGRect(x: 25, y: 27, width: 58, height: 40), cornerWidth: 7, cornerHeight: 7, transform: nil)
+    ctx.setFillColor(rgba(0xE2EEFF))
+    ctx.addPath(bezelPath)
+    ctx.fillPath()
+
+    // Midnight Sapphire Screen Interior (#081328): x=28.5..79.5, y=30.5..63.5, rx=4.5
+    let screenRect = CGRect(x: 28.5, y: 30.5, width: 51, height: 33)
+    let screenPath = CGPath(roundedRect: screenRect, cornerWidth: 4.5, cornerHeight: 4.5, transform: nil)
+    ctx.setFillColor(rgba(0x081328))
+    ctx.addPath(screenPath)
+    ctx.fillPath()
+
+    // Remote Window Header Strip (#142C57) clipped to screen top
+    ctx.saveGState()
+    ctx.addPath(screenPath)
+    ctx.clip()
+    ctx.setFillColor(rgba(0x142C57))
+    ctx.fill(CGRect(x: 28.5, y: 30.5, width: 51, height: 7.0))
+    ctx.restoreGState()
+
+    // Window Control Dots (#38BDF8 at 34,34 r=1.6; #7AA8FF at 39,34 r=1.6)
+    ctx.setFillColor(rgba(0x38BDF8))
+    ctx.fillEllipse(in: CGRect(x: 34 - 1.6, y: 34 - 1.6, width: 3.2, height: 3.2))
+    ctx.setFillColor(rgba(0x7AA8FF))
+    ctx.fillEllipse(in: CGRect(x: 39 - 1.6, y: 34 - 1.6, width: 3.2, height: 3.2))
+
+    // Left Pane: Electric Sky-Cyan SSH Terminal Chevron + Prompt Underscore (#38BDF8)
+    let chevron = CGMutablePath()
+    chevron.move(to: CGPoint(x: 34.2, y: 42.5))
+    chevron.addLine(to: CGPoint(x: 44.2, y: 50.2))
+    chevron.addLine(to: CGPoint(x: 34.2, y: 57.9))
+    chevron.addLine(to: CGPoint(x: 31.9, y: 55.1))
+    chevron.addLine(to: CGPoint(x: 38.3, y: 50.2))
+    chevron.addLine(to: CGPoint(x: 31.9, y: 45.3))
+    chevron.closeSubpath()
+    ctx.setFillColor(rgba(0x38BDF8))
+    ctx.addPath(chevron)
+    ctx.fillPath()
+
+    let underscore = CGPath(
+        roundedRect: CGRect(x: 43.6, y: 54.4, width: 11.5, height: 3.2),
+        cornerWidth: 1.6,
+        cornerHeight: 1.6,
+        transform: nil
+    )
+    ctx.addPath(underscore)
+    ctx.fillPath()
+
+    // Right Pane: Connected Remote Desktop Tile (#1A386E + #3B82F6 header + #93C5FD / #60A5FA bars)
+    let rdpTileRect = CGRect(x: 57.5, y: 41.5, width: 18.5, height: 17.5)
+    let rdpTilePath = CGPath(roundedRect: rdpTileRect, cornerWidth: 2.5, cornerHeight: 2.5, transform: nil)
+    ctx.setFillColor(rgba(0x1A386E))
+    ctx.addPath(rdpTilePath)
+    ctx.fillPath()
+
+    ctx.saveGState()
+    ctx.addPath(rdpTilePath)
+    ctx.clip()
+    ctx.setFillColor(rgba(0x3B82F6))
+    ctx.fill(CGRect(x: 57.5, y: 41.5, width: 18.5, height: 4.7))
+    ctx.restoreGState()
+
+    ctx.setFillColor(rgba(0x93C5FD))
+    ctx.fill(CGRect(x: 61.0, y: 50.0, width: 11.5, height: 2.2))
+    ctx.setFillColor(rgba(0x60A5FA))
+    ctx.fill(CGRect(x: 61.0, y: 54.0, width: 7.5, height: 2.2))
+
+    // Display Stand Neck (#93C5FD) + Connected Server Hub Base (#E2EEFF)
+    ctx.setFillColor(rgba(0x93C5FD))
+    ctx.fill(CGRect(x: 50.5, y: 67.0, width: 7.0, height: 7.5))
+
+    let hubBasePath = CGPath(
+        roundedRect: CGRect(x: 37.0, y: 73.5, width: 34.0, height: 5.0),
+        cornerWidth: 2.5,
+        cornerHeight: 2.5,
+        transform: nil
+    )
+    ctx.setFillColor(rgba(0xE2EEFF))
+    ctx.addPath(hubBasePath)
+    ctx.fillPath()
+
+    // Active Server Node Pulse Core (#081328 outer + #38BDF8 inner)
+    ctx.setFillColor(rgba(0x081328))
+    ctx.fillEllipse(in: CGRect(x: 54.0 - 4.2, y: 76.0 - 4.2, width: 8.4, height: 8.4))
+    ctx.setFillColor(rgba(0x38BDF8))
+    ctx.fillEllipse(in: CGRect(x: 54.0 - 2.4, y: 76.0 - 2.4, width: 4.8, height: 4.8))
+
+    ctx.restoreGState()
+
+    // Subtle glass rim highlight matching NexusBrandEmblem border
+    ctx.saveGState()
+    ctx.setStrokeColor(rgba(0x60A5FA, alpha: 0.28))
+    ctx.setLineWidth(max(0.75, size * 0.008))
+    ctx.addPath(squirclePath)
     ctx.strokePath()
+    ctx.restoreGState()
 
     NSGraphicsContext.restoreGraphicsState()
     let pointDim = filename.contains("@2x") ? (px / 2) : px
@@ -128,8 +277,10 @@ rm -rf "${ICONSET_DIR}"
 echo "==> Code-signing NexusTS.app..."
 SIGN_IDENTITY="${CODESIGN_IDENTITY:--}"
 SIGN_EXTRA_FLAGS=()
+ENTITLEMENTS_ARGS=()
 if [[ "${SIGN_IDENTITY}" != "-" ]]; then
     SIGN_EXTRA_FLAGS+=(--options runtime --timestamp)
+    ENTITLEMENTS_ARGS+=(--entitlements "${MACOS_DIR}/NexusTS.entitlements")
 fi
 
 if [[ -d "${APP_BUNDLE}/Contents/Frameworks" ]]; then
@@ -138,7 +289,7 @@ if [[ -d "${APP_BUNDLE}/Contents/Frameworks" ]]; then
     done < <(find "${APP_BUNDLE}/Contents/Frameworks" -type f -name "*.dylib" -print0)
 fi
 
-codesign --force ${SIGN_EXTRA_FLAGS[@]+"${SIGN_EXTRA_FLAGS[@]}"} --entitlements "${MACOS_DIR}/NexusTS.entitlements" --sign "${SIGN_IDENTITY}" "${APP_BUNDLE}"
+codesign --force ${SIGN_EXTRA_FLAGS[@]+"${SIGN_EXTRA_FLAGS[@]}"} ${ENTITLEMENTS_ARGS[@]+"${ENTITLEMENTS_ARGS[@]}"} --sign "${SIGN_IDENTITY}" "${APP_BUNDLE}"
 codesign --verify --deep --strict "${APP_BUNDLE}"
 
 ARCHIVE_SUFFIX="Host"
@@ -153,7 +304,7 @@ ditto -c -k --sequesterRsrc --keepParent "${APP_BUNDLE}" "${ZIP_OUT}"
 
 STAGE_DMG_DIR="${DIST_DIR}/dmg-stage"
 mkdir -p "${STAGE_DMG_DIR}"
-cp -R "${APP_BUNDLE}" "${STAGE_DMG_DIR}/NexusTS.app"
+ditto "${APP_BUNDLE}" "${STAGE_DMG_DIR}/NexusTS.app"
 ln -s /Applications "${STAGE_DMG_DIR}/Applications"
 hdiutil create -volname "NexusTS" -srcfolder "${STAGE_DMG_DIR}" -ov -format UDZO "${DMG_OUT}" >/dev/null
 rm -rf "${STAGE_DMG_DIR}"

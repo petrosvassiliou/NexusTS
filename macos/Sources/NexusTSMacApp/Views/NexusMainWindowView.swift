@@ -306,23 +306,23 @@ public struct NexusMainWindowView: View {
             Button {
                 store.toggleSidebarVisibility()
             } label: {
-                Label("Toggle Sidebar", systemImage: "line.3.horizontal")
+                Label(MacWorkspaceShortcut.toggleSidebar.title(in: store.strings), systemImage: "line.3.horizontal")
             }
-            .help("Show / Hide Sidebar")
+            .help("\(MacWorkspaceShortcut.toggleSidebar.title(in: store.strings)) (\(MacWorkspaceShortcut.toggleSidebar.keycap))")
 
             if store.activeSection != .sessions {
                 Button {
-                    store.activeSection = .sessions
+                    store.selectSection(.sessions)
                 } label: {
                     Label(store.strings.connections, systemImage: "chevron.left")
                 }
-                .help("Return to Connections & Sessions (⌘1)")
+                .help("\(store.strings.connections) (⌘1)")
             }
 
             Menu {
                 ForEach(WorkspacePrimarySection.allCases) { section in
                     Button {
-                        store.activeSection = section
+                        store.selectSection(section)
                     } label: {
                         Label(
                             studioTitle(for: section),
@@ -336,41 +336,27 @@ public struct NexusMainWindowView: View {
                     systemImage: store.activeSection == .sessions ? "square.grid.2x2" : store.activeSection.sfSymbol
                 )
             }
-            .help("Switch Workspace Studio (⌘1–⌘7)")
+            .help("\(store.strings.studios) (⌘1–⌘7)")
         }
 
         ToolbarItemGroup(placement: .primaryAction) {
             Menu {
                 Button {
-                    let targetFolder = store.selectedFolderId == VaultHierarchySanitizer.systemCredentialsFolderId
-                        ? nil
-                        : store.selectedFolderId
-                    store.newConnectionInitialFolderId = targetFolder
-                    store.newConnectionInitialProtocol = .SSH
-                    store.isPresentingNewConnectionSheet = true
+                    store.presentNewConnectionSheet(defaultProtocol: .RDP)
                 } label: {
-                    Label(store.strings.newConnection, systemImage: "plus.rectangle.on.rectangle")
+                    Label("\(MacWorkspaceShortcut.newConnection.menuTitle(in: store.strings)) (\(MacWorkspaceShortcut.newConnection.keycap))", systemImage: "plus.rectangle.on.rectangle")
                 }
 
                 Button {
-                    let targetFolder = store.selectedFolderId == VaultHierarchySanitizer.systemCredentialsFolderId
-                        ? nil
-                        : store.selectedFolderId
-                    store.newConnectionInitialFolderId = targetFolder
-                    store.newConnectionInitialProtocol = .RDP
-                    store.isPresentingNewConnectionSheet = true
+                    store.presentNewConnectionSheet(defaultProtocol: .SSH)
                 } label: {
-                    Label("New Remote Desktop (RDP)…", systemImage: "display")
+                    Label("New SSH Connection…", systemImage: "terminal")
                 }
 
                 Button {
-                    let parentFolder = store.selectedFolderId == VaultHierarchySanitizer.systemCredentialsFolderId
-                        ? nil
-                        : store.selectedFolderId
-                    store.newFolderInitialParentId = parentFolder
-                    store.isPresentingNewFolderSheet = true
+                    store.presentNewFolderSheet()
                 } label: {
-                    Label(store.strings.newFolder, systemImage: "folder.badge.plus")
+                    Label("\(MacWorkspaceShortcut.newFolder.menuTitle(in: store.strings)) (\(MacWorkspaceShortcut.newFolder.keycap))", systemImage: "folder.badge.plus")
                 }
 
                 Button {
@@ -396,7 +382,7 @@ public struct NexusMainWindowView: View {
                 Button {
                     store.openLocalTerminal()
                 } label: {
-                    Label(store.strings.localTerminal, systemImage: "apple.terminal")
+                    Label("\(MacWorkspaceShortcut.localTerminal.title(in: store.strings)) (\(MacWorkspaceShortcut.localTerminal.keycap))", systemImage: "apple.terminal")
                 }
 
                 Divider()
@@ -430,70 +416,65 @@ public struct NexusMainWindowView: View {
                     Label(store.strings.resetDatabase, systemImage: "trash")
                 }
             } label: {
-                Label("Add", systemImage: "plus")
+                Label(store.strings.newConnection, systemImage: "plus")
             } primaryAction: {
-                let targetFolder = store.selectedFolderId == VaultHierarchySanitizer.systemCredentialsFolderId
-                    ? nil
-                    : store.selectedFolderId
-                store.newConnectionInitialFolderId = targetFolder
-                store.newConnectionInitialProtocol = .SSH
-                store.isPresentingNewConnectionSheet = true
+                store.presentNewConnectionSheet()
             }
-            .help("Create a new connection, folder, intelligent folder, credential, or import a Royal TS / enterprise vault (⌘N)")
+            .help("\(MacWorkspaceShortcut.newConnection.title(in: store.strings)) (\(MacWorkspaceShortcut.newConnection.keycap))")
 
             Button {
                 store.openLocalTerminal()
             } label: {
-                Label(store.strings.localTerminal, systemImage: "terminal")
+                Label(MacWorkspaceShortcut.localTerminal.title(in: store.strings), systemImage: "terminal")
             }
-            .help("Open local macOS login shell (/bin/zsh) (⌘T)")
+            .help("\(MacWorkspaceShortcut.localTerminal.title(in: store.strings)) (\(MacWorkspaceShortcut.localTerminal.keycap))")
 
             Button {
-                store.isQuickConnectPresented.toggle()
+                store.toggleQuickConnect()
             } label: {
-                Label("Quick Connect", systemImage: "sparkle.magnifyingglass")
+                Label(MacWorkspaceShortcut.quickConnect.title(in: store.strings), systemImage: "sparkle.magnifyingglass")
             }
-            .help("Quick Connect & Fuzzy Host Search (⌘K)")
+            .help("\(MacWorkspaceShortcut.quickConnect.title(in: store.strings)) (\(MacWorkspaceShortcut.quickConnect.keycap))")
 
             Button {
                 store.splitFocusedPane(.horizontal)
             } label: {
-                Label(store.strings.splitRight, systemImage: "rectangle.split.2x1")
+                Label(MacWorkspaceShortcut.splitRight.title(in: store.strings), systemImage: "rectangle.split.2x1")
             }
-            .help("Split Active Pane Right (⌘D)")
+            .help("\(MacWorkspaceShortcut.splitRight.title(in: store.strings)) (\(MacWorkspaceShortcut.splitRight.keycap))")
 
             Button {
                 store.splitFocusedPane(.vertical)
             } label: {
-                Label(store.strings.splitDown, systemImage: "rectangle.split.1x2")
+                Label(MacWorkspaceShortcut.splitDown.title(in: store.strings), systemImage: "rectangle.split.1x2")
             }
-            .help("Split Active Pane Down (⇧⌘D)")
+            .help("\(MacWorkspaceShortcut.splitDown.title(in: store.strings)) (\(MacWorkspaceShortcut.splitDown.keycap))")
 
             Toggle(isOn: $store.broadcastInputEnabled) {
-                Label(store.strings.broadcastInput, systemImage: "dot.radiowaves.left.and.right")
+                Label(MacWorkspaceShortcut.broadcastInput.title(in: store.strings), systemImage: "dot.radiowaves.left.and.right")
             }
-            .help("Broadcast keyboard input to all terminal panes (⇧⌘B)")
+            .help("\(MacWorkspaceShortcut.broadcastInput.title(in: store.strings)) (\(MacWorkspaceShortcut.broadcastInput.keycap))")
 
             Button {
                 Task { await store.syncCloudNow(reportErrors: true) }
             } label: {
-                Label(store.strings.syncNow, systemImage: "arrow.triangle.2.circlepath.icloud")
+                Label(MacWorkspaceShortcut.syncNow.title(in: store.strings), systemImage: "arrow.triangle.2.circlepath.icloud")
             }
-            .help("Synchronize vault with iCloud Drive or Google Drive (⇧⌘S)")
+            .help("\(MacWorkspaceShortcut.syncNow.title(in: store.strings)) (\(MacWorkspaceShortcut.syncNow.keycap))")
 
             Button {
                 store.lockVault()
             } label: {
-                Label(store.strings.lockVault, systemImage: "lock")
+                Label(MacWorkspaceShortcut.lockVault.title(in: store.strings), systemImage: "lock")
             }
-            .help("Lock zero-knowledge vault and zeroize keys (⇧⌘L)")
+            .help("\(MacWorkspaceShortcut.lockVault.title(in: store.strings)) (\(MacWorkspaceShortcut.lockVault.keycap))")
 
             Button {
-                store.isInspectorPresented.toggle()
+                store.toggleInspector()
             } label: {
-                Label(store.strings.inspectorTitle, systemImage: "sidebar.trailing")
+                Label(MacWorkspaceShortcut.toggleInspector.title(in: store.strings), systemImage: "sidebar.trailing")
             }
-            .help("Toggle Property Inspector (⌥⌘I)")
+            .help("\(MacWorkspaceShortcut.toggleInspector.title(in: store.strings)) (\(MacWorkspaceShortcut.toggleInspector.keycap))")
         }
     }
 }

@@ -2,15 +2,15 @@
 # ==============================================================================
 # NexusTS (com.nexusts.app.macos) — Universal2 OpenSSL 3.4 + FreeRDP 3.12 Builder
 # ==============================================================================
-# Compiles OpenSSL 3.4.1 (static PIC) and FreeRDP 3.12.0 (Universal2 arm64 + x86_64
-# @rpath dylibs with builtin DISP_DVC, RDPDR drive redirection, CLIPRDR, RDPSND)
-# for macOS 14 Sonoma+.
+# Compiles OpenSSL 3.4.1 and FreeRDP 3.12.0 as self-contained Universal2
+# (arm64 + x86_64) static PIC archives (.a) with builtin DISP_DVC, RDPDR drive
+# redirection, CLIPRDR, RDPSND, and AUDIN channels for macOS 14 Sonoma+.
 #
 # Staged output matches native/CMakeLists.txt & macos/Package.swift contract:
 #   native/third_party/freerdp3/macos/
 #     ├── include/freerdp3/
 #     ├── include/winpr3/
-#     └── lib/{libfreerdp3.dylib,libfreerdp-client3.dylib,libwinpr3.dylib,...}
+#     └── lib/{libfreerdp3.a,libfreerdp-client3.a,libwinpr3.a,libssl.a,libcrypto.a,...}
 # ==============================================================================
 set -euo pipefail
 
@@ -158,9 +158,11 @@ for ARCH in "${TARGET_ARCHS[@]}"; do
     -DOPENSSL_INCLUDE_DIR="$ARCH_PREFIX/include" \
     -DOPENSSL_CRYPTO_LIBRARY="$ARCH_PREFIX/lib/libcrypto.a" \
     -DOPENSSL_SSL_LIBRARY="$ARCH_PREFIX/lib/libssl.a" \
-    -DBUILD_SHARED_LIBS=ON \
+    -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+    -DBUILD_SHARED_LIBS=OFF \
     -DBUILTIN_CHANNELS=ON \
     -DBUILD_TESTING=OFF \
+    -DWITH_WINPR_TOOLS=OFF \
     -DWITH_UNICODE_BUILTIN=ON \
     -DWITH_CLIENT=ON \
     -DWITH_CLIENT_COMMON=ON \
@@ -211,50 +213,57 @@ for ARCH in "${TARGET_ARCHS[@]}"; do
 
   cmake --build "$ARCH_BUILD/freerdp" --parallel "$JOBS"
   cmake --install "$ARCH_BUILD/freerdp"
+
+  # Ensure any static builtin channel archives not copied by cmake --install are staged too
+  mkdir -p "$ARCH_PREFIX/lib/freerdp3-channels"
+  while IFS= read -r -d '' extra_a; do
+    base_a="$(basename "$extra_a")"
+    if [[ "$base_a" == libwinpr-tools* ]]; then
+      continue
+    fi
+    if ! find "$ARCH_PREFIX/lib" -name "$base_a" | grep -q .; then
+      cp -f "$extra_a" "$ARCH_PREFIX/lib/freerdp3-channels/$base_a"
+    fi
+  done < <(find "$ARCH_BUILD/freerdp" -path "*/CMakeFiles/*" -prune -o -type f -name "*.a" -print0)
 done
 
 echo "======================================================================"
-echo "==> Merging FreeRDP ${FREERDP_VERSION} into Universal2 Stage: ${STAGE_ROOT}"
+echo "==> Merging Static OpenSSL + FreeRDP ${FREERDP_VERSION} into Universal2 Stage: ${STAGE_ROOT}"
 echo "======================================================================"
 rm -rf "$STAGE_ROOT"
 mkdir -p "$STAGE_ROOT/include" "$STAGE_ROOT/lib"
 
-PRIMARY_ARCH="${TARGET_ARCHS[0]}"
+PRIMARY_ARCH="$(printf '%s' "${TARGET_ARCHS[0]}" | tr -d '[:space:]')"
 cp -a "$WORK_DIR/stage/$PRIMARY_ARCH/include/." "$STAGE_ROOT/include/"
 
-for item in "$WORK_DIR/stage/$PRIMARY_ARCH/lib/"*.dylib; do
-  [[ -e "$item" || -L "$item" ]] || continue
-  base="$(basename "$item")"
-  if [[ -L "$item" ]]; then
-    ln -sf "$(readlink "$item")" "$STAGE_ROOT/lib/$base"
+while IFS= read -r -d '' primary_a; do
+  rel_path="${primary_a#"$WORK_DIR/stage/$PRIMARY_ARCH/lib/"}"
+  base_name="$(basename "$rel_path")"
+  # Skip unused CLI helper archive if present
+  if [[ "$base_name" == libwinpr-tools* ]]; then
+    continue
+  fi
+  mkdir -p "$(dirname "$STAGE_ROOT/lib/$rel_path")"
+  LIPO_INPUTS=()
+  for ARCH in "${TARGET_ARCHS[@]}"; do
+    ARCH="$(printf '%s' "$ARCH" | tr -d '[:space:]')"
+    LIPO_INPUTS+=("$WORK_DIR/stage/$ARCH/lib/$rel_path")
+  done
+  if [[ "${#LIPO_INPUTS[@]}" -gt 1 ]]; then
+    lipo -create -output "$STAGE_ROOT/lib/$rel_path" "${LIPO_INPUTS[@]}"
   else
-    LIPO_INPUTS=()
-    for ARCH in "${TARGET_ARCHS[@]}"; do
-      ARCH="$(printf '%s' "$ARCH" | tr -d '[:space:]')"
-      LIPO_INPUTS+=("$WORK_DIR/stage/$ARCH/lib/$base")
-    done
-    if [[ "${#LIPO_INPUTS[@]}" -gt 1 ]]; then
-      lipo -create -output "$STAGE_ROOT/lib/$base" "${LIPO_INPUTS[@]}"
-    else
-      cp -f "${LIPO_INPUTS[0]}" "$STAGE_ROOT/lib/$base"
-    fi
-    chmod 755 "$STAGE_ROOT/lib/$base"
-    strip -x "$STAGE_ROOT/lib/$base" || true
+    cp -f "${LIPO_INPUTS[0]}" "$STAGE_ROOT/lib/$rel_path"
   fi
-done
+done < <(find "$WORK_DIR/stage/$PRIMARY_ARCH/lib" -type f -name "*.a" -print0)
 
-for required_dylib in libfreerdp3.dylib libfreerdp-client3.dylib libwinpr3.dylib; do
-  if [[ ! -e "$STAGE_ROOT/lib/$required_dylib" ]]; then
-    echo "ERROR: Expected $STAGE_ROOT/lib/$required_dylib was not staged!" >&2
+for required_archive in libfreerdp3.a libfreerdp-client3.a libwinpr3.a libssl.a libcrypto.a; do
+  if [[ ! -f "$STAGE_ROOT/lib/$required_archive" ]]; then
+    echo "ERROR: Expected static archive $STAGE_ROOT/lib/$required_archive was not staged!" >&2
     exit 1
   fi
-  echo "  Verified $(basename "$required_dylib"): $(lipo -archs "$STAGE_ROOT/lib/$required_dylib")"
-  otool -L "$STAGE_ROOT/lib/$required_dylib"
-  if otool -L "$STAGE_ROOT/lib/$required_dylib" | tail -n +2 | grep -E '(/opt/homebrew|/usr/local)' >/dev/null 2>&1; then
-    echo "ERROR: Non-portable Homebrew/local dylib dependency leaked into $required_dylib!" >&2
-    exit 1
-  fi
+  echo "  Verified $required_archive: $(lipo -archs "$STAGE_ROOT/lib/$required_archive")"
 done
 
+echo "  Total Universal2 static archives staged: $(find "$STAGE_ROOT/lib" -type f -name "*.a" | wc -l)"
 rm -rf "$WORK_DIR/build"
-echo "SUCCESS: Staged Universal2 FreeRDP ${FREERDP_VERSION} -> $STAGE_ROOT"
+echo "SUCCESS: Staged Universal2 Static FreeRDP ${FREERDP_VERSION} -> $STAGE_ROOT"

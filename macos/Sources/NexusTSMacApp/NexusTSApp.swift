@@ -1,18 +1,52 @@
 import AppKit
 import CoreSpotlight
+import Darwin
 import NexusTSCore
 import SwiftUI
 
+public final class NexusMacAppDelegate: NSObject, NSApplicationDelegate {
+    public func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    public func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+        if !flag {
+            for window in sender.windows where window.isMiniaturized {
+                window.deminiaturize(nil)
+                return false
+            }
+            return true
+        }
+        return true
+    }
+}
+
 @main
 public struct NexusTSApp: App {
+    @NSApplicationDelegateAdaptor(NexusMacAppDelegate.self) private var appDelegate
     @StateObject private var store = WorkspaceStore()
 
     public init() {
-        NSWindow.allowsAutomaticWindowTabbing = true
+        if CommandLine.arguments.contains("--self-test") {
+            let en = LocalizedWorkspaceStrings.catalog(for: .en)
+            let de = LocalizedWorkspaceStrings.catalog(for: .de)
+            guard !en.newConnection.isEmpty, !de.newConnection.isEmpty else {
+                Darwin.exit(1)
+            }
+            print("NEXUSTS_MACOS_SELF_TEST_OK version=\(MacGitHubReleaseUpdater.currentVersion)")
+            fflush(stdout)
+            Darwin.exit(0)
+        }
+        // Disable AppKit's automatic window tabbing so macOS does not inject "File > New Tab (⌘T)"
+        // and hijack ⌘T away from opening a NexusTS Local Terminal tab.
+        NSWindow.allowsAutomaticWindowTabbing = false
     }
 
     public var body: some Scene {
-        WindowGroup {
+        WindowGroup(id: "main-workspace") {
             NexusMainWindowView()
                 .environmentObject(store)
                 .frame(minWidth: 980, minHeight: 620)
@@ -30,8 +64,6 @@ public struct NexusTSApp: App {
         .windowToolbarStyle(.unified(showsTitle: true))
         .defaultSize(width: 1380, height: 860)
         .commands {
-            SidebarCommands()
-            InspectorCommands()
             ToolbarCommands()
             NexusMenuBarCommands(store: store)
         }
@@ -89,121 +121,175 @@ struct NexusMenuBarCommands: Commands {
     @ObservedObject var store: WorkspaceStore
 
     var body: some Commands {
-        CommandGroup(after: .newItem) {
-            Button("New Connection…") {
-                let targetFolder = store.selectedFolderId == VaultHierarchySanitizer.systemCredentialsFolderId
-                    ? nil
-                    : store.selectedFolderId
-                store.newConnectionInitialFolderId = targetFolder
-                store.newConnectionInitialProtocol = .SSH
-                store.isPresentingNewConnectionSheet = true
+        // Replace SwiftUI's default "New Window (⌘N)" so ⌘N opens New Connection instead of spawning a new window.
+        CommandGroup(replacing: .newItem) {
+            Button(MacWorkspaceShortcut.newConnection.menuTitle(in: store.strings)) {
+                store.presentNewConnectionSheet()
             }
             .keyboardShortcut("n", modifiers: [.command])
+            .disabled(store.isVaultLocked)
 
-            Button("New Folder…") {
-                let parentFolder = store.selectedFolderId == VaultHierarchySanitizer.systemCredentialsFolderId
-                    ? nil
-                    : store.selectedFolderId
-                store.newFolderInitialParentId = parentFolder
-                store.isPresentingNewFolderSheet = true
+            Button(MacWorkspaceShortcut.newFolder.menuTitle(in: store.strings)) {
+                store.presentNewFolderSheet()
             }
             .keyboardShortcut("n", modifiers: [.command, .shift])
+            .disabled(store.isVaultLocked)
 
             Button(store.strings.newSmartFolder) {
                 store.isPresentingNewSmartFolderSheet = true
             }
+            .disabled(store.isVaultLocked)
 
             Button(store.strings.newDynamicFolder) {
                 store.isPresentingNewDynamicFolderSheet = true
             }
+            .disabled(store.isVaultLocked)
 
             Button(store.strings.newCredential) {
                 store.isPresentingNewCredentialSheet = true
             }
-
-            Button("New Local Terminal (/bin/zsh)") {
-                store.openLocalTerminal()
-            }
-            .keyboardShortcut("t", modifiers: [.command])
+            .disabled(store.isVaultLocked)
 
             Divider()
 
-            Button("Quick Connect Palette…") {
-                store.isQuickConnectPresented.toggle()
+            Button(MacWorkspaceShortcut.localTerminal.menuTitle(in: store.strings)) {
+                store.openLocalTerminal()
+            }
+            .keyboardShortcut("t", modifiers: [.command])
+            .disabled(store.isVaultLocked)
+
+            Button(MacWorkspaceShortcut.quickConnect.menuTitle(in: store.strings)) {
+                store.toggleQuickConnect()
             }
             .keyboardShortcut("k", modifiers: [.command])
+            .disabled(store.isVaultLocked)
+        }
+
+        CommandGroup(after: .toolbar) {
+            Divider()
+
+            Toggle(
+                MacWorkspaceShortcut.toggleSidebar.title(in: store.strings),
+                isOn: Binding(
+                    get: { store.columnVisibility != .detailOnly },
+                    set: { show in store.columnVisibility = show ? .all : .detailOnly }
+                )
+            )
+            .keyboardShortcut("s", modifiers: [.command, .control])
+            .disabled(store.isVaultLocked)
+
+            Toggle(
+                MacWorkspaceShortcut.toggleInspector.title(in: store.strings),
+                isOn: Binding(
+                    get: { store.isInspectorPresented },
+                    set: { newValue in
+                        if newValue && store.isFullScreenSessionMode {
+                            store.isFullScreenSessionMode = false
+                        }
+                        store.isInspectorPresented = newValue
+                    }
+                )
+            )
+            .keyboardShortcut("i", modifiers: [.command, .option])
+            .disabled(store.isVaultLocked)
+
+            Toggle(
+                MacWorkspaceShortcut.toggleAuditConsole.title(in: store.strings),
+                isOn: $store.isBottomConsolePresented
+            )
+            .keyboardShortcut("j", modifiers: [.command, .shift])
+            .disabled(store.isVaultLocked)
+
+            Toggle(
+                MacWorkspaceShortcut.fullScreenSession.title(in: store.strings),
+                isOn: Binding(
+                    get: { store.isFullScreenSessionMode },
+                    set: { _ in store.toggleFullScreenSessionMode() }
+                )
+            )
+            .keyboardShortcut("f", modifiers: [.command, .shift])
+            .disabled(store.isVaultLocked || (store.paneTree.allTabs.isEmpty && !store.isFullScreenSessionMode))
         }
 
         CommandMenu("Workspace") {
             Button(store.strings.connections) {
-                store.activeSection = .sessions
+                store.selectSection(.sessions)
             }
             .keyboardShortcut("1", modifiers: [.command])
+            .disabled(store.isVaultLocked)
 
             Button(store.strings.overview) {
-                store.activeSection = .overview
+                store.selectSection(.overview)
             }
             .keyboardShortcut("2", modifiers: [.command])
+            .disabled(store.isVaultLocked)
 
             Button(store.strings.templates) {
-                store.activeSection = .templates
+                store.selectSection(.templates)
             }
             .keyboardShortcut("3", modifiers: [.command])
+            .disabled(store.isVaultLocked)
 
             Button(store.strings.credentials) {
-                store.activeSection = .credentials
+                store.selectSection(.credentials)
             }
             .keyboardShortcut("4", modifiers: [.command])
+            .disabled(store.isVaultLocked)
 
             Button(store.strings.gateways) {
-                store.activeSection = .gateways
+                store.selectSection(.gateways)
             }
             .keyboardShortcut("5", modifiers: [.command])
+            .disabled(store.isVaultLocked)
 
             Button(store.strings.automationTasks) {
-                store.activeSection = .automationTasks
+                store.selectSection(.automationTasks)
             }
             .keyboardShortcut("6", modifiers: [.command])
+            .disabled(store.isVaultLocked)
 
             Button(store.strings.cloudSync) {
-                store.activeSection = .cloudSync
+                store.selectSection(.cloudSync)
             }
             .keyboardShortcut("7", modifiers: [.command])
+            .disabled(store.isVaultLocked)
 
             Divider()
 
-            Button("Split Active Pane Right") {
+            Button(MacWorkspaceShortcut.splitRight.title(in: store.strings)) {
                 store.splitFocusedPane(.horizontal)
             }
             .keyboardShortcut("d", modifiers: [.command])
+            .disabled(store.isVaultLocked)
 
-            Button("Split Active Pane Down") {
+            Button(MacWorkspaceShortcut.splitDown.title(in: store.strings)) {
                 store.splitFocusedPane(.vertical)
             }
             .keyboardShortcut("d", modifiers: [.command, .shift])
+            .disabled(store.isVaultLocked)
 
             Divider()
 
-            Toggle("Broadcast Keyboard Input to All Terminals", isOn: $store.broadcastInputEnabled)
-                .keyboardShortcut("b", modifiers: [.command, .shift])
-
-            Toggle("Toggle Audit & Broadcast Console", isOn: $store.isBottomConsolePresented)
-                .keyboardShortcut("j", modifiers: [.command, .shift])
-
-            Toggle("Toggle Property Inspector", isOn: $store.isInspectorPresented)
-                .keyboardShortcut("i", modifiers: [.command, .option])
+            Toggle(
+                MacWorkspaceShortcut.broadcastInput.title(in: store.strings),
+                isOn: $store.broadcastInputEnabled
+            )
+            .keyboardShortcut("b", modifiers: [.command, .shift])
+            .disabled(store.isVaultLocked)
 
             Divider()
 
-            Button("Synchronize Cloud Vault Now") {
+            Button(MacWorkspaceShortcut.syncNow.title(in: store.strings)) {
                 Task { await store.syncCloudNow(reportErrors: true) }
             }
             .keyboardShortcut("s", modifiers: [.command, .shift])
+            .disabled(store.isVaultLocked)
 
-            Button("Lock Zero-Knowledge Vault") {
+            Button(MacWorkspaceShortcut.lockVault.title(in: store.strings)) {
                 store.lockVault()
             }
             .keyboardShortcut("l", modifiers: [.command, .shift])
+            .disabled(store.isVaultLocked)
 
             Divider()
 

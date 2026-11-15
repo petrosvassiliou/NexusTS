@@ -441,7 +441,7 @@ public final class WorkspaceStore: ObservableObject {
     @Published public var editingConnection: VaultConnection? = nil
     @Published public var isPresentingNewConnectionSheet: Bool = false
     @Published public var newConnectionInitialFolderId: String? = nil
-    @Published public var newConnectionInitialProtocol: VaultProtocolType = .SSH
+    @Published public var newConnectionInitialProtocol: VaultProtocolType = .RDP
     @Published public var editingFolder: VaultFolder? = nil
     @Published public var isPresentingNewFolderSheet: Bool = false
     @Published public var newFolderInitialParentId: String? = nil
@@ -750,6 +750,79 @@ public final class WorkspaceStore: ObservableObject {
         columnVisibility = (columnVisibility == .detailOnly) ? .all : .detailOnly
     }
 
+    public func presentNewConnectionSheet(defaultProtocol: VaultProtocolType = .RDP) {
+        let targetFolder = selectedFolderId == VaultHierarchySanitizer.systemCredentialsFolderId
+            ? nil
+            : selectedFolderId
+        newConnectionInitialFolderId = targetFolder
+        newConnectionInitialProtocol = defaultProtocol
+        isPresentingNewConnectionSheet = true
+    }
+
+    public func presentNewFolderSheet() {
+        let parentFolder = selectedFolderId == VaultHierarchySanitizer.systemCredentialsFolderId
+            ? nil
+            : selectedFolderId
+        newFolderInitialParentId = parentFolder
+        isPresentingNewFolderSheet = true
+    }
+
+    public func toggleQuickConnect() {
+        isQuickConnectPresented.toggle()
+    }
+
+    public func selectSection(_ section: WorkspacePrimarySection) {
+        isFullScreenSessionMode = false
+        activeSection = section
+    }
+
+    public func toggleInspector() {
+        if isFullScreenSessionMode {
+            isFullScreenSessionMode = false
+        }
+        isInspectorPresented.toggle()
+    }
+
+    public func toggleFullScreenSessionMode() {
+        if isFullScreenSessionMode {
+            exitFullScreenSession()
+        } else if !paneTree.allTabs.isEmpty {
+            enterFullScreenSession()
+        }
+    }
+
+    public func executeShortcut(_ shortcut: MacWorkspaceShortcut) {
+        guard !isVaultLocked else { return }
+        switch shortcut {
+        case .quickConnect:
+            toggleQuickConnect()
+        case .localTerminal:
+            openLocalTerminal()
+        case .newConnection:
+            presentNewConnectionSheet()
+        case .newFolder:
+            presentNewFolderSheet()
+        case .splitRight:
+            splitFocusedPane(.horizontal)
+        case .splitDown:
+            splitFocusedPane(.vertical)
+        case .broadcastInput:
+            broadcastInputEnabled.toggle()
+        case .toggleSidebar:
+            toggleSidebarVisibility()
+        case .toggleInspector:
+            toggleInspector()
+        case .toggleAuditConsole:
+            isBottomConsolePresented.toggle()
+        case .fullScreenSession:
+            toggleFullScreenSessionMode()
+        case .syncNow:
+            Task { await syncCloudNow(reportErrors: true) }
+        case .lockVault:
+            lockVault()
+        }
+    }
+
     public var focusedOrFirstActiveTab: WorkspaceSessionTab? {
         paneTree.focusedOrFirstActiveTab(focusedPaneId: focusedPaneId)
     }
@@ -785,6 +858,7 @@ public final class WorkspaceStore: ObservableObject {
         adHocPassword: String? = nil,
         adHocDomain: String? = nil
     ) {
+        isFullScreenSessionMode = false
         activeSection = .sessions
         selectedConnectionId = connection.id
 
@@ -816,6 +890,7 @@ public final class WorkspaceStore: ObservableObject {
     }
 
     public func openLocalTerminal(inSplit orientation: SplitOrientation? = nil) {
+        isFullScreenSessionMode = false
         activeSection = .sessions
         let tab = WorkspaceSessionTab.makeLocalZshTab()
         if let orientation, let targetLeaf = focusedPaneId ?? paneTree.allLeafIds.first {
@@ -831,9 +906,15 @@ public final class WorkspaceStore: ObservableObject {
     }
 
     public func splitFocusedPane(_ orientation: SplitOrientation) {
+        isFullScreenSessionMode = false
+        activeSection = .sessions
         guard let targetLeaf = focusedPaneId ?? paneTree.allLeafIds.first else { return }
-        let shellTab = WorkspaceSessionTab.makeLocalZshTab()
-        let (updated, newLeafId) = paneTree.splittingPane(targetLeaf, orientation: orientation, newTab: shellTab)
+        if paneTree.allTabs.isEmpty {
+            let firstShell = WorkspaceSessionTab.makeLocalZshTab()
+            paneTree = paneTree.insertingTab(firstShell, into: targetLeaf)
+        }
+        let secondShell = WorkspaceSessionTab.makeLocalZshTab()
+        let (updated, newLeafId) = paneTree.splittingPane(targetLeaf, orientation: orientation, newTab: secondShell)
         paneTree = updated
         focusedPaneId = newLeafId
     }

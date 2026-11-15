@@ -448,7 +448,8 @@ class NexusWorkspaceComposeE2ETest {
 
         // Verify semantic version comparator in Play-Protect-safe GitHub Release Checker (0.3.x beta series + legacy tag filtering)
         assertTrue(GitHubReleaseUpdateChecker.isNewerSemanticVersion("0.3.0-beta.2", "0.3.0-beta.1"))
-        assertTrue(GitHubReleaseUpdateChecker.isNewerSemanticVersion("0.3.0-beta.10", "0.3.0-beta.2"))
+        assertTrue(GitHubReleaseUpdateChecker.isNewerSemanticVersion("0.3.0-beta.3", "0.3.0-beta.2"))
+        assertTrue(GitHubReleaseUpdateChecker.isNewerSemanticVersion("0.3.0-beta.10", "0.3.0-beta.3"))
         assertTrue(GitHubReleaseUpdateChecker.isNewerSemanticVersion("0.3.0", "0.3.0-beta.1"))
         assertTrue(GitHubReleaseUpdateChecker.isNewerSemanticVersion("0.4.0", "0.3.0"))
         assertTrue(GitHubReleaseUpdateChecker.isNewerSemanticVersion("1.3.0", "0.3.0"))
@@ -1502,10 +1503,10 @@ class NexusWorkspaceComposeE2ETest {
 
     @Test
     fun compactFlushLeftSidebarFolderContextMenusStartAllRdpRenameDeleteAndV117UpgradeParity() {
-        assertEquals(10301, BuildConfig.VERSION_CODE)
+        assertEquals(10302, BuildConfig.VERSION_CODE)
         assertTrue(
-            "Expected BuildConfig.VERSION_NAME (${BuildConfig.VERSION_NAME}) to start with 0.3.0-beta.2",
-            BuildConfig.VERSION_NAME.startsWith("0.3.0-beta.2")
+            "Expected BuildConfig.VERSION_NAME (${BuildConfig.VERSION_NAME}) to start with 0.3.0-beta.3",
+            BuildConfig.VERSION_NAME.startsWith("0.3.0-beta.3")
         )
 
         val serializer = buildFastSerializer()

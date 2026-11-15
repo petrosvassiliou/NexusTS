@@ -6,6 +6,7 @@ import SwiftUI
 
 public struct MenuBarQuickAgentView: View {
     @EnvironmentObject private var store: WorkspaceStore
+    @Environment(\.openWindow) private var openWindow
 
     public init() {}
 
@@ -29,17 +30,29 @@ public struct MenuBarQuickAgentView: View {
             Divider()
 
             Button {
+                NSApp.setActivationPolicy(.regular)
+                openWindow(id: "main-workspace")
                 NSApp.activate(ignoringOtherApps: true)
-                store.openLocalTerminal()
             } label: {
-                Label("New Local macOS Shell (/bin/zsh)", systemImage: "apple.terminal")
+                Label("Open NexusTS Workspace", systemImage: "macwindow")
             }
 
             Button {
+                NSApp.setActivationPolicy(.regular)
+                openWindow(id: "main-workspace")
+                NSApp.activate(ignoringOtherApps: true)
+                store.openLocalTerminal()
+            } label: {
+                Label(MacWorkspaceShortcut.localTerminal.title(in: store.strings), systemImage: "apple.terminal")
+            }
+
+            Button {
+                NSApp.setActivationPolicy(.regular)
+                openWindow(id: "main-workspace")
                 NSApp.activate(ignoringOtherApps: true)
                 store.isQuickConnectPresented = true
             } label: {
-                Label("Quick Connect Palette…", systemImage: "sparkle.magnifyingglass")
+                Label(MacWorkspaceShortcut.quickConnect.menuTitle(in: store.strings), systemImage: "sparkle.magnifyingglass")
             }
 
             let favorites = store.activeConnections.filter(\.favorite).prefix(8)

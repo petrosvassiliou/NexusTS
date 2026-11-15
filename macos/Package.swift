@@ -5,14 +5,27 @@ import PackageDescription
 let packageDir = URL(fileURLWithPath: #filePath).deletingLastPathComponent().path
 let vendorLibDir = "\(packageDir)/Vendor/lib"
 let freerdpMacLibDir = URL(fileURLWithPath: "\(packageDir)/../native/third_party/freerdp3/macos/lib").standardized.path
-let hasPrebuiltFreeRdp = FileManager.default.fileExists(atPath: "\(freerdpMacLibDir)/libfreerdp3.dylib")
+let hasPrebuiltFreeRdpStatic = FileManager.default.fileExists(atPath: "\(freerdpMacLibDir)/libfreerdp3.a")
+let hasPrebuiltFreeRdpDynamic = !hasPrebuiltFreeRdpStatic
+    && FileManager.default.fileExists(atPath: "\(freerdpMacLibDir)/libfreerdp3.dylib")
 
 var coreUnsafeLinkerFlags: [String] = [
     "-L\(vendorLibDir)",
     "-lnexusts_ffi",
     "-lnexusts_rdp_macos"
 ]
-if hasPrebuiltFreeRdp {
+if hasPrebuiltFreeRdpStatic {
+    var staticArchives: [String] = []
+    if let enumerator = FileManager.default.enumerator(atPath: freerdpMacLibDir) {
+        while let rel = enumerator.nextObject() as? String {
+            if rel.hasSuffix(".a") && !rel.contains("libwinpr-tools") {
+                staticArchives.append("\(freerdpMacLibDir)/\(rel)")
+            }
+        }
+    }
+    staticArchives.sort()
+    coreUnsafeLinkerFlags.append(contentsOf: staticArchives)
+} else if hasPrebuiltFreeRdpDynamic {
     coreUnsafeLinkerFlags += [
         "-L\(freerdpMacLibDir)",
         "-lfreerdp3",
@@ -22,7 +35,7 @@ if hasPrebuiltFreeRdp {
 }
 
 var testLinkerSettings: [LinkerSetting] = []
-if hasPrebuiltFreeRdp {
+if hasPrebuiltFreeRdpDynamic {
     testLinkerSettings.append(
         .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", freerdpMacLibDir])
     )
@@ -56,7 +69,16 @@ let package = Package(
                 .linkedLibrary("c++"),
                 .linkedLibrary("resolv"),
                 .linkedLibrary("z"),
+                .linkedLibrary("iconv"),
                 .linkedFramework("Foundation"),
+                .linkedFramework("CoreFoundation"),
+                .linkedFramework("CoreServices"),
+                .linkedFramework("Carbon"),
+                .linkedFramework("SystemConfiguration"),
+                .linkedFramework("AudioToolbox"),
+                .linkedFramework("CoreAudio"),
+                .linkedFramework("CoreMedia"),
+                .linkedFramework("VideoToolbox"),
                 .linkedFramework("Security"),
                 .linkedFramework("LocalAuthentication"),
                 .linkedFramework("CoreSpotlight"),

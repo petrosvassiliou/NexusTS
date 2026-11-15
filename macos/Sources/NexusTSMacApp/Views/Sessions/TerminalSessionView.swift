@@ -370,6 +370,10 @@ final class TerminalKeyCaptureNSView: NSView {
 
     override func keyDown(with event: NSEvent) {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if flags.contains(.command) {
+            super.keyDown(with: event)
+            return
+        }
 
         // Special Function & Navigation Keys
         switch event.keyCode {

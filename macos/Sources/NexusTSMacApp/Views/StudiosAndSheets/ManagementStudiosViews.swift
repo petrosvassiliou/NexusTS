@@ -13,7 +13,13 @@ public struct VaultOverviewDashboardView: View {
     public var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
-                HStack(alignment: .center) {
+                HStack(alignment: .center, spacing: 14) {
+                    Image(nsImage: NSApp.applicationIconImage)
+                        .resizable()
+                        .interpolation(.high)
+                        .frame(width: 48, height: 48)
+                        .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+
                     VStack(alignment: .leading, spacing: 4) {
                         Text(store.document.name)
                             .font(.largeTitle.weight(.bold))
@@ -31,9 +37,7 @@ public struct VaultOverviewDashboardView: View {
                     .controlSize(.large)
 
                     Button {
-                        store.newConnectionInitialFolderId = store.selectedFolderId
-                        store.newConnectionInitialProtocol = .SSH
-                        store.isPresentingNewConnectionSheet = true
+                        store.presentNewConnectionSheet()
                     } label: {
                         Label(store.strings.newConnection, systemImage: "plus")
                     }
@@ -60,7 +64,7 @@ public struct VaultOverviewDashboardView: View {
                         symbol: "macwindow.split.2x1",
                         tint: Color(nsColor: .systemGreen)
                     ) {
-                        store.activeSection = .sessions
+                        store.selectSection(.sessions)
                     }
 
                     OverviewStatCard(
@@ -70,7 +74,7 @@ public struct VaultOverviewDashboardView: View {
                         symbol: "key.horizontal.fill",
                         tint: Color(nsColor: .systemOrange)
                     ) {
-                        store.activeSection = .credentials
+                        store.selectSection(.credentials)
                     }
 
                     OverviewStatCard(
@@ -80,7 +84,7 @@ public struct VaultOverviewDashboardView: View {
                         symbol: "icloud.fill",
                         tint: Color(nsColor: .systemTeal)
                     ) {
-                        store.activeSection = .cloudSync
+                        store.selectSection(.cloudSync)
                     }
                 }
 
@@ -144,19 +148,25 @@ public struct VaultOverviewDashboardView: View {
                     }
                 }
 
-                // Keyboard Shortcut Cheat Sheet
+                // Keyboard Shortcut Cheat Sheet (localized + interactive buttons matching menu bar 1:1)
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("macOS Workspace Shortcuts")
+                    Text(store.strings.workspaceShortcutsTitle)
                         .font(.headline)
 
-                    HStack(spacing: 20) {
-                        ShortcutLegendItem("Quick Connect", keys: "⌘K")
-                        ShortcutLegendItem("Local Shell", keys: "⌘T")
-                        ShortcutLegendItem("New Connection", keys: "⌘N")
-                        ShortcutLegendItem("Split Right", keys: "⌘D")
-                        ShortcutLegendItem("Split Down", keys: "⇧⌘D")
-                        ShortcutLegendItem("Broadcast", keys: "⇧⌘B")
-                        ShortcutLegendItem("Inspector", keys: "⌥⌘I")
+                    LazyVGrid(
+                        columns: [GridItem(.adaptive(minimum: 185), spacing: 10)],
+                        alignment: .leading,
+                        spacing: 10
+                    ) {
+                        ForEach(MacWorkspaceShortcut.overviewCheatSheetItems) { item in
+                            ShortcutLegendItem(
+                                item.title(in: store.strings),
+                                keys: item.keycap,
+                                isActive: isShortcutActive(item)
+                            ) {
+                                store.executeShortcut(item)
+                            }
+                        }
                     }
                     .padding(12)
                     .liquidGlassSurface(cornerRadius: 12, prominence: .subtle)
@@ -165,6 +175,21 @@ public struct VaultOverviewDashboardView: View {
             .padding(28)
         }
         .scrollContentBackground(.hidden)
+    }
+
+    private func isShortcutActive(_ item: MacWorkspaceShortcut) -> Bool {
+        switch item {
+        case .broadcastInput:
+            return store.broadcastInputEnabled
+        case .toggleInspector:
+            return store.isInspectorPresented
+        case .toggleSidebar:
+            return store.columnVisibility != .detailOnly
+        case .quickConnect:
+            return store.isQuickConnectPresented
+        default:
+            return false
+        }
     }
 }
 
@@ -220,15 +245,51 @@ private struct OverviewStatCard: View {
 private struct ShortcutLegendItem: View {
     let label: String
     let keys: String
-    init(_ label: String, keys: String) {
+    let isActive: Bool
+    let action: () -> Void
+    @State private var isHovered: Bool = false
+
+    init(_ label: String, keys: String, isActive: Bool = false, action: @escaping () -> Void) {
         self.label = label
         self.keys = keys
+        self.isActive = isActive
+        self.action = action
     }
+
     var body: some View {
-        HStack(spacing: 6) {
-            Text(label).font(.caption).foregroundStyle(.secondary)
-            KeycapBadge(keys)
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Text(label)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(isActive ? Color.accentColor : .primary)
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+                KeycapBadge(keys)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(
+                        isActive
+                            ? Color.accentColor.opacity(0.14)
+                            : Color.primary.opacity(isHovered ? 0.08 : 0.03)
+                    )
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(
+                        isActive ? Color.accentColor.opacity(0.35) : Color.primary.opacity(0.08),
+                        lineWidth: 0.75
+                    )
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            isHovered = hovering
+        }
+        .help("\(label) (\(keys))")
     }
 }
 

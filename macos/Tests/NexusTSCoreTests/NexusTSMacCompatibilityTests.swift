@@ -302,7 +302,8 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
             )
         )
         XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.3.0-beta.2", isNewerThan: "0.3.0-beta.1"))
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.3.0-beta.10", isNewerThan: "0.3.0-beta.2"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.3.0-beta.3", isNewerThan: "0.3.0-beta.2"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.3.0-beta.10", isNewerThan: "0.3.0-beta.3"))
         XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.3.0", isNewerThan: "0.3.0-beta.1"))
         XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.4.0", isNewerThan: "0.3.0"))
         XCTAssertFalse(MacGitHubReleaseUpdater.compareSemver("0.3.0-beta.1", isNewerThan: "0.3.0"))
@@ -312,8 +313,42 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
         XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("1.3.0", isNewerThan: "0.3.0"))
     }
 
+    func testMacWorkspaceShortcutsUniquenessAndLocalizedLabels() {
+        let allKeycaps = MacWorkspaceShortcut.allCases.map(\.keycap)
+        XCTAssertEqual(
+            Set(allKeycaps).count,
+            allKeycaps.count,
+            "Every macOS keyboard shortcut must have a unique keycap without collisions"
+        )
+        XCTAssertEqual(MacWorkspaceShortcut.newConnection.keycap, "⌘N")
+        XCTAssertEqual(MacWorkspaceShortcut.localTerminal.keycap, "⌘T")
+        XCTAssertEqual(MacWorkspaceShortcut.quickConnect.keycap, "⌘K")
+        XCTAssertEqual(MacWorkspaceShortcut.splitRight.keycap, "⌘D")
+        XCTAssertEqual(MacWorkspaceShortcut.splitDown.keycap, "⇧⌘D")
+        XCTAssertEqual(MacWorkspaceShortcut.broadcastInput.keycap, "⇧⌘B")
+        XCTAssertEqual(MacWorkspaceShortcut.toggleInspector.keycap, "⌥⌘I")
+        XCTAssertEqual(MacWorkspaceShortcut.toggleSidebar.keycap, "⌃⌘S")
+
+        for lang in NexusAppLanguage.allCases {
+            let catalog = LocalizedWorkspaceStrings.catalog(for: lang)
+            XCTAssertFalse(catalog.quickConnectTitle.isEmpty)
+            XCTAssertFalse(catalog.workspaceShortcutsTitle.isEmpty)
+            XCTAssertFalse(catalog.toggleSidebar.isEmpty)
+            XCTAssertFalse(catalog.fullScreenSession.isEmpty)
+            for shortcut in MacWorkspaceShortcut.allCases {
+                XCTAssertFalse(shortcut.title(in: catalog).isEmpty)
+                XCTAssertFalse(shortcut.menuTitle(in: catalog).isEmpty)
+            }
+            // Ensure Overview cheat-sheet labels match canonical catalog labels 1-to-1 (e.g., "Local Terminal" / "Lokales Terminal", never "Local Shell")
+            XCTAssertEqual(MacWorkspaceShortcut.localTerminal.title(in: catalog), catalog.localTerminal)
+            XCTAssertEqual(MacWorkspaceShortcut.newConnection.title(in: catalog), catalog.newConnection)
+            XCTAssertEqual(MacWorkspaceShortcut.broadcastInput.title(in: catalog), catalog.broadcastInput)
+            XCTAssertEqual(MacWorkspaceShortcut.toggleInspector.title(in: catalog), catalog.inspectorTitle)
+        }
+    }
+
     func testV118LocalizationUpgradeVersionAndVaultReplacementCompatibility() throws {
-        XCTAssertEqual(MacGitHubReleaseUpdater.currentVersion, "0.3.0-beta.2")
+        XCTAssertEqual(MacGitHubReleaseUpdater.currentVersion, "0.3.0-beta.3")
 
         for lang in NexusAppLanguage.allCases {
             let catalog = LocalizedWorkspaceStrings.catalog(for: lang)

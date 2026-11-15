@@ -226,11 +226,20 @@ public final class MacCloudBookmarkSyncBridge: @unchecked Sendable {
 
     public func linkVaultFileURL(_ url: URL) throws {
         #if os(macOS)
-        let bookmark = try url.bookmarkData(
-            options: [.withSecurityScope],
+        let bookmark: Data
+        if let standard = try? url.bookmarkData(
+            options: [],
             includingResourceValuesForKeys: nil,
             relativeTo: nil
-        )
+        ) {
+            bookmark = standard
+        } else {
+            bookmark = try url.bookmarkData(
+                options: [.withSecurityScope],
+                includingResourceValuesForKeys: nil,
+                relativeTo: nil
+            )
+        }
         #else
         let bookmark = try url.bookmarkData()
         #endif
@@ -248,12 +257,18 @@ public final class MacCloudBookmarkSyncBridge: @unchecked Sendable {
         guard let data = defaults.data(forKey: bookmarkKey) else { return nil }
         var stale = false
         #if os(macOS)
-        guard let url = try? URL(
+        let resolved = (try? URL(
+            resolvingBookmarkData: data,
+            options: [],
+            relativeTo: nil,
+            bookmarkDataIsStale: &stale
+        )) ?? (try? URL(
             resolvingBookmarkData: data,
             options: [.withSecurityScope],
             relativeTo: nil,
             bookmarkDataIsStale: &stale
-        ) else { return nil }
+        ))
+        guard let url = resolved else { return nil }
         if stale {
             try? linkVaultFileURL(url)
         }

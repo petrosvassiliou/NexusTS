@@ -165,7 +165,8 @@ public struct RdpSessionView: View {
                                 RdpInteractiveSurfaceNSViewRepresentable(
                                     session: session,
                                     remoteWidth: cgImage.width,
-                                    remoteHeight: cgImage.height
+                                    remoteHeight: cgImage.height,
+                                    captureRemoteShortcuts: store.remoteKeyCaptureEnabled
                                 )
                             }
                     } else if !isConnected && !lastNativeError.isEmpty {
@@ -364,12 +365,14 @@ private struct RdpInteractiveSurfaceNSViewRepresentable: NSViewRepresentable {
     let session: NativeRdpSession
     let remoteWidth: Int
     let remoteHeight: Int
+    let captureRemoteShortcuts: Bool
 
     func makeNSView(context: Context) -> RdpPointerAndKeyNSView {
         let view = RdpPointerAndKeyNSView()
         view.session = session
         view.remoteWidth = remoteWidth
         view.remoteHeight = remoteHeight
+        view.captureRemoteShortcuts = captureRemoteShortcuts
         return view
     }
 
@@ -377,6 +380,7 @@ private struct RdpInteractiveSurfaceNSViewRepresentable: NSViewRepresentable {
         nsView.session = session
         nsView.remoteWidth = remoteWidth
         nsView.remoteHeight = remoteHeight
+        nsView.captureRemoteShortcuts = captureRemoteShortcuts
     }
 }
 
@@ -384,6 +388,7 @@ final class RdpPointerAndKeyNSView: NSView {
     var session: NativeRdpSession?
     var remoteWidth: Int = 1920
     var remoteHeight: Int = 1080
+    var captureRemoteShortcuts: Bool = false
 
     override var acceptsFirstResponder: Bool { true }
 
@@ -423,10 +428,18 @@ final class RdpPointerAndKeyNSView: NSView {
     }
 
     override func keyDown(with event: NSEvent) {
+        if !captureRemoteShortcuts && event.modifierFlags.contains(.command) {
+            super.keyDown(with: event)
+            return
+        }
         session?.sendScancode(event.keyCode, keyDown: true, extended: false)
     }
 
     override func keyUp(with event: NSEvent) {
+        if !captureRemoteShortcuts && event.modifierFlags.contains(.command) {
+            super.keyUp(with: event)
+            return
+        }
         session?.sendScancode(event.keyCode, keyDown: false, extended: false)
     }
 }

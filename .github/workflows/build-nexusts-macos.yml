@@ -55,7 +55,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: native/third_party/freerdp3/macos
-          key: freerdp3-macos-universal2-v1-${{ hashFiles('scripts/build-freerdp3-macos.sh') }}
+          key: freerdp3-macos-static-universal2-v2-${{ hashFiles('scripts/build-freerdp3-macos.sh') }}
 
       - name: Build & Stage Universal2 OpenSSL 3.4.1 + FreeRDP 3.12.0 (arm64 + x86_64)
         if: ${{ (github.event_name != 'workflow_dispatch' || inputs.compile_full_freerdp3 == true) && steps.freerdp-macos-cache.outputs.cache-hit != 'true' }}
@@ -114,19 +114,34 @@ jobs:
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
         run: ./scripts/package-macos-app.sh --universal
 
-      - name: Verify Universal2 Mach-O slices & bundle signature
+      - name: Verify Self-Contained Universal2 Mach-O, AppIcon, Signature & Launch Self-Test
         run: |
-          ARCHS="$(lipo -archs macos/dist/NexusTS.app/Contents/MacOS/NexusTS)"
+          set -euo pipefail
+          BIN="macos/dist/NexusTS.app/Contents/MacOS/NexusTS"
+          ARCHS="$(lipo -archs "${BIN}")"
           echo "NexusTS.app Mach-O architectures: ${ARCHS}"
           echo "${ARCHS}" | grep -q "arm64"
           echo "${ARCHS}" | grep -q "x86_64"
-          if [[ -f macos/dist/NexusTS.app/Contents/Frameworks/libfreerdp3.dylib ]]; then
-            RDP_ARCHS="$(lipo -archs macos/dist/NexusTS.app/Contents/Frameworks/libfreerdp3.dylib)"
-            echo "Bundled libfreerdp3.dylib architectures: ${RDP_ARCHS}"
-            echo "${RDP_ARCHS}" | grep -q "arm64"
-            echo "${RDP_ARCHS}" | grep -q "x86_64"
+
+          echo "==> Verifying AppIcon.icns is bundled and non-empty"
+          test -s macos/dist/NexusTS.app/Contents/Resources/AppIcon.icns
+
+          echo "==> Verifying zero external/@rpath/Homebrew dylib dependencies"
+          OTOOL_OUT="$(otool -L "${BIN}")"
+          echo "${OTOOL_OUT}"
+          if echo "${OTOOL_OUT}" | tail -n +2 | grep -qE "@rpath/|@loader_path/|@executable_path/|/opt/homebrew/|/usr/local/"; then
+            echo "FATAL: Non-system dynamic library dependency found in NexusTS Mach-O!" >&2
+            exit 1
           fi
+          test ! -d macos/dist/NexusTS.app/Contents/Frameworks
+
+          echo "==> Verifying codesign integrity"
           codesign --verify --deep --strict --verbose=2 macos/dist/NexusTS.app
+
+          echo "==> Executing packaged NexusTS --self-test binary"
+          SELF_TEST_OUT="$("${BIN}" --self-test)"
+          echo "${SELF_TEST_OUT}"
+          echo "${SELF_TEST_OUT}" | grep -q "NEXUSTS_MACOS_SELF_TEST_OK version=0.3.0-beta.3"
 
       - name: Upload NexusTS macOS Universal DMG & App Bundle
         uses: actions/upload-artifact@v4
@@ -157,7 +172,7 @@ jobs:
           set -euo pipefail
           TAG_NAME="${GITHUB_REF_NAME}"
           if [[ "${TAG_NAME}" != v* ]]; then
-            TAG_NAME="${{ inputs.release_tag || 'v0.3.0-beta.2' }}"
+            TAG_NAME="${{ inputs.release_tag || 'v0.3.0-beta.3' }}"
           fi
           echo "tag_name=${TAG_NAME}" >> "${GITHUB_OUTPUT}"
 

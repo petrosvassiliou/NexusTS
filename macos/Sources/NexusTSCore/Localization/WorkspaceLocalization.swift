@@ -86,6 +86,10 @@ public struct LocalizedWorkspaceStrings: Equatable, Sendable {
     public let royalImportRoot: String
     public let royalImportReplaceAll: String
     public let copyDiagnostics: String
+    public let quickConnectTitle: String
+    public let workspaceShortcutsTitle: String
+    public let toggleSidebar: String
+    public let fullScreenSession: String
 
     public static func catalog(for language: NexusAppLanguage) -> LocalizedWorkspaceStrings {
         switch language.resolvedCode {
@@ -138,7 +142,11 @@ public struct LocalizedWorkspaceStrings: Equatable, Sendable {
                 royalImportNewFolder: "Neuen Ordner für importierte Struktur erstellen",
                 royalImportRoot: "An der Wurzel der Hierarchie platzieren",
                 royalImportReplaceAll: "Alle vorhandenen Verbindungen löschen und ersetzen",
-                copyDiagnostics: "Diagnose kopieren"
+                copyDiagnostics: "Diagnose kopieren",
+                quickConnectTitle: "Schnellverbindung",
+                workspaceShortcutsTitle: "macOS-Tastaturkurzbefehle",
+                toggleSidebar: "Seitenleiste",
+                fullScreenSession: "Vollbild-Sitzung"
             )
         case "it":
             return LocalizedWorkspaceStrings(
@@ -189,7 +197,11 @@ public struct LocalizedWorkspaceStrings: Equatable, Sendable {
                 royalImportNewFolder: "Crea una nuova cartella",
                 royalImportRoot: "Posiziona alla radice della gerarchia",
                 royalImportReplaceAll: "Elimina tutte le connessioni esistenti e sostituisci",
-                copyDiagnostics: "Copia Diagnostica"
+                copyDiagnostics: "Copia Diagnostica",
+                quickConnectTitle: "Connessione Rapida",
+                workspaceShortcutsTitle: "Scorciatoie Area di Lavoro macOS",
+                toggleSidebar: "Barra Laterale",
+                fullScreenSession: "Sessione a Schermo Intero"
             )
         case "es":
             return LocalizedWorkspaceStrings(
@@ -240,7 +252,11 @@ public struct LocalizedWorkspaceStrings: Equatable, Sendable {
                 royalImportNewFolder: "Crear una nueva carpeta",
                 royalImportRoot: "Colocar en la raíz de la jerarquía",
                 royalImportReplaceAll: "Eliminar todas las conexiones existentes y reemplazar",
-                copyDiagnostics: "Copiar Diagnóstico"
+                copyDiagnostics: "Copiar Diagnóstico",
+                quickConnectTitle: "Conexión Rápida",
+                workspaceShortcutsTitle: "Atajos de Espacio de Trabajo macOS",
+                toggleSidebar: "Barra Lateral",
+                fullScreenSession: "Sesión a Pantalla Completa"
             )
         case "el":
             return LocalizedWorkspaceStrings(
@@ -291,7 +307,11 @@ public struct LocalizedWorkspaceStrings: Equatable, Sendable {
                 royalImportNewFolder: "Δημιουργία νέου φακέλου",
                 royalImportRoot: "Τοποθέτηση στη ρίζα της ιεραρχίας",
                 royalImportReplaceAll: "Διαγραφή όλων των υπαρχουσών συνδέσεων και αντικατάσταση",
-                copyDiagnostics: "Αντιγραφή Διαγνωστικών"
+                copyDiagnostics: "Αντιγραφή Διαγνωστικών",
+                quickConnectTitle: "Ταχεία Σύνδεση",
+                workspaceShortcutsTitle: "Συντομεύσεις Χώρου Εργασίας macOS",
+                toggleSidebar: "Πλαϊνή Στήλη",
+                fullScreenSession: "Συνεδρία Πλήρους Οθόνης"
             )
         case "fr":
             return LocalizedWorkspaceStrings(
@@ -342,7 +362,11 @@ public struct LocalizedWorkspaceStrings: Equatable, Sendable {
                 royalImportNewFolder: "Créer un nouveau dossier",
                 royalImportRoot: "Placer à la racine de la hiérarchie",
                 royalImportReplaceAll: "Supprimer toutes les connexions existantes et remplacer",
-                copyDiagnostics: "Copier le Diagnostic"
+                copyDiagnostics: "Copier le Diagnostic",
+                quickConnectTitle: "Connexion Rapide",
+                workspaceShortcutsTitle: "Raccourcis de l’Espace de Travail macOS",
+                toggleSidebar: "Barre Latérale",
+                fullScreenSession: "Session Plein Écran"
             )
         default:
             return LocalizedWorkspaceStrings(
@@ -393,8 +417,89 @@ public struct LocalizedWorkspaceStrings: Equatable, Sendable {
                 royalImportNewFolder: "Create a new folder for imported connections",
                 royalImportRoot: "Place at the root of the hierarchy",
                 royalImportReplaceAll: "Delete all existing connections and replace",
-                copyDiagnostics: "Copy Diagnostics"
+                copyDiagnostics: "Copy Diagnostics",
+                quickConnectTitle: "Quick Connect",
+                workspaceShortcutsTitle: "macOS Workspace Shortcuts",
+                toggleSidebar: "Sidebar",
+                fullScreenSession: "Full-Screen Session"
             )
         }
     }
+}
+
+/// Canonical macOS keyboard shortcut catalog shared across the Menu Bar, Toolbar tooltips,
+/// and the Overview shortcut legend so labels and key chords can never drift or collide.
+public enum MacWorkspaceShortcut: String, CaseIterable, Identifiable, Sendable {
+    case quickConnect
+    case localTerminal
+    case newConnection
+    case newFolder
+    case splitRight
+    case splitDown
+    case broadcastInput
+    case toggleSidebar
+    case toggleInspector
+    case toggleAuditConsole
+    case fullScreenSession
+    case syncNow
+    case lockVault
+
+    public var id: String { rawValue }
+
+    public var keycap: String {
+        switch self {
+        case .quickConnect: return "⌘K"
+        case .localTerminal: return "⌘T"
+        case .newConnection: return "⌘N"
+        case .newFolder: return "⇧⌘N"
+        case .splitRight: return "⌘D"
+        case .splitDown: return "⇧⌘D"
+        case .broadcastInput: return "⇧⌘B"
+        case .toggleSidebar: return "⌃⌘S"
+        case .toggleInspector: return "⌥⌘I"
+        case .toggleAuditConsole: return "⇧⌘J"
+        case .fullScreenSession: return "⇧⌘F"
+        case .syncNow: return "⇧⌘S"
+        case .lockVault: return "⇧⌘L"
+        }
+    }
+
+    public func title(in strings: LocalizedWorkspaceStrings) -> String {
+        switch self {
+        case .quickConnect: return strings.quickConnectTitle
+        case .localTerminal: return strings.localTerminal
+        case .newConnection: return strings.newConnection
+        case .newFolder: return strings.newFolder
+        case .splitRight: return strings.splitRight
+        case .splitDown: return strings.splitDown
+        case .broadcastInput: return strings.broadcastInput
+        case .toggleSidebar: return strings.toggleSidebar
+        case .toggleInspector: return strings.inspectorTitle
+        case .toggleAuditConsole: return strings.auditConsole
+        case .fullScreenSession: return strings.fullScreenSession
+        case .syncNow: return strings.syncNow
+        case .lockVault: return strings.lockVault
+        }
+    }
+
+    public func menuTitle(in strings: LocalizedWorkspaceStrings) -> String {
+        switch self {
+        case .quickConnect, .newConnection, .newFolder:
+            let base = title(in: strings)
+            return base.hasSuffix("…") ? base : "\(base)…"
+        default:
+            return title(in: strings)
+        }
+    }
+
+    public static let overviewCheatSheetItems: [MacWorkspaceShortcut] = [
+        .quickConnect,
+        .localTerminal,
+        .newConnection,
+        .splitRight,
+        .splitDown,
+        .broadcastInput,
+        .toggleInspector,
+        .toggleSidebar
+    ]
 }
