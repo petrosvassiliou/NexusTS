@@ -198,7 +198,7 @@
     <string name="dialog_delete_folder_title">Ordner löschen</string>
     <string name="action_delete_folder_and_contents">Ordner &amp; gesamten Inhalt löschen</string>
     <string name="action_delete_folder_keep_contents">Nur Ordner löschen (Elemente nach oben verschieben)</string>
-    <string name="nav_studios_menu">Studios</string>
+    <string name="nav_studios_menu">Verwalten</string>
 
     <!-- v1.2.0 Royal TS Import, Systemordner Anmeldeinformationen, Intelligente Ordner, Datenbank-Reset & Fehlerdiagnose -->
     <string name="action_edit_smart_folder">Intelligenten Ordner bearbeiten…</string>

@@ -350,11 +350,13 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
     }
 
     func testV118LocalizationUpgradeVersionAndVaultReplacementCompatibility() throws {
-        XCTAssertEqual(MacGitHubReleaseUpdater.currentVersion, "0.3.0-beta.5")
+        XCTAssertEqual(MacGitHubReleaseUpdater.currentVersion, "0.3.0-beta.6")
+        XCTAssertEqual(LocalizedWorkspaceStrings.catalog(for: .english).studios, "Manage")
 
         for lang in NexusAppLanguage.allCases {
             let catalog = LocalizedWorkspaceStrings.catalog(for: lang)
             XCTAssertFalse(catalog.studios.isEmpty)
+            XCTAssertNotEqual(catalog.studios.lowercased(), "studios")
             XCTAssertFalse(catalog.renameFolder.isEmpty)
             XCTAssertFalse(catalog.startAllRdp.isEmpty)
             XCTAssertFalse(catalog.deleteFolderAndContents.isEmpty)

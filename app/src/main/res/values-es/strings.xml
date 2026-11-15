@@ -198,7 +198,7 @@
     <string name="dialog_delete_folder_title">Eliminar carpeta</string>
     <string name="action_delete_folder_and_contents">Eliminar carpeta y todo su contenido</string>
     <string name="action_delete_folder_keep_contents">Eliminar solo la carpeta (Mover elementos arriba)</string>
-    <string name="nav_studios_menu">Estudios</string>
+    <string name="nav_studios_menu">Gestionar</string>
 
     <!-- v1.2.0 -->
     <string name="action_edit_smart_folder">Editar carpeta inteligente…</string>

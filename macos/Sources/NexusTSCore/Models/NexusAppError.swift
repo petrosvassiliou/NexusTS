@@ -171,7 +171,7 @@ public enum NexusErrorClassifier {
                 category: .cloudSync,
                 title: operationTitle,
                 userMessage: summary,
-                remediationHint: "Check network connectivity or re-link the iCloud Drive / Google Drive vault file in Cloud Sync Studio.",
+                remediationHint: "Check network connectivity or re-link the iCloud Drive / Google Drive vault file in Cloud Sync.",
                 technicalDetails: tech,
                 recoveryConnectionId: recoveryConnectionId
             )

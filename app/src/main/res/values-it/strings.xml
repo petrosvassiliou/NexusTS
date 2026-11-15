@@ -198,7 +198,7 @@
     <string name="dialog_delete_folder_title">Elimina cartella</string>
     <string name="action_delete_folder_and_contents">Elimina cartella e tutto il contenuto</string>
     <string name="action_delete_folder_keep_contents">Elimina solo cartella (Sposta elementi sopra)</string>
-    <string name="nav_studios_menu">Studio</string>
+    <string name="nav_studios_menu">Gestisci</string>
 
     <!-- v1.2.0 -->
     <string name="action_edit_smart_folder">Modifica cartella intelligente…</string>

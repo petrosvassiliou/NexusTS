@@ -1257,7 +1257,7 @@ private struct SidebarSystemCredentialsFolderRow: View {
             Button {
                 store.activeSection = .credentials
             } label: {
-                Label("Open Credentials & TOTP Studio", systemImage: "key.horizontal")
+                Label("Manage Credentials & TOTP", systemImage: "key.horizontal")
             }
         }
     }

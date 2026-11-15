@@ -157,6 +157,7 @@ class NexusWorkspaceComposeE2ETest {
             assertTrue(res.getString(R.string.action_delete_folder_and_contents).isNotBlank())
             assertTrue(res.getString(R.string.action_delete_folder_keep_contents).isNotBlank())
             assertTrue(res.getString(R.string.nav_studios_menu).isNotBlank())
+            assertFalse(res.getString(R.string.nav_studios_menu).equals("Studios", ignoreCase = true))
             // v1.2.0 localization keys
             assertTrue(res.getString(R.string.action_edit_smart_folder).isNotBlank())
             assertTrue(res.getString(R.string.action_duplicate_smart_folder).isNotBlank())
@@ -1503,11 +1504,12 @@ class NexusWorkspaceComposeE2ETest {
 
     @Test
     fun compactFlushLeftSidebarFolderContextMenusStartAllRdpRenameDeleteAndV117UpgradeParity() {
-        assertEquals(10304, BuildConfig.VERSION_CODE)
+        assertEquals(10305, BuildConfig.VERSION_CODE)
         assertTrue(
-            "Expected BuildConfig.VERSION_NAME (${BuildConfig.VERSION_NAME}) to start with 0.3.0-beta.5",
-            BuildConfig.VERSION_NAME.startsWith("0.3.0-beta.5")
+            "Expected BuildConfig.VERSION_NAME (${BuildConfig.VERSION_NAME}) to start with 0.3.0-beta.6",
+            BuildConfig.VERSION_NAME.startsWith("0.3.0-beta.6")
         )
+        assertEquals("Manage", WorkspaceLocalizedStrings.defaultEnglish().navStudiosMenu)
 
         val serializer = buildFastSerializer()
         val upgradeDir = Files.createTempDirectory("nexusts-v117-to-v118-upgrade").toFile()

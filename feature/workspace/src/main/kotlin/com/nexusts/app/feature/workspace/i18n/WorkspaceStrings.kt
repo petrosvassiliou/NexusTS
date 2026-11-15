@@ -207,7 +207,7 @@ data class WorkspaceLocalizedStrings(
     val dialogDeleteFolderTitle: String = "Delete Folder",
     val actionDeleteFolderAndContents: String = "Delete Folder & All Contents",
     val actionDeleteFolderKeepContents: String = "Delete Folder Only (Move Items Up)",
-    val navStudiosMenu: String = "Studios",
+    val navStudiosMenu: String = "Manage",
     val actionEditSmartFolder: String = "Edit Smart Folder…",
     val actionDuplicateSmartFolder: String = "Duplicate Smart Folder",
     val smartFolderAllFolders: String = "All Folders (Entire Vault)",
