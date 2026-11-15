@@ -557,36 +557,127 @@ public final class MacLocalPtySession: @unchecked Sendable {
 
 // MARK: - 5. GitHub Releases macOS Signed DMG Update Checker & SHA-256 Verifier
 
+public enum MacUpdateInstallPhase: Equatable, Sendable {
+    case idle
+    case checking
+    case downloading(progress: Double)
+    case verifyingSha256
+    case extractingAppBundle
+    case applyingAndRelaunching
+    case upToDate
+    case failed(String)
+
+    public var isBusy: Bool {
+        switch self {
+        case .checking, .downloading, .verifyingSha256, .extractingAppBundle, .applyingAndRelaunching:
+            return true
+        case .idle, .upToDate, .failed:
+            return false
+        }
+    }
+
+    public var statusText: String {
+        switch self {
+        case .idle:
+            return ""
+        case .checking:
+            return "Checking GitHub Releases…"
+        case .downloading(let progress):
+            let pct = Int((min(1.0, max(0.0, progress)) * 100.0).rounded())
+            return pct > 0 ? "Downloading update inside NexusTS (\(pct)%)…" : "Downloading update inside NexusTS…"
+        case .verifyingSha256:
+            return "Verifying cryptographic SHA-256 signature…"
+        case .extractingAppBundle:
+            return "Unpacking Universal2 NexusTS.app…"
+        case .applyingAndRelaunching:
+            return "Installing update in place & relaunching NexusTS…"
+        case .upToDate:
+            return "NexusTS is up to date (v\(MacGitHubReleaseUpdater.currentVersion))."
+        case .failed(let message):
+            return message
+        }
+    }
+}
+
+public enum MacAutoUpdateError: LocalizedError, Equatable, Sendable {
+    case authenticationRequired(repoSlug: String)
+    case missingZipBundleAsset(tagName: String)
+    case downloadFailed(String)
+    case sha256Mismatch(assetName: String)
+    case extractionFailed(String)
+    case invalidAppBundle(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .authenticationRequired(let repoSlug):
+            return "GitHub repository \(repoSlug) is private. Save a read-only GitHub Personal Access Token (Contents: Read-only) in Settings → Updates (or sign in with GitHub CLI `gh auth login`) to enable one-click in-app updates."
+        case .missingZipBundleAsset(let tagName):
+            return "Release \(tagName) does not include a macOS .zip app bundle yet."
+        case .downloadFailed(let msg):
+            return msg
+        case .sha256Mismatch(let assetName):
+            return "SHA-256 checksum mismatch for \(assetName). Update aborted for security."
+        case .extractionFailed(let msg):
+            return msg
+        case .invalidAppBundle(let msg):
+            return msg
+        }
+    }
+}
+
 public struct MacReleaseUpdateCandidate: Equatable, Sendable {
     public let tagName: String
     public let releaseTitle: String
     public let htmlReleaseUrl: URL
+    public let zipAssetName: String?
+    public let zipDownloadUrl: URL?
+    public let zipApiAssetUrl: URL?
+    public let zipSizeBytes: Int64
+    public let zipExpectedSha256: String?
     public let dmgAssetName: String?
     public let dmgDownloadUrl: URL?
     public let sha256SumsUrl: URL?
+    public let sha256SumsApiAssetUrl: URL?
     public let releaseNotes: String
+
+    public var hasInAppZipUpdate: Bool {
+        zipApiAssetUrl != nil || zipDownloadUrl != nil
+    }
 
     public init(
         tagName: String,
         releaseTitle: String,
         htmlReleaseUrl: URL,
+        zipAssetName: String? = nil,
+        zipDownloadUrl: URL? = nil,
+        zipApiAssetUrl: URL? = nil,
+        zipSizeBytes: Int64 = 0,
+        zipExpectedSha256: String? = nil,
         dmgAssetName: String? = nil,
         dmgDownloadUrl: URL? = nil,
         sha256SumsUrl: URL? = nil,
+        sha256SumsApiAssetUrl: URL? = nil,
         releaseNotes: String = ""
     ) {
         self.tagName = tagName
         self.releaseTitle = releaseTitle
         self.htmlReleaseUrl = htmlReleaseUrl
+        self.zipAssetName = zipAssetName
+        self.zipDownloadUrl = zipDownloadUrl
+        self.zipApiAssetUrl = zipApiAssetUrl
+        self.zipSizeBytes = zipSizeBytes
+        self.zipExpectedSha256 = zipExpectedSha256
         self.dmgAssetName = dmgAssetName
         self.dmgDownloadUrl = dmgDownloadUrl
         self.sha256SumsUrl = sha256SumsUrl
+        self.sha256SumsApiAssetUrl = sha256SumsApiAssetUrl
         self.releaseNotes = releaseNotes
     }
 }
 
 public enum MacGitHubReleaseUpdater {
-    public static let currentVersion = "0.3.0-beta.3"
+    public static let currentVersion = "0.3.0-beta.4"
+    public static let githubTokenKeychainKey = "github_release_pat"
 
     private static let legacyPreRebaseVersions: Set<String> = [
         "1.0.0",
@@ -602,13 +693,109 @@ public enum MacGitHubReleaseUpdater {
         return legacyPreRebaseVersions.contains(cleaned)
     }
 
+    // MARK: - GitHub Token Discovery (Supports Both Public & Private Repositories)
+
+    public static func saveKeychainGitHubToken(_ rawToken: String) {
+        let trimmed = rawToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        MacKeychainAndBiometrics.shared.saveToken(trimmed, key: githubTokenKeychainKey)
+    }
+
+    public static func loadKeychainGitHubToken() -> String? {
+        guard let saved = MacKeychainAndBiometrics.shared.loadToken(key: githubTokenKeychainKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !saved.isEmpty else {
+            return nil
+        }
+        return saved
+    }
+
+    public static func resolveGitHubAuthToken(explicitToken: String? = nil) -> (token: String, source: String)? {
+        if let exp = explicitToken?.trimmingCharacters(in: .whitespacesAndNewlines), !exp.isEmpty {
+            return (exp, "Explicit Token")
+        }
+        if let saved = loadKeychainGitHubToken() {
+            return (saved, "macOS Keychain")
+        }
+        let env = ProcessInfo.processInfo.environment
+        for envKey in ["NEXUSTS_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN"] {
+            if let val = env[envKey]?.trimmingCharacters(in: .whitespacesAndNewlines), !val.isEmpty {
+                return (val, envKey)
+            }
+        }
+        for ghPath in ["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh"] {
+            if FileManager.default.isExecutableFile(atPath: ghPath),
+               let out = runQuickHelperProcess(executable: ghPath, arguments: ["auth", "token"]),
+               !out.isEmpty {
+                return (out, "GitHub CLI (gh)")
+            }
+        }
+        if FileManager.default.isExecutableFile(atPath: "/usr/bin/git"),
+           let credOut = runQuickHelperProcess(
+               executable: "/usr/bin/git",
+               arguments: ["credential-osxkeychain", "get"],
+               stdinString: "protocol=https\nhost=github.com\n\n"
+           ) {
+            for line in credOut.split(whereSeparator: \.isNewline) {
+                if line.hasPrefix("password=") {
+                    let pwd = String(line.dropFirst("password=".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !pwd.isEmpty {
+                        return (pwd, "macOS Git Keychain")
+                    }
+                }
+            }
+        }
+        return nil
+    }
+
+    private static func runQuickHelperProcess(
+        executable: String,
+        arguments: [String],
+        stdinString: String? = nil
+    ) -> String? {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: executable)
+        proc.arguments = arguments
+        let outPipe = Pipe()
+        proc.standardOutput = outPipe
+        proc.standardError = FileHandle.nullDevice
+        let inPipe: Pipe?
+        if stdinString != nil {
+            let p = Pipe()
+            proc.standardInput = p
+            inPipe = p
+        } else {
+            proc.standardInput = FileHandle.nullDevice
+            inPipe = nil
+        }
+        do {
+            try proc.run()
+            if let stdinString, let inPipe {
+                try? inPipe.fileHandleForWriting.write(contentsOf: Data(stdinString.utf8))
+                try? inPipe.fileHandleForWriting.close()
+            }
+            let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
+            proc.waitUntilExit()
+            guard proc.terminationStatus == 0 else { return nil }
+            let str = String(data: outData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return (str?.isEmpty == false) ? str : nil
+        } catch {
+            return nil
+        }
+    }
+
+    // MARK: - Release Check
+
     public static func checkForUpdates(
-        repoSlug: String = "petrosvassiliou/NexusTS"
+        repoSlug: String = "petrosvassiliou/NexusTS",
+        explicitToken: String? = nil
     ) async throws -> MacReleaseUpdateCandidate? {
         struct ReleasePayload: Decodable {
             struct Asset: Decodable {
                 let name: String
+                let url: String?
                 let browser_download_url: String
+                let size: Int64?
+                let digest: String?
             }
             let tag_name: String
             let name: String?
@@ -625,12 +812,35 @@ public enum MacGitHubReleaseUpdater {
         guard let url = URL(string: endpoint) else {
             return nil
         }
-        var req = URLRequest(url: url)
-        req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-        req.setValue("NexusTS-macOS/\(currentVersion)", forHTTPHeaderField: "User-Agent")
 
-        let (data, resp) = try await URLSession.shared.data(for: req)
-        guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else { return nil }
+        let resolvedAuth = resolveGitHubAuthToken(explicitToken: explicitToken)
+
+        func performReleaseQuery(bearerToken: String?) async throws -> (Data, HTTPURLResponse) {
+            var req = URLRequest(url: url)
+            req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+            req.setValue("NexusTS-macOS/\(currentVersion)", forHTTPHeaderField: "User-Agent")
+            if let bearerToken, !bearerToken.isEmpty {
+                req.setValue("Bearer \(bearerToken)", forHTTPHeaderField: "Authorization")
+            }
+            let (data, resp) = try await URLSession.shared.data(for: req)
+            guard let http = resp as? HTTPURLResponse else {
+                throw MacAutoUpdateError.downloadFailed("Invalid HTTP response from GitHub Releases.")
+            }
+            return (data, http)
+        }
+
+        var (data, http) = try await performReleaseQuery(bearerToken: resolvedAuth?.token)
+        if (http.statusCode == 401 || http.statusCode == 403), resolvedAuth != nil {
+            // Stale local token — retry unauthenticated in case repository is public
+            (data, http) = try await performReleaseQuery(bearerToken: nil)
+        }
+
+        if http.statusCode == 404 {
+            throw MacAutoUpdateError.authenticationRequired(repoSlug: repoSlug)
+        }
+        guard http.statusCode == 200 else {
+            throw MacAutoUpdateError.downloadFailed("GitHub Releases API returned HTTP \(http.statusCode).")
+        }
 
         let rel: ReleasePayload
         if isBetaChannel {
@@ -651,10 +861,15 @@ public enum MacGitHubReleaseUpdater {
             return nil
         }
 
+        let zipAsset = rel.assets?.first(where: {
+            let lower = $0.name.lowercased()
+            return lower.contains("macos") && lower.hasSuffix(".zip")
+        }) ?? rel.assets?.first(where: {
+            $0.name.lowercased().hasSuffix(".zip")
+        })
+
         let dmgAsset = rel.assets?.first(where: {
             $0.name.lowercased().hasSuffix(".dmg")
-        }) ?? rel.assets?.first(where: {
-            $0.name.lowercased().contains("macos") && $0.name.lowercased().hasSuffix(".zip")
         })
 
         let sumsAsset = rel.assets?.first(where: {
@@ -663,15 +878,39 @@ public enum MacGitHubReleaseUpdater {
             $0.name == "SHA256SUMS.txt"
         })
 
+        let parsedDigestHex: String? = {
+            guard let raw = zipAsset?.digest?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  raw.lowercased().hasPrefix("sha256:") else {
+                return nil
+            }
+            let hex = String(raw.dropFirst("sha256:".count)).lowercased()
+            return hex.count == 64 ? hex : nil
+        }()
+
         return MacReleaseUpdateCandidate(
             tagName: rel.tag_name,
             releaseTitle: rel.name ?? rel.tag_name,
             htmlReleaseUrl: htmlUrl,
+            zipAssetName: zipAsset?.name,
+            zipDownloadUrl: zipAsset.flatMap { URL(string: $0.browser_download_url) },
+            zipApiAssetUrl: zipAsset?.url.flatMap { URL(string: $0) },
+            zipSizeBytes: zipAsset?.size ?? 0,
+            zipExpectedSha256: parsedDigestHex,
             dmgAssetName: dmgAsset?.name,
             dmgDownloadUrl: dmgAsset.flatMap { URL(string: $0.browser_download_url) },
             sha256SumsUrl: sumsAsset.flatMap { URL(string: $0.browser_download_url) },
+            sha256SumsApiAssetUrl: sumsAsset?.url.flatMap { URL(string: $0) },
             releaseNotes: rel.body ?? ""
         )
+    }
+
+    // MARK: - SHA-256 Verification, In-App .zip Extraction & Atomic Bundle Replacement
+
+    public static func sha256Hex(of data: Data) -> String {
+        SHA256.hash(data: data)
+            .map { String(format: "%02x", $0) }
+            .joined()
+            .lowercased()
     }
 
     public static func verifySha256Manifest(
@@ -679,10 +918,7 @@ public enum MacGitHubReleaseUpdater {
         expectedAssetName: String,
         manifestText: String
     ) -> Bool {
-        let actualHex = SHA256.hash(data: fileData)
-            .map { String(format: "%02x", $0) }
-            .joined()
-            .lowercased()
+        let actualHex = sha256Hex(of: fileData)
 
         for rawLine in manifestText.split(whereSeparator: \.isNewline) {
             let parts = rawLine.split(whereSeparator: { $0 == " " || $0 == "\t" })
@@ -696,34 +932,297 @@ public enum MacGitHubReleaseUpdater {
         return false
     }
 
-    public static func downloadAndVerifyDmg(
-        candidate: MacReleaseUpdateCandidate
-    ) async throws -> URL {
-        guard let dmgUrl = candidate.dmgDownloadUrl else {
-            throw NativeBridgeError.networkUtilityError("Release \(candidate.tagName) does not include a macOS DMG asset yet.")
+    /// Resolves where the updated `NexusTS.app` should be installed.
+    /// If the user launched `NexusTS.app` directly from a read-only mounted DMG (`/Volumes/...`),
+    /// automatically installs into `/Applications/NexusTS.app` (or `~/Applications/NexusTS.app`).
+    public static func resolveTargetInstallAppURL(
+        currentBundleURL: URL = Bundle.main.bundleURL,
+        isApplicationsWritable: Bool? = nil
+    ) -> URL {
+        let standardized = currentBundleURL.standardizedFileURL
+        let path = standardized.path
+        if path.hasSuffix(".app") && !path.hasPrefix("/Volumes/") {
+            return standardized
         }
-        let assetName = candidate.dmgAssetName ?? dmgUrl.lastPathComponent
-        let (dmgData, dmgResp) = try await URLSession.shared.data(from: dmgUrl)
-        guard let http = dmgResp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            throw NativeBridgeError.networkUtilityError("Failed to download \(assetName)")
+        let canWriteSysApps = isApplicationsWritable ?? FileManager.default.isWritableFile(atPath: "/Applications")
+        if canWriteSysApps {
+            return URL(fileURLWithPath: "/Applications/NexusTS.app")
+        }
+        let userApps = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Applications", isDirectory: true)
+        return userApps.appendingPathComponent("NexusTS.app")
+    }
+
+    public static func posixSingleQuote(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
+    /// Generates the detached POSIX shell script that waits for the running PID to exit,
+    /// atomically swaps the staged `NexusTS.app` into place, clears quarantine xattrs, and relaunches.
+    public static func buildAtomicSwapShellScript(
+        oldPid: Int32,
+        stagedAppPath: String,
+        targetAppPath: String,
+        stagingRootPath: String
+    ) -> String {
+        let backupAppPath = "\(targetAppPath).prev-update"
+        let targetParentDir = URL(fileURLWithPath: targetAppPath).deletingLastPathComponent().path
+
+        let qStaged = posixSingleQuote(stagedAppPath)
+        let qTarget = posixSingleQuote(targetAppPath)
+        let qBackup = posixSingleQuote(backupAppPath)
+        let qParent = posixSingleQuote(targetParentDir)
+        let qStageRoot = posixSingleQuote(stagingRootPath)
+
+        // Escape command for AppleScript `do shell script "..." with administrator privileges` fallback
+        let privCmd = "rm -rf \(qBackup) && (if [ -e \(qTarget) ]; then mv \(qTarget) \(qBackup); fi) && mkdir -p \(qParent) && mv \(qStaged) \(qTarget) && /usr/bin/xattr -cr \(qTarget) && rm -rf \(qBackup) \(qStageRoot)"
+        let appleScriptEscaped = privCmd
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+
+        return """
+        #!/bin/sh
+        OLD_PID=\(oldPid)
+        i=0
+        while kill -0 "$OLD_PID" 2>/dev/null && [ "$i" -lt 150 ]; do
+          sleep 0.1
+          i=$((i + 1))
+        done
+
+        rm -rf \(qBackup) 2>/dev/null || true
+        mkdir -p \(qParent) 2>/dev/null || true
+        if [ -e \(qTarget) ]; then
+          mv \(qTarget) \(qBackup) 2>/dev/null || true
+        fi
+
+        if mv \(qStaged) \(qTarget) 2>/dev/null; then
+          /usr/bin/xattr -cr \(qTarget) 2>/dev/null || true
+          rm -rf \(qBackup) \(qStageRoot) 2>/dev/null || true
+          /usr/bin/open -n \(qTarget)
+          exit 0
+        fi
+
+        if [ -e \(qBackup) ] && [ ! -e \(qTarget) ]; then
+          mv \(qBackup) \(qTarget) 2>/dev/null || true
+        fi
+
+        if /usr/bin/osascript -e "do shell script \\"\(appleScriptEscaped)\\" with administrator privileges"; then
+          /usr/bin/open -n \(qTarget)
+          exit 0
+        fi
+
+        exit 1
+        """
+    }
+
+    /// Extracts a `NexusTS-*-macOS-Universal.zip` archive using `/usr/bin/ditto` and verifies the resulting `.app` bundle.
+    public static func extractAndValidateAppBundle(
+        fromZip zipFileURL: URL,
+        into extractDirectoryURL: URL
+    ) throws -> URL {
+        try FileManager.default.createDirectory(at: extractDirectoryURL, withIntermediateDirectories: true)
+
+        let ditto = Process()
+        ditto.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+        ditto.arguments = ["-x", "-k", zipFileURL.path, extractDirectoryURL.path]
+        let errPipe = Pipe()
+        ditto.standardOutput = FileHandle.nullDevice
+        ditto.standardError = errPipe
+        try ditto.run()
+        let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+        ditto.waitUntilExit()
+        guard ditto.terminationStatus == 0 else {
+            let msg = String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "ditto exit \(ditto.terminationStatus)"
+            throw MacAutoUpdateError.extractionFailed("Failed to unpack update archive: \(msg)")
         }
 
-        if let sumsUrl = candidate.sha256SumsUrl,
-           let (sumsData, sumsResp) = try? await URLSession.shared.data(from: sumsUrl),
-           let sumsHttp = sumsResp as? HTTPURLResponse,
-           (200..<300).contains(sumsHttp.statusCode),
-           let manifestText = String(data: sumsData, encoding: .utf8),
-           manifestText.contains(assetName) {
-            guard verifySha256Manifest(fileData: dmgData, expectedAssetName: assetName, manifestText: manifestText) else {
-                throw NativeBridgeError.authenticationFailed("SHA-256 checksum mismatch for \(assetName)!")
+        var foundAppURL: URL?
+        if let enumerator = FileManager.default.enumerator(
+            at: extractDirectoryURL,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) {
+            for case let candidateURL as URL in enumerator {
+                if candidateURL.pathExtension == "app" {
+                    foundAppURL = candidateURL
+                    break
+                }
             }
         }
 
-        let downloadsDir = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
-            ?? FileManager.default.temporaryDirectory
-        let destination = downloadsDir.appendingPathComponent(assetName)
-        try dmgData.write(to: destination, options: .atomic)
-        return destination
+        guard let stagedAppURL = foundAppURL else {
+            throw MacAutoUpdateError.invalidAppBundle("No .app bundle found inside \(zipFileURL.lastPathComponent).")
+        }
+
+        // Clear any quarantine attributes before verifying and swapping
+        let xattr = Process()
+        xattr.executableURL = URL(fileURLWithPath: "/usr/bin/xattr")
+        xattr.arguments = ["-cr", stagedAppURL.path]
+        xattr.standardOutput = FileHandle.nullDevice
+        xattr.standardError = FileHandle.nullDevice
+        try? xattr.run()
+        xattr.waitUntilExit()
+
+        let infoPlistPath = stagedAppURL.appendingPathComponent("Contents/Info.plist").path
+        let macExecPath = stagedAppURL.appendingPathComponent("Contents/MacOS/NexusTS").path
+        guard FileManager.default.fileExists(atPath: infoPlistPath),
+              FileManager.default.fileExists(atPath: macExecPath) else {
+            throw MacAutoUpdateError.invalidAppBundle("Extracted NexusTS.app is missing Contents/MacOS/NexusTS.")
+        }
+        try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: macExecPath)
+        return stagedAppURL
+    }
+
+    /// Downloads the Universal2 `.zip` release inside the app (reporting live progress),
+    /// verifies its SHA-256 digest, unpacks `NexusTS.app`, and launches the atomic in-place swap & relaunch helper.
+    public static func downloadVerifyAndStageUpdate(
+        candidate: MacReleaseUpdateCandidate,
+        explicitToken: String? = nil,
+        onPhaseChange: (@Sendable (MacUpdateInstallPhase) -> Void)? = nil
+    ) async throws -> (stagedAppURL: URL, stagingRootURL: URL) {
+        let auth = resolveGitHubAuthToken(explicitToken: explicitToken)
+
+        let downloadTargetURL: URL
+        let useApiOctetStream: Bool
+        if let token = auth?.token, !token.isEmpty, let apiUrl = candidate.zipApiAssetUrl {
+            downloadTargetURL = apiUrl
+            useApiOctetStream = true
+        } else if let browserUrl = candidate.zipDownloadUrl {
+            downloadTargetURL = browserUrl
+            useApiOctetStream = false
+        } else if let apiUrl = candidate.zipApiAssetUrl {
+            downloadTargetURL = apiUrl
+            useApiOctetStream = true
+        } else {
+            throw MacAutoUpdateError.missingZipBundleAsset(tagName: candidate.tagName)
+        }
+
+        let stagingRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("NexusTS-AutoUpdate-\(UUID().uuidString.lowercased())", isDirectory: true)
+        try FileManager.default.createDirectory(at: stagingRoot, withIntermediateDirectories: true)
+
+        let assetName = candidate.zipAssetName ?? "NexusTS-\(candidate.tagName)-macOS-Universal.zip"
+        let zipDestURL = stagingRoot.appendingPathComponent(assetName)
+
+        onPhaseChange?(.downloading(progress: 0.0))
+        do {
+            try await downloadGitHubAsset(
+                url: downloadTargetURL,
+                bearerToken: auth?.token,
+                useOctetStreamAccept: useApiOctetStream,
+                destinationURL: zipDestURL,
+                expectedBytes: candidate.zipSizeBytes
+            ) { fraction in
+                onPhaseChange?(.downloading(progress: fraction))
+            }
+        } catch {
+            try? FileManager.default.removeItem(at: stagingRoot)
+            throw error
+        }
+
+        onPhaseChange?(.verifyingSha256)
+        let zipData = try Data(contentsOf: zipDestURL)
+
+        if let expectedHex = candidate.zipExpectedSha256 {
+            let actualHex = sha256Hex(of: zipData)
+            guard actualHex == expectedHex.lowercased() else {
+                try? FileManager.default.removeItem(at: stagingRoot)
+                throw MacAutoUpdateError.sha256Mismatch(assetName: assetName)
+            }
+        } else if let sumsUrl = (auth != nil ? candidate.sha256SumsApiAssetUrl : nil) ?? candidate.sha256SumsUrl {
+            let sumsDest = stagingRoot.appendingPathComponent("SHA256SUMS-macos.txt")
+            let useSumsApi = (sumsUrl == candidate.sha256SumsApiAssetUrl)
+            if (try? await downloadGitHubAsset(
+                url: sumsUrl,
+                bearerToken: auth?.token,
+                useOctetStreamAccept: useSumsApi,
+                destinationURL: sumsDest,
+                expectedBytes: 0,
+                onProgress: nil
+            )) != nil,
+               let manifestText = try? String(contentsOf: sumsDest, encoding: .utf8),
+               manifestText.contains(assetName) {
+                guard verifySha256Manifest(fileData: zipData, expectedAssetName: assetName, manifestText: manifestText) else {
+                    try? FileManager.default.removeItem(at: stagingRoot)
+                    throw MacAutoUpdateError.sha256Mismatch(assetName: assetName)
+                }
+            }
+        }
+
+        onPhaseChange?(.extractingAppBundle)
+        let extractDir = stagingRoot.appendingPathComponent("extracted", isDirectory: true)
+        do {
+            let stagedApp = try extractAndValidateAppBundle(fromZip: zipDestURL, into: extractDir)
+            try? FileManager.default.removeItem(at: zipDestURL)
+            return (stagedApp, stagingRoot)
+        } catch {
+            try? FileManager.default.removeItem(at: stagingRoot)
+            throw error
+        }
+    }
+
+    public static func launchAtomicSwapHelperAndRelaunch(
+        stagedAppURL: URL,
+        stagingRootURL: URL,
+        targetAppURL: URL? = nil
+    ) throws {
+        let resolvedTarget = targetAppURL ?? resolveTargetInstallAppURL()
+        let script = buildAtomicSwapShellScript(
+            oldPid: getpid(),
+            stagedAppPath: stagedAppURL.path,
+            targetAppPath: resolvedTarget.path,
+            stagingRootPath: stagingRootURL.path
+        )
+        let scriptURL = stagingRootURL.appendingPathComponent("apply-nexusts-update.sh")
+        try Data(script.utf8).write(to: scriptURL, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptURL.path)
+
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/bin/sh")
+        proc.arguments = [scriptURL.path]
+        proc.standardInput = FileHandle.nullDevice
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        try proc.run()
+    }
+
+    private static func downloadGitHubAsset(
+        url: URL,
+        bearerToken: String?,
+        useOctetStreamAccept: Bool,
+        destinationURL: URL,
+        expectedBytes: Int64,
+        onProgress: (@Sendable (Double) -> Void)?
+    ) async throws {
+        var req = URLRequest(url: url)
+        req.setValue("NexusTS-macOS/\(currentVersion)", forHTTPHeaderField: "User-Agent")
+        if useOctetStreamAccept {
+            req.setValue("application/octet-stream", forHTTPHeaderField: "Accept")
+        }
+        if let bearerToken, !bearerToken.isEmpty {
+            req.setValue("Bearer \(bearerToken)", forHTTPHeaderField: "Authorization")
+        }
+
+        let delegate = GitHubAssetDownloadDelegate(
+            destinationURL: destinationURL,
+            fallbackExpectedBytes: expectedBytes,
+            onProgress: onProgress
+        )
+        let session = URLSession(configuration: .ephemeral, delegate: delegate, delegateQueue: nil)
+        defer { session.finishTasksAndInvalidate() }
+
+        let (_, http) = try await withCheckedThrowingContinuation { (cont: CheckedContinuation<(URL, HTTPURLResponse), Error>) in
+            delegate.attachContinuation(cont)
+            let task = session.downloadTask(with: req)
+            task.resume()
+        }
+
+        if http.statusCode == 401 || http.statusCode == 404 {
+            throw MacAutoUpdateError.authenticationRequired(repoSlug: "petrosvassiliou/NexusTS")
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            throw MacAutoUpdateError.downloadFailed("Asset download failed with HTTP \(http.statusCode).")
+        }
     }
 
     public static func compareSemver(_ candidate: String, isNewerThan current: String) -> Bool {
@@ -774,5 +1273,100 @@ public enum MacGitHubReleaseUpdater {
             return cs > us
         }
         return candSegs.count > currSegs.count
+    }
+}
+
+private final class GitHubAssetDownloadDelegate: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+    private let lock = NSLock()
+    private let destinationURL: URL
+    private let fallbackExpectedBytes: Int64
+    private let onProgress: (@Sendable (Double) -> Void)?
+    private var continuation: CheckedContinuation<(URL, HTTPURLResponse), Error>?
+    private var fileMoveError: Error?
+
+    init(
+        destinationURL: URL,
+        fallbackExpectedBytes: Int64,
+        onProgress: (@Sendable (Double) -> Void)?
+    ) {
+        self.destinationURL = destinationURL
+        self.fallbackExpectedBytes = fallbackExpectedBytes
+        self.onProgress = onProgress
+    }
+
+    func attachContinuation(_ cont: CheckedContinuation<(URL, HTTPURLResponse), Error>) {
+        lock.lock()
+        self.continuation = cont
+        lock.unlock()
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        var redirected = request
+        if response.url?.host?.lowercased() != request.url?.host?.lowercased() {
+            // Strip GitHub API Bearer token when following 302 redirect to presigned S3/Azure asset storage
+            redirected.setValue(nil, forHTTPHeaderField: "Authorization")
+            redirected.setValue("*/*", forHTTPHeaderField: "Accept")
+        }
+        completionHandler(redirected)
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didWriteData bytesWritten: Int64,
+        totalBytesWritten: Int64,
+        totalBytesExpectedToWrite: Int64
+    ) {
+        let total = totalBytesExpectedToWrite > 0 ? totalBytesExpectedToWrite : fallbackExpectedBytes
+        guard total > 0 else { return }
+        let fraction = min(1.0, max(0.0, Double(totalBytesWritten) / Double(total)))
+        onProgress?(fraction)
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didFinishDownloadingTo location: URL
+    ) {
+        do {
+            if FileManager.default.fileExists(atPath: destinationURL.path) {
+                try FileManager.default.removeItem(at: destinationURL)
+            }
+            try FileManager.default.moveItem(at: location, to: destinationURL)
+            onProgress?(1.0)
+        } catch {
+            lock.lock()
+            self.fileMoveError = error
+            lock.unlock()
+        }
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        didCompleteWithError error: Error?
+    ) {
+        lock.lock()
+        let cont = self.continuation
+        self.continuation = nil
+        let moveErr = self.fileMoveError
+        lock.unlock()
+
+        guard let cont else { return }
+        if let error {
+            cont.resume(throwing: error)
+        } else if let moveErr {
+            cont.resume(throwing: moveErr)
+        } else if let http = task.response as? HTTPURLResponse {
+            cont.resume(returning: (destinationURL, http))
+        } else {
+            cont.resume(throwing: MacAutoUpdateError.downloadFailed("Missing HTTP response during update download."))
+        }
     }
 }

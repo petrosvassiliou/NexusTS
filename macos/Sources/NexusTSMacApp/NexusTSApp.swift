@@ -121,6 +121,13 @@ struct NexusMenuBarCommands: Commands {
     @ObservedObject var store: WorkspaceStore
 
     var body: some Commands {
+        CommandGroup(after: .appInfo) {
+            Button("Check for Updates…") {
+                store.isPresentingSoftwareUpdateSheet = true
+                Task { await store.checkGitHubUpdates(manual: true) }
+            }
+        }
+
         // Replace SwiftUI's default "New Window (⌘N)" so ⌘N opens New Connection instead of spawning a new window.
         CommandGroup(replacing: .newItem) {
             Button(MacWorkspaceShortcut.newConnection.menuTitle(in: store.strings)) {
@@ -137,11 +144,6 @@ struct NexusMenuBarCommands: Commands {
 
             Button(store.strings.newSmartFolder) {
                 store.isPresentingNewSmartFolderSheet = true
-            }
-            .disabled(store.isVaultLocked)
-
-            Button(store.strings.newDynamicFolder) {
-                store.isPresentingNewDynamicFolderSheet = true
             }
             .disabled(store.isVaultLocked)
 

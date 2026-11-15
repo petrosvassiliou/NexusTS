@@ -23,7 +23,6 @@ public struct SidebarHierarchyView: View {
     @EnvironmentObject private var store: WorkspaceStore
     @Environment(\.openWindow) private var openWindow
     @State private var collapsedSmartFolderIds: Set<String> = []
-    @State private var collapsedDynamicFolderIds: Set<String> = []
     @State private var isRootDropTargeted: Bool = false
 
     public init() {}
@@ -307,67 +306,7 @@ public struct SidebarHierarchyView: View {
                             }
                         }
 
-                        // 3. Dynamic Folders (RoyalJSON / Scripted Inventory)
-                        let dynList = store.activeDynamicFolders
-                        Section {
-                            if dynList.isEmpty {
-                                Button {
-                                    store.isPresentingNewDynamicFolderSheet = true
-                                } label: {
-                                    HStack(spacing: 6) {
-                                        Image(systemName: "bolt.badge.clock")
-                                            .foregroundStyle(.secondary)
-                                        Text(store.strings.newDynamicFolder)
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                        Spacer()
-                                    }
-                                    .padding(.vertical, 2)
-                                }
-                                .buttonStyle(.plain)
-                            } else {
-                                ForEach(dynList) { dyn in
-                                    let cached = store.dynamicFolderCache[dyn.id] ?? []
-                                    let isExpanded = !collapsedDynamicFolderIds.contains(dyn.id)
-                                    SidebarDynamicFolderRow(
-                                        dynamicFolder: dyn,
-                                        cachedCount: cached.count,
-                                        isExpanded: isExpanded
-                                    ) {
-                                        if isExpanded {
-                                            collapsedDynamicFolderIds.insert(dyn.id)
-                                        } else {
-                                            collapsedDynamicFolderIds.remove(dyn.id)
-                                        }
-                                    }
-                                    if isExpanded {
-                                        ForEach(cached) { dynConn in
-                                            SidebarConnectionRow(
-                                                connection: dynConn,
-                                                depth: 1,
-                                                allowReorderingDrop: false
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        } header: {
-                            HStack(spacing: 6) {
-                                Text(store.strings.dynamicFolders)
-                                    .font(.caption.weight(.semibold))
-                                Spacer()
-                                Button {
-                                    store.isPresentingNewDynamicFolderSheet = true
-                                } label: {
-                                    Image(systemName: "plus")
-                                        .font(.caption)
-                                }
-                                .buttonStyle(.plain)
-                                .help(store.strings.newDynamicFolder)
-                            }
-                        }
-
-                        // 4. Bottom-Pinned System "Credentials" Folder (credentials only, always at bottom)
+                        // 3. Bottom-Pinned System "Credentials" Folder (credentials only, always at bottom)
                         Section {
                             SidebarSystemCredentialsFolderRow()
                             let credsExpanded = !store.collapsedFolderIds.contains(VaultHierarchySanitizer.systemCredentialsFolderId)
@@ -1160,7 +1099,7 @@ struct SidebarConnectionRow: View {
     }
 }
 
-// MARK: - Intelligent Folder (SmartFolder) & Dynamic Folder Rows
+// MARK: - Intelligent Folder (SmartFolder) Rows
 
 private struct SidebarSmartFolderRow: View {
     @EnvironmentObject private var store: WorkspaceStore
@@ -1222,82 +1161,6 @@ private struct SidebarSmartFolderRow: View {
                 store.deleteSmartFolder(smartFolder.id)
             } label: {
                 Label("Delete Intelligent Folder", systemImage: "trash")
-            }
-        }
-    }
-}
-
-private struct SidebarDynamicFolderRow: View {
-    @EnvironmentObject private var store: WorkspaceStore
-    let dynamicFolder: DynamicFolder
-    let cachedCount: Int
-    let isExpanded: Bool
-    let onToggle: () -> Void
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Button(action: onToggle) {
-                Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                    .font(.system(size: 9.5, weight: .bold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 12, height: 16)
-            }
-            .buttonStyle(.plain)
-
-            Image(systemName: "bolt.badge.clock")
-                .font(.system(size: 12.5))
-                .foregroundStyle(Color(nsColor: .systemTeal))
-
-            Text(dynamicFolder.name)
-                .font(.system(size: 12.5, weight: .medium))
-                .lineLimit(1)
-
-            Spacer(minLength: 4)
-
-            if cachedCount > 0 {
-                Text("\(cachedCount)")
-                    .font(.system(size: 10.5, design: .monospaced))
-                    .foregroundStyle(.secondary)
-            }
-
-            Button {
-                Task { await store.refreshDynamicFolder(dynamicFolder) }
-            } label: {
-                Image(systemName: "arrow.clockwise")
-                    .font(.caption2)
-            }
-            .buttonStyle(.plain)
-            .help("Refresh Dynamic Folder")
-        }
-        .padding(.vertical, 2)
-        .padding(.horizontal, 5)
-        .contentShape(Rectangle())
-        .onTapGesture(perform: onToggle)
-        .contextMenu {
-            Button {
-                Task { await store.refreshDynamicFolder(dynamicFolder) }
-            } label: {
-                Label("Refresh Dynamic Folder", systemImage: "arrow.clockwise")
-            }
-
-            Button {
-                store.editingDynamicFolder = dynamicFolder
-            } label: {
-                Label(store.strings.editDynamicFolder, systemImage: "slider.horizontal.3")
-            }
-
-            Button {
-                store.duplicateDynamicFolder(dynamicFolder)
-            } label: {
-                Label(store.strings.duplicateDynamicFolder, systemImage: "plus.square.on.square")
-            }
-
-            Divider()
-
-            Button(role: .destructive) {
-                store.deleteDynamicFolder(dynamicFolder.id)
-            } label: {
-                Label("Delete Dynamic Folder", systemImage: "trash")
             }
         }
     }

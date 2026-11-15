@@ -13,7 +13,6 @@ public struct NexusMainWindowView: View {
     @State private var exportPayload: ExportedFileDocument? = nil
     @State private var exportFormat: VaultExportFormat = .nxts
     @State private var isExportingVaultFile = false
-    @State private var isDownloadingVerifiedDmg = false
     @State private var bannerAlertMessage: String? = nil
 
     public init() {}
@@ -88,11 +87,9 @@ public struct NexusMainWindowView: View {
         .sheet(item: $store.editingSmartFolder) { sf in
             SmartFolderEditorSheet(existing: sf)
         }
-        .sheet(isPresented: $store.isPresentingNewDynamicFolderSheet) {
-            DynamicFolderEditorSheet(existing: nil)
-        }
-        .sheet(item: $store.editingDynamicFolder) { df in
-            DynamicFolderEditorSheet(existing: df)
+        .sheet(isPresented: $store.isPresentingSoftwareUpdateSheet) {
+            MacSoftwareUpdateSheet()
+                .environmentObject(store)
         }
         .sheet(isPresented: $store.isPresentingNewCredentialSheet) {
             CredentialEditorSheet(existing: nil)
@@ -223,39 +220,50 @@ public struct NexusMainWindowView: View {
         VStack(spacing: 0) {
             if let update = store.updateCandidate {
                 HStack(spacing: 10) {
-                    Image(systemName: "arrow.down.circle.fill")
+                    Image(systemName: "arrow.triangle.2.circlepath.circle.fill")
                         .foregroundStyle(Color(nsColor: .systemBlue))
-                    Text("NexusTS \(update.tagName) is available on GitHub Releases (100% vault-compatible in-place upgrade).")
-                        .font(.callout.weight(.medium))
+
+                    if store.updateInstallPhase.isBusy {
+                        Text(store.updateInstallPhase.statusText)
+                            .font(.callout.weight(.medium))
+                            .lineLimit(1)
+                    } else {
+                        Text("NexusTS \(update.tagName) is ready to install inside the app (no DMG required).")
+                            .font(.callout.weight(.medium))
+                            .lineLimit(1)
+                    }
+
                     Spacer()
-                    if isDownloadingVerifiedDmg {
+
+                    if case .downloading(let progress) = store.updateInstallPhase {
+                        ProgressView(value: min(1.0, max(0.0, progress)))
+                            .progressViewStyle(.linear)
+                            .frame(width: 120)
+                    } else if store.updateInstallPhase.isBusy {
                         ProgressView()
                             .controlSize(.small)
-                    } else {
-                        Button("Download Verified DMG…") {
-                            isDownloadingVerifiedDmg = true
-                            Task { @MainActor in
-                                defer { isDownloadingVerifiedDmg = false }
-                                do {
-                                    if let dmgUrl = try await store.downloadVerifiedUpdateDmg() {
-                                        NSWorkspace.shared.open(dmgUrl)
-                                        NSWorkspace.shared.activateFileViewerSelecting([dmgUrl])
-                                    } else {
-                                        NSWorkspace.shared.open(update.dmgDownloadUrl ?? update.htmlReleaseUrl)
-                                    }
-                                } catch {
-                                    NSWorkspace.shared.open(update.dmgDownloadUrl ?? update.htmlReleaseUrl)
-                                }
-                            }
+                    }
+
+                    Button("Update & Relaunch") {
+                        Task { await store.installAvailableUpdateAndRelaunch() }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .disabled(store.updateInstallPhase.isBusy)
+
+                    Button("Details…") {
+                        store.isPresentingSoftwareUpdateSheet = true
+                    }
+                    .controlSize(.small)
+
+                    if !store.updateInstallPhase.isBusy {
+                        Button {
+                            store.updateCandidate = nil
+                        } label: {
+                            Image(systemName: "xmark")
                         }
-                        .controlSize(.small)
+                        .buttonStyle(.plain)
                     }
-                    Button {
-                        store.updateCandidate = nil
-                    } label: {
-                        Image(systemName: "xmark")
-                    }
-                    .buttonStyle(.plain)
                 }
                 .padding(.horizontal, 14)
                 .padding(.vertical, 7)
@@ -363,12 +371,6 @@ public struct NexusMainWindowView: View {
                     store.isPresentingNewSmartFolderSheet = true
                 } label: {
                     Label(store.strings.newSmartFolder, systemImage: "sparkles.rectangle.stack")
-                }
-
-                Button {
-                    store.isPresentingNewDynamicFolderSheet = true
-                } label: {
-                    Label(store.strings.newDynamicFolder, systemImage: "bolt.badge.clock")
                 }
 
                 Button {

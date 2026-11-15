@@ -38,7 +38,6 @@ import androidx.compose.material.icons.outlined.CreateNewFolder
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.DesktopWindows
 import androidx.compose.material.icons.outlined.DriveFileMove
-import androidx.compose.material.icons.outlined.DynamicFeed
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Key
@@ -107,8 +106,6 @@ import com.nexusts.app.core.vault.credentials.TotpCodeGenerator
 import com.nexusts.app.core.vault.inheritance.EffectiveConnectionProfile
 import com.nexusts.app.core.vault.model.ConnectionTemplate
 import com.nexusts.app.core.vault.model.CustomPropertyEntry
-import com.nexusts.app.core.vault.model.DynamicFolder
-import com.nexusts.app.core.vault.model.DynamicScriptInterpreter
 import com.nexusts.app.core.vault.model.InheritableProperties
 import com.nexusts.app.core.vault.model.NxtsVaultDocument
 import com.nexusts.app.core.vault.model.ProtocolSpecificSettings
@@ -2112,181 +2109,6 @@ fun NewSmartFolderDialog(
                     TextButton(
                         onClick = {
                             onDeleteSmartFolder(existingSmartFolder.id)
-                            onDismiss()
-                        }
-                    ) {
-                        Text(strings.actionDeleteItem, color = MaterialTheme.colorScheme.error)
-                    }
-                }
-                TextButton(onClick = onDismiss) {
-                    Text(strings.dialogActionCancel)
-                }
-            }
-        }
-    )
-}
-
-/**
- * Interactive Creator & Editor for Royal TS [DynamicFolder] Inventory (`JSON_HTTP_API` JSON array or HTTPS URL).
- */
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-fun NewDynamicFolderDialog(
-    visible: Boolean,
-    folders: List<VaultFolder> = emptyList(),
-    strings: WorkspaceLocalizedStrings,
-    onDismiss: () -> Unit,
-    onSaveDynamicFolder: (DynamicFolder) -> Unit,
-    existingDynamicFolder: DynamicFolder? = null,
-    onDeleteDynamicFolder: ((String) -> Unit)? = null
-) {
-    if (!visible) return
-    var name by remember(existingDynamicFolder) { mutableStateOf(existingDynamicFolder?.name.orEmpty()) }
-    var selectedParentId by remember(existingDynamicFolder) {
-        mutableStateOf(existingDynamicFolder?.parentFolderId)
-    }
-    var interpreter by remember(existingDynamicFolder) {
-        mutableStateOf(existingDynamicFolder?.interpreter ?: DynamicScriptInterpreter.JSON_HTTP_API)
-    }
-    var scriptPayload by remember(existingDynamicFolder) {
-        mutableStateOf(existingDynamicFolder?.scriptOrEndpointPayload.orEmpty())
-    }
-
-    val jsonValidationError = remember(interpreter, scriptPayload) {
-        val trimmed = scriptPayload.trim()
-        if (trimmed.isEmpty()) {
-            null
-        } else if (interpreter == DynamicScriptInterpreter.JSON_HTTP_API &&
-            !trimmed.startsWith("https://", ignoreCase = true) &&
-            !trimmed.startsWith("http://", ignoreCase = true)
-        ) {
-            runCatching {
-                if (trimmed.startsWith("[")) {
-                    org.json.JSONArray(trimmed)
-                } else if (trimmed.startsWith("{")) {
-                    org.json.JSONObject(trimmed)
-                } else {
-                    throw IllegalArgumentException("Expected HTTPS URL or JSON array/object.")
-                }
-            }.exceptionOrNull()?.localizedMessage ?: if (!trimmed.startsWith("[") && !trimmed.startsWith("{")) {
-                "Expected HTTPS URL or JSON array/object."
-            } else {
-                null
-            }
-        } else {
-            null
-        }
-    }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        icon = {
-            Icon(Icons.Outlined.DynamicFeed, contentDescription = null, tint = MaterialTheme.colorScheme.secondary)
-        },
-        title = {
-            Text(
-                if (existingDynamicFolder != null) {
-                    strings.actionEditDynamicFolder
-                } else {
-                    strings.actionNewDynamicFolder
-                }
-            )
-        },
-        text = {
-            Column(
-                modifier = Modifier.verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                OutlinedTextField(
-                    value = name,
-                    onValueChange = { name = it },
-                    label = { Text(strings.dialogFieldName) },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    DynamicScriptInterpreter.entries.forEach { candidate ->
-                        NexusChoiceChip(
-                            selected = interpreter == candidate,
-                            onClick = { interpreter = candidate },
-                            label = candidate.name
-                        )
-                    }
-                }
-                if (folders.isNotEmpty()) {
-                    val parentLabel = folders.firstOrNull { it.id == selectedParentId }?.name ?: "-"
-                    val parentOptions = remember(folders) {
-                        buildList {
-                            add(NexusSelectOption<String?>(value = null, title = "-"))
-                            folders.forEach { folder ->
-                                add(NexusSelectOption(value = folder.id, title = folder.name))
-                            }
-                        }
-                    }
-                    NexusDialogSelectField(
-                        buttonText = "${strings.dialogFieldFolder}: $parentLabel",
-                        dialogTitle = strings.dialogFieldFolder,
-                        cancelLabel = strings.dialogActionCancel,
-                        selectedValue = selectedParentId,
-                        options = parentOptions,
-                        leadingIcon = Icons.Outlined.Folder,
-                        onSelect = { selectedParentId = it }
-                    )
-                }
-                OutlinedTextField(
-                    value = scriptPayload,
-                    onValueChange = { scriptPayload = it },
-                    label = { Text("JSON Inventory Array or https:// Inventory Endpoint") },
-                    placeholder = {
-                        Text(
-                            text = "[ { \"name\": \"server-01\", \"host\": \"server.example.internal\", \"protocol\": \"SSH\" } ]",
-                            style = MaterialTheme.typography.labelSmall
-                        )
-                    },
-                    isError = jsonValidationError != null,
-                    supportingText = if (jsonValidationError != null) {
-                        {
-                            Text(
-                                text = jsonValidationError,
-                                color = MaterialTheme.colorScheme.error
-                            )
-                        }
-                    } else {
-                        null
-                    },
-                    minLines = 4,
-                    maxLines = 8,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-        },
-        confirmButton = {
-            Button(
-                enabled = name.isNotBlank() && scriptPayload.isNotBlank() && jsonValidationError == null,
-                onClick = {
-                    onSaveDynamicFolder(
-                        DynamicFolder(
-                            id = existingDynamicFolder?.id ?: java.util.UUID.randomUUID().toString(),
-                            parentFolderId = selectedParentId,
-                            name = name.trim(),
-                            interpreter = interpreter,
-                            scriptOrEndpointPayload = scriptPayload.trim()
-                        )
-                    )
-                }
-            ) {
-                Text(strings.dialogActionSave)
-            }
-        },
-        dismissButton = {
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                if (existingDynamicFolder != null && onDeleteDynamicFolder != null) {
-                    TextButton(
-                        onClick = {
-                            onDeleteDynamicFolder(existingDynamicFolder.id)
                             onDismiss()
                         }
                     ) {

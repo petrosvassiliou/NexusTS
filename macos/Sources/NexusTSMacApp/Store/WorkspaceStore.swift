@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import Darwin
 import Foundation
 import NexusTSCore
 import SwiftUI
@@ -434,8 +435,14 @@ public final class WorkspaceStore: ObservableObject {
     @Published public var syncStatusSummary: String = "Local Zero-Knowledge Vault"
     @Published public var linkedCloudFileURL: URL? = nil
     @Published public var updateCandidate: MacReleaseUpdateCandidate? = nil
+    @Published public var updateInstallPhase: MacUpdateInstallPhase = .idle
+    @Published public var autoCheckUpdatesEnabled: Bool = (UserDefaults.standard.object(forKey: "nexusts.macos.autoCheckUpdates") as? Bool) ?? true {
+        didSet {
+            UserDefaults.standard.set(autoCheckUpdatesEnabled, forKey: "nexusts.macos.autoCheckUpdates")
+        }
+    }
+    @Published public var isPresentingSoftwareUpdateSheet: Bool = false
     @Published public var auditLog: [AuditLogEntry] = []
-    @Published public var dynamicFolderCache: [String: [VaultConnection]] = [:]
 
     // Sheet Presentation Triggers & Global Error State
     @Published public var editingConnection: VaultConnection? = nil
@@ -450,8 +457,6 @@ public final class WorkspaceStore: ObservableObject {
     @Published public var connectWithOptionsTarget: VaultConnection? = nil
     @Published public var editingSmartFolder: SmartFolder? = nil
     @Published public var isPresentingNewSmartFolderSheet: Bool = false
-    @Published public var editingDynamicFolder: DynamicFolder? = nil
-    @Published public var isPresentingNewDynamicFolderSheet: Bool = false
     @Published public var editingCredential: VaultCredential? = nil
     @Published public var isPresentingNewCredentialSheet: Bool = false
     @Published public var pendingRoyalImport: PendingRoyalTsImport? = nil
@@ -483,7 +488,16 @@ public final class WorkspaceStore: ObservableObject {
         loadPersistedLocalVault()
         appendAudit("Vault", "NexusTS macOS initialized (\(document.connections.count) connections).")
         Task { [weak self] in
-            await self?.checkGitHubUpdates()
+            if self?.autoCheckUpdatesEnabled == true {
+                await self?.checkGitHubUpdates(manual: false)
+            }
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 4 * 3600 * 1_000_000_000)
+                if Task.isCancelled { break }
+                if self?.autoCheckUpdatesEnabled == true {
+                    await self?.checkGitHubUpdates(manual: false)
+                }
+            }
         }
     }
 
@@ -678,7 +692,6 @@ public final class WorkspaceStore: ObservableObject {
         paneTree = .initialEmpty()
         detachedWindowTabs.removeAll()
         isFullScreenSessionMode = false
-        dynamicFolderCache.removeAll()
         NativeSshCryptoBridge.clearAgentKeys()
         MacKeychainAndBiometrics.shared.deleteAllVaultPassphrases()
 
@@ -727,10 +740,6 @@ public final class WorkspaceStore: ObservableObject {
 
     public var activeSmartFolders: [SmartFolder] {
         document.smartFolders.filter { !document.tombstonedObjectIds.contains($0.id) }
-    }
-
-    public var activeDynamicFolders: [DynamicFolder] {
-        document.dynamicFolders.filter { !document.tombstonedObjectIds.contains($0.id) }
     }
 
     public var selectedConnection: VaultConnection? {
@@ -1443,49 +1452,6 @@ public final class WorkspaceStore: ObservableObject {
         }
     }
 
-    public func saveDynamicFolder(_ dynamicFolder: DynamicFolder) {
-        if dynamicFolder.interpreter == .JSON_HTTP_API,
-           !dynamicFolder.scriptOrEndpointPayload.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().hasPrefix("http"),
-           let jsonErr = PropertyInheritanceResolver.validateDynamicFolderJsonPayload(dynamicFolder.scriptOrEndpointPayload) {
-            reportAppError(
-                NexusAppError(
-                    category: .validation,
-                    title: "Invalid Dynamic Folder JSON",
-                    userMessage: jsonErr,
-                    remediationHint: "Provide an HTTPS endpoint URL or valid RoyalJSON {\"Objects\": [...]}."
-                )
-            )
-            return
-        }
-        commitMutation("Saved Dynamic Folder \(dynamicFolder.name)") { doc in
-            doc.tombstonedObjectIds.remove(dynamicFolder.id)
-            if let idx = doc.dynamicFolders.firstIndex(where: { $0.id == dynamicFolder.id }) {
-                doc.dynamicFolders[idx] = dynamicFolder
-            } else {
-                doc.dynamicFolders.append(dynamicFolder)
-            }
-        }
-        Task { await refreshDynamicFolder(dynamicFolder) }
-    }
-
-    public func duplicateDynamicFolder(_ dynamicFolder: DynamicFolder) {
-        var copy = dynamicFolder
-        copy.id = "dyn-\(UUID().uuidString.lowercased())"
-        copy.name = "\(dynamicFolder.name) Copy"
-        copy.updatedAtEpochMs = VaultClock.nowMs()
-        commitMutation("Duplicated Dynamic Folder \(dynamicFolder.name)") { doc in
-            doc.dynamicFolders.append(copy)
-        }
-    }
-
-    public func deleteDynamicFolder(_ dynamicFolderId: String) {
-        dynamicFolderCache.removeValue(forKey: dynamicFolderId)
-        commitMutation("Deleted Dynamic Folder") { doc in
-            doc.tombstonedObjectIds.insert(dynamicFolderId)
-            doc.dynamicFolders.removeAll { $0.id == dynamicFolderId }
-        }
-    }
-
     public func saveCredential(_ credential: VaultCredential) {
         var normalized = credential
         normalized.parentFolderId = nil
@@ -1779,24 +1745,68 @@ public final class WorkspaceStore: ObservableObject {
         }
     }
 
-    public func refreshDynamicFolder(_ dyn: DynamicFolder) async {
-        let items = await PropertyInheritanceResolver.evaluateDynamicFolder(dyn, allowLocalScriptExecution: false)
-        dynamicFolderCache[dyn.id] = items
-        appendAudit("Dynamic Folder", "Reloaded '\(dyn.name)' (\(items.count) dynamic hosts).")
-    }
-
-    public func checkGitHubUpdates() async {
-        if let candidate = try? await MacGitHubReleaseUpdater.checkForUpdates() {
-            self.updateCandidate = candidate
-            appendAudit("Updater", "New release available on GitHub: \(candidate.tagName).")
+    public func checkGitHubUpdates(manual: Bool = false) async {
+        guard !updateInstallPhase.isBusy else { return }
+        if manual {
+            updateInstallPhase = .checking
+        }
+        do {
+            if let candidate = try await MacGitHubReleaseUpdater.checkForUpdates() {
+                let isNew = self.updateCandidate?.tagName != candidate.tagName
+                self.updateCandidate = candidate
+                self.updateInstallPhase = .idle
+                if isNew || manual {
+                    appendAudit("Updater", "New release available on GitHub: \(candidate.tagName).")
+                }
+            } else {
+                self.updateCandidate = nil
+                if manual {
+                    self.updateInstallPhase = .upToDate
+                } else if case .checking = self.updateInstallPhase {
+                    self.updateInstallPhase = .idle
+                }
+            }
+        } catch {
+            if manual {
+                self.updateInstallPhase = .failed(error.localizedDescription)
+            } else {
+                self.updateInstallPhase = .idle
+            }
         }
     }
 
-    public func downloadVerifiedUpdateDmg() async throws -> URL? {
-        guard let candidate = updateCandidate else { return nil }
-        let fileURL = try await MacGitHubReleaseUpdater.downloadAndVerifyDmg(candidate: candidate)
-        appendAudit("Updater", "Verified SHA-256 & downloaded \(fileURL.lastPathComponent).")
-        return fileURL
+    public func installAvailableUpdateAndRelaunch() async {
+        guard let candidate = updateCandidate, !updateInstallPhase.isBusy else { return }
+        do {
+            let (stagedAppURL, stagingRootURL) = try await MacGitHubReleaseUpdater.downloadVerifyAndStageUpdate(
+                candidate: candidate
+            ) { [weak self] phase in
+                Task { @MainActor in
+                    self?.updateInstallPhase = phase
+                }
+            }
+
+            updateInstallPhase = .applyingAndRelaunching
+            appendAudit("Updater", "Applying NexusTS \(candidate.tagName) in place and relaunching…")
+            persistLocalVault()
+            for (_, ctrl) in terminalControllers { ctrl.shutdown() }
+            terminalControllers.removeAll()
+            for (_, rdp) in rdpSessions { rdp.destroy() }
+            rdpSessions.removeAll()
+
+            try MacGitHubReleaseUpdater.launchAtomicSwapHelperAndRelaunch(
+                stagedAppURL: stagedAppURL,
+                stagingRootURL: stagingRootURL
+            )
+
+            NSApplication.shared.terminate(nil)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                Darwin.exit(0)
+            }
+        } catch {
+            updateInstallPhase = .failed(error.localizedDescription)
+            reportError(error, operationTitle: "In-App Update Failed")
+        }
     }
 
     public func appendAudit(_ category: String, _ message: String) {

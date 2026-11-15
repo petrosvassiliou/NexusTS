@@ -57,7 +57,6 @@ import androidx.compose.material.icons.outlined.DeviceHub
 import androidx.compose.material.icons.outlined.Download
 import androidx.compose.material.icons.outlined.DragIndicator
 import androidx.compose.material.icons.outlined.DriveFileMove
-import androidx.compose.material.icons.outlined.DynamicFeed
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.ExpandLess
@@ -196,7 +195,6 @@ import com.nexusts.app.core.vault.importer.DetectedExternalVaultFormat
 import com.nexusts.app.core.vault.importer.RoyalTsImportPlacementMode
 import com.nexusts.app.core.vault.inheritance.EffectiveConnectionProfile
 import com.nexusts.app.core.vault.model.CustomPropertyEntry
-import com.nexusts.app.core.vault.model.DynamicFolder
 import com.nexusts.app.core.vault.model.InheritanceMode
 import com.nexusts.app.core.vault.model.ProtocolSpecificSettings
 import com.nexusts.app.core.vault.model.RdpAudioRedirectionMode
@@ -218,7 +216,6 @@ import com.nexusts.app.feature.workspace.studios.DriveSyncAndConflictStudioView
 import com.nexusts.app.feature.workspace.studios.ExpressiveVaultOverviewDashboard
 import com.nexusts.app.feature.workspace.studios.FolderPropertiesAndCredentialDialog
 import com.nexusts.app.feature.workspace.studios.InspectorExtendedRoyalCards
-import com.nexusts.app.feature.workspace.studios.NewDynamicFolderDialog
 import com.nexusts.app.feature.workspace.studios.NewOrEditConnectionDialog
 import com.nexusts.app.feature.workspace.studios.NewSmartFolderDialog
 import com.nexusts.app.feature.workspace.studios.NewTemplateDialog
@@ -484,7 +481,6 @@ fun NexusWorkspaceScreen(
                     onNewConnection = viewModel::openNewConnectionDialog,
                     onNewFolder = viewModel::openNewFolderDialog,
                     onNewSmartFolder = viewModel::openNewSmartFolderDialog,
-                    onNewDynamicFolder = viewModel::openNewDynamicFolderDialog,
                     onNewTemplate = viewModel::openNewTemplateDialog,
                     onNewCredential = viewModel::openNewCredentialDialog,
                     onNewLocalShell = viewModel::launchLocalShellTab,
@@ -519,12 +515,6 @@ fun NexusWorkspaceScreen(
                     onEditSmartFolder = viewModel::openEditSmartFolderDialog,
                     onDuplicateSmartFolder = viewModel::duplicateSmartFolder,
                     onDeleteSmartFolder = viewModel::deleteSmartFolderFromVault,
-                    onNewDynamicFolder = viewModel::openNewDynamicFolderDialog,
-                    onEditDynamicFolder = viewModel::openEditDynamicFolderDialog,
-                    onDuplicateDynamicFolder = viewModel::duplicateDynamicFolder,
-                    onToggleDynamicFolder = viewModel::toggleDynamicFolder,
-                    onReloadDynamicFolder = viewModel::reloadDynamicFolder,
-                    onDeleteDynamicFolder = viewModel::deleteDynamicFolderFromVault,
                     onNewFolder = viewModel::openNewFolderDialog,
                     onSelectFolder = viewModel::selectFolderInTree,
                     onNewConnection = viewModel::openNewConnectionDialog,
@@ -921,15 +911,6 @@ fun NexusWorkspaceScreen(
                     validateRegex = viewModel::validateSmartFolderRegex,
                     previewMatches = viewModel::previewSmartFolderMatches,
                     onDeleteSmartFolder = viewModel::deleteSmartFolderFromVault
-                )
-                NewDynamicFolderDialog(
-                    visible = uiState.isNewDynamicFolderDialogVisible,
-                    folders = uiState.vaultDocument.folders.filterNot { it.id in uiState.vaultDocument.tombstonedObjectIds },
-                    strings = strings,
-                    onDismiss = viewModel::dismissNewDynamicFolderDialog,
-                    onSaveDynamicFolder = viewModel::saveDynamicFolderToVault,
-                    existingDynamicFolder = uiState.editingDynamicFolder,
-                    onDeleteDynamicFolder = viewModel::deleteDynamicFolderFromVault
                 )
                 NewTemplateDialog(
                     visible = uiState.isNewTemplateDialogVisible,
@@ -2045,7 +2026,6 @@ private fun DesktopTopWindowChrome(
     onNewConnection: () -> Unit,
     onNewFolder: () -> Unit,
     onNewSmartFolder: () -> Unit,
-    onNewDynamicFolder: () -> Unit,
     onNewTemplate: () -> Unit,
     onNewCredential: () -> Unit = {},
     onNewLocalShell: () -> Unit,
@@ -2420,14 +2400,6 @@ private fun DesktopTopWindowChrome(
                             onClick = {
                                 createMenuExpanded = false
                                 onNewSmartFolder()
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text(strings.actionNewDynamicFolder) },
-                            leadingIcon = { Icon(Icons.Outlined.DynamicFeed, contentDescription = null) },
-                            onClick = {
-                                createMenuExpanded = false
-                                onNewDynamicFolder()
                             }
                         )
                         DropdownMenuItem(
@@ -3049,12 +3021,6 @@ private fun VaultHierarchySidebarTree(
     onEditSmartFolder: (SmartFolder) -> Unit = {},
     onDuplicateSmartFolder: (SmartFolder) -> Unit = {},
     onDeleteSmartFolder: (String) -> Unit,
-    onNewDynamicFolder: () -> Unit,
-    onEditDynamicFolder: (DynamicFolder) -> Unit = {},
-    onDuplicateDynamicFolder: (DynamicFolder) -> Unit = {},
-    onToggleDynamicFolder: (DynamicFolder) -> Unit,
-    onReloadDynamicFolder: (DynamicFolder) -> Unit,
-    onDeleteDynamicFolder: (String) -> Unit,
     onNewFolder: () -> Unit,
     onSelectFolder: (String?) -> Unit = {},
     onNewConnection: () -> Unit = {},
@@ -3125,9 +3091,6 @@ private fun VaultHierarchySidebarTree(
     }
     val activeSmartFolders = remember(doc.smartFolders, doc.tombstonedObjectIds) {
         doc.smartFolders.filterNot { it.id in doc.tombstonedObjectIds }
-    }
-    val activeDynamicFolders = remember(doc.dynamicFolders, doc.tombstonedObjectIds) {
-        doc.dynamicFolders.filterNot { it.id in doc.tombstonedObjectIds }
     }
     val activeFolders = remember(doc.folders, doc.tombstonedObjectIds) {
         doc.folders
@@ -3912,82 +3875,6 @@ private fun VaultHierarchySidebarTree(
                                 }
                             }
                         }
-
-                        if (activeDynamicFolders.isNotEmpty()) {
-                            item(key = "header-dynamic-folders") {
-                                Spacer(modifier = Modifier.height(6.dp))
-                                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 6.dp, vertical = 3.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.SpaceBetween
-                                ) {
-                                    Text(
-                                        text = strings.vaultSectionDynamicFolders,
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.secondary
-                                    )
-                                    IconButton(onClick = onNewDynamicFolder, modifier = Modifier.size(22.dp)) {
-                                        Icon(
-                                            imageVector = Icons.Outlined.Add,
-                                            contentDescription = strings.actionNewDynamicFolder,
-                                            modifier = Modifier.size(14.dp),
-                                            tint = MaterialTheme.colorScheme.secondary
-                                        )
-                                    }
-                                }
-                            }
-                            activeDynamicFolders.forEach { dyn ->
-                                val hydrated = uiState.hydratedDynamicConnections[dyn.id].orEmpty().filter(::matchesFilter)
-                                val isExpanded = uiState.selectedDynamicFolderId == dyn.id
-                                item(key = "dyn-${dyn.id}") {
-                                    DynamicFolderTreeRow(
-                                        dynamicFolder = dyn,
-                                        isExpanded = isExpanded,
-                                        strings = strings,
-                                        onToggle = { onToggleDynamicFolder(dyn) },
-                                        onEdit = { onEditDynamicFolder(dyn) },
-                                        onDuplicate = { onDuplicateDynamicFolder(dyn) },
-                                        onReload = { onReloadDynamicFolder(dyn) },
-                                        onNewDynamicFolder = onNewDynamicFolder,
-                                        onDelete = { onDeleteDynamicFolder(dyn.id) }
-                                    )
-                                }
-                                if (isExpanded) {
-                                    groupConnectionsIntelligently(hydrated).forEach { group ->
-                                        if (group.showsHeader) {
-                                            item(key = "dyn-hdr-${dyn.id}-${group.badge}") {
-                                                SidebarProtocolGroupHeaderRow(
-                                                    badge = group.badge,
-                                                    count = group.connections.size,
-                                                    indentLevel = 1
-                                                )
-                                            }
-                                        }
-                                        items(group.connections, key = { "dyn-${dyn.id}-${it.id}" }) { conn ->
-                                            ConnectionTreeRow(
-                                                connection = conn,
-                                                indentLevel = 1,
-                                                isSelected = conn.id == uiState.selectedConnectionId,
-                                                strings = strings,
-                                                activeSessionCount = activeSessionCountByConnectionId[conn.id] ?: 0,
-                                                onSelect = { onSelectConnection(conn.id) },
-                                                onEdit = { onEditConnection(conn) },
-                                                onConnectWithOptions = { onConnectWithOptions(conn) },
-                                                onToggleFavorite = { onToggleFavorite(conn.id) },
-                                                onDuplicate = { onDuplicateConnection(conn) },
-                                                onDelete = { onDeleteConnection(conn.id) },
-                                                onDisconnect = { onDisconnectConnection(conn.id) },
-                                                onLaunch = { placement -> onLaunchConnection(conn, placement) },
-                                                onLaunchSplitDown = { onLaunchConnectionInSplitDown(conn) }
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        }
                     }
                 }
             }
@@ -4162,14 +4049,6 @@ private fun VaultHierarchySidebarTree(
                 onClick = {
                     sidebarBgMenuOpen = false
                     onNewSmartFolder()
-                }
-            )
-            DropdownMenuItem(
-                text = { Text(strings.actionNewDynamicFolder) },
-                leadingIcon = { Icon(Icons.Outlined.DynamicFeed, contentDescription = null) },
-                onClick = {
-                    sidebarBgMenuOpen = false
-                    onNewDynamicFolder()
                 }
             )
             DropdownMenuItem(
@@ -4759,173 +4638,6 @@ private fun SmartFolderTreeRow(
                 onClick = {
                     menuOpen = false
                     onNewSmartFolder()
-                }
-            )
-            HorizontalDivider()
-            DropdownMenuItem(
-                text = { Text(strings.actionDeleteItem, color = MaterialTheme.colorScheme.error) },
-                leadingIcon = {
-                    Icon(Icons.Outlined.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error)
-                },
-                onClick = {
-                    menuOpen = false
-                    onDelete()
-                }
-            )
-        }
-    }
-}
-
-@Composable
-private fun DynamicFolderTreeRow(
-    dynamicFolder: DynamicFolder,
-    isExpanded: Boolean,
-    strings: WorkspaceLocalizedStrings,
-    onToggle: () -> Unit,
-    onEdit: () -> Unit = {},
-    onDuplicate: () -> Unit = {},
-    onReload: () -> Unit,
-    onNewDynamicFolder: () -> Unit,
-    onDelete: () -> Unit
-) {
-    var menuOpen by remember { mutableStateOf(false) }
-    var menuOffsetPx by remember { mutableStateOf(Offset.Zero) }
-    val hover = rememberDesktopHoverState()
-    val isHovered = hover.value.isHovered
-
-    Box {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .nexusHoverTracker(hover, PointerIcon.Hand)
-                .clip(MaterialTheme.shapes.small)
-                .background(
-                    when {
-                        isExpanded -> MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.45f)
-                        isHovered || menuOpen -> MaterialTheme.colorScheme.surfaceContainerHigh
-                        else -> Color.Transparent
-                    }
-                )
-                .nexusInteractiveRow(
-                    rowKey = "dyn-${dynamicFolder.id}",
-                    onClick = onToggle,
-                    onDoubleClick = onEdit,
-                    onSecondaryClick = { pos ->
-                        menuOffsetPx = pos
-                        menuOpen = true
-                    }
-                )
-                .padding(horizontal = 8.dp, vertical = 5.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Row(
-                modifier = Modifier.weight(1f),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(
-                    imageVector = Icons.Outlined.DynamicFeed,
-                    contentDescription = null,
-                    modifier = Modifier.size(16.dp),
-                    tint = MaterialTheme.colorScheme.secondary
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = dynamicFolder.name,
-                    style = MaterialTheme.typography.bodyMedium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                if (isHovered || menuOpen) {
-                    IconButton(
-                        onClick = onEdit,
-                        modifier = Modifier.size(22.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Outlined.Edit,
-                            contentDescription = strings.actionEditDynamicFolder,
-                            modifier = Modifier.size(13.dp),
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-                IconButton(
-                    onClick = onReload,
-                    modifier = Modifier.size(24.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Outlined.Refresh,
-                        contentDescription = strings.actionReloadDynamicFolder,
-                        modifier = Modifier.size(14.dp),
-                        tint = MaterialTheme.colorScheme.secondary
-                    )
-                }
-                IconButton(
-                    onClick = onDelete,
-                    modifier = Modifier.size(22.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Outlined.Delete,
-                        contentDescription = strings.actionDeleteItem,
-                        modifier = Modifier.size(13.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-        }
-
-        val density = LocalDensity.current
-        DropdownMenu(
-            expanded = menuOpen,
-            onDismissRequest = { menuOpen = false },
-            offset = with(density) { DpOffset(menuOffsetPx.x.toDp(), 0.dp) }
-        ) {
-            DropdownMenuItem(
-                text = { Text(strings.actionEditDynamicFolder) },
-                leadingIcon = { Icon(Icons.Outlined.Edit, contentDescription = null) },
-                onClick = {
-                    menuOpen = false
-                    onEdit()
-                }
-            )
-            DropdownMenuItem(
-                text = { Text(strings.actionDuplicateDynamicFolder) },
-                leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null) },
-                onClick = {
-                    menuOpen = false
-                    onDuplicate()
-                }
-            )
-            HorizontalDivider()
-            DropdownMenuItem(
-                text = { Text(if (isExpanded) "Collapse Dynamic Folder" else "Expand Dynamic Folder") },
-                leadingIcon = {
-                    Icon(
-                        if (isExpanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
-                        contentDescription = null
-                    )
-                },
-                onClick = {
-                    menuOpen = false
-                    onToggle()
-                }
-            )
-            DropdownMenuItem(
-                text = { Text(strings.actionReloadDynamicFolder) },
-                leadingIcon = { Icon(Icons.Outlined.Refresh, contentDescription = null) },
-                onClick = {
-                    menuOpen = false
-                    onReload()
-                }
-            )
-            DropdownMenuItem(
-                text = { Text(strings.actionNewDynamicFolder) },
-                leadingIcon = { Icon(Icons.Outlined.Add, contentDescription = null) },
-                onClick = {
-                    menuOpen = false
-                    onNewDynamicFolder()
                 }
             )
             HorizontalDivider()
@@ -7653,7 +7365,7 @@ private fun PlayProtectAutoUpdateDialog(
                                     ).trim()
                                     else -> String.format(
                                         strings.autoUpdateUpToDateFormat,
-                                        uiState.updateCurrentVersion.ifBlank { "0.3.0-beta.3" }
+                                        uiState.updateCurrentVersion.ifBlank { "0.3.0-beta.4" }
                                     )
                                 },
                                 style = MaterialTheme.typography.titleSmall,
@@ -7668,7 +7380,7 @@ private fun PlayProtectAutoUpdateDialog(
                                 ""
                             }
                             Text(
-                                text = "Installed: v${uiState.updateCurrentVersion.ifBlank { "0.3.0-beta.3" }}  →  Latest: ${uiState.updateLatestTag.ifBlank { "current" }}$sizeMb",
+                                text = "Installed: v${uiState.updateCurrentVersion.ifBlank { "0.3.0-beta.4" }}  →  Latest: ${uiState.updateLatestTag.ifBlank { "current" }}$sizeMb",
                                 style = NexusTheme.monospace.keycapShortcut,
                                 color = MaterialTheme.colorScheme.secondary
                             )

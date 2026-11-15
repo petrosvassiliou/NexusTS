@@ -303,7 +303,8 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
         )
         XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.3.0-beta.2", isNewerThan: "0.3.0-beta.1"))
         XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.3.0-beta.3", isNewerThan: "0.3.0-beta.2"))
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.3.0-beta.10", isNewerThan: "0.3.0-beta.3"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.3.0-beta.4", isNewerThan: "0.3.0-beta.3"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.3.0-beta.10", isNewerThan: "0.3.0-beta.4"))
         XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.3.0", isNewerThan: "0.3.0-beta.1"))
         XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.4.0", isNewerThan: "0.3.0"))
         XCTAssertFalse(MacGitHubReleaseUpdater.compareSemver("0.3.0-beta.1", isNewerThan: "0.3.0"))
@@ -348,7 +349,7 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
     }
 
     func testV118LocalizationUpgradeVersionAndVaultReplacementCompatibility() throws {
-        XCTAssertEqual(MacGitHubReleaseUpdater.currentVersion, "0.3.0-beta.3")
+        XCTAssertEqual(MacGitHubReleaseUpdater.currentVersion, "0.3.0-beta.4")
 
         for lang in NexusAppLanguage.allCases {
             let catalog = LocalizedWorkspaceStrings.catalog(for: lang)
@@ -505,5 +506,88 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
             rawNativeError: "TLS_CERTIFICATE_CHANGED: X.509 certificate fingerprint changed"
         )
         XCTAssertEqual(rdpCertChanged.category, .tlsCertificate)
+    }
+
+    func testInAppMacAutoUpdaterBundleExtractionTargetResolutionAndSwapScript() throws {
+        // 1. Verify target install resolution keeps writable .app paths in place and redirects read-only /Volumes DMG mounts
+        let appInApplications = URL(fileURLWithPath: "/Applications/NexusTS.app")
+        XCTAssertEqual(
+            MacGitHubReleaseUpdater.resolveTargetInstallAppURL(currentBundleURL: appInApplications, isApplicationsWritable: true).path,
+            "/Applications/NexusTS.app"
+        )
+        let customDesktopApp = URL(fileURLWithPath: "/Users/tester/Desktop/NexusTS.app")
+        XCTAssertEqual(
+            MacGitHubReleaseUpdater.resolveTargetInstallAppURL(currentBundleURL: customDesktopApp, isApplicationsWritable: false).path,
+            "/Users/tester/Desktop/NexusTS.app"
+        )
+        let mountedDmgApp = URL(fileURLWithPath: "/Volumes/NexusTS 0.3.0-beta.4/NexusTS.app")
+        XCTAssertEqual(
+            MacGitHubReleaseUpdater.resolveTargetInstallAppURL(currentBundleURL: mountedDmgApp, isApplicationsWritable: true).path,
+            "/Applications/NexusTS.app"
+        )
+        XCTAssertTrue(
+            MacGitHubReleaseUpdater.resolveTargetInstallAppURL(currentBundleURL: mountedDmgApp, isApplicationsWritable: false).path
+                .hasSuffix("/Applications/NexusTS.app")
+        )
+
+        // 2. Verify atomic swap shell script escapes paths with spaces/apostrophes and relaunches without any hdiutil/DMG mounting
+        let swapScript = MacGitHubReleaseUpdater.buildAtomicSwapShellScript(
+            oldPid: 42424,
+            stagedAppPath: "/var/folders/xx/NexusTS Stage/extracted/NexusTS.app",
+            targetAppPath: "/Users/petros's mac/Applications/NexusTS.app",
+            stagingRootPath: "/var/folders/xx/NexusTS Stage"
+        )
+        XCTAssertTrue(swapScript.contains("OLD_PID=42424"))
+        XCTAssertTrue(swapScript.contains("/usr/bin/open -n"))
+        XCTAssertTrue(swapScript.contains("/usr/bin/xattr -cr"))
+        XCTAssertFalse(swapScript.contains("hdiutil"), "In-app updater must never mount or require a DMG")
+        XCTAssertTrue(swapScript.contains("'\\''"), "Single quotes in paths must be safely POSIX-escaped")
+
+        // 3. Verify real .zip app bundle creation, SHA-256 digest verification, and ditto extraction
+        let tempRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("NexusTSUpdaterTest-\(UUID().uuidString.lowercased())", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        let mockApp = tempRoot.appendingPathComponent("source/NexusTS.app", isDirectory: true)
+        let contentsDir = mockApp.appendingPathComponent("Contents", isDirectory: true)
+        let macosDir = contentsDir.appendingPathComponent("MacOS", isDirectory: true)
+        try FileManager.default.createDirectory(at: macosDir, withIntermediateDirectories: true)
+        try Data("<?xml version=\"1.0\"?><plist version=\"1.0\"><dict/></plist>".utf8)
+            .write(to: contentsDir.appendingPathComponent("Info.plist"))
+        let execURL = macosDir.appendingPathComponent("NexusTS")
+        try Data("#!/bin/sh\necho NEXUSTS_MOCK_OK\n".utf8).write(to: execURL)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: execURL.path)
+
+        let zipURL = tempRoot.appendingPathComponent("NexusTS-v0.3.0-beta.4-macOS-Universal.zip")
+        let dittoZip = Process()
+        dittoZip.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+        dittoZip.arguments = ["-c", "-k", "--keepParent", mockApp.path, zipURL.path]
+        try dittoZip.run()
+        dittoZip.waitUntilExit()
+        XCTAssertEqual(dittoZip.terminationStatus, 0)
+
+        let zipData = try Data(contentsOf: zipURL)
+        let digest = MacGitHubReleaseUpdater.sha256Hex(of: zipData)
+        XCTAssertEqual(digest.count, 64)
+        let manifest = "\(digest)  NexusTS-v0.3.0-beta.4-macOS-Universal.zip\n"
+        XCTAssertTrue(
+            MacGitHubReleaseUpdater.verifySha256Manifest(
+                fileData: zipData,
+                expectedAssetName: "NexusTS-v0.3.0-beta.4-macOS-Universal.zip",
+                manifestText: manifest
+            )
+        )
+
+        let extractDir = tempRoot.appendingPathComponent("unpacked", isDirectory: true)
+        let unpackedApp = try MacGitHubReleaseUpdater.extractAndValidateAppBundle(
+            fromZip: zipURL,
+            into: extractDir
+        )
+        XCTAssertEqual(unpackedApp.lastPathComponent, "NexusTS.app")
+        XCTAssertTrue(
+            FileManager.default.isExecutableFile(
+                atPath: unpackedApp.appendingPathComponent("Contents/MacOS/NexusTS").path
+            )
+        )
     }
 }

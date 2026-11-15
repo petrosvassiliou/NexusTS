@@ -100,6 +100,22 @@ public struct MenuBarQuickAgentView: View {
             }
 
             Button {
+                NSApp.setActivationPolicy(.regular)
+                openWindow(id: "main-workspace")
+                NSApp.activate(ignoringOtherApps: true)
+                store.isPresentingSoftwareUpdateSheet = true
+                if store.updateCandidate == nil {
+                    Task { await store.checkGitHubUpdates(manual: true) }
+                }
+            } label: {
+                if let rel = store.updateCandidate {
+                    Label("Install Update (\(rel.tagName))…", systemImage: "arrow.down.circle.fill")
+                } else {
+                    Label("Check for Updates…", systemImage: "arrow.triangle.2.circlepath.circle")
+                }
+            }
+
+            Button {
                 store.lockVault()
             } label: {
                 Label("Lock Zero-Knowledge Vault", systemImage: "lock.fill")
@@ -156,7 +172,7 @@ public struct MacSettingsView: View {
                     Label("Updates", systemImage: "arrow.down.circle")
                 }
         }
-        .frame(width: 540, height: 420)
+        .frame(width: 560, height: 470)
     }
 
     private var generalTab: some View {
@@ -279,62 +295,177 @@ public struct MacSettingsView: View {
         .formStyle(.grouped)
     }
 
-    @State private var updateStatusText: String? = nil
-    @State private var isDownloadingUpdate: Bool = false
-
     private var updatesTab: some View {
+        MacSoftwareUpdateContentView(showsSheetChrome: false)
+    }
+}
+
+// MARK: - 3. In-App macOS Software Update Sheet & Settings Panel (No DMG Required)
+
+public struct MacSoftwareUpdateSheet: View {
+    @EnvironmentObject private var store: WorkspaceStore
+    @Environment(\.dismiss) private var dismiss
+
+    public init() {}
+
+    public var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                Image(systemName: "arrow.triangle.2.circlepath.circle.fill")
+                    .font(.system(size: 28))
+                    .foregroundStyle(Color.accentColor)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("NexusTS In-App Software Update")
+                        .font(.headline)
+                    Text("Downloads, verifies SHA-256, replaces NexusTS.app in place, and relaunches automatically — no DMG needed.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+            .padding(16)
+            .background(.bar)
+
+            Divider()
+
+            MacSoftwareUpdateContentView(showsSheetChrome: true)
+
+            Divider()
+
+            HStack {
+                Spacer()
+                Button("Close") {
+                    dismiss()
+                }
+                .keyboardShortcut(.cancelAction)
+                .disabled(store.updateInstallPhase.isBusy)
+            }
+            .padding(12)
+            .background(.bar)
+        }
+        .frame(width: 580, height: 490)
+    }
+}
+
+private struct MacSoftwareUpdateContentView: View {
+    @EnvironmentObject private var store: WorkspaceStore
+    let showsSheetChrome: Bool
+
+    @State private var githubTokenInput: String = ""
+    @State private var detectedAuthSource: String = "None configured"
+    @State private var tokenSavedNotice: String? = nil
+
+    private func refreshAuthStatus() {
+        detectedAuthSource = MacGitHubReleaseUpdater.resolveGitHubAuthToken()?.source ?? "None configured"
+    }
+
+    var body: some View {
         Form {
-            Section("macOS Universal2 Release Channel") {
-                LabeledContent("Installed macOS Version", value: "NexusTS \(MacGitHubReleaseUpdater.currentVersion) (Universal2)")
+            Section("In-App Auto-Update (Universal2 App Bundle)") {
+                LabeledContent("Installed Version", value: "NexusTS v\(MacGitHubReleaseUpdater.currentVersion) (Universal2)")
+                LabeledContent("Install Location") {
+                    Text(MacGitHubReleaseUpdater.resolveTargetInstallAppURL().path)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+
+                Toggle("Automatically check for updates on launch & in background", isOn: $store.autoCheckUpdatesEnabled)
+
                 HStack(spacing: 10) {
-                    Button("Check GitHub Releases Now") {
-                        updateStatusText = "Checking GitHub Releases…"
-                        Task {
-                            await store.checkGitHubUpdates()
-                            updateStatusText = store.updateCandidate == nil
-                                ? "You're running the latest release (v\(MacGitHubReleaseUpdater.currentVersion))."
-                                : "Update \(store.updateCandidate!.tagName) available!"
-                        }
+                    Button("Check for Updates Now") {
+                        Task { await store.checkGitHubUpdates(manual: true) }
+                    }
+                    .disabled(store.updateInstallPhase.isBusy)
+
+                    if store.updateInstallPhase.isBusy {
+                        ProgressView()
+                            .controlSize(.small)
                     }
 
-                    if let status = updateStatusText {
-                        Text(status)
+                    if !store.updateInstallPhase.statusText.isEmpty {
+                        Text(store.updateInstallPhase.statusText)
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(
+                                {
+                                    if case .failed = store.updateInstallPhase {
+                                        return Color(nsColor: .systemRed)
+                                    }
+                                    return Color.secondary
+                                }()
+                            )
                     }
+                }
+
+                if case .downloading(let progress) = store.updateInstallPhase {
+                    ProgressView(value: min(1.0, max(0.0, progress)))
+                        .progressViewStyle(.linear)
                 }
             }
 
             if let rel = store.updateCandidate {
                 Section("Available Update: \(rel.tagName)") {
                     LabeledContent("Release", value: rel.releaseTitle)
-                    HStack(spacing: 10) {
-                        if rel.dmgDownloadUrl != nil {
-                            Button(isDownloadingUpdate ? "Downloading & Verifying SHA-256…" : "Download & Verify Universal2 DMG") {
-                                isDownloadingUpdate = true
-                                Task {
-                                    do {
-                                        if let fileURL = try await store.downloadVerifiedUpdateDmg() {
-                                            updateStatusText = "Verified SHA-256: \(fileURL.lastPathComponent)"
-                                            NSWorkspace.shared.activateFileViewerSelecting([fileURL])
-                                        }
-                                    } catch {
-                                        updateStatusText = error.localizedDescription
-                                    }
-                                    isDownloadingUpdate = false
-                                }
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .disabled(isDownloadingUpdate)
+                    if rel.zipSizeBytes > 0 {
+                        let mb = String(format: "%.1f MB", Double(rel.zipSizeBytes) / (1024.0 * 1024.0))
+                        LabeledContent("Bundle Size", value: "\(rel.zipAssetName ?? "macOS Universal .zip") (\(mb))")
+                    }
+                    if !rel.releaseNotes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        ScrollView {
+                            Text(rel.releaseNotes)
+                                .font(.caption)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .textSelection(.enabled)
                         }
+                        .frame(maxHeight: showsSheetChrome ? 110 : 80)
+                    }
 
-                        Button("Open Release Page") {
+                    HStack(spacing: 10) {
+                        Button("Install Update & Relaunch") {
+                            Task { await store.installAvailableUpdateAndRelaunch() }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(store.updateInstallPhase.isBusy)
+
+                        Button("View Release Notes on GitHub") {
                             NSWorkspace.shared.open(rel.htmlReleaseUrl)
                         }
                     }
                 }
             }
+
+            Section("GitHub Access Token (Private Repository Releases)") {
+                LabeledContent("Detected Credential Source", value: detectedAuthSource)
+                SecureField("Optional GitHub Personal Access Token (Contents: Read-only)", text: $githubTokenInput)
+                HStack(spacing: 8) {
+                    Button("Save Token in Keychain") {
+                        MacGitHubReleaseUpdater.saveKeychainGitHubToken(githubTokenInput)
+                        githubTokenInput = ""
+                        refreshAuthStatus()
+                        tokenSavedNotice = "Saved to macOS Keychain."
+                        Task { await store.checkGitHubUpdates(manual: true) }
+                    }
+                    .disabled(githubTokenInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                    if MacGitHubReleaseUpdater.loadKeychainGitHubToken() != nil {
+                        Button("Clear Keychain Token", role: .destructive) {
+                            MacGitHubReleaseUpdater.saveKeychainGitHubToken("")
+                            refreshAuthStatus()
+                            tokenSavedNotice = "Cleared Keychain token."
+                        }
+                    }
+
+                    if let notice = tokenSavedNotice {
+                        Text(notice)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
         }
         .formStyle(.grouped)
+        .onAppear {
+            refreshAuthStatus()
+        }
     }
 }

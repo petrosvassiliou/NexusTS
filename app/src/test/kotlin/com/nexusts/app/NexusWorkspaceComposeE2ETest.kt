@@ -1503,10 +1503,10 @@ class NexusWorkspaceComposeE2ETest {
 
     @Test
     fun compactFlushLeftSidebarFolderContextMenusStartAllRdpRenameDeleteAndV117UpgradeParity() {
-        assertEquals(10302, BuildConfig.VERSION_CODE)
+        assertEquals(10303, BuildConfig.VERSION_CODE)
         assertTrue(
-            "Expected BuildConfig.VERSION_NAME (${BuildConfig.VERSION_NAME}) to start with 0.3.0-beta.3",
-            BuildConfig.VERSION_NAME.startsWith("0.3.0-beta.3")
+            "Expected BuildConfig.VERSION_NAME (${BuildConfig.VERSION_NAME}) to start with 0.3.0-beta.4",
+            BuildConfig.VERSION_NAME.startsWith("0.3.0-beta.4")
         )
 
         val serializer = buildFastSerializer()
@@ -1618,6 +1618,17 @@ class NexusWorkspaceComposeE2ETest {
             assertTextRendered("Windows RDS Tier")
             assertTextRendered("DC-Core-RDP-01")
             assertTextRendered(strings.navStudiosMenu)
+            // Verify Dynamic Folders UI has been completely removed from the workspace sidebar
+            assertEquals(
+                "Dynamic Folders section header must never be rendered in the sidebar",
+                0,
+                composeRule.onAllNodesWithText(strings.vaultSectionDynamicFolders, substring = false).fetchSemanticsNodes().size
+            )
+            assertEquals(
+                "New Dynamic Folder action must never be rendered in the sidebar",
+                0,
+                composeRule.onAllNodesWithText(strings.actionNewDynamicFolder, substring = false).fetchSemanticsNodes().size
+            )
             // Verify folders appear ONLY once (in the left sidebar) and NEVER duplicated in the center overview screen
             assertEquals(
                 "Folder row must appear strictly once (in sidebar, never duplicated in center overview)",
