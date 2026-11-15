@@ -304,7 +304,8 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
         XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.3.0-beta.2", isNewerThan: "0.3.0-beta.1"))
         XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.3.0-beta.3", isNewerThan: "0.3.0-beta.2"))
         XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.3.0-beta.4", isNewerThan: "0.3.0-beta.3"))
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.3.0-beta.10", isNewerThan: "0.3.0-beta.4"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.3.0-beta.5", isNewerThan: "0.3.0-beta.4"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.3.0-beta.10", isNewerThan: "0.3.0-beta.5"))
         XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.3.0", isNewerThan: "0.3.0-beta.1"))
         XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.4.0", isNewerThan: "0.3.0"))
         XCTAssertFalse(MacGitHubReleaseUpdater.compareSemver("0.3.0-beta.1", isNewerThan: "0.3.0"))
@@ -349,7 +350,7 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
     }
 
     func testV118LocalizationUpgradeVersionAndVaultReplacementCompatibility() throws {
-        XCTAssertEqual(MacGitHubReleaseUpdater.currentVersion, "0.3.0-beta.4")
+        XCTAssertEqual(MacGitHubReleaseUpdater.currentVersion, "0.3.0-beta.5")
 
         for lang in NexusAppLanguage.allCases {
             let catalog = LocalizedWorkspaceStrings.catalog(for: lang)

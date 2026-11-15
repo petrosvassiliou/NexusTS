@@ -146,9 +146,9 @@ fun NexusChoiceChip(
         border = BorderStroke(1.dp, borderColor)
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+            modifier = Modifier.padding(horizontal = 15.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(7.dp)
+            horizontalArrangement = Arrangement.spacedBy(9.dp)
         ) {
             if (effectiveIcon != null) {
                 Icon(
@@ -225,9 +225,9 @@ fun NexusActionChip(
         border = BorderStroke(1.dp, borderColor)
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+            modifier = Modifier.padding(horizontal = 15.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(7.dp)
+            horizontalArrangement = Arrangement.spacedBy(9.dp)
         ) {
             if (leadingIcon != null) {
                 Icon(
@@ -289,7 +289,7 @@ fun ExpressiveSplitActionButton(
     Row(
         modifier = modifier,
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(2.dp)
+        horizontalArrangement = Arrangement.spacedBy(3.dp)
     ) {
         Surface(
             modifier = Modifier
@@ -306,9 +306,9 @@ fun ExpressiveSplitActionButton(
             contentColor = contentColor
         ) {
             Row(
-                modifier = Modifier.padding(start = 16.dp, end = 12.dp),
+                modifier = Modifier.padding(start = 16.dp, end = 14.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Icon(
                     imageVector = leadingIcon,
@@ -326,7 +326,7 @@ fun ExpressiveSplitActionButton(
         Surface(
             modifier = Modifier
                 .height(40.dp)
-                .width(34.dp)
+                .width(38.dp)
                 .nexusHoverTracker(trailHover, PointerIcon.Hand)
                 .clip(trailShape)
                 .clickable(

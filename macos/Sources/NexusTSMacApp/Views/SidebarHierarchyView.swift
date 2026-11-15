@@ -352,7 +352,7 @@ public struct SidebarHierarchyView: View {
         let allCollapsed = !store.activeFolders.isEmpty
             && store.collapsedFolderIds.isSuperset(of: store.activeFolders.map(\.id))
 
-        HStack(spacing: 4) {
+        HStack(spacing: 6) {
             sidebarFilterPill(
                 mode: .all,
                 label: store.strings.connections,
@@ -371,7 +371,7 @@ public struct SidebarHierarchyView: View {
                 helpText: store.strings.recentSessions
             )
 
-            Spacer(minLength: 4)
+            Spacer(minLength: 6)
 
             SidebarGlassIconButton(
                 systemImage: "folder.badge.plus",
@@ -416,8 +416,8 @@ public struct SidebarHierarchyView: View {
                 }
             }
         }
-        .padding(.horizontal, 7)
-        .padding(.vertical, 5)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
         .liquidGlassSurface(cornerRadius: 12, prominence: .subtle)
     }
 
@@ -552,7 +552,7 @@ private struct SidebarGlassIconButton: View {
             Image(systemName: systemImage)
                 .font(.system(size: 11.5, weight: .semibold))
                 .foregroundStyle(isHovered ? Color.primary : Color.secondary)
-                .frame(width: 22, height: 22)
+                .frame(width: 24, height: 24)
                 .liquidGlassCapsule(isHovered: isHovered)
         }
         .buttonStyle(.plain)
@@ -575,7 +575,7 @@ private struct SidebarFilterPillButton: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 4) {
+            HStack(spacing: 6) {
                 Image(systemName: systemImage)
                     .font(.system(size: 10.5, weight: .semibold))
                 if let label {
@@ -585,8 +585,8 @@ private struct SidebarFilterPillButton: View {
                 }
             }
             .foregroundStyle(selected || isHovered ? Color.primary : Color.secondary)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 3.5)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4.5)
             .liquidGlassCapsule(
                 tint: Color.accentColor,
                 isSelected: selected,

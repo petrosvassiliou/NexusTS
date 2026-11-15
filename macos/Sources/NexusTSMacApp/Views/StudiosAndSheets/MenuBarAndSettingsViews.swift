@@ -11,8 +11,8 @@ public struct MenuBarQuickAgentView: View {
     public init() {}
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
                 Image(systemName: "network.badge.shield.half.filled")
                     .foregroundStyle(Color.accentColor)
                 Text("NexusTS Vault")
@@ -25,7 +25,7 @@ public struct MenuBarQuickAgentView: View {
                         .foregroundStyle(Color(nsColor: .systemGreen))
                 }
             }
-            .padding(.bottom, 2)
+            .padding(.bottom, 3)
 
             Divider()
 
@@ -128,8 +128,8 @@ public struct MenuBarQuickAgentView: View {
             }
             .keyboardShortcut("q", modifiers: [.command])
         }
-        .padding(8)
-        .frame(width: 280)
+        .padding(10)
+        .frame(width: 288)
     }
 }
 

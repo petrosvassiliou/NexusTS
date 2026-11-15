@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.defaultMinSize
@@ -2055,21 +2056,21 @@ private fun DesktopTopWindowChrome(
         color = MaterialTheme.colorScheme.surfaceContainerLowest,
         modifier = Modifier
             .fillMaxWidth()
-            .height(52.dp)
+            .height(58.dp)
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
         Row(
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp),
+                .padding(horizontal = 16.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             // Left Window Identity + Studios Switcher Cluster
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                horizontalArrangement = Arrangement.spacedBy(16.dp)
             ) {
                 ExpressiveMorphingIconButton(
                     icon = Icons.Outlined.Menu,
@@ -2077,12 +2078,17 @@ private fun DesktopTopWindowChrome(
                     isActive = isSidebarVisible,
                     onClick = onToggleSidebar
                 )
-                NexusBrandEmblem(size = 30.dp, cornerRadius = 9.dp)
-                Text(
-                    text = strings.appName,
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(11.dp)
+                ) {
+                    NexusBrandEmblem(size = 30.dp, cornerRadius = 9.dp)
+                    Text(
+                        text = strings.appName,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
                 if (vaultName.isNotBlank() && vaultName != NexusWorkspaceViewModel.DEFAULT_VAULT_NAME) {
                     Surface(
                         shape = RoundedCornerShape(99.dp),
@@ -2095,7 +2101,7 @@ private fun DesktopTopWindowChrome(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp)
                         )
                     }
                 }
@@ -2108,7 +2114,7 @@ private fun DesktopTopWindowChrome(
                         val isStudiosHovered = studiosHover.value.isHovered
                         Surface(
                             modifier = Modifier
-                                .height(34.dp)
+                                .height(38.dp)
                                 .semantics(mergeDescendants = true) {
                                     contentDescription = strings.navStudiosMenu
                                 }
@@ -2146,9 +2152,9 @@ private fun DesktopTopWindowChrome(
                                 MaterialTheme.colorScheme.onSurface
                             }
                             Row(
-                                modifier = Modifier.padding(start = 10.dp, end = 8.dp),
+                                modifier = Modifier.padding(start = 15.dp, end = 13.dp),
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                horizontalArrangement = Arrangement.spacedBy(9.dp)
                             ) {
                                 Icon(
                                     imageVector = if (inNonSessionStudio && activeStudio != null) {
@@ -2157,7 +2163,7 @@ private fun DesktopTopWindowChrome(
                                         Icons.Outlined.Tune
                                     },
                                     contentDescription = null,
-                                    modifier = Modifier.size(16.dp),
+                                    modifier = Modifier.size(17.dp),
                                     tint = if (inNonSessionStudio) {
                                         MaterialTheme.colorScheme.onSecondaryContainer
                                     } else {
@@ -2177,7 +2183,7 @@ private fun DesktopTopWindowChrome(
                                 Icon(
                                     imageVector = Icons.Outlined.KeyboardArrowDown,
                                     contentDescription = null,
-                                    modifier = Modifier.size(16.dp),
+                                    modifier = Modifier.size(17.dp),
                                     tint = if (inNonSessionStudio) {
                                         MaterialTheme.colorScheme.onSecondaryContainer
                                     } else {
@@ -2189,15 +2195,16 @@ private fun DesktopTopWindowChrome(
 
                         DropdownMenu(
                             expanded = studiosMenuExpanded,
-                            onDismissRequest = { studiosMenuExpanded = false }
+                            onDismissRequest = { studiosMenuExpanded = false },
+                            shape = NexusDropdownMenuShape
                         ) {
                             destinations.forEach { dest ->
                                 val isSelected = dest.id == selectedDestinationId
-                                DropdownMenuItem(
+                                NexusSpacedDropdownMenuItem(
                                     text = {
                                         Row(
                                             verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                            horizontalArrangement = Arrangement.spacedBy(10.dp)
                                         ) {
                                             Text(dest.label)
                                             if (dest.badgeCount > 0) {
@@ -2209,7 +2216,7 @@ private fun DesktopTopWindowChrome(
                                                         text = dest.badgeCount.toString(),
                                                         style = NexusTheme.monospace.keycapShortcut,
                                                         color = MaterialTheme.colorScheme.onPrimaryContainer,
-                                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp)
+                                                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 1.dp)
                                                     )
                                                 }
                                             }
@@ -2255,16 +2262,16 @@ private fun DesktopTopWindowChrome(
                 }
             }
 
-            // Center Google M3 Quick-Connect Omnibox (`Ctrl + K`) — sleek 36dp pill
+            // Center Google M3 Quick-Connect Omnibox (`Ctrl + K`) — sleek 38dp pill
             val quickConnectHover = rememberDesktopHoverState()
             val quickConnectInteraction = remember { MutableInteractionSource() }
             val isQuickConnectHovered = quickConnectHover.value.isHovered
             Surface(
                 modifier = Modifier
                     .weight(1f, fill = false)
-                    .widthIn(min = 190.dp, max = 350.dp)
-                    .padding(horizontal = 10.dp)
-                    .height(36.dp)
+                    .widthIn(min = 190.dp, max = 360.dp)
+                    .padding(horizontal = 14.dp)
+                    .height(38.dp)
                     .nexusHoverTracker(quickConnectHover, PointerIcon.Hand)
                     .clip(RoundedCornerShape(99.dp))
                     .clickable(
@@ -2288,7 +2295,7 @@ private fun DesktopTopWindowChrome(
                 )
             ) {
                 Row(
-                    modifier = Modifier.padding(horizontal = 12.dp),
+                    modifier = Modifier.padding(horizontal = 14.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
@@ -2306,7 +2313,7 @@ private fun DesktopTopWindowChrome(
                                 MaterialTheme.colorScheme.secondary
                             }
                         )
-                        Spacer(modifier = Modifier.width(8.dp))
+                        Spacer(modifier = Modifier.width(10.dp))
                         Text(
                             text = strings.quickConnectButton,
                             style = MaterialTheme.typography.bodySmall,
@@ -2319,7 +2326,7 @@ private fun DesktopTopWindowChrome(
                             overflow = TextOverflow.Ellipsis
                         )
                     }
-                    Spacer(modifier = Modifier.width(8.dp))
+                    Spacer(modifier = Modifier.width(10.dp))
                     Surface(
                         shape = RoundedCornerShape(99.dp),
                         color = MaterialTheme.colorScheme.surfaceContainerLowest
@@ -2337,7 +2344,7 @@ private fun DesktopTopWindowChrome(
             // Right Google M3 Action Cluster (Clean & Uncluttered)
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 if (flexibleUpdateDownloaded) {
                     FilledTonalButton(
@@ -2345,7 +2352,7 @@ private fun DesktopTopWindowChrome(
                         modifier = Modifier.height(40.dp)
                     ) {
                         Icon(Icons.Outlined.SystemUpdateAlt, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
+                        Spacer(modifier = Modifier.width(9.dp))
                         Text(strings.updateRestartAction, style = MaterialTheme.typography.labelLarge)
                     }
                 } else if (githubUpdateAvailable) {
@@ -2354,7 +2361,7 @@ private fun DesktopTopWindowChrome(
                         modifier = Modifier.height(40.dp)
                     ) {
                         Icon(Icons.Outlined.SystemUpdateAlt, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
+                        Spacer(modifier = Modifier.width(9.dp))
                         Text(
                             text = String.format(
                                 strings.autoUpdateAvailableFormat,
@@ -2376,9 +2383,10 @@ private fun DesktopTopWindowChrome(
                     )
                     DropdownMenu(
                         expanded = createMenuExpanded,
-                        onDismissRequest = { createMenuExpanded = false }
+                        onDismissRequest = { createMenuExpanded = false },
+                        shape = NexusDropdownMenuShape
                     ) {
-                        DropdownMenuItem(
+                        NexusSpacedDropdownMenuItem(
                             text = { Text(strings.actionNewConnection) },
                             leadingIcon = { Icon(Icons.Outlined.Add, contentDescription = null) },
                             onClick = {
@@ -2386,7 +2394,7 @@ private fun DesktopTopWindowChrome(
                                 onNewConnection()
                             }
                         )
-                        DropdownMenuItem(
+                        NexusSpacedDropdownMenuItem(
                             text = { Text(strings.actionNewFolder) },
                             leadingIcon = { Icon(Icons.Outlined.Folder, contentDescription = null) },
                             onClick = {
@@ -2394,7 +2402,7 @@ private fun DesktopTopWindowChrome(
                                 onNewFolder()
                             }
                         )
-                        DropdownMenuItem(
+                        NexusSpacedDropdownMenuItem(
                             text = { Text(strings.actionNewSmartFolder) },
                             leadingIcon = { Icon(Icons.Outlined.AutoAwesome, contentDescription = null) },
                             onClick = {
@@ -2402,7 +2410,7 @@ private fun DesktopTopWindowChrome(
                                 onNewSmartFolder()
                             }
                         )
-                        DropdownMenuItem(
+                        NexusSpacedDropdownMenuItem(
                             text = { Text(strings.studioActionAddCredential) },
                             leadingIcon = { Icon(Icons.Outlined.Key, contentDescription = null) },
                             onClick = {
@@ -2410,7 +2418,7 @@ private fun DesktopTopWindowChrome(
                                 onNewCredential()
                             }
                         )
-                        DropdownMenuItem(
+                        NexusSpacedDropdownMenuItem(
                             text = { Text(strings.actionNewTemplate) },
                             leadingIcon = { Icon(Icons.Outlined.Bookmarks, contentDescription = null) },
                             onClick = {
@@ -2418,8 +2426,8 @@ private fun DesktopTopWindowChrome(
                                 onNewTemplate()
                             }
                         )
-                        HorizontalDivider()
-                        DropdownMenuItem(
+                        NexusMenuDivider()
+                        NexusSpacedDropdownMenuItem(
                             text = { Text("Local Terminal") },
                             leadingIcon = { Icon(Icons.Outlined.Terminal, contentDescription = null) },
                             onClick = {
@@ -2427,7 +2435,7 @@ private fun DesktopTopWindowChrome(
                                 onNewLocalShell()
                             }
                         )
-                        DropdownMenuItem(
+                        NexusSpacedDropdownMenuItem(
                             text = { Text(strings.actionImportRtsz) },
                             leadingIcon = { Icon(Icons.Outlined.UploadFile, contentDescription = null) },
                             onClick = {
@@ -2435,8 +2443,8 @@ private fun DesktopTopWindowChrome(
                                 onImportRtsz()
                             }
                         )
-                        HorizontalDivider()
-                        DropdownMenuItem(
+                        NexusMenuDivider()
+                        NexusSpacedDropdownMenuItem(
                             text = { Text(strings.actionExportNxts) },
                             leadingIcon = { Icon(Icons.Outlined.Download, contentDescription = null) },
                             onClick = {
@@ -2444,7 +2452,7 @@ private fun DesktopTopWindowChrome(
                                 onExportVault(VaultExportFormat.NXTS_VAULT)
                             }
                         )
-                        DropdownMenuItem(
+                        NexusSpacedDropdownMenuItem(
                             text = { Text(strings.actionExportRtsz) },
                             leadingIcon = { Icon(Icons.Outlined.Download, contentDescription = null) },
                             onClick = {
@@ -2452,7 +2460,7 @@ private fun DesktopTopWindowChrome(
                                 onExportVault(VaultExportFormat.RTSZ_ROYAL_ARCHIVE)
                             }
                         )
-                        DropdownMenuItem(
+                        NexusSpacedDropdownMenuItem(
                             text = { Text(strings.actionExportCsv) },
                             leadingIcon = { Icon(Icons.Outlined.Download, contentDescription = null) },
                             onClick = {
@@ -2516,9 +2524,9 @@ private fun DesktopTopWindowChrome(
                         )
                     ) {
                         Row(
-                            modifier = Modifier.padding(start = 12.dp, end = 10.dp),
+                            modifier = Modifier.padding(start = 14.dp, end = 12.dp),
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(7.dp)
+                            horizontalArrangement = Arrangement.spacedBy(9.dp)
                         ) {
                             NexusLanguageFlagBadge(
                                 languageCode = currentLocale.bcp47Tag,
@@ -2581,9 +2589,10 @@ private fun DesktopTopWindowChrome(
                     )
                     DropdownMenu(
                         expanded = toolsMenuExpanded,
-                        onDismissRequest = { toolsMenuExpanded = false }
+                        onDismissRequest = { toolsMenuExpanded = false },
+                        shape = NexusDropdownMenuShape
                     ) {
-                        DropdownMenuItem(
+                        NexusSpacedDropdownMenuItem(
                             text = {
                                 Text(
                                     if (githubUpdateAvailable && githubUpdateTag.isNotBlank()) {
@@ -2599,7 +2608,7 @@ private fun DesktopTopWindowChrome(
                                 onOpenAutoUpdateDialog()
                             }
                         )
-                        DropdownMenuItem(
+                        NexusSpacedDropdownMenuItem(
                             text = { Text(strings.drawerAuditLogs) },
                             leadingIcon = { Icon(Icons.Outlined.Terminal, contentDescription = null) },
                             trailingIcon = {
@@ -2613,7 +2622,7 @@ private fun DesktopTopWindowChrome(
                             }
                         )
                         if (hasActiveSessions || remoteKeyCaptureEnabled) {
-                            DropdownMenuItem(
+                            NexusSpacedDropdownMenuItem(
                                 text = { Text("Remote Key Capture") },
                                 leadingIcon = { Icon(Icons.Outlined.Keyboard, contentDescription = null) },
                                 trailingIcon = {
@@ -2628,7 +2637,7 @@ private fun DesktopTopWindowChrome(
                             )
                         }
                         if (hasActiveSessions || broadcastEnabled) {
-                            DropdownMenuItem(
+                            NexusSpacedDropdownMenuItem(
                                 text = { Text(strings.actionBroadcastInput) },
                                 leadingIcon = { Icon(Icons.Outlined.Podcasts, contentDescription = null) },
                                 trailingIcon = {
@@ -2643,8 +2652,8 @@ private fun DesktopTopWindowChrome(
                             )
                         }
                         if (onRequestResetDatabase != null) {
-                            HorizontalDivider()
-                            DropdownMenuItem(
+                            NexusMenuDivider()
+                            NexusSpacedDropdownMenuItem(
                                 text = { Text(strings.actionResetDatabase, color = MaterialTheme.colorScheme.error) },
                                 leadingIcon = {
                                     Icon(
@@ -2669,6 +2678,41 @@ private fun DesktopTopWindowChrome(
         )
         }
     }
+}
+
+private val NexusDropdownMenuShape = RoundedCornerShape(16.dp)
+private val NexusMenuItemPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp)
+
+@Composable
+private fun NexusSpacedDropdownMenuItem(
+    text: @Composable () -> Unit,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    leadingIcon: @Composable (() -> Unit)? = null,
+    trailingIcon: @Composable (() -> Unit)? = null,
+    enabled: Boolean = true
+) {
+    DropdownMenuItem(
+        modifier = modifier,
+        text = {
+            Box(modifier = Modifier.padding(start = 6.dp, end = 8.dp)) {
+                text()
+            }
+        },
+        onClick = onClick,
+        leadingIcon = leadingIcon,
+        trailingIcon = trailingIcon,
+        enabled = enabled,
+        contentPadding = NexusMenuItemPadding
+    )
+}
+
+@Composable
+private fun NexusMenuDivider() {
+    HorizontalDivider(
+        modifier = Modifier.padding(vertical = 5.dp),
+        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
+    )
 }
 
 private const val ROOT_DROP_TARGET_KEY = "__NEXUSTS_ROOT_LEVEL__"
@@ -2956,7 +3000,7 @@ private fun SidebarQuickFilterChip(
     val isHovered = hover.value.isHovered
     Surface(
         modifier = Modifier
-            .height(24.dp)
+            .height(26.dp)
             .nexusHoverTracker(hover, PointerIcon.Hand)
             .clip(RoundedCornerShape(99.dp))
             .clickable(interactionSource = interaction, indication = null, onClick = onClick),
@@ -2986,9 +3030,9 @@ private fun SidebarQuickFilterChip(
             else -> MaterialTheme.colorScheme.onSurfaceVariant
         }
         Row(
-            modifier = Modifier.padding(horizontal = 8.dp),
+            modifier = Modifier.padding(horizontal = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp)
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             if (leadingIcon != null) {
                 Icon(
@@ -3399,7 +3443,7 @@ private fun VaultHierarchySidebarTree(
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                    horizontalArrangement = Arrangement.spacedBy(7.dp)
                 ) {
                     SidebarQuickFilterChip(
                         label = strings.vaultSectionFolders,
@@ -4025,9 +4069,10 @@ private fun VaultHierarchySidebarTree(
         DropdownMenu(
             expanded = sidebarBgMenuOpen,
             onDismissRequest = { sidebarBgMenuOpen = false },
-            offset = with(bgDensity) { DpOffset(sidebarBgMenuOffsetPx.x.toDp(), 0.dp) }
+            offset = with(bgDensity) { DpOffset(sidebarBgMenuOffsetPx.x.toDp(), 0.dp) },
+            shape = NexusDropdownMenuShape
         ) {
-            DropdownMenuItem(
+            NexusSpacedDropdownMenuItem(
                 text = { Text(strings.actionNewConnection) },
                 leadingIcon = { Icon(Icons.Outlined.Add, contentDescription = null) },
                 onClick = {
@@ -4035,7 +4080,7 @@ private fun VaultHierarchySidebarTree(
                     onNewConnection()
                 }
             )
-            DropdownMenuItem(
+            NexusSpacedDropdownMenuItem(
                 text = { Text(strings.actionNewFolder) },
                 leadingIcon = { Icon(Icons.Outlined.CreateNewFolder, contentDescription = null) },
                 onClick = {
@@ -4043,7 +4088,7 @@ private fun VaultHierarchySidebarTree(
                     onNewFolder()
                 }
             )
-            DropdownMenuItem(
+            NexusSpacedDropdownMenuItem(
                 text = { Text(strings.actionNewSmartFolder) },
                 leadingIcon = { Icon(Icons.Outlined.AutoAwesome, contentDescription = null) },
                 onClick = {
@@ -4051,7 +4096,7 @@ private fun VaultHierarchySidebarTree(
                     onNewSmartFolder()
                 }
             )
-            DropdownMenuItem(
+            NexusSpacedDropdownMenuItem(
                 text = { Text(strings.studioActionAddCredential) },
                 leadingIcon = { Icon(Icons.Outlined.Key, contentDescription = null) },
                 onClick = {
@@ -4059,8 +4104,8 @@ private fun VaultHierarchySidebarTree(
                     onNewCredential()
                 }
             )
-            HorizontalDivider()
-            DropdownMenuItem(
+            NexusMenuDivider()
+            NexusSpacedDropdownMenuItem(
                 text = { Text("Local Terminal") },
                 leadingIcon = { Icon(Icons.Outlined.Terminal, contentDescription = null) },
                 onClick = {
@@ -4068,7 +4113,7 @@ private fun VaultHierarchySidebarTree(
                     onLaunchLocalShell()
                 }
             )
-            DropdownMenuItem(
+            NexusSpacedDropdownMenuItem(
                 text = { Text(strings.actionImportRtsz) },
                 leadingIcon = { Icon(Icons.Outlined.UploadFile, contentDescription = null) },
                 onClick = {
@@ -4162,7 +4207,7 @@ private fun SystemCredentialsSidebarFooter(
                     Row(
                         modifier = Modifier.weight(1f),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                        horizontalArrangement = Arrangement.spacedBy(7.dp)
                     ) {
                         Icon(
                             imageVector = if (isExpanded && credentials.isNotEmpty()) {
@@ -4198,7 +4243,7 @@ private fun SystemCredentialsSidebarFooter(
                     }
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(2.dp)
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         Surface(
                             shape = RoundedCornerShape(99.dp),
@@ -4229,9 +4274,10 @@ private fun SystemCredentialsSidebarFooter(
                 DropdownMenu(
                     expanded = headerMenuOpen,
                     onDismissRequest = { headerMenuOpen = false },
-                    offset = with(density) { DpOffset(headerMenuOffsetPx.x.toDp(), 0.dp) }
+                    offset = with(density) { DpOffset(headerMenuOffsetPx.x.toDp(), 0.dp) },
+                    shape = NexusDropdownMenuShape
                 ) {
-                    DropdownMenuItem(
+                    NexusSpacedDropdownMenuItem(
                         text = { Text(strings.studioActionAddCredential) },
                         leadingIcon = { Icon(Icons.Outlined.Add, contentDescription = null) },
                         onClick = {
@@ -4239,7 +4285,7 @@ private fun SystemCredentialsSidebarFooter(
                             onNewCredential()
                         }
                     )
-                    DropdownMenuItem(
+                    NexusSpacedDropdownMenuItem(
                         text = { Text(strings.inspectorGenerateSshKey) },
                         leadingIcon = { Icon(Icons.Outlined.VpnKey, contentDescription = null) },
                         onClick = {
@@ -4248,8 +4294,8 @@ private fun SystemCredentialsSidebarFooter(
                         }
                     )
                     if (credentials.isNotEmpty()) {
-                        HorizontalDivider()
-                        DropdownMenuItem(
+                        NexusMenuDivider()
+                        NexusSpacedDropdownMenuItem(
                             text = { Text(if (isExpanded) "Collapse" else "Expand") },
                             leadingIcon = {
                                 Icon(
@@ -4437,9 +4483,10 @@ private fun CredentialTreeRow(
         DropdownMenu(
             expanded = menuOpen,
             onDismissRequest = { menuOpen = false },
-            offset = with(density) { DpOffset(menuOffsetPx.x.toDp(), 0.dp) }
+            offset = with(density) { DpOffset(menuOffsetPx.x.toDp(), 0.dp) },
+            shape = NexusDropdownMenuShape
         ) {
-            DropdownMenuItem(
+            NexusSpacedDropdownMenuItem(
                 text = { Text(strings.actionEditCredential) },
                 leadingIcon = { Icon(Icons.Outlined.Edit, contentDescription = null) },
                 onClick = {
@@ -4448,7 +4495,7 @@ private fun CredentialTreeRow(
                 }
             )
             if (credential.username.isNotBlank()) {
-                DropdownMenuItem(
+                NexusSpacedDropdownMenuItem(
                     text = { Text("Copy Username") },
                     leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null) },
                     onClick = {
@@ -4458,7 +4505,7 @@ private fun CredentialTreeRow(
                 )
             }
             if (!credential.secretPassword.isNullOrEmpty()) {
-                DropdownMenuItem(
+                NexusSpacedDropdownMenuItem(
                     text = { Text("Copy Password") },
                     leadingIcon = { Icon(Icons.Outlined.Key, contentDescription = null) },
                     onClick = {
@@ -4467,7 +4514,7 @@ private fun CredentialTreeRow(
                     }
                 )
             }
-            DropdownMenuItem(
+            NexusSpacedDropdownMenuItem(
                 text = { Text("Duplicate") },
                 leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null) },
                 onClick = {
@@ -4475,8 +4522,8 @@ private fun CredentialTreeRow(
                     onDuplicate()
                 }
             )
-            HorizontalDivider()
-            DropdownMenuItem(
+            NexusMenuDivider()
+            NexusSpacedDropdownMenuItem(
                 text = { Text(strings.actionDeleteItem, color = MaterialTheme.colorScheme.error) },
                 leadingIcon = {
                     Icon(Icons.Outlined.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error)
@@ -4590,9 +4637,10 @@ private fun SmartFolderTreeRow(
         DropdownMenu(
             expanded = menuOpen,
             onDismissRequest = { menuOpen = false },
-            offset = with(density) { DpOffset(menuOffsetPx.x.toDp(), 0.dp) }
+            offset = with(density) { DpOffset(menuOffsetPx.x.toDp(), 0.dp) },
+            shape = NexusDropdownMenuShape
         ) {
-            DropdownMenuItem(
+            NexusSpacedDropdownMenuItem(
                 text = { Text(strings.actionEditSmartFolder) },
                 leadingIcon = { Icon(Icons.Outlined.Edit, contentDescription = null) },
                 onClick = {
@@ -4600,7 +4648,7 @@ private fun SmartFolderTreeRow(
                     onEdit()
                 }
             )
-            DropdownMenuItem(
+            NexusSpacedDropdownMenuItem(
                 text = { Text(strings.actionDuplicateSmartFolder) },
                 leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null) },
                 onClick = {
@@ -4608,8 +4656,8 @@ private fun SmartFolderTreeRow(
                     onDuplicate()
                 }
             )
-            HorizontalDivider()
-            DropdownMenuItem(
+            NexusMenuDivider()
+            NexusSpacedDropdownMenuItem(
                 text = { Text(if (isExpanded) "Collapse Smart Folder" else "Expand Smart Folder") },
                 leadingIcon = {
                     Icon(
@@ -4623,7 +4671,7 @@ private fun SmartFolderTreeRow(
                 }
             )
             if (matchedCount > 0) {
-                DropdownMenuItem(
+                NexusSpacedDropdownMenuItem(
                     text = { Text(strings.actionConnectAllFolder) },
                     leadingIcon = { Icon(Icons.Outlined.PlayArrow, contentDescription = null) },
                     onClick = {
@@ -4632,7 +4680,7 @@ private fun SmartFolderTreeRow(
                     }
                 )
             }
-            DropdownMenuItem(
+            NexusSpacedDropdownMenuItem(
                 text = { Text(strings.actionNewSmartFolder) },
                 leadingIcon = { Icon(Icons.Outlined.Add, contentDescription = null) },
                 onClick = {
@@ -4640,8 +4688,8 @@ private fun SmartFolderTreeRow(
                     onNewSmartFolder()
                 }
             )
-            HorizontalDivider()
-            DropdownMenuItem(
+            NexusMenuDivider()
+            NexusSpacedDropdownMenuItem(
                 text = { Text(strings.actionDeleteItem, color = MaterialTheme.colorScheme.error) },
                 leadingIcon = {
                     Icon(Icons.Outlined.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error)
@@ -4910,7 +4958,7 @@ private fun FolderTreeRow(
                                 modifier = Modifier.size(17.dp)
                             )
 
-                            Spacer(modifier = Modifier.width(6.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
                             Text(
                                 text = folder.name,
                                 style = MaterialTheme.typography.labelLarge,
@@ -4920,7 +4968,7 @@ private fun FolderTreeRow(
                                 modifier = Modifier.weight(1f, fill = false)
                             )
                             if (explicitFolderCredentialName != null) {
-                                Spacer(modifier = Modifier.width(4.dp))
+                                Spacer(modifier = Modifier.width(5.dp))
                                 Icon(
                                     imageVector = Icons.Outlined.Key,
                                     contentDescription = explicitFolderCredentialName,
@@ -5035,9 +5083,10 @@ private fun FolderTreeRow(
         DropdownMenu(
             expanded = folderMenuOpen,
             onDismissRequest = { folderMenuOpen = false },
-            offset = with(density) { DpOffset(folderMenuOffsetPx.x.toDp(), 0.dp) }
+            offset = with(density) { DpOffset(folderMenuOffsetPx.x.toDp(), 0.dp) },
+            shape = NexusDropdownMenuShape
         ) {
-            DropdownMenuItem(
+            NexusSpacedDropdownMenuItem(
                 text = { Text(strings.actionEditFolderCredentials) },
                 leadingIcon = { Icon(Icons.Outlined.Key, contentDescription = null) },
                 onClick = {
@@ -5045,7 +5094,7 @@ private fun FolderTreeRow(
                     onEditFolder()
                 }
             )
-            DropdownMenuItem(
+            NexusSpacedDropdownMenuItem(
                 text = { Text(strings.actionRenameFolder) },
                 leadingIcon = { Icon(Icons.Outlined.Edit, contentDescription = null) },
                 onClick = {
@@ -5053,8 +5102,8 @@ private fun FolderTreeRow(
                     onRenameFolder()
                 }
             )
-            HorizontalDivider()
-            DropdownMenuItem(
+            NexusMenuDivider()
+            NexusSpacedDropdownMenuItem(
                 text = {
                     Text(
                         if (rdpCount > 0) {
@@ -5077,7 +5126,7 @@ private fun FolderTreeRow(
                 }
             )
             if (childCount > 0) {
-                DropdownMenuItem(
+                NexusSpacedDropdownMenuItem(
                     text = { Text("${strings.actionConnectAllFolder} ($childCount)") },
                     leadingIcon = { Icon(Icons.Outlined.PlayArrow, contentDescription = null) },
                     onClick = {
@@ -5087,7 +5136,7 @@ private fun FolderTreeRow(
                 )
             }
             if (activeSessionCountInSubtree > 0 || childCount > 0) {
-                DropdownMenuItem(
+                NexusSpacedDropdownMenuItem(
                     text = {
                         Text(
                             text = if (activeSessionCountInSubtree > 0) {
@@ -5115,8 +5164,8 @@ private fun FolderTreeRow(
                     }
                 )
             }
-            HorizontalDivider()
-            DropdownMenuItem(
+            NexusMenuDivider()
+            NexusSpacedDropdownMenuItem(
                 text = { Text("New RDP Connection") },
                 leadingIcon = { Icon(Icons.Outlined.Add, contentDescription = null) },
                 onClick = {
@@ -5124,7 +5173,7 @@ private fun FolderTreeRow(
                     onNewRdpInFolder()
                 }
             )
-            DropdownMenuItem(
+            NexusSpacedDropdownMenuItem(
                 text = { Text("New SSH Connection") },
                 leadingIcon = { Icon(Icons.Outlined.Terminal, contentDescription = null) },
                 onClick = {
@@ -5132,7 +5181,7 @@ private fun FolderTreeRow(
                     onNewSshInFolder()
                 }
             )
-            DropdownMenuItem(
+            NexusSpacedDropdownMenuItem(
                 text = { Text("New Subfolder") },
                 leadingIcon = { Icon(Icons.Outlined.CreateNewFolder, contentDescription = null) },
                 onClick = {
@@ -5140,8 +5189,8 @@ private fun FolderTreeRow(
                     onNewSubfolder()
                 }
             )
-            HorizontalDivider()
-            DropdownMenuItem(
+            NexusMenuDivider()
+            NexusSpacedDropdownMenuItem(
                 text = { Text("Move Folder to…") },
                 leadingIcon = { Icon(Icons.Outlined.DriveFileMove, contentDescription = null) },
                 onClick = {
@@ -5149,7 +5198,7 @@ private fun FolderTreeRow(
                     onOpenMoveFolderDialog()
                 }
             )
-            DropdownMenuItem(
+            NexusSpacedDropdownMenuItem(
                 text = { Text("Move Up") },
                 leadingIcon = { Icon(Icons.Outlined.ArrowUpward, contentDescription = null) },
                 onClick = {
@@ -5157,7 +5206,7 @@ private fun FolderTreeRow(
                     onMoveUp()
                 }
             )
-            DropdownMenuItem(
+            NexusSpacedDropdownMenuItem(
                 text = { Text("Move Down") },
                 leadingIcon = { Icon(Icons.Outlined.ArrowDownward, contentDescription = null) },
                 onClick = {
@@ -5165,7 +5214,7 @@ private fun FolderTreeRow(
                     onMoveDown()
                 }
             )
-            DropdownMenuItem(
+            NexusSpacedDropdownMenuItem(
                 text = { Text("Duplicate Folder") },
                 leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null) },
                 onClick = {
@@ -5174,7 +5223,7 @@ private fun FolderTreeRow(
                 }
             )
             if (hasExpandableChildren) {
-                DropdownMenuItem(
+                NexusSpacedDropdownMenuItem(
                     text = { Text(if (isExpanded) "Collapse Subfolders" else "Expand Subfolders") },
                     leadingIcon = {
                         Icon(
@@ -5188,8 +5237,8 @@ private fun FolderTreeRow(
                     }
                 )
             }
-            HorizontalDivider()
-            DropdownMenuItem(
+            NexusMenuDivider()
+            NexusSpacedDropdownMenuItem(
                 text = { Text(strings.actionDeleteItem, color = MaterialTheme.colorScheme.error) },
                 leadingIcon = {
                     Icon(Icons.Outlined.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error)
@@ -5637,9 +5686,10 @@ private fun ConnectionTreeRow(
         DropdownMenu(
             expanded = contextMenuOpen,
             onDismissRequest = { contextMenuOpen = false },
-            offset = with(density) { DpOffset(contextMenuOffsetPx.x.toDp(), 0.dp) }
+            offset = with(density) { DpOffset(contextMenuOffsetPx.x.toDp(), 0.dp) },
+            shape = NexusDropdownMenuShape
         ) {
-            DropdownMenuItem(
+            NexusSpacedDropdownMenuItem(
                 text = { Text("Connect") },
                 leadingIcon = { Icon(Icons.Outlined.PlayArrow, contentDescription = null) },
                 onClick = {
@@ -5648,7 +5698,7 @@ private fun ConnectionTreeRow(
                     onLaunch(QuickLaunchPlacement.ACTIVE_PANE_TAB)
                 }
             )
-            DropdownMenuItem(
+            NexusSpacedDropdownMenuItem(
                 text = { Text(strings.actionEditConnection) },
                 leadingIcon = { Icon(Icons.Outlined.Edit, contentDescription = null) },
                 onClick = {
@@ -5656,7 +5706,7 @@ private fun ConnectionTreeRow(
                     onEdit()
                 }
             )
-            DropdownMenuItem(
+            NexusSpacedDropdownMenuItem(
                 text = { Text(strings.actionConnectWithOptions) },
                 leadingIcon = { Icon(Icons.Outlined.Tune, contentDescription = null) },
                 onClick = {
@@ -5665,7 +5715,7 @@ private fun ConnectionTreeRow(
                 }
             )
             if (activeSessionCount > 0) {
-                DropdownMenuItem(
+                NexusSpacedDropdownMenuItem(
                     text = { Text("${strings.actionDisconnectSession} ($activeSessionCount)") },
                     leadingIcon = {
                         Icon(
@@ -5680,8 +5730,8 @@ private fun ConnectionTreeRow(
                     }
                 )
             }
-            HorizontalDivider()
-            DropdownMenuItem(
+            NexusMenuDivider()
+            NexusSpacedDropdownMenuItem(
                 text = { Text(strings.splitRight) },
                 leadingIcon = { Icon(Icons.Outlined.VerticalSplit, contentDescription = null) },
                 onClick = {
@@ -5689,7 +5739,7 @@ private fun ConnectionTreeRow(
                     onLaunch(QuickLaunchPlacement.SPLIT_RIGHT_PANE)
                 }
             )
-            DropdownMenuItem(
+            NexusSpacedDropdownMenuItem(
                 text = { Text(strings.splitDown) },
                 leadingIcon = { Icon(Icons.Outlined.HorizontalSplit, contentDescription = null) },
                 onClick = {
@@ -5697,7 +5747,7 @@ private fun ConnectionTreeRow(
                     onLaunchSplitDown()
                 }
             )
-            DropdownMenuItem(
+            NexusSpacedDropdownMenuItem(
                 text = { Text(strings.detachNewWindow) },
                 leadingIcon = { Icon(Icons.AutoMirrored.Outlined.OpenInNew, contentDescription = null) },
                 onClick = {
@@ -5705,8 +5755,8 @@ private fun ConnectionTreeRow(
                     onLaunch(QuickLaunchPlacement.DETACHED_NEW_WINDOW)
                 }
             )
-            HorizontalDivider()
-            DropdownMenuItem(
+            NexusMenuDivider()
+            NexusSpacedDropdownMenuItem(
                 text = { Text(strings.actionMoveToFolder) },
                 leadingIcon = { Icon(Icons.Outlined.DriveFileMove, contentDescription = null) },
                 onClick = {
@@ -5715,7 +5765,7 @@ private fun ConnectionTreeRow(
                 }
             )
             if (enableDragToFolder) {
-                DropdownMenuItem(
+                NexusSpacedDropdownMenuItem(
                     text = { Text("Move Up") },
                     leadingIcon = { Icon(Icons.Outlined.ArrowUpward, contentDescription = null) },
                     onClick = {
@@ -5723,7 +5773,7 @@ private fun ConnectionTreeRow(
                         onMoveUp()
                     }
                 )
-                DropdownMenuItem(
+                NexusSpacedDropdownMenuItem(
                     text = { Text("Move Down") },
                     leadingIcon = { Icon(Icons.Outlined.ArrowDownward, contentDescription = null) },
                     onClick = {
@@ -5732,7 +5782,7 @@ private fun ConnectionTreeRow(
                     }
                 )
             }
-            DropdownMenuItem(
+            NexusSpacedDropdownMenuItem(
                 text = { Text("Copy Host") },
                 leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null) },
                 onClick = {
@@ -5740,7 +5790,7 @@ private fun ConnectionTreeRow(
                     clipboard.setText(AnnotatedString(connection.host))
                 }
             )
-            DropdownMenuItem(
+            NexusSpacedDropdownMenuItem(
                 text = { Text(strings.actionDuplicateConnection) },
                 leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null) },
                 onClick = {
@@ -5748,7 +5798,7 @@ private fun ConnectionTreeRow(
                     onDuplicate()
                 }
             )
-            DropdownMenuItem(
+            NexusSpacedDropdownMenuItem(
                 text = { Text(strings.actionToggleFavorite) },
                 leadingIcon = {
                     Icon(
@@ -5761,8 +5811,8 @@ private fun ConnectionTreeRow(
                     onToggleFavorite()
                 }
             )
-            HorizontalDivider()
-            DropdownMenuItem(
+            NexusMenuDivider()
+            NexusSpacedDropdownMenuItem(
                 text = { Text(strings.actionDeleteItem, color = MaterialTheme.colorScheme.error) },
                 leadingIcon = {
                     Icon(Icons.Outlined.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error)
@@ -6600,7 +6650,7 @@ private fun LanguageSelectionDropdownMenu(
     DropdownMenu(
         expanded = expanded,
         onDismissRequest = onDismiss,
-        modifier = Modifier.widthIn(min = 268.dp, max = 328.dp),
+        modifier = Modifier.widthIn(min = 276.dp, max = 336.dp),
         shape = RoundedCornerShape(18.dp),
         containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
         border = BorderStroke(
@@ -6611,9 +6661,9 @@ private fun LanguageSelectionDropdownMenu(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 8.dp),
+                .padding(horizontal = 16.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Icon(
                 imageVector = Icons.Outlined.Language,
@@ -6628,7 +6678,7 @@ private fun LanguageSelectionDropdownMenu(
             )
         }
         HorizontalDivider(
-            modifier = Modifier.padding(bottom = 4.dp),
+            modifier = Modifier.padding(bottom = 5.dp),
             color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
         )
 
@@ -6638,7 +6688,7 @@ private fun LanguageSelectionDropdownMenu(
 
             DropdownMenuItem(
                 modifier = Modifier
-                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                    .padding(horizontal = 8.dp, vertical = 3.dp)
                     .clip(RoundedCornerShape(12.dp))
                     .background(
                         if (isSelected) {
@@ -6647,6 +6697,7 @@ private fun LanguageSelectionDropdownMenu(
                             Color.Transparent
                         }
                     ),
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
                 leadingIcon = {
                     NexusLanguageFlagBadge(
                         languageCode = locale.bcp47Tag,
@@ -6656,7 +6707,10 @@ private fun LanguageSelectionDropdownMenu(
                     )
                 },
                 text = {
-                    Column {
+                    Column(
+                        modifier = Modifier.padding(start = 6.dp, end = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
                         Text(
                             text = locale.nativeDisplayName,
                             style = MaterialTheme.typography.bodyLarge,
@@ -6678,7 +6732,7 @@ private fun LanguageSelectionDropdownMenu(
                 trailingIcon = {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Surface(
                             shape = RoundedCornerShape(99.dp),
@@ -6688,7 +6742,7 @@ private fun LanguageSelectionDropdownMenu(
                                 text = locale.bcp47Tag.uppercase(),
                                 style = NexusTheme.monospace.keycapShortcut,
                                 color = MaterialTheme.colorScheme.secondary,
-                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
                             )
                         }
                         if (isSelected) {
@@ -7365,7 +7419,7 @@ private fun PlayProtectAutoUpdateDialog(
                                     ).trim()
                                     else -> String.format(
                                         strings.autoUpdateUpToDateFormat,
-                                        uiState.updateCurrentVersion.ifBlank { "0.3.0-beta.4" }
+                                        uiState.updateCurrentVersion.ifBlank { "0.3.0-beta.5" }
                                     )
                                 },
                                 style = MaterialTheme.typography.titleSmall,
@@ -7380,7 +7434,7 @@ private fun PlayProtectAutoUpdateDialog(
                                 ""
                             }
                             Text(
-                                text = "Installed: v${uiState.updateCurrentVersion.ifBlank { "0.3.0-beta.4" }}  →  Latest: ${uiState.updateLatestTag.ifBlank { "current" }}$sizeMb",
+                                text = "Installed: v${uiState.updateCurrentVersion.ifBlank { "0.3.0-beta.5" }}  →  Latest: ${uiState.updateLatestTag.ifBlank { "current" }}$sizeMb",
                                 style = NexusTheme.monospace.keycapShortcut,
                                 color = MaterialTheme.colorScheme.secondary
                             )

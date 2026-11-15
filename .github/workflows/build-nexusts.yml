@@ -319,7 +319,7 @@ jobs:
           set -euo pipefail
           TAG_NAME="${GITHUB_REF_NAME}"
           if [[ "${TAG_NAME}" != v* ]]; then
-            TAG_NAME="${{ inputs.release_tag || 'v0.3.0-beta.4' }}"
+            TAG_NAME="${{ inputs.release_tag || 'v0.3.0-beta.5' }}"
           fi
           echo "tag_name=${TAG_NAME}" >> "${GITHUB_OUTPUT}"
 
@@ -346,7 +346,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.stage.outputs.tag_name }}
-          name: "NexusTS ${{ steps.stage.outputs.tag_name }} — In-App macOS Auto-Update, Simplified Folders & macOS Polish"
+          name: "NexusTS ${{ steps.stage.outputs.tag_name }} — Toolbar & Menu Spacing Polish, In-App macOS Auto-Update"
           draft: false
           prerelease: ${{ contains(steps.stage.outputs.tag_name, '-') }}
           generate_release_notes: true
@@ -354,18 +354,18 @@ jobs:
             ## NexusTS ${{ steps.stage.outputs.tag_name }} (`com.nexusts.app` / `com.nexusts.app.macos`)
             **Native Remote Management & Connection Manager for Googlebook OS, Android Tablets & macOS**
 
-            > **Beta Channel (`0.3.x` Series)**: Installs directly over `v0.3.0-beta.3` and earlier builds (`versionCode = 10303`) while preserving all local `.nxts` v2 vaults & Android Keystore / macOS Keychain secrets.
+            > **Beta Channel (`0.3.x` Series)**: Installs directly over `v0.3.0-beta.4` and earlier builds (`versionCode = 10304`) while preserving all local `.nxts` v2 vaults & Android Keystore / macOS Keychain secrets.
 
             ### Signed Deliverables (100% In-Place Upgrade Compatible)
-            - **`NexusTS-${{ steps.stage.outputs.tag_name }}-googlebook-android-release.apk`**: Cryptographically signed (APK Signature Scheme v2/v3/v4, RSA-4096) universal `arm64-v8a` + `x86_64` APK with 16 KB ELF page alignment (`0x4000`) and 100% Google Play Protect compliance (`versionCode = 10303`).
+            - **`NexusTS-${{ steps.stage.outputs.tag_name }}-googlebook-android-release.apk`**: Cryptographically signed (APK Signature Scheme v2/v3/v4, RSA-4096) universal `arm64-v8a` + `x86_64` APK with 16 KB ELF page alignment (`0x4000`) and 100% Google Play Protect compliance (`versionCode = 10304`).
             - **`NexusTS-${{ steps.stage.outputs.tag_name }}-playstore-release.aab`**: Signed Android App Bundle for optional Managed Google Play / internal distribution.
             - **`NexusTS-${{ steps.stage.outputs.tag_name }}-macOS-Universal.zip` & `.dmg`**: Self-contained Universal2 (`arm64` + `x86_64`) macOS application bundle statically linking OpenSSL 3.4 + FreeRDP 3.12 (`.zip` powers one-click in-app updates without downloading a `.dmg`).
             - **`nexusts-upload-certificate.pem` & `oauth-and-mdm-registration.json`**: Public X.509 upload certificate (`SHA-1: A6:AF:15:A9:BF:0B:FE:38:D4:66:46:3E:3E:72:A6:5B:4F:9C:4D:F6`, `SHA-256: 4A:BD:80:F1:20:14:B9:88:09:1C:97:92:2F:87:02:D1:BF:B7:93:9C:73:B6:9A:DB:1A:9B:76:30:6A:30:27:82`) and Managed Google Play `app_restrictions` template.
 
             ### What's New & Fixed in ${{ steps.stage.outputs.tag_name }}
-            - **In-App macOS Auto-Update (No DMG Download Needed)**: `NexusTS.app` now downloads the Universal2 `.zip` bundle directly inside the app (`NexusTS > Check for Updates…`, `Settings > Updates`, Menu Bar agent, or the in-app update banner), verifies its cryptographic SHA-256 digest, unpacks `NexusTS.app` via `ditto`, strips quarantine attributes, atomically replaces the installed app bundle in place, and automatically relaunches.
-            - **Removed Confusing Dynamic Folders**: Removed **Dynamic Folders** from the sidebar, `+` menus, context menus, and dialogs across both macOS and Android/Googlebook so only **Intelligent Folders** (live filter views over connections in your vault) remain, while keeping `.nxts` v2 vault deserialization 100% backward-compatible.
-            - **Includes `v0.3.0-beta.3` Fixes**: Self-contained Universal2 macOS executable (static OpenSSL 3.4 + FreeRDP 3.12 with zero nested `.dylib`s), unified Android NexusTS app icon on macOS (`AppIcon.icns`), and fixed macOS keyboard shortcuts (`⌘N` New Connection, `⌘T` Local Terminal, `⌥⌘I` Inspector, `⌘D` / `⇧⌘D` split panes).
+            - **Refined Menu & Symbol Spacing**: Increased horizontal and vertical breathing room across the top command bar (`[≡]`, brand lockup, `Studios` menu pill, `Quick Connect`, `New Connection` split button, and `Language` selector), all dropdown/context menu items and symbols, and sidebar filter pills/menus on Googlebook/Android and macOS.
+            - **In-App macOS Auto-Update (No DMG Download Needed)**: `NexusTS.app` downloads the Universal2 `.zip` bundle directly inside the app, verifies its cryptographic SHA-256 digest, unpacks via `ditto`, atomically replaces the installed `.app` bundle in place, and relaunches automatically.
+            - **Simplified Folder Organization**: Retains **Intelligent Folders** while removing confusing script-driven Dynamic Folders across UI surfaces.
           files: release-assets/*
 
       - name: Check Optional Google Play Service Account Secret
