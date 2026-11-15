@@ -2359,20 +2359,22 @@ class NexusWorkspaceComposeE2ETest {
             parentFolderId = srvFolder.id,
             name = "AADSRV01.kreis-bergstrasse.net",
             host = "10.2.200.32",
-            protocol = VaultProtocolType.RDP
+            protocol = VaultProtocolType.RDP,
+            settings = ProtocolSpecificSettings.Rdp()
         )
         val ftpServer = VaultConnection(
             id = "conn-ftp-archive",
             parentFolderId = srvFolder.id,
             name = "hp-msrv01-ftp",
             host = "10.2.200.41",
-            protocol = VaultProtocolType.FTP
+            protocol = VaultProtocolType.FTP,
+            settings = ProtocolSpecificSettings.FileTransfer(port = 21)
         )
         composeRule.runOnIdle {
             vm.saveFolderAndCredentialToVault(srvFolder)
             vm.saveConnectionToVault(rdpServer)
             vm.saveConnectionToVault(ftpServer)
-            vm.openConnectionInWorkspace(rdpServer)
+            vm.launchConnection(rdpServer)
         }
         composeRule.waitForIdle()
 
