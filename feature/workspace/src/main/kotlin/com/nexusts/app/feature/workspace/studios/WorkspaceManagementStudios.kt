@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -27,6 +28,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.Check
+import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.CloudSync
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Delete
@@ -36,7 +39,9 @@ import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.outlined.NetworkCheck
 import androidx.compose.material.icons.outlined.PlayArrow
+import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.SystemUpdateAlt
+import androidx.compose.material.icons.outlined.UnfoldMore
 import androidx.compose.material.icons.outlined.UploadFile
 import androidx.compose.material.icons.outlined.VpnKey
 import androidx.compose.material.icons.outlined.WarningAmber
@@ -66,11 +71,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.nexusts.app.core.ui.components.NexusActionChip
 import com.nexusts.app.core.ui.components.NexusChoiceChip
@@ -97,6 +104,7 @@ import com.nexusts.app.core.vault.model.SshPortForwardRule
 import com.nexusts.app.core.vault.model.VaultConnection
 import com.nexusts.app.core.vault.model.VaultCredential
 import com.nexusts.app.core.vault.model.VaultFolder
+import com.nexusts.app.core.vault.model.VaultProtocolCategory
 import com.nexusts.app.core.vault.model.VaultProtocolType
 import com.nexusts.app.feature.workspace.i18n.WorkspaceLocalizedStrings
 import java.util.UUID
@@ -128,7 +136,6 @@ fun FolderPropertiesAndCredentialDialog(
     var parentFolderId by remember(editingFolder, defaultParentFolderId) {
         mutableStateOf(editingFolder?.parentFolderId ?: defaultParentFolderId)
     }
-    var parentMenuOpen by remember { mutableStateOf(false) }
 
     // 0 = Create & Save New Folder Credential inline, 1 = Pick Existing Credential, 2 = Inherit Parent, 3 = Prompt
     var credAssignChoice by remember(editingFolder) {
@@ -147,7 +154,6 @@ fun FolderPropertiesAndCredentialDialog(
             editingFolder?.inheritable?.explicitCredentialId ?: credentials.firstOrNull()?.id
         )
     }
-    var credMenuOpen by remember { mutableStateOf(false) }
 
     // Inline Folder Credential creator fields
     var inlineCredName by remember(editingFolder) { mutableStateOf("") }
@@ -220,35 +226,23 @@ fun FolderPropertiesAndCredentialDialog(
 
                 if (candidateParents.isNotEmpty()) {
                     val parentLabel = candidateParents.firstOrNull { it.id == parentFolderId }?.name ?: "-"
-                    Box(modifier = Modifier.fillMaxWidth()) {
-                        OutlinedButton(
-                            onClick = { parentMenuOpen = true },
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text("${strings.dialogFieldFolder}: $parentLabel")
-                        }
-                        DropdownMenu(
-                            expanded = parentMenuOpen,
-                            onDismissRequest = { parentMenuOpen = false }
-                        ) {
-                            DropdownMenuItem(
-                                text = { Text("-") },
-                                onClick = {
-                                    parentFolderId = null
-                                    parentMenuOpen = false
-                                }
-                            )
+                    val parentOptions = remember(candidateParents) {
+                        buildList {
+                            add(NexusSelectOption<String?>(value = null, title = "-"))
                             candidateParents.forEach { candidate ->
-                                DropdownMenuItem(
-                                    text = { Text(candidate.name) },
-                                    onClick = {
-                                        parentFolderId = candidate.id
-                                        parentMenuOpen = false
-                                    }
-                                )
+                                add(NexusSelectOption(value = candidate.id, title = candidate.name))
                             }
                         }
                     }
+                    NexusDialogSelectField(
+                        buttonText = "${strings.dialogFieldFolder}: $parentLabel",
+                        dialogTitle = strings.dialogFieldFolder,
+                        cancelLabel = strings.dialogActionCancel,
+                        selectedValue = parentFolderId,
+                        options = parentOptions,
+                        leadingIcon = Icons.Outlined.Folder,
+                        onSelect = { parentFolderId = it }
+                    )
                 }
 
                 RoyalColorSwatchSelector(
@@ -341,31 +335,25 @@ fun FolderPropertiesAndCredentialDialog(
                             val userPart = if (it.domain.isNotBlank()) "${it.domain}\\${it.username}" else it.username
                             "${it.name} ($userPart)"
                         } ?: "-"
-                        Box(modifier = Modifier.fillMaxWidth()) {
-                            OutlinedButton(
-                                onClick = { credMenuOpen = true },
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Icon(Icons.Outlined.Key, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(activeCredLabel)
-                            }
-                            DropdownMenu(
-                                expanded = credMenuOpen,
-                                onDismissRequest = { credMenuOpen = false }
-                            ) {
-                                credentials.forEach { cred ->
-                                    val userPart = if (cred.domain.isNotBlank()) "${cred.domain}\\${cred.username}" else cred.username
-                                    DropdownMenuItem(
-                                        text = { Text("${cred.name} • $userPart") },
-                                        onClick = {
-                                            selectedCredId = cred.id
-                                            credMenuOpen = false
-                                        }
-                                    )
-                                }
+                        val credOptions = remember(credentials) {
+                            credentials.map { cred ->
+                                val userPart = if (cred.domain.isNotBlank()) "${cred.domain}\\${cred.username}" else cred.username
+                                NexusSelectOption<String?>(
+                                    value = cred.id,
+                                    title = cred.name,
+                                    subtitle = userPart
+                                )
                             }
                         }
+                        NexusDialogSelectField(
+                            buttonText = activeCredLabel,
+                            dialogTitle = strings.inspectorEffectiveCredential,
+                            cancelLabel = strings.dialogActionCancel,
+                            selectedValue = selectedCredId,
+                            options = credOptions,
+                            leadingIcon = Icons.Outlined.Key,
+                            onSelect = { selectedCredId = it }
+                        )
                     }
                 }
 
@@ -508,11 +496,6 @@ fun NewOrEditConnectionDialog(
         mutableStateOf(initialConnection?.inheritable?.explicitGatewayId ?: gateways.firstOrNull()?.id)
     }
 
-    var protoMenuOpen by remember { mutableStateOf(false) }
-    var folderMenuOpen by remember { mutableStateOf(false) }
-    var credMenuOpen by remember { mutableStateOf(false) }
-    var gwMenuOpen by remember { mutableStateOf(false) }
-    var bastionMenuOpen by remember { mutableStateOf(false) }
     var activeRdpTab by remember(initialConnection) { mutableIntStateOf(0) }
 
     // VNC & File Transfer ports
@@ -607,36 +590,23 @@ fun NewOrEditConnectionDialog(
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                // Protocol Selector
-                Box(modifier = Modifier.fillMaxWidth()) {
-                    OutlinedButton(
-                        onClick = { protoMenuOpen = true },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text("${strings.dialogFieldProtocol}: ${selectedProto.name}")
-                    }
-                    DropdownMenu(
-                        expanded = protoMenuOpen,
-                        onDismissRequest = { protoMenuOpen = false }
-                    ) {
-                        VaultProtocolType.entries.forEach { proto ->
-                            DropdownMenuItem(
-                                text = { Text(proto.name) },
-                                onClick = {
-                                    selectedProto = proto
-                                    when (proto) {
-                                        VaultProtocolType.FTP -> ftPortText = "21"
-                                        VaultProtocolType.FTPS -> ftPortText = "990"
-                                        VaultProtocolType.SFTP, VaultProtocolType.SCP -> ftPortText = "22"
-                                        VaultProtocolType.TELNET -> sshPortText = "23"
-                                        else -> Unit
-                                    }
-                                    protoMenuOpen = false
-                                }
-                            )
+                // Protocol Selector (top-level grouped & searchable modal picker — never clipped by AlertDialog window)
+                NexusProtocolSelectorField(
+                    label = strings.dialogFieldProtocol,
+                    cancelLabel = strings.dialogActionCancel,
+                    selectedProtocol = selectedProto,
+                    onSelectProtocol = { proto ->
+                        selectedProto = proto
+                        when (proto) {
+                            VaultProtocolType.FTP -> ftPortText = "21"
+                            VaultProtocolType.FTPS -> ftPortText = "990"
+                            VaultProtocolType.SFTP, VaultProtocolType.SCP -> ftPortText = "22"
+                            VaultProtocolType.TELNET -> sshPortText = "23"
+                            VaultProtocolType.SSH -> if (sshPortText == "23") sshPortText = "22"
+                            else -> Unit
                         }
                     }
-                }
+                )
 
                 // Always-visible core connection identity (Name, Host, Port, Parent Folder) across all tabs!
                 OutlinedTextField(
@@ -655,7 +625,7 @@ fun NewOrEditConnectionDialog(
                         modifier = Modifier.weight(1f)
                     )
                     when (selectedProto) {
-                        VaultProtocolType.RDP -> {
+                        VaultProtocolType.RDP, VaultProtocolType.WINDOWS_TERMINAL_SERVICES -> {
                             OutlinedTextField(
                                 value = rdpPortText,
                                 onValueChange = { rdpPortText = it.filter(Char::isDigit).take(5) },
@@ -699,35 +669,23 @@ fun NewOrEditConnectionDialog(
                 // Parent Folder Selector (Property Inheritance Cascade)
                 if (folders.isNotEmpty()) {
                     val activeFolderName = folders.firstOrNull { it.id == selectedFolderId }?.name ?: "-"
-                    Box(modifier = Modifier.fillMaxWidth()) {
-                        OutlinedButton(
-                            onClick = { folderMenuOpen = true },
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text("${strings.dialogFieldFolder}: $activeFolderName")
-                        }
-                        DropdownMenu(
-                            expanded = folderMenuOpen,
-                            onDismissRequest = { folderMenuOpen = false }
-                        ) {
-                            DropdownMenuItem(
-                                text = { Text("-") },
-                                onClick = {
-                                    selectedFolderId = null
-                                    folderMenuOpen = false
-                                }
-                            )
+                    val folderOptions = remember(folders) {
+                        buildList {
+                            add(NexusSelectOption<String?>(value = null, title = "-"))
                             folders.forEach { folder ->
-                                DropdownMenuItem(
-                                    text = { Text(folder.name) },
-                                    onClick = {
-                                        selectedFolderId = folder.id
-                                        folderMenuOpen = false
-                                    }
-                                )
+                                add(NexusSelectOption(value = folder.id, title = folder.name))
                             }
                         }
                     }
+                    NexusDialogSelectField(
+                        buttonText = "${strings.dialogFieldFolder}: $activeFolderName",
+                        dialogTitle = strings.dialogFieldFolder,
+                        cancelLabel = strings.dialogActionCancel,
+                        selectedValue = selectedFolderId,
+                        options = folderOptions,
+                        leadingIcon = Icons.Outlined.Folder,
+                        onSelect = { selectedFolderId = it }
+                    )
                 }
 
                 if (selectedProto == VaultProtocolType.RDP) {
@@ -806,31 +764,25 @@ fun NewOrEditConnectionDialog(
                                 val userStr = if (it.domain.isNotBlank()) "${it.domain}\\${it.username}" else it.username
                                 "${it.name} ($userStr)"
                             } ?: "-"
-                            Box(modifier = Modifier.fillMaxWidth()) {
-                                OutlinedButton(
-                                    onClick = { credMenuOpen = true },
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Icon(Icons.Outlined.Key, contentDescription = null, modifier = Modifier.size(15.dp))
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text(chosenCredLabel)
-                                }
-                                DropdownMenu(
-                                    expanded = credMenuOpen,
-                                    onDismissRequest = { credMenuOpen = false }
-                                ) {
-                                    credentials.forEach { cred ->
-                                        val userStr = if (cred.domain.isNotBlank()) "${cred.domain}\\${cred.username}" else cred.username
-                                        DropdownMenuItem(
-                                            text = { Text("${cred.name} • $userStr") },
-                                            onClick = {
-                                                explicitCredentialId = cred.id
-                                                credMenuOpen = false
-                                            }
-                                        )
-                                    }
+                            val credOptions = remember(credentials) {
+                                credentials.map { cred ->
+                                    val userStr = if (cred.domain.isNotBlank()) "${cred.domain}\\${cred.username}" else cred.username
+                                    NexusSelectOption<String?>(
+                                        value = cred.id,
+                                        title = cred.name,
+                                        subtitle = userStr
+                                    )
                                 }
                             }
+                            NexusDialogSelectField(
+                                buttonText = chosenCredLabel,
+                                dialogTitle = strings.inspectorEffectiveCredential,
+                                cancelLabel = strings.dialogActionCancel,
+                                selectedValue = explicitCredentialId,
+                                options = credOptions,
+                                leadingIcon = Icons.Outlined.Key,
+                                onSelect = { explicitCredentialId = it }
+                            )
                         }
 
                         else -> Unit
@@ -864,30 +816,24 @@ fun NewOrEditConnectionDialog(
                         }
                         if (gatewayMode == InheritanceMode.OVERRIDE_EXPLICIT) {
                             val chosenGw = gateways.firstOrNull { it.id == explicitGatewayId }
-                            Box(modifier = Modifier.fillMaxWidth()) {
-                                OutlinedButton(
-                                    onClick = { gwMenuOpen = true },
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Icon(Icons.Outlined.DeviceHub, contentDescription = null, modifier = Modifier.size(15.dp))
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text(chosenGw?.let { "${it.name} (${it.host}:${it.port})" } ?: "-")
-                                }
-                                DropdownMenu(
-                                    expanded = gwMenuOpen,
-                                    onDismissRequest = { gwMenuOpen = false }
-                                ) {
-                                    gateways.forEach { gw ->
-                                        DropdownMenuItem(
-                                            text = { Text("${gw.name} • ${gw.host}:${gw.port}") },
-                                            onClick = {
-                                                explicitGatewayId = gw.id
-                                                gwMenuOpen = false
-                                            }
-                                        )
-                                    }
+                            val gwOptions = remember(gateways) {
+                                gateways.map { gw ->
+                                    NexusSelectOption<String?>(
+                                        value = gw.id,
+                                        title = gw.name,
+                                        subtitle = "${gw.host}:${gw.port}"
+                                    )
                                 }
                             }
+                            NexusDialogSelectField(
+                                buttonText = chosenGw?.let { "${it.name} (${it.host}:${it.port})" } ?: "-",
+                                dialogTitle = strings.inspectorEffectiveGateway,
+                                cancelLabel = strings.dialogActionCancel,
+                                selectedValue = explicitGatewayId,
+                                options = gwOptions,
+                                leadingIcon = Icons.Outlined.DeviceHub,
+                                onSelect = { explicitGatewayId = it }
+                            )
                         }
                     }
 
@@ -1219,40 +1165,32 @@ fun NewOrEditConnectionDialog(
 
                     // Bastion Jump Host Picker
                     val candidateBastions = sshConnections.filter { it.id != initialConnection?.id }
-                    Box(modifier = Modifier.fillMaxWidth()) {
-                        val selectedBastionName = candidateBastions.firstOrNull { it.id == sshBastionConnId }
-                            ?.let { "${it.name} (${it.host})" }
-                            ?: "Direct (No Bastion Jump Host)"
-                        OutlinedButton(
-                            onClick = { bastionMenuOpen = true },
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Icon(Icons.Outlined.DeviceHub, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("ProxyJump: $selectedBastionName")
-                        }
-                        DropdownMenu(
-                            expanded = bastionMenuOpen,
-                            onDismissRequest = { bastionMenuOpen = false }
-                        ) {
-                            DropdownMenuItem(
-                                text = { Text("Direct (No Bastion Jump Host)") },
-                                onClick = {
-                                    sshBastionConnId = null
-                                    bastionMenuOpen = false
-                                }
-                            )
+                    val selectedBastionName = candidateBastions.firstOrNull { it.id == sshBastionConnId }
+                        ?.let { "${it.name} (${it.host})" }
+                        ?: "Direct (No Bastion Jump Host)"
+                    val bastionOptions = remember(candidateBastions) {
+                        buildList {
+                            add(NexusSelectOption<String?>(value = null, title = "Direct (No Bastion Jump Host)"))
                             candidateBastions.forEach { bastion ->
-                                DropdownMenuItem(
-                                    text = { Text("${bastion.name} (${bastion.host})") },
-                                    onClick = {
-                                        sshBastionConnId = bastion.id
-                                        bastionMenuOpen = false
-                                    }
+                                add(
+                                    NexusSelectOption(
+                                        value = bastion.id,
+                                        title = bastion.name,
+                                        subtitle = bastion.host
+                                    )
                                 )
                             }
                         }
                     }
+                    NexusDialogSelectField(
+                        buttonText = "ProxyJump: $selectedBastionName",
+                        dialogTitle = "ProxyJump Bastion",
+                        cancelLabel = strings.dialogActionCancel,
+                        selectedValue = sshBastionConnId,
+                        options = bastionOptions,
+                        leadingIcon = Icons.Outlined.DeviceHub,
+                        onSelect = { sshBastionConnId = it }
+                    )
 
                     // Existing Port-Forwarding Rules List
                     sshPortForwards.forEach { rule ->
@@ -2237,7 +2175,6 @@ fun SecureGatewayStudioView(
     var gwPort by remember { mutableStateOf("1080") }
     var gwKind by remember { mutableStateOf(GatewayTransportKind.SOCKS5_PROXY) }
     var gwCredentialId by remember { mutableStateOf<String?>(null) }
-    var gwCredMenuOpen by remember { mutableStateOf(false) }
     var bgMenuOpen by remember { mutableStateOf(false) }
 
     fun openAddGateway() {
@@ -2309,37 +2246,29 @@ fun SecureGatewayStudioView(
                     )
                     if (credentials.isNotEmpty()) {
                         val selectedCredName = credentials.firstOrNull { it.id == gwCredentialId }?.name ?: "-"
-                        Box(modifier = Modifier.fillMaxWidth()) {
-                            OutlinedButton(
-                                onClick = { gwCredMenuOpen = true },
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Icon(Icons.Outlined.Key, contentDescription = null, modifier = Modifier.size(15.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("${strings.inspectorEffectiveCredential}: $selectedCredName")
-                            }
-                            DropdownMenu(
-                                expanded = gwCredMenuOpen,
-                                onDismissRequest = { gwCredMenuOpen = false }
-                            ) {
-                                DropdownMenuItem(
-                                    text = { Text("-") },
-                                    onClick = {
-                                        gwCredentialId = null
-                                        gwCredMenuOpen = false
-                                    }
-                                )
+                        val gwCredOptions = remember(credentials) {
+                            buildList {
+                                add(NexusSelectOption<String?>(value = null, title = "-"))
                                 credentials.forEach { c ->
-                                    DropdownMenuItem(
-                                        text = { Text(c.name) },
-                                        onClick = {
-                                            gwCredentialId = c.id
-                                            gwCredMenuOpen = false
-                                        }
+                                    add(
+                                        NexusSelectOption(
+                                            value = c.id,
+                                            title = c.name,
+                                            subtitle = c.username.takeIf { it.isNotBlank() }
+                                        )
                                     )
                                 }
                             }
                         }
+                        NexusDialogSelectField(
+                            buttonText = "${strings.inspectorEffectiveCredential}: $selectedCredName",
+                            dialogTitle = strings.inspectorEffectiveCredential,
+                            cancelLabel = strings.dialogActionCancel,
+                            selectedValue = gwCredentialId,
+                            options = gwCredOptions,
+                            leadingIcon = Icons.Outlined.Key,
+                            onSelect = { gwCredentialId = it }
+                        )
                     }
                 }
             },
@@ -3633,3 +3562,440 @@ fun DriveSyncAndConflictStudioView(
         }
     }
 }
+
+internal data class NexusSelectOption<T>(
+    val value: T,
+    val title: String,
+    val subtitle: String? = null,
+    val badge: String? = null
+)
+
+@Composable
+internal fun <T> NexusDialogSelectField(
+    buttonText: String,
+    dialogTitle: String,
+    cancelLabel: String,
+    selectedValue: T,
+    options: List<NexusSelectOption<T>>,
+    onSelect: (T) -> Unit,
+    modifier: Modifier = Modifier,
+    leadingIcon: ImageVector? = null
+) {
+    var dialogOpen by remember { mutableStateOf(false) }
+
+    OutlinedButton(
+        onClick = { dialogOpen = true },
+        modifier = modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(
+                modifier = Modifier.weight(1f),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                if (leadingIcon != null) {
+                    Icon(
+                        imageVector = leadingIcon,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                }
+                Text(
+                    text = buttonText,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Spacer(modifier = Modifier.width(8.dp))
+            Icon(
+                imageVector = Icons.Outlined.UnfoldMore,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+
+    if (dialogOpen) {
+        var searchQuery by remember { mutableStateOf("") }
+        val filteredOptions = remember(options, searchQuery) {
+            val q = searchQuery.trim()
+            if (q.isEmpty()) {
+                options
+            } else {
+                options.filter { opt ->
+                    opt.title.contains(q, ignoreCase = true) ||
+                        (opt.subtitle?.contains(q, ignoreCase = true) == true) ||
+                        (opt.badge?.contains(q, ignoreCase = true) == true)
+                }
+            }
+        }
+
+        AlertDialog(
+            onDismissRequest = { dialogOpen = false },
+            title = {
+                Text(
+                    text = dialogTitle,
+                    style = MaterialTheme.typography.titleMedium
+                )
+            },
+            text = {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    if (options.size > 6) {
+                        OutlinedTextField(
+                            value = searchQuery,
+                            onValueChange = { searchQuery = it },
+                            placeholder = { Text("Filter…") },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Outlined.Search,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            },
+                            trailingIcon = if (searchQuery.isNotEmpty()) {
+                                {
+                                    IconButton(onClick = { searchQuery = "" }) {
+                                        Icon(
+                                            imageVector = Icons.Outlined.Close,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    }
+                                }
+                            } else {
+                                null
+                            },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 360.dp)
+                            .verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        filteredOptions.forEach { option ->
+                            val isSelected = option.value == selectedValue
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = if (isSelected) {
+                                    MaterialTheme.colorScheme.secondaryContainer
+                                } else {
+                                    Color.Transparent
+                                },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .clickable {
+                                        onSelect(option.value)
+                                        dialogOpen = false
+                                    }
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    if (option.badge != null) {
+                                        Surface(
+                                            shape = RoundedCornerShape(6.dp),
+                                            color = MaterialTheme.colorScheme.surfaceContainerHighest
+                                        ) {
+                                            Text(
+                                                text = option.badge,
+                                                style = NexusTheme.monospace.keycapShortcut,
+                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                            )
+                                        }
+                                    }
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = option.title,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = if (isSelected) {
+                                                MaterialTheme.colorScheme.onSecondaryContainer
+                                            } else {
+                                                MaterialTheme.colorScheme.onSurface
+                                            },
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        if (!option.subtitle.isNullOrBlank()) {
+                                            Text(
+                                                text = option.subtitle,
+                                                style = NexusTheme.monospace.keycapShortcut,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+                                    }
+                                    if (isSelected) {
+                                        Icon(
+                                            imageVector = Icons.Outlined.Check,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { dialogOpen = false }) {
+                    Text(cancelLabel)
+                }
+            }
+        )
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+internal fun NexusProtocolSelectorField(
+    label: String,
+    cancelLabel: String,
+    selectedProtocol: VaultProtocolType,
+    onSelectProtocol: (VaultProtocolType) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var pickerOpen by remember { mutableStateOf(false) }
+
+    OutlinedButton(
+        onClick = { pickerOpen = true },
+        modifier = modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(
+                modifier = Modifier.weight(1f),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(6.dp),
+                    color = MaterialTheme.colorScheme.primaryContainer
+                ) {
+                    Text(
+                        text = selectedProtocol.shortBadge,
+                        style = NexusTheme.monospace.keycapShortcut,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                    )
+                }
+                Text(
+                    text = "$label: ${selectedProtocol.displayName}",
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Spacer(modifier = Modifier.width(8.dp))
+            Icon(
+                imageVector = Icons.Outlined.UnfoldMore,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+
+    if (pickerOpen) {
+        var searchQuery by remember { mutableStateOf("") }
+        var selectedCategory by remember { mutableStateOf<VaultProtocolCategory?>(null) }
+
+        val matchingProtocols = remember(searchQuery, selectedCategory) {
+            val q = searchQuery.trim()
+            VaultProtocolType.entries.filter { proto ->
+                val categoryMatch = selectedCategory == null || proto.category == selectedCategory
+                val queryMatch = q.isEmpty() ||
+                    proto.displayName.contains(q, ignoreCase = true) ||
+                    proto.shortBadge.contains(q, ignoreCase = true) ||
+                    proto.name.contains(q, ignoreCase = true) ||
+                    proto.defaultPortHint.contains(q, ignoreCase = true)
+                categoryMatch && queryMatch
+            }
+        }
+
+        AlertDialog(
+            onDismissRequest = { pickerOpen = false },
+            title = {
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.titleMedium
+                )
+            },
+            text = {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    OutlinedTextField(
+                        value = searchQuery,
+                        onValueChange = { searchQuery = it },
+                        placeholder = { Text("RDP, SSH, SFTP, VNC, Ping, Docker…") },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = Icons.Outlined.Search,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        },
+                        trailingIcon = if (searchQuery.isNotEmpty()) {
+                            {
+                                IconButton(onClick = { searchQuery = "" }) {
+                                    Icon(
+                                        imageVector = Icons.Outlined.Close,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                            }
+                        } else {
+                            null
+                        },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        NexusChoiceChip(
+                            selected = selectedCategory == null,
+                            onClick = { selectedCategory = null },
+                            label = "All (${VaultProtocolType.entries.size})"
+                        )
+                        VaultProtocolCategory.entries.forEach { category ->
+                            NexusChoiceChip(
+                                selected = selectedCategory == category,
+                                onClick = {
+                                    selectedCategory = if (selectedCategory == category) null else category
+                                },
+                                label = category.title
+                            )
+                        }
+                    }
+
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 360.dp)
+                            .verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        VaultProtocolCategory.entries.forEach { category ->
+                            val categoryItems = matchingProtocols.filter { it.category == category }
+                            if (categoryItems.isNotEmpty()) {
+                                Text(
+                                    text = category.title,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.padding(start = 6.dp, top = 6.dp, bottom = 2.dp)
+                                )
+                                categoryItems.forEach { proto ->
+                                    val isSelected = proto == selectedProtocol
+                                    Surface(
+                                        shape = RoundedCornerShape(10.dp),
+                                        color = if (isSelected) {
+                                            MaterialTheme.colorScheme.secondaryContainer
+                                        } else {
+                                            Color.Transparent
+                                        },
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(10.dp))
+                                            .clickable {
+                                                onSelectProtocol(proto)
+                                                pickerOpen = false
+                                            }
+                                    ) {
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(horizontal = 10.dp, vertical = 9.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                        ) {
+                                            Surface(
+                                                shape = RoundedCornerShape(6.dp),
+                                                color = if (isSelected) {
+                                                    MaterialTheme.colorScheme.primary
+                                                } else {
+                                                    MaterialTheme.colorScheme.surfaceContainerHighest
+                                                },
+                                                modifier = Modifier.widthIn(min = 46.dp)
+                                            ) {
+                                                Text(
+                                                    text = proto.shortBadge,
+                                                    style = NexusTheme.monospace.keycapShortcut,
+                                                    color = if (isSelected) {
+                                                        MaterialTheme.colorScheme.onPrimary
+                                                    } else {
+                                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                                    },
+                                                    textAlign = TextAlign.Center,
+                                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
+                                                )
+                                            }
+                                            Text(
+                                                text = proto.displayName,
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                color = if (isSelected) {
+                                                    MaterialTheme.colorScheme.onSecondaryContainer
+                                                } else {
+                                                    MaterialTheme.colorScheme.onSurface
+                                                },
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                            Text(
+                                                text = proto.defaultPortHint,
+                                                style = NexusTheme.monospace.keycapShortcut,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                            if (isSelected) {
+                                                Icon(
+                                                    imageVector = Icons.Outlined.Check,
+                                                    contentDescription = null,
+                                                    tint = MaterialTheme.colorScheme.primary,
+                                                    modifier = Modifier.size(18.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { pickerOpen = false }) {
+                    Text(cancelLabel)
+                }
+            }
+        )
+    }
+}
+

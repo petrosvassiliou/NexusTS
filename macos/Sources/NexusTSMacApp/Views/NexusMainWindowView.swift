@@ -1045,7 +1045,7 @@ private struct FullScreenFolderLauncherPopover: View {
                     }
                 }
             }
-            .frame(width: 340, height: 380)
+            .frame(width: 380, height: 400)
         }
         .padding(12)
     }
@@ -1071,11 +1071,12 @@ private struct FullScreenFolderLauncherPopover: View {
                 Image(systemName: "folder.fill")
                     .foregroundStyle(Color.accentColor)
                 Text(folder.name)
-                    .font(.callout.weight(.medium))
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.secondary)
                 Spacer()
             }
             .padding(.leading, CGFloat(depth) * 14)
-            .padding(.vertical, 4)
+            .padding(.vertical, 5)
             .padding(.horizontal, 6)
             .contentShape(Rectangle())
         }
@@ -1093,30 +1094,32 @@ private struct FullScreenFolderLauncherPopover: View {
 
     private func connectionLauncherRow(_ conn: VaultConnection, depth: Int) -> some View {
         let isSelected = store.selectedConnectionId == conn.id
-        return HStack(spacing: 6) {
-            Image(systemName: conn.protocolType.sfSymbolName)
-                .font(.caption)
-                .foregroundStyle(conn.protocolType.appleSystemTint)
+        return HStack(spacing: 8) {
             Text(conn.name)
-                .font(.callout)
+                .font(.system(size: 14, weight: isSelected ? .semibold : .medium))
+                .foregroundStyle(.primary)
                 .lineLimit(1)
             Spacer()
+            Text(conn.protocolType.shortBadge)
+                .font(.system(size: 9.5, weight: .regular, design: .monospaced))
+                .foregroundStyle(.tertiary)
             Button {
                 store.openConnection(conn)
                 isPresented = false
             } label: {
                 Image(systemName: "play.fill")
                     .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
             .buttonStyle(.borderless)
             .help("Connect to \(conn.name)")
         }
-        .padding(.leading, CGFloat(depth) * 14 + 12)
-        .padding(.vertical, 4)
+        .padding(.leading, CGFloat(depth) * 14 + 14)
+        .padding(.vertical, 5)
         .padding(.horizontal, 6)
         .background(
             RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(isSelected ? Color.accentColor.opacity(0.16) : Color.clear)
+                .fill(isSelected ? Color.accentColor.opacity(0.18) : Color.clear)
         )
         .contentShape(Rectangle())
         .onTapGesture(count: 2) {

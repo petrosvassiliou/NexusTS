@@ -33,6 +33,14 @@ data class InheritableProperties(
     val requireConnectConfirmation: Boolean = false
 )
 
+enum class VaultProtocolCategory(val title: String) {
+    REMOTE_DESKTOP("Remote Desktop"),
+    TERMINAL_CONTAINERS("Terminal & Containers"),
+    FILE_TRANSFER("File Transfer"),
+    WEB_CLOUD("Web & Cloud"),
+    NETWORK_UTILITIES("Network Tools")
+}
+
 @Serializable
 enum class VaultProtocolType {
     RDP,
@@ -57,7 +65,119 @@ enum class VaultProtocolType {
     UTILITY_PORT_SCANNER,
     UTILITY_WAKE_ON_LAN,
     KUBERNETES_POD,
-    DOCKER_CONTAINER
+    DOCKER_CONTAINER;
+
+    val displayName: String
+        get() = when (this) {
+            RDP -> "Remote Desktop (RDP)"
+            SSH -> "SSH Terminal"
+            TELNET -> "Telnet"
+            SERIAL -> "USB Serial / UART"
+            SFTP -> "SFTP File Transfer"
+            FTP -> "FTP"
+            FTPS -> "FTPS (TLS)"
+            SCP -> "SCP Transfer"
+            VNC -> "VNC Remote Screen"
+            APPLE_SCREEN_SHARING -> "Apple Screen Sharing"
+            WEB_PAGE -> "Web Console (HTTP/HTTPS)"
+            VMWARE_VSPHERE -> "VMware vSphere"
+            PROXMOX_VE -> "Proxmox VE"
+            HYPER_V -> "Microsoft Hyper-V"
+            AWS_EC2 -> "AWS EC2"
+            AZURE_VM -> "Microsoft Azure VM"
+            WINDOWS_TERMINAL_SERVICES -> "Windows Terminal Services"
+            UTILITY_PING -> "Ping Reachability"
+            UTILITY_TRACEROUTE -> "Traceroute"
+            UTILITY_PORT_SCANNER -> "TCP Port Scanner"
+            UTILITY_WAKE_ON_LAN -> "Wake-on-LAN"
+            KUBERNETES_POD -> "Kubernetes Pod"
+            DOCKER_CONTAINER -> "Docker Container"
+        }
+
+    val shortBadge: String
+        get() = when (this) {
+            RDP -> "RDP"
+            SSH -> "SSH"
+            TELNET -> "TEL"
+            SERIAL -> "UART"
+            SFTP -> "SFTP"
+            FTP -> "FTP"
+            FTPS -> "FTPS"
+            SCP -> "SCP"
+            VNC -> "VNC"
+            APPLE_SCREEN_SHARING -> "ARD"
+            WEB_PAGE -> "WEB"
+            VMWARE_VSPHERE -> "ESXi"
+            PROXMOX_VE -> "PVE"
+            HYPER_V -> "HV"
+            AWS_EC2 -> "EC2"
+            AZURE_VM -> "AZ"
+            WINDOWS_TERMINAL_SERVICES -> "WTS"
+            UTILITY_PING -> "PING"
+            UTILITY_TRACEROUTE -> "MTR"
+            UTILITY_PORT_SCANNER -> "SCAN"
+            UTILITY_WAKE_ON_LAN -> "WOL"
+            KUBERNETES_POD -> "K8S"
+            DOCKER_CONTAINER -> "OCI"
+        }
+
+    val defaultPortHint: String
+        get() = when (this) {
+            RDP -> "TCP 3389"
+            SSH -> "TCP 22"
+            TELNET -> "TCP 23"
+            SERIAL -> "UART / COM"
+            SFTP -> "TCP 22"
+            FTP -> "TCP 21"
+            FTPS -> "TCP 990"
+            SCP -> "TCP 22"
+            VNC -> "TCP 5900"
+            APPLE_SCREEN_SHARING -> "TCP 5900"
+            WEB_PAGE -> "HTTPS 443"
+            VMWARE_VSPHERE -> "HTTPS 443"
+            PROXMOX_VE -> "HTTPS 8006"
+            HYPER_V -> "TCP 2179"
+            AWS_EC2 -> "SSH / SSM"
+            AZURE_VM -> "SSH / Bastion"
+            WINDOWS_TERMINAL_SERVICES -> "TCP 3389"
+            UTILITY_PING -> "ICMP / Echo"
+            UTILITY_TRACEROUTE -> "ICMP / UDP"
+            UTILITY_PORT_SCANNER -> "TCP Scan"
+            UTILITY_WAKE_ON_LAN -> "UDP 9"
+            KUBERNETES_POD -> "kubectl exec"
+            DOCKER_CONTAINER -> "docker exec"
+        }
+
+    val category: VaultProtocolCategory
+        get() = when (this) {
+            RDP,
+            WINDOWS_TERMINAL_SERVICES,
+            VNC,
+            APPLE_SCREEN_SHARING -> VaultProtocolCategory.REMOTE_DESKTOP
+
+            SSH,
+            TELNET,
+            SERIAL,
+            KUBERNETES_POD,
+            DOCKER_CONTAINER -> VaultProtocolCategory.TERMINAL_CONTAINERS
+
+            SFTP,
+            FTP,
+            FTPS,
+            SCP -> VaultProtocolCategory.FILE_TRANSFER
+
+            WEB_PAGE,
+            VMWARE_VSPHERE,
+            PROXMOX_VE,
+            HYPER_V,
+            AWS_EC2,
+            AZURE_VM -> VaultProtocolCategory.WEB_CLOUD
+
+            UTILITY_PING,
+            UTILITY_TRACEROUTE,
+            UTILITY_PORT_SCANNER,
+            UTILITY_WAKE_ON_LAN -> VaultProtocolCategory.NETWORK_UTILITIES
+        }
 }
 
 @Serializable

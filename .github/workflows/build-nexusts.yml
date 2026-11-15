@@ -319,7 +319,7 @@ jobs:
           set -euo pipefail
           TAG_NAME="${GITHUB_REF_NAME}"
           if [[ "${TAG_NAME}" != v* ]]; then
-            TAG_NAME="${{ inputs.release_tag || 'v0.3.0-beta.1' }}"
+            TAG_NAME="${{ inputs.release_tag || 'v0.3.0-beta.2' }}"
           fi
           echo "tag_name=${TAG_NAME}" >> "${GITHUB_OUTPUT}"
 
@@ -346,7 +346,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.stage.outputs.tag_name }}
-          name: "NexusTS ${{ steps.stage.outputs.tag_name }} — RDP Transport Fix, Clean Main Launchpad & 0.3 Beta Series"
+          name: "NexusTS ${{ steps.stage.outputs.tag_name }} — Unclipped Protocol Selector & Readable Full-Screen Server List"
           draft: false
           prerelease: ${{ contains(steps.stage.outputs.tag_name, '-') }}
           generate_release_notes: true
@@ -354,19 +354,17 @@ jobs:
             ## NexusTS ${{ steps.stage.outputs.tag_name }} (`com.nexusts.app` / `com.nexusts.app.macos`)
             **Native Remote Management & Connection Manager for Googlebook OS, Android Tablets & macOS**
 
-            > **Beta Channel & Version Rebase Notice**: NexusTS has been rebased to the **`0.3.x` beta series** (`versionName = 0.3.0-beta.1`) while keeping internal Android `versionCode = 10300` so existing installations upgrade cleanly in place without uninstalling or losing local `.nxts` vault data.
+            > **Beta Channel (`0.3.x` Series)**: Installs directly over `v0.3.0-beta.1` and earlier builds (`versionCode = 10301`) while preserving all local `.nxts` v2 vaults & Android Keystore secrets.
 
             ### Signed Deliverables (100% In-Place Upgrade Compatible)
-            - **`NexusTS-${{ steps.stage.outputs.tag_name }}-googlebook-android-release.apk`**: Cryptographically signed (APK Signature Scheme v2/v3/v4, RSA-4096) universal `arm64-v8a` + `x86_64` APK with 16 KB ELF page alignment (`0x4000`) and 100% Google Play Protect compliance. Installs directly over prior builds (`versionCode = 10300`) while preserving all `.nxts` v2 vaults & Android Keystore secrets.
+            - **`NexusTS-${{ steps.stage.outputs.tag_name }}-googlebook-android-release.apk`**: Cryptographically signed (APK Signature Scheme v2/v3/v4, RSA-4096) universal `arm64-v8a` + `x86_64` APK with 16 KB ELF page alignment (`0x4000`) and 100% Google Play Protect compliance (`versionCode = 10301`).
             - **`NexusTS-${{ steps.stage.outputs.tag_name }}-playstore-release.aab`**: Signed Android App Bundle for optional Managed Google Play / internal distribution.
             - **`NexusTS-${{ steps.stage.outputs.tag_name }}-macOS-Universal.dmg` & `.zip`**: Universal2 (`arm64` + `x86_64`) macOS application bundle with bundled OpenSSL 3.4 + FreeRDP 3.12.
             - **`nexusts-upload-certificate.pem` & `oauth-and-mdm-registration.json`**: Public X.509 upload certificate (`SHA-1: A6:AF:15:A9:BF:0B:FE:38:D4:66:46:3E:3E:72:A6:5B:4F:9C:4D:F6`, `SHA-256: 4A:BD:80:F1:20:14:B9:88:09:1C:97:92:2F:87:02:D1:BF:B7:93:9C:73:B6:9A:DB:1A:9B:76:30:6A:30:27:82`) and Managed Google Play `app_restrictions` template.
 
-            ### What's Fixed & Redesigned in ${{ steps.stage.outputs.tag_name }}
-            - **Fixed RDP `ERRCONNECT_CONNECT_TRANSPORT_FAILED (0x0002000D)` Connectivity Regression**: Removed the invalid `FreeRDP_BitmapCacheEnabled` / `FreeRDP_OffscreenSupportLevel` `Confirm Active PDU` capability overrides that caused Windows `termsrv` to drop activation, added `PROXY_TYPE_IGNORE` protection on direct LAN RDP sockets, registered FreeRDP `rdpPointer` graphics callbacks in `PostConnect`, and sanitized `host[:port]` inputs.
-            - **Removed Duplicate Center Folders Section & Redesigned Main Launchpad**: Completely removed the center `Folders & Connections` (`Ordner & Verbindungen`) card and folder counter from the main overview screen, replacing it with a clean, uncluttered Workspace Launchpad featuring an interactive Quick Connect (`Ctrl+K`) bar, primary actions, Pinned Favorites grid, and optional Tasks checklist while keeping all folder navigation in the collapsible left sidebar.
-            - **Rebased Versioning to `0.3.0-beta.1` (`versionCode = 10300`)**: Rebased user-facing app version to `0.3.0-beta.1` across Android and macOS and added legacy pre-rebase tag filtering to the in-app updater.
-            - **Includes All Multi-Session & UX Improvements**: Main-window multi-tab RDP switching, dirty-rect native rendering pipeline, external RDP control bar outside the viewport, hamburger sidebar toggle, double-click-only connection launch, automatic per-connection clipboard sync (`CLIPRDR`), OS screenshot shortcut pass-through, and Full-Screen Session Mode (`Ctrl+Alt+F`).
+            ### What's Fixed & Improved in ${{ steps.stage.outputs.tag_name }}
+            - **Fixed Clipped / Missing Options in New Connection Protocol Selector**: Replaced nested `DropdownMenu` child popups inside Compose `AlertDialog` windows (which Android's dialog `DecorView` clipped at ~20 items, cutting off `TCP Port Scanner`, `Wake-on-LAN`, `Kubernetes Pod`, and `Docker Container`) with dedicated top-level scrollable & searchable modal pickers (`NexusProtocolSelectorField` & `NexusDialogSelectField`). All 23 protocols now render cleanly with human-readable names, category filter chips, search, and default port hints across Connection, Folder, Credential, Gateway, and Template dialogs.
+            - **Easier-to-Read Full-Screen Server List & Understated Connection Type**: Redesigned the Full-Screen Folder & Server launcher (`FullScreenFolderStructurePanel`) with wider layout (`392dp`), crisp larger server names (`14.5sp` `Medium`/`SemiBold` high-contrast single-line rows), no noisy `"RDP • IP"` second line, and a subtle low-contrast protocol tag (`9sp` muted right-aligned label) so server names stand out immediately. Also fixed the localized German toolbar button text (`Ordner & Verbindungen`).
           files: release-assets/*
 
       - name: Check Optional Google Play Service Account Secret

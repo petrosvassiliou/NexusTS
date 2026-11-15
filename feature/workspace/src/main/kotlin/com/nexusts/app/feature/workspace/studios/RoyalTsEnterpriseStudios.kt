@@ -1509,7 +1509,6 @@ fun NewTemplateDialog(
     var colorHex by remember(editingTemplate) { mutableStateOf<String?>(editingTemplate?.colorAccentHex ?: "#5B9BFF") }
     var rdpAdminConsole by remember(editingTemplate) { mutableStateOf(existingRdp?.connectToConsoleAdmin ?: true) }
     var rdpScalePercent by remember(editingTemplate) { mutableIntStateOf(existingRdp?.desktopScaleFactorPercent ?: 150) }
-    var protoMenuOpen by remember { mutableStateOf(false) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -1533,28 +1532,12 @@ fun NewTemplateDialog(
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
-                Box(modifier = Modifier.fillMaxWidth()) {
-                    OutlinedButton(
-                        onClick = { protoMenuOpen = true },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text("${strings.dialogFieldProtocol}: ${protocol.name}")
-                    }
-                    DropdownMenu(
-                        expanded = protoMenuOpen,
-                        onDismissRequest = { protoMenuOpen = false }
-                    ) {
-                        VaultProtocolType.entries.forEach { candidate ->
-                            DropdownMenuItem(
-                                text = { Text(candidate.name) },
-                                onClick = {
-                                    protocol = candidate
-                                    protoMenuOpen = false
-                                }
-                            )
-                        }
-                    }
-                }
+                NexusProtocolSelectorField(
+                    label = strings.dialogFieldProtocol,
+                    cancelLabel = strings.dialogActionCancel,
+                    selectedProtocol = protocol,
+                    onSelectProtocol = { protocol = it }
+                )
                 RoyalColorSwatchSelector(
                     label = strings.dialogFieldColorAccent,
                     selectedHex = colorHex,
@@ -1669,9 +1652,6 @@ fun ConnectWithOptionsDialog(
     var forceConsoleAdmin by remember(targetConnection) { mutableStateOf(initialConsole) }
     var placement by remember(targetConnection) { mutableStateOf(QuickLaunchPlacement.ACTIVE_PANE_TAB) }
 
-    var credMenuOpen by remember { mutableStateOf(false) }
-    var tplMenuOpen by remember { mutableStateOf(false) }
-
     AlertDialog(
         onDismissRequest = onDismiss,
         title = {
@@ -1683,7 +1663,7 @@ fun ConnectWithOptionsDialog(
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Text(
-                    text = "${targetConnection.protocol.name} -> ${targetConnection.host}",
+                    text = "${targetConnection.protocol.displayName} -> ${targetConnection.host}",
                     style = NexusTheme.monospace.keycapShortcut,
                     color = MaterialTheme.colorScheme.secondary
                 )
@@ -1712,27 +1692,24 @@ fun ConnectWithOptionsDialog(
                 when (credChoice) {
                     1 -> {
                         val chosen = credentials.firstOrNull { it.id == selectedCredId }
-                        Box(modifier = Modifier.fillMaxWidth()) {
-                            OutlinedButton(
-                                onClick = { credMenuOpen = true },
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Icon(Icons.Outlined.Key, contentDescription = null, modifier = Modifier.size(15.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(chosen?.name ?: "-")
-                            }
-                            DropdownMenu(expanded = credMenuOpen, onDismissRequest = { credMenuOpen = false }) {
-                                credentials.forEach { cred ->
-                                    DropdownMenuItem(
-                                        text = { Text("${cred.name} (${cred.username})") },
-                                        onClick = {
-                                            selectedCredId = cred.id
-                                            credMenuOpen = false
-                                        }
-                                    )
-                                }
+                        val credOptions = remember(credentials) {
+                            credentials.map { cred ->
+                                NexusSelectOption<String?>(
+                                    value = cred.id,
+                                    title = cred.name,
+                                    subtitle = cred.username.takeIf { it.isNotBlank() }
+                                )
                             }
                         }
+                        NexusDialogSelectField(
+                            buttonText = chosen?.name ?: "-",
+                            dialogTitle = strings.inspectorEffectiveCredential,
+                            cancelLabel = strings.dialogActionCancel,
+                            selectedValue = selectedCredId,
+                            options = credOptions,
+                            leadingIcon = Icons.Outlined.Key,
+                            onSelect = { selectedCredId = it }
+                        )
                     }
 
                     2 -> {
@@ -1763,32 +1740,29 @@ fun ConnectWithOptionsDialog(
 
                 if (matchingTemplates.isNotEmpty()) {
                     val chosenTpl = matchingTemplates.firstOrNull { it.id == selectedTemplateId }
-                    Box(modifier = Modifier.fillMaxWidth()) {
-                        OutlinedButton(
-                            onClick = { tplMenuOpen = true },
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text("${strings.dialogFieldTemplate}: ${chosenTpl?.name ?: "-"}")
-                        }
-                        DropdownMenu(expanded = tplMenuOpen, onDismissRequest = { tplMenuOpen = false }) {
-                            DropdownMenuItem(
-                                text = { Text("-") },
-                                onClick = {
-                                    selectedTemplateId = null
-                                    tplMenuOpen = false
-                                }
-                            )
+                    val tplOptions = remember(matchingTemplates) {
+                        buildList {
+                            add(NexusSelectOption<String?>(value = null, title = "-"))
                             matchingTemplates.forEach { tpl ->
-                                DropdownMenuItem(
-                                    text = { Text(tpl.name) },
-                                    onClick = {
-                                        selectedTemplateId = tpl.id
-                                        tplMenuOpen = false
-                                    }
+                                add(
+                                    NexusSelectOption(
+                                        value = tpl.id,
+                                        title = tpl.name,
+                                        subtitle = tpl.description.takeIf { it.isNotBlank() }
+                                    )
                                 )
                             }
                         }
                     }
+                    NexusDialogSelectField(
+                        buttonText = "${strings.dialogFieldTemplate}: ${chosenTpl?.name ?: "-"}",
+                        dialogTitle = strings.dialogFieldTemplate,
+                        cancelLabel = strings.dialogActionCancel,
+                        selectedValue = selectedTemplateId,
+                        options = tplOptions,
+                        leadingIcon = Icons.Outlined.Bookmarks,
+                        onSelect = { selectedTemplateId = it }
+                    )
                 }
 
                 if (targetConnection.protocol == VaultProtocolType.RDP) {
@@ -1880,7 +1854,6 @@ fun NewSmartFolderDialog(
     var scopeFolderId by remember(existingSmartFolder) {
         mutableStateOf(existingSmartFolder?.filter?.scopeFolderId)
     }
-    var scopeMenuOpen by remember { mutableStateOf(false) }
     var osFilter by remember(existingSmartFolder) {
         mutableStateOf(existingSmartFolder?.filter?.osFamilyFilter.orEmpty())
     }
@@ -1924,23 +1897,6 @@ fun NewSmartFolderDialog(
         if (regexError != null) emptyList() else previewMatches(draftFilter)
     }
 
-    val commonProtocols = remember {
-        listOf(
-            VaultProtocolType.RDP,
-            VaultProtocolType.SSH,
-            VaultProtocolType.SFTP,
-            VaultProtocolType.VNC,
-            VaultProtocolType.WEB_PAGE,
-            VaultProtocolType.PROXMOX_VE,
-            VaultProtocolType.VMWARE_VSPHERE,
-            VaultProtocolType.KUBERNETES_POD,
-            VaultProtocolType.DOCKER_CONTAINER,
-            VaultProtocolType.SERIAL,
-            VaultProtocolType.TELNET,
-            VaultProtocolType.APPLE_SCREEN_SHARING
-        )
-    }
-
     AlertDialog(
         onDismissRequest = onDismiss,
         icon = {
@@ -1974,40 +1930,26 @@ fun NewSmartFolderDialog(
                 if (allFolders.isNotEmpty()) {
                     val scopeLabel = allFolders.firstOrNull { it.id == scopeFolderId }?.name
                         ?: strings.smartFolderAllFolders
-                    Box(modifier = Modifier.fillMaxWidth()) {
-                        OutlinedButton(
-                            onClick = { scopeMenuOpen = true },
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Icon(Icons.Outlined.Folder, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("${strings.smartFolderScopeLabel}: $scopeLabel")
-                        }
-                        DropdownMenu(
-                            expanded = scopeMenuOpen,
-                            onDismissRequest = { scopeMenuOpen = false }
-                        ) {
-                            DropdownMenuItem(
-                                text = { Text(strings.smartFolderAllFolders) },
-                                onClick = {
-                                    scopeFolderId = null
-                                    scopeMenuOpen = false
-                                }
-                            )
+                    val scopeOptions = remember(allFolders, strings.smartFolderAllFolders) {
+                        buildList {
+                            add(NexusSelectOption<String?>(value = null, title = strings.smartFolderAllFolders))
                             allFolders.forEach { folder ->
-                                DropdownMenuItem(
-                                    text = { Text(folder.name) },
-                                    onClick = {
-                                        scopeFolderId = folder.id
-                                        scopeMenuOpen = false
-                                    }
-                                )
+                                add(NexusSelectOption(value = folder.id, title = folder.name))
                             }
                         }
                     }
+                    NexusDialogSelectField(
+                        buttonText = "${strings.smartFolderScopeLabel}: $scopeLabel",
+                        dialogTitle = strings.smartFolderScopeLabel,
+                        cancelLabel = strings.dialogActionCancel,
+                        selectedValue = scopeFolderId,
+                        options = scopeOptions,
+                        leadingIcon = Icons.Outlined.Folder,
+                        onSelect = { scopeFolderId = it }
+                    )
                 }
 
-                // Multi-Select Protocol Filter Chips
+                // Multi-Select Protocol Filter Chips (all 23 VaultProtocolType entries)
                 Text(
                     text = strings.dialogFieldProtocol,
                     style = MaterialTheme.typography.labelMedium,
@@ -2022,7 +1964,7 @@ fun NewSmartFolderDialog(
                         onClick = { selectedProtocols = emptySet() },
                         label = "All"
                     )
-                    commonProtocols.forEach { proto ->
+                    VaultProtocolType.entries.forEach { proto ->
                         val active = proto in selectedProtocols
                         NexusChoiceChip(
                             selected = active,
@@ -2033,7 +1975,7 @@ fun NewSmartFolderDialog(
                                     selectedProtocols + proto
                                 }
                             },
-                            label = proto.name
+                            label = proto.displayName
                         )
                     }
                 }
@@ -2126,7 +2068,7 @@ fun NewSmartFolderDialog(
                                         color = MaterialTheme.colorScheme.surfaceContainerHigh
                                     ) {
                                         Text(
-                                            text = "${conn.name} (${conn.protocol.name})",
+                                            text = "${conn.name} (${conn.protocol.shortBadge})",
                                             style = NexusTheme.monospace.keycapShortcut,
                                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
                                             maxLines = 1,
@@ -2206,7 +2148,6 @@ fun NewDynamicFolderDialog(
     var interpreter by remember(existingDynamicFolder) {
         mutableStateOf(existingDynamicFolder?.interpreter ?: DynamicScriptInterpreter.JSON_HTTP_API)
     }
-    var parentMenuOpen by remember { mutableStateOf(false) }
     var scriptPayload by remember(existingDynamicFolder) {
         mutableStateOf(existingDynamicFolder?.scriptOrEndpointPayload.orEmpty())
     }
@@ -2277,35 +2218,23 @@ fun NewDynamicFolderDialog(
                 }
                 if (folders.isNotEmpty()) {
                     val parentLabel = folders.firstOrNull { it.id == selectedParentId }?.name ?: "-"
-                    Box(modifier = Modifier.fillMaxWidth()) {
-                        OutlinedButton(
-                            onClick = { parentMenuOpen = true },
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text("${strings.dialogFieldFolder}: $parentLabel")
-                        }
-                        DropdownMenu(
-                            expanded = parentMenuOpen,
-                            onDismissRequest = { parentMenuOpen = false }
-                        ) {
-                            DropdownMenuItem(
-                                text = { Text("-") },
-                                onClick = {
-                                    selectedParentId = null
-                                    parentMenuOpen = false
-                                }
-                            )
+                    val parentOptions = remember(folders) {
+                        buildList {
+                            add(NexusSelectOption<String?>(value = null, title = "-"))
                             folders.forEach { folder ->
-                                DropdownMenuItem(
-                                    text = { Text(folder.name) },
-                                    onClick = {
-                                        selectedParentId = folder.id
-                                        parentMenuOpen = false
-                                    }
-                                )
+                                add(NexusSelectOption(value = folder.id, title = folder.name))
                             }
                         }
                     }
+                    NexusDialogSelectField(
+                        buttonText = "${strings.dialogFieldFolder}: $parentLabel",
+                        dialogTitle = strings.dialogFieldFolder,
+                        cancelLabel = strings.dialogActionCancel,
+                        selectedValue = selectedParentId,
+                        options = parentOptions,
+                        leadingIcon = Icons.Outlined.Folder,
+                        onSelect = { selectedParentId = it }
+                    )
                 }
                 OutlinedTextField(
                     value = scriptPayload,

@@ -1211,7 +1211,11 @@ private fun FullScreenSessionWorkspace(
                                     modifier = Modifier.size(15.dp)
                                 )
                                 Text(
-                                    text = "${strings.vaultSectionFolders} & Servers",
+                                    text = if (strings.vaultSectionFolders.contains("&")) {
+                                        strings.vaultSectionFolders
+                                    } else {
+                                        "${strings.vaultSectionFolders} & Servers"
+                                    },
                                     style = NexusTheme.monospace.keycapShortcut,
                                     color = Color(0xFFF1F5F9),
                                     maxLines = 1
@@ -1422,8 +1426,8 @@ private fun FullScreenSessionWorkspace(
                         modifier = Modifier
                             .align(Alignment.TopStart)
                             .padding(start = 8.dp, top = 4.dp, bottom = 16.dp)
-                            .width(340.dp)
-                            .heightIn(max = 540.dp)
+                            .width(392.dp)
+                            .heightIn(max = 580.dp)
                     )
                 }
             }
@@ -1467,7 +1471,9 @@ private fun FullScreenFolderStructurePanel(
         if (normalizedQuery.isEmpty()) return true
         return conn.name.lowercase().contains(normalizedQuery) ||
             conn.host.lowercase().contains(normalizedQuery) ||
-            conn.protocol.name.lowercase().contains(normalizedQuery)
+            conn.protocol.name.lowercase().contains(normalizedQuery) ||
+            conn.protocol.displayName.lowercase().contains(normalizedQuery) ||
+            conn.protocol.shortBadge.lowercase().contains(normalizedQuery)
     }
 
     data class FlatTreeEntry(
@@ -1591,7 +1597,7 @@ private fun FullScreenFolderStructurePanel(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(10.dp),
+                .padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Row(
@@ -1665,8 +1671,8 @@ private fun FullScreenFolderStructurePanel(
                                     .padding(
                                         start = (6 + item.indent * 14).dp,
                                         end = 8.dp,
-                                        top = 6.dp,
-                                        bottom = 6.dp
+                                        top = 7.dp,
+                                        bottom = 7.dp
                                     ),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -1694,8 +1700,11 @@ private fun FullScreenFolderStructurePanel(
                                 )
                                 Text(
                                     text = folder.name,
-                                    style = MaterialTheme.typography.labelLarge,
-                                    color = MaterialTheme.colorScheme.onSurface,
+                                    style = MaterialTheme.typography.bodyMedium.copy(
+                                        fontSize = 13.5.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    ),
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
                                     modifier = Modifier.weight(1f)
@@ -1703,7 +1712,7 @@ private fun FullScreenFolderStructurePanel(
                                 Text(
                                     text = "${item.childCount}",
                                     style = NexusTheme.monospace.keycapShortcut,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f)
                                 )
                             }
                         }
@@ -1718,7 +1727,7 @@ private fun FullScreenFolderStructurePanel(
                                         val current = expandedSmartIds[smart.id] ?: false
                                         expandedSmartIds[smart.id] = !current
                                     }
-                                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                                    .padding(horizontal = 8.dp, vertical = 7.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
@@ -1740,8 +1749,11 @@ private fun FullScreenFolderStructurePanel(
                                 )
                                 Text(
                                     text = smart.name,
-                                    style = MaterialTheme.typography.labelLarge,
-                                    color = MaterialTheme.colorScheme.onSurface,
+                                    style = MaterialTheme.typography.bodyMedium.copy(
+                                        fontSize = 13.5.sp,
+                                        fontWeight = FontWeight.SemiBold
+                                    ),
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
                                     modifier = Modifier.weight(1f)
@@ -1749,7 +1761,7 @@ private fun FullScreenFolderStructurePanel(
                                 Text(
                                     text = "${item.childCount}",
                                     style = NexusTheme.monospace.keycapShortcut,
-                                    color = MaterialTheme.colorScheme.secondary
+                                    color = MaterialTheme.colorScheme.secondary.copy(alpha = 0.78f)
                                 )
                             }
                         }
@@ -1758,16 +1770,19 @@ private fun FullScreenFolderStructurePanel(
                             val conn = item.connection
                             val isSelected = uiState.selectedConnectionId == conn.id
                             val isActive = conn.id in activeConnectionIds
+                            val rowHover = rememberDesktopHoverState()
+                            val isRowHovered = rowHover.value.isHovered
                             val rowShape = RoundedCornerShape(8.dp)
                             Box(
                                 modifier = Modifier
                                     .fillMaxWidth()
+                                    .nexusHoverTracker(rowHover, PointerIcon.Hand)
                                     .clip(rowShape)
                                     .background(
-                                        if (isSelected) {
-                                            MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.65f)
-                                        } else {
-                                            Color.Transparent
+                                        when {
+                                            isSelected -> MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.75f)
+                                            isRowHovered -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f)
+                                            else -> Color.Transparent
                                         },
                                         rowShape
                                     )
@@ -1784,13 +1799,13 @@ private fun FullScreenFolderStructurePanel(
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .padding(
-                                            start = (10 + item.indent * 14).dp,
+                                            start = (12 + item.indent * 14).dp,
                                             end = 6.dp,
-                                            top = 5.dp,
-                                            bottom = 5.dp
+                                            top = 7.dp,
+                                            bottom = 7.dp
                                         ),
                                     verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
                                     if (isActive) {
                                         Box(
@@ -1800,22 +1815,33 @@ private fun FullScreenFolderStructurePanel(
                                                 .background(MaterialTheme.colorScheme.primary)
                                         )
                                     }
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Text(
-                                            text = conn.name,
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurface,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                        Text(
-                                            text = "${conn.protocol.name} • ${conn.host}",
-                                            style = NexusTheme.monospace.keycapShortcut,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                    }
+                                    Text(
+                                        text = conn.name,
+                                        style = MaterialTheme.typography.bodyLarge.copy(
+                                            fontSize = 14.5.sp,
+                                            lineHeight = 19.sp,
+                                            fontWeight = if (isSelected || isActive) {
+                                                FontWeight.SemiBold
+                                            } else {
+                                                FontWeight.Medium
+                                            },
+                                            letterSpacing = 0.sp
+                                        ),
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    Text(
+                                        text = conn.protocol.shortSidebarBadge(),
+                                        style = NexusTheme.monospace.keycapShortcut.copy(
+                                            fontSize = 9.sp,
+                                            lineHeight = 11.sp,
+                                            fontWeight = FontWeight.Normal
+                                        ),
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.50f),
+                                        maxLines = 1
+                                    )
                                     IconButton(
                                         onClick = {
                                             onSelectConnection(conn.id)
@@ -1826,7 +1852,9 @@ private fun FullScreenFolderStructurePanel(
                                         Icon(
                                             imageVector = Icons.Outlined.PlayArrow,
                                             contentDescription = "Connect ${conn.name}",
-                                            tint = MaterialTheme.colorScheme.primary,
+                                            tint = MaterialTheme.colorScheme.primary.copy(
+                                                alpha = if (isRowHovered || isSelected) 0.95f else 0.52f
+                                            ),
                                             modifier = Modifier.size(15.dp)
                                         )
                                     }
@@ -7625,7 +7653,7 @@ private fun PlayProtectAutoUpdateDialog(
                                     ).trim()
                                     else -> String.format(
                                         strings.autoUpdateUpToDateFormat,
-                                        uiState.updateCurrentVersion.ifBlank { "0.3.0-beta.1" }
+                                        uiState.updateCurrentVersion.ifBlank { "0.3.0-beta.2" }
                                     )
                                 },
                                 style = MaterialTheme.typography.titleSmall,
@@ -7640,7 +7668,7 @@ private fun PlayProtectAutoUpdateDialog(
                                 ""
                             }
                             Text(
-                                text = "Installed: v${uiState.updateCurrentVersion.ifBlank { "0.3.0-beta.1" }}  →  Latest: ${uiState.updateLatestTag.ifBlank { "current" }}$sizeMb",
+                                text = "Installed: v${uiState.updateCurrentVersion.ifBlank { "0.3.0-beta.2" }}  →  Latest: ${uiState.updateLatestTag.ifBlank { "current" }}$sizeMb",
                                 style = NexusTheme.monospace.keycapShortcut,
                                 color = MaterialTheme.colorScheme.secondary
                             )

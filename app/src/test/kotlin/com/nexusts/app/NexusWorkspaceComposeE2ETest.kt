@@ -2278,5 +2278,130 @@ class NexusWorkspaceComposeE2ETest {
         composeRule.waitForIdle()
         assertFalse(vm.uiState.value.isFullScreenSessionMode)
     }
+
+    @Test
+    fun v030Beta2UnclippedProtocolSelectorAndFullScreenServerReadability() {
+        val vm = buildRealViewModel()
+        val strings = WorkspaceLocalizedStrings.defaultEnglish()
+
+        composeRule.setContent {
+            NexusTSTheme {
+                NexusWorkspaceScreen(
+                    viewModel = vm,
+                    strings = strings,
+                    connectedDisplays = emptyList(),
+                    flexibleUpdateDownloaded = false,
+                    onCompleteFlexibleUpdate = {},
+                    onRequestImportFilePicker = {},
+                    onRequestGoogleDriveSync = {},
+                    onDetachTabToNativeWindow = { _, _ -> }
+                )
+            }
+        }
+        composeRule.waitForIdle()
+
+        // 1. Open New Connection dialog and open the Protocol modal picker
+        composeRule.runOnIdle {
+            vm.openNewConnectionDialog()
+        }
+        composeRule.waitForIdle()
+        assertTrue(vm.uiState.value.isNewConnectionDialogVisible)
+        assertTextRendered("${strings.dialogFieldProtocol}: ${VaultProtocolType.RDP.displayName}")
+
+        composeRule
+            .onAllNodesWithText("${strings.dialogFieldProtocol}: ${VaultProtocolType.RDP.displayName}", substring = false)
+            .onFirst()
+            .performClick()
+        composeRule.waitForIdle()
+
+        // Every single one of the 23 protocols (including the bottom items previously clipped by AlertDialog Popup bounds)
+        // must be present and reachable via scroll in the top-level modal picker.
+        assertEquals(23, VaultProtocolType.entries.size)
+        VaultProtocolType.entries.forEach { proto ->
+            assertTrue(
+                "Protocol option '${proto.displayName}' (${proto.name}) must be present in modal picker",
+                composeRule.onAllNodesWithText(proto.displayName, substring = false).fetchSemanticsNodes().isNotEmpty()
+            )
+        }
+
+        // Specifically scroll to and select Wake-on-LAN and Docker Container (previously cut off in DropdownMenu)
+        composeRule
+            .onAllNodesWithText(VaultProtocolType.UTILITY_WAKE_ON_LAN.displayName, substring = false)
+            .onFirst()
+            .performScrollTo()
+            .performClick()
+        composeRule.waitForIdle()
+        assertTextRendered("${strings.dialogFieldProtocol}: ${VaultProtocolType.UTILITY_WAKE_ON_LAN.displayName}")
+
+        composeRule
+            .onAllNodesWithText("${strings.dialogFieldProtocol}: ${VaultProtocolType.UTILITY_WAKE_ON_LAN.displayName}", substring = false)
+            .onFirst()
+            .performClick()
+        composeRule.waitForIdle()
+
+        composeRule
+            .onAllNodesWithText(VaultProtocolType.DOCKER_CONTAINER.displayName, substring = false)
+            .onFirst()
+            .performScrollTo()
+            .performClick()
+        composeRule.waitForIdle()
+        assertTextRendered("${strings.dialogFieldProtocol}: ${VaultProtocolType.DOCKER_CONTAINER.displayName}")
+
+        composeRule.runOnIdle {
+            vm.dismissNewConnectionDialog()
+        }
+        composeRule.waitForIdle()
+
+        // 2. Verify Full-Screen server list renders server names cleanly without prominent "RDP • <host>" subtitle
+        val srvFolder = VaultFolder(id = "fld-srv-kb", name = "Servers")
+        val rdpServer = VaultConnection(
+            id = "conn-aadsrv01",
+            parentFolderId = srvFolder.id,
+            name = "AADSRV01.kreis-bergstrasse.net",
+            host = "10.2.200.32",
+            protocol = VaultProtocolType.RDP
+        )
+        val ftpServer = VaultConnection(
+            id = "conn-ftp-archive",
+            parentFolderId = srvFolder.id,
+            name = "hp-msrv01-ftp",
+            host = "10.2.200.41",
+            protocol = VaultProtocolType.FTP
+        )
+        composeRule.runOnIdle {
+            vm.saveFolderAndCredentialToVault(srvFolder)
+            vm.saveConnectionToVault(rdpServer)
+            vm.saveConnectionToVault(ftpServer)
+            vm.openConnectionInWorkspace(rdpServer)
+        }
+        composeRule.waitForIdle()
+
+        val activeTabId = vm.tilingController.focusedOrFirstActiveTab()!!.tabId
+        composeRule.runOnIdle {
+            vm.enterFullScreenForTab(activeTabId)
+        }
+        composeRule.waitForIdle()
+        assertTrue(vm.uiState.value.isFullScreenSessionMode)
+
+        composeRule
+            .onAllNodesWithContentDescription("Browse Folders & Servers")
+            .onFirst()
+            .performClick()
+        composeRule.waitForIdle()
+
+        assertTextRendered("AADSRV01.kreis-bergstrasse.net")
+        assertTextRendered("hp-msrv01-ftp")
+        assertEquals(
+            "Noisy 'RDP • 10.2.200.32' subtitle must not compete with server names in Full-Screen list",
+            0,
+            composeRule.onAllNodesWithText("RDP • 10.2.200.32", substring = true).fetchSemanticsNodes().size
+        )
+        assertEquals(
+            "Noisy 'FTP • 10.2.200.41' subtitle must not compete with server names in Full-Screen list",
+            0,
+            composeRule.onAllNodesWithText("FTP • 10.2.200.41", substring = true).fetchSemanticsNodes().size
+        )
+    }
 }
+
 
