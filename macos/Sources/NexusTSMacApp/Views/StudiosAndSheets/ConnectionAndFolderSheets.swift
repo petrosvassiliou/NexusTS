@@ -1,3 +1,4 @@
+import AppKit
 import NexusTSCore
 import SwiftUI
 
@@ -276,7 +277,8 @@ public struct ConnectionEditorSheet: View {
             }
         } else {
             protocolType = initialProtocol
-            parentFolderId = initialFolderId ?? ""
+            let safeInitialFolder = (initialFolderId == VaultHierarchySanitizer.systemCredentialsFolderId) ? nil : initialFolderId
+            parentFolderId = safeInitialFolder ?? ""
             sshSettings.port = initialProtocol == .TELNET ? 23 : 22
             transferSettings.port = initialProtocol.defaultPort
             if initialProtocol == .APPLE_SCREEN_SHARING {
@@ -323,9 +325,26 @@ public struct ConnectionEditorSheet: View {
         inheritable.explicitCredentialId = credentialMode == .OVERRIDE_EXPLICIT && !explicitCredentialId.isEmpty ? explicitCredentialId : nil
         inheritable.displayColorAccentHex = colorHex.isEmpty ? nil : colorHex
 
+        let resolvedParentId: String? = {
+            if parentFolderId.isEmpty || parentFolderId == VaultHierarchySanitizer.systemCredentialsFolderId {
+                return nil
+            }
+            return parentFolderId
+        }()
+
+        let nextSortOrder: Int = {
+            if let existing, existing.parentFolderId == resolvedParentId {
+                return existing.sortOrder
+            }
+            return (store.activeConnections
+                .filter { $0.parentFolderId == resolvedParentId }
+                .map(\.sortOrder)
+                .max() ?? -1) + 1
+        }()
+
         let built = VaultConnection(
             id: existing?.id ?? UUID().uuidString.lowercased(),
-            parentFolderId: parentFolderId.isEmpty ? nil : parentFolderId,
+            parentFolderId: resolvedParentId,
             name: name.trimmingCharacters(in: .whitespacesAndNewlines),
             host: host.trimmingCharacters(in: .whitespacesAndNewlines),
             protocolType: protocolType,
@@ -333,6 +352,7 @@ public struct ConnectionEditorSheet: View {
             tags: parsedTags,
             notes: notes,
             favorite: favorite,
+            sortOrder: nextSortOrder,
             inheritable: inheritable,
             settings: assembledSettings(),
             updatedAtEpochMs: VaultClock.nowMs()
@@ -367,6 +387,10 @@ public struct FolderInheritanceEditorSheet: View {
         self.existing = existing
     }
 
+    private var isReservedName: Bool {
+        VaultHierarchySanitizer.isReservedCredentialsFolderName(name)
+    }
+
     public var body: some View {
         VStack(spacing: 0) {
             HStack {
@@ -385,6 +409,11 @@ public struct FolderInheritanceEditorSheet: View {
             Form {
                 Section("Folder Hierarchy") {
                     TextField("Folder Name", text: $name)
+                    if isReservedName {
+                        Text("\"Credentials\" is reserved for the bottom-pinned system Credentials folder.")
+                            .font(.caption)
+                            .foregroundStyle(Color(nsColor: .systemRed))
+                    }
                     Picker("Parent Folder", selection: $parentFolderId) {
                         Text("Vault Root").tag("")
                         ForEach(store.activeFolders.filter { candidate in
@@ -411,7 +440,7 @@ public struct FolderInheritanceEditorSheet: View {
                     if credentialMode == .OVERRIDE_EXPLICIT {
                         Picker("Inherited Credential", selection: $explicitCredentialId) {
                             Text("Select Credential…").tag("")
-                            ForEach(store.document.credentials) { cred in
+                            ForEach(store.activeCredentials) { cred in
                                 Text("\(cred.name) (\(cred.username))").tag(cred.id)
                             }
                         }
@@ -429,21 +458,29 @@ public struct FolderInheritanceEditorSheet: View {
                 }
                 Spacer()
                 Button(existing == nil ? "Create Folder" : "Save Folder") {
+                    guard !isReservedName else { return }
                     var inh = existing?.inheritable ?? InheritableProperties()
                     inh.environmentBadge = environmentBadge.trimmingCharacters(in: .whitespaces).isEmpty ? nil : environmentBadge
                     inh.credentialMode = credentialMode
                     inh.explicitCredentialId = credentialMode == .OVERRIDE_EXPLICIT && !explicitCredentialId.isEmpty ? explicitCredentialId : nil
                     inh.displayColorAccentHex = colorHex.isEmpty ? nil : colorHex
 
+                    let resolvedParent: String? = {
+                        if parentFolderId.isEmpty || parentFolderId == VaultHierarchySanitizer.systemCredentialsFolderId {
+                            return nil
+                        }
+                        return parentFolderId
+                    }()
+
                     let folder = VaultFolder(
                         id: existing?.id ?? UUID().uuidString.lowercased(),
-                        parentFolderId: parentFolderId.isEmpty ? nil : parentFolderId,
+                        parentFolderId: resolvedParent,
                         name: name.trimmingCharacters(in: .whitespacesAndNewlines),
                         description: existing?.description ?? "",
                         tags: existing?.tags ?? [],
                         inheritable: inh,
                         sortOrder: existing?.sortOrder ?? ((store.activeFolders.filter {
-                            $0.parentFolderId == (parentFolderId.isEmpty ? nil : parentFolderId)
+                            $0.parentFolderId == resolvedParent
                         }.map(\.sortOrder).max() ?? -1) + 1),
                         updatedAtEpochMs: VaultClock.nowMs()
                     )
@@ -458,12 +495,12 @@ public struct FolderInheritanceEditorSheet: View {
                     dismiss()
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
+                .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty || isReservedName)
             }
             .padding(14)
             .background(.bar)
         }
-        .frame(width: 500, height: 430)
+        .frame(width: 500, height: 450)
         .onAppear {
             if let f = existing {
                 name = f.name
@@ -473,7 +510,8 @@ public struct FolderInheritanceEditorSheet: View {
                 explicitCredentialId = f.inheritable.explicitCredentialId ?? ""
                 colorHex = f.inheritable.displayColorAccentHex ?? ""
             } else {
-                parentFolderId = store.newFolderInitialParentId ?? store.selectedFolderId ?? ""
+                let candidateParent = store.newFolderInitialParentId ?? store.selectedFolderId
+                parentFolderId = (candidateParent == VaultHierarchySanitizer.systemCredentialsFolderId) ? "" : (candidateParent ?? "")
             }
         }
     }
@@ -493,8 +531,12 @@ public struct RenameFolderSheet: View {
         self.folder = folder
     }
 
+    private var isReservedName: Bool {
+        VaultHierarchySanitizer.isReservedCredentialsFolderName(folderName)
+    }
+
     public var body: some View {
-        VStack(spacing: 14) {
+        VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 10) {
                 Image(systemName: "folder.fill")
                     .font(.title3)
@@ -512,11 +554,17 @@ public struct RenameFolderSheet: View {
                 .focused($isFocused)
                 .onSubmit {
                     let trimmed = folderName.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !trimmed.isEmpty {
+                    if !trimmed.isEmpty && !isReservedName {
                         store.renameFolder(folder.id, newName: trimmed)
                         dismiss()
                     }
                 }
+
+            if isReservedName {
+                Text("\"Credentials\" is reserved for the bottom-pinned system Credentials folder.")
+                    .font(.caption)
+                    .foregroundStyle(Color(nsColor: .systemRed))
+            }
 
             HStack {
                 Button("Cancel", role: .cancel) {
@@ -531,11 +579,11 @@ public struct RenameFolderSheet: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
-                .disabled(folderName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(folderName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isReservedName)
             }
         }
         .padding(18)
-        .frame(width: 360)
+        .frame(width: 380)
         .onAppear {
             folderName = folder.name
             isFocused = true
@@ -634,5 +682,827 @@ public struct ConnectWithOptionsSheet: View {
             .background(.bar)
         }
         .frame(width: 460, height: 360)
+    }
+}
+
+// MARK: - 4. Intelligent Folder (SmartFolder) Editor Sheet
+
+public struct SmartFolderEditorSheet: View {
+    @EnvironmentObject private var store: WorkspaceStore
+    @Environment(\.dismiss) private var dismiss
+
+    public let existing: SmartFolder?
+
+    @State private var name: String = ""
+    @State private var scopeFolderId: String = ""
+    @State private var selectedProtocols: Set<VaultProtocolType> = []
+    @State private var includeTagsText: String = ""
+    @State private var excludeTagsText: String = ""
+    @State private var osFamilyFilter: String = ""
+    @State private var environmentFilter: String = ""
+    @State private var hostPatternRegex: String = ""
+
+    public init(existing: SmartFolder?) {
+        self.existing = existing
+    }
+
+    private var regexValidationError: String? {
+        PropertyInheritanceResolver.validateSmartFolderRegex(hostPatternRegex)
+    }
+
+    private func buildCandidateSmartFolder() -> SmartFolder {
+        let includeTags = includeTagsText
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        let excludeTags = excludeTagsText
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        let trimmedOs = osFamilyFilter.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedEnv = environmentFilter.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedRegex = hostPatternRegex.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let filter = SmartFolderFilter(
+            includeTags: includeTags,
+            excludeTags: excludeTags,
+            includeProtocols: VaultProtocolType.allCases.filter { selectedProtocols.contains($0) },
+            osFamilyFilter: trimmedOs.isEmpty ? nil : trimmedOs,
+            hostPatternRegex: trimmedRegex.isEmpty ? nil : trimmedRegex,
+            environmentFilter: trimmedEnv.isEmpty ? nil : trimmedEnv,
+            scopeFolderId: scopeFolderId.isEmpty ? nil : scopeFolderId
+        )
+        return SmartFolder(
+            id: existing?.id ?? "smart-\(UUID().uuidString.lowercased())",
+            name: name.trimmingCharacters(in: .whitespacesAndNewlines),
+            filter: filter,
+            updatedAtEpochMs: VaultClock.nowMs()
+        )
+    }
+
+    public var body: some View {
+        let candidate = buildCandidateSmartFolder()
+        let liveMatches = regexValidationError == nil
+            ? PropertyInheritanceResolver.evaluateSmartFolder(candidate, in: store.document)
+            : []
+
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Image(systemName: "sparkles.rectangle.stack.fill")
+                    .font(.title2)
+                    .foregroundStyle(Color(nsColor: .systemPurple))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(existing == nil ? store.strings.newSmartFolder : store.strings.editSmartFolder)
+                        .font(.headline)
+                    Text("Dynamically evaluates connections across your vault by protocol, folder scope, tags, OS, and regex")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+            .padding(18)
+            .background(.bar)
+
+            Divider()
+
+            Form {
+                Section("General & Scope") {
+                    TextField("Intelligent Folder Name", text: $name)
+                    Picker("Folder Scope", selection: $scopeFolderId) {
+                        Text("Entire Vault (All Folders)").tag("")
+                        ForEach(store.activeFolders) { folder in
+                            Text(folder.name).tag(folder.id)
+                        }
+                    }
+                }
+
+                Section("Protocol Filter (Select zero or more; empty matches any protocol)") {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 120), spacing: 8)], spacing: 6) {
+                        ForEach(VaultProtocolType.allCases) { proto in
+                            let isChosen = selectedProtocols.contains(proto)
+                            Button {
+                                if isChosen {
+                                    selectedProtocols.remove(proto)
+                                } else {
+                                    selectedProtocols.insert(proto)
+                                }
+                            } label: {
+                                HStack(spacing: 5) {
+                                    Image(systemName: isChosen ? "checkmark.circle.fill" : "circle")
+                                        .foregroundStyle(isChosen ? Color.accentColor : .secondary)
+                                    Text(proto.shortBadge)
+                                        .font(.caption.weight(isChosen ? .semibold : .regular))
+                                    Spacer(minLength: 0)
+                                }
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                        .fill(isChosen ? Color.accentColor.opacity(0.14) : Color.primary.opacity(0.04))
+                                )
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    if !selectedProtocols.isEmpty {
+                        Button("Clear Protocol Filter (Match All)") {
+                            selectedProtocols.removeAll()
+                        }
+                        .controlSize(.small)
+                    }
+                }
+
+                Section("Tag, OS, Environment & Regex Rules") {
+                    TextField("Require Tags (comma-separated, all must match)", text: $includeTagsText)
+                    TextField("Exclude Tags (comma-separated, none may match)", text: $excludeTagsText)
+                    TextField("OS Family Contains (e.g. Windows, Linux, macOS)", text: $osFamilyFilter)
+                    TextField("Environment Badge (e.g. PROD, STAGING, LAB)", text: $environmentFilter)
+                    TextField("Host or Connection Name Regex (e.g. ^dc-\\d+)", text: $hostPatternRegex)
+                        .font(.system(.body, design: .monospaced))
+                    if let err = regexValidationError {
+                        Text(err)
+                            .font(.caption)
+                            .foregroundStyle(Color(nsColor: .systemRed))
+                    }
+                }
+
+                Section("Live Match Preview (\(liveMatches.count) connection\(liveMatches.count == 1 ? "" : "s"))") {
+                    if liveMatches.isEmpty {
+                        Text("No existing connections currently match these filter criteria.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(liveMatches.prefix(10)) { conn in
+                            HStack(spacing: 8) {
+                                ProtocolSquircleIcon(protocolType: conn.protocolType, size: 18)
+                                Text(conn.name)
+                                    .font(.caption.weight(.medium))
+                                Spacer()
+                                Text(conn.protocolType.shortBadge)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        if liveMatches.count > 10 {
+                            Text("+ \(liveMatches.count - 10) more matching connections")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+            .formStyle(.grouped)
+
+            Divider()
+
+            HStack {
+                if let existing {
+                    Button(role: .destructive) {
+                        store.deleteSmartFolder(existing.id)
+                        dismiss()
+                    } label: {
+                        Label("Delete", systemImage: "trash")
+                    }
+                }
+                Button("Cancel", role: .cancel) {
+                    dismiss()
+                }
+                .keyboardShortcut(.cancelAction)
+
+                Spacer()
+
+                Button(existing == nil ? "Create Intelligent Folder" : "Save Changes") {
+                    store.saveSmartFolder(buildCandidateSmartFolder())
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+                .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || regexValidationError != nil)
+            }
+            .padding(14)
+            .background(.bar)
+        }
+        .frame(width: 600, height: 640)
+        .onAppear {
+            if let sf = existing {
+                name = sf.name
+                scopeFolderId = sf.filter.scopeFolderId ?? ""
+                selectedProtocols = Set(sf.filter.includeProtocols)
+                includeTagsText = sf.filter.includeTags.joined(separator: ", ")
+                excludeTagsText = sf.filter.excludeTags.joined(separator: ", ")
+                osFamilyFilter = sf.filter.osFamilyFilter ?? ""
+                environmentFilter = sf.filter.environmentFilter ?? ""
+                hostPatternRegex = sf.filter.hostPatternRegex ?? ""
+            }
+        }
+    }
+}
+
+// MARK: - 5. Dynamic Folder Editor Sheet (RoyalJSON / HTTPS Endpoint Inventory)
+
+public struct DynamicFolderEditorSheet: View {
+    @EnvironmentObject private var store: WorkspaceStore
+    @Environment(\.dismiss) private var dismiss
+
+    public let existing: DynamicFolder?
+
+    @State private var name: String = ""
+    @State private var parentFolderId: String = ""
+    @State private var interpreter: DynamicScriptInterpreter = .JSON_HTTP_API
+    @State private var refreshIntervalMinutes: Int = 30
+    @State private var payload: String = "{\"Objects\":[]}"
+
+    public init(existing: DynamicFolder?) {
+        self.existing = existing
+    }
+
+    private var payloadValidationError: String? {
+        guard interpreter == .JSON_HTTP_API else { return nil }
+        let trimmed = payload.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.lowercased().hasPrefix("http://") || trimmed.lowercased().hasPrefix("https://") {
+            return nil
+        }
+        return PropertyInheritanceResolver.validateDynamicFolderJsonPayload(trimmed)
+    }
+
+    public var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Image(systemName: "bolt.badge.clock")
+                    .font(.title2)
+                    .foregroundStyle(Color(nsColor: .systemTeal))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(existing == nil ? store.strings.newDynamicFolder : store.strings.editDynamicFolder)
+                        .font(.headline)
+                    Text("Populates ephemeral connections from a RoyalJSON payload or HTTPS inventory endpoint")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+            .padding(18)
+            .background(.bar)
+
+            Divider()
+
+            Form {
+                Section("Dynamic Folder Configuration") {
+                    TextField("Dynamic Folder Name", text: $name)
+                    Picker("Parent Folder", selection: $parentFolderId) {
+                        Text("Vault Root").tag("")
+                        ForEach(store.activeFolders) { folder in
+                            Text(folder.name).tag(folder.id)
+                        }
+                    }
+                    Picker("Source Mode", selection: $interpreter) {
+                        Text("HTTPS URL or RoyalJSON").tag(DynamicScriptInterpreter.JSON_HTTP_API)
+                        Text("Shell Script (/bin/sh)").tag(DynamicScriptInterpreter.SHELL_SH)
+                        Text("Python 3 Script").tag(DynamicScriptInterpreter.PYTHON3)
+                    }
+                    TextField("Refresh Interval (minutes)", value: $refreshIntervalMinutes, format: .number)
+                }
+
+                Section("HTTPS Inventory URL or RoyalJSON {\"Objects\": [...]} Payload") {
+                    TextEditor(text: $payload)
+                        .font(.system(size: 12, design: .monospaced))
+                        .frame(minHeight: 150)
+                    if let err = payloadValidationError {
+                        Text(err)
+                            .font(.caption)
+                            .foregroundStyle(Color(nsColor: .systemRed))
+                    }
+                }
+            }
+            .formStyle(.grouped)
+
+            Divider()
+
+            HStack {
+                if let existing {
+                    Button(role: .destructive) {
+                        store.deleteDynamicFolder(existing.id)
+                        dismiss()
+                    } label: {
+                        Label("Delete", systemImage: "trash")
+                    }
+                }
+                Button("Cancel", role: .cancel) { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Spacer()
+                Button(existing == nil ? "Create Dynamic Folder" : "Save Changes") {
+                    let built = DynamicFolder(
+                        id: existing?.id ?? "dyn-\(UUID().uuidString.lowercased())",
+                        parentFolderId: parentFolderId.isEmpty ? nil : parentFolderId,
+                        name: name.trimmingCharacters(in: .whitespacesAndNewlines),
+                        interpreter: interpreter,
+                        scriptOrEndpointPayload: payload,
+                        refreshIntervalMinutes: max(1, refreshIntervalMinutes),
+                        inheritable: existing?.inheritable ?? InheritableProperties(),
+                        updatedAtEpochMs: VaultClock.nowMs()
+                    )
+                    store.saveDynamicFolder(built)
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+                .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || payloadValidationError != nil)
+            }
+            .padding(14)
+            .background(.bar)
+        }
+        .frame(width: 560, height: 500)
+        .onAppear {
+            if let df = existing {
+                name = df.name
+                parentFolderId = df.parentFolderId ?? ""
+                interpreter = df.interpreter
+                refreshIntervalMinutes = df.refreshIntervalMinutes
+                payload = df.scriptOrEndpointPayload
+            }
+        }
+    }
+}
+
+// MARK: - 6. Credential Editor Sheet (Pinned System "Credentials" Folder)
+
+public struct CredentialEditorSheet: View {
+    @EnvironmentObject private var store: WorkspaceStore
+    @Environment(\.dismiss) private var dismiss
+
+    public let existing: VaultCredential?
+
+    @State private var name: String = ""
+    @State private var username: String = ""
+    @State private var domain: String = ""
+    @State private var secretPassword: String = ""
+    @State private var revealPassword: Bool = false
+    @State private var totpSecretBase32: String = ""
+    @State private var privateKeyPem: String = ""
+    @State private var publicKeyOpenSsh: String = ""
+    @State private var keyFingerprintSha256: String = ""
+    @State private var keyPassphrase: String = ""
+
+    public init(existing: VaultCredential?) {
+        self.existing = existing
+    }
+
+    public var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Image(systemName: "key.fill")
+                    .font(.title2)
+                    .foregroundStyle(Color(nsColor: .systemOrange))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(existing == nil ? store.strings.newCredential : store.strings.editCredential)
+                        .font(.headline)
+                    Text("Stored inside the bottom-pinned Credentials system folder (.nxts AES-256-GCM)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+            .padding(18)
+            .background(.bar)
+
+            Divider()
+
+            Form {
+                Section("Identity & Password") {
+                    TextField("Credential Name", text: $name)
+                    TextField("Username", text: $username)
+                    TextField("Domain (AD / NetBIOS, Optional)", text: $domain)
+                    HStack {
+                        if revealPassword {
+                            TextField("Password / API Secret", text: $secretPassword)
+                        } else {
+                            SecureField("Password / API Secret", text: $secretPassword)
+                        }
+                        Button {
+                            revealPassword.toggle()
+                        } label: {
+                            Image(systemName: revealPassword ? "eye.slash" : "eye")
+                        }
+                        .buttonStyle(.borderless)
+                    }
+                    TextField("TOTP 2FA Secret (Base32 RFC 6238, Optional)", text: $totpSecretBase32)
+                }
+
+                Section("SSH Private Key (Optional)") {
+                    HStack {
+                        Button {
+                            do {
+                                let pair = try NativeSshCryptoBridge.generateEd25519Keypair(
+                                    comment: "\(username.isEmpty ? NSUserName() : username)@NexusTS"
+                                )
+                                privateKeyPem = pair.privateKeyOpenSshPem
+                                publicKeyOpenSsh = pair.publicKeyOpenSsh
+                                keyFingerprintSha256 = pair.sha256Fingerprint
+                                if name.trimmingCharacters(in: .whitespaces).isEmpty {
+                                    name = "Ed25519 SSH Key (\(pair.keyId.prefix(6)))"
+                                }
+                            } catch {
+                                store.reportError(error, operationTitle: "SSH Key Generation Failed")
+                            }
+                        } label: {
+                            Label("Generate Ed25519 Keypair", systemImage: "wand.and.stars")
+                        }
+                        .controlSize(.small)
+
+                        if !publicKeyOpenSsh.isEmpty {
+                            Button("Copy Public Key") {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(publicKeyOpenSsh, forType: .string)
+                            }
+                            .controlSize(.small)
+                        }
+                    }
+
+                    if !keyFingerprintSha256.isEmpty {
+                        LabeledContent("Fingerprint", value: keyFingerprintSha256)
+                            .font(.caption.monospaced())
+                    }
+
+                    TextEditor(text: $privateKeyPem)
+                        .font(.system(size: 11, design: .monospaced))
+                        .frame(minHeight: 90)
+                    SecureField("Private Key Passphrase (Optional)", text: $keyPassphrase)
+                }
+            }
+            .formStyle(.grouped)
+
+            Divider()
+
+            HStack {
+                if let existing {
+                    Button(role: .destructive) {
+                        store.deleteCredential(existing.id)
+                        dismiss()
+                    } label: {
+                        Label("Delete", systemImage: "trash")
+                    }
+                }
+                Button("Cancel", role: .cancel) { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Spacer()
+                Button(existing == nil ? "Create Credential" : "Save Credential") {
+                    let sourceKind: CredentialSourceKind = !privateKeyPem.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        ? .SSH_KEY_PAIR
+                        : (existing?.sourceKind ?? .VAULT_INTERNAL)
+                    let built = VaultCredential(
+                        id: existing?.id ?? "cred-\(UUID().uuidString.lowercased())",
+                        parentFolderId: nil,
+                        name: name.trimmingCharacters(in: .whitespacesAndNewlines),
+                        sourceKind: sourceKind,
+                        username: username.trimmingCharacters(in: .whitespacesAndNewlines),
+                        domain: domain.trimmingCharacters(in: .whitespacesAndNewlines),
+                        secretPassword: secretPassword,
+                        privateKeyPem: privateKeyPem,
+                        publicKeyOpenSsh: publicKeyOpenSsh,
+                        keyFingerprintSha256: keyFingerprintSha256,
+                        keyPassphrase: keyPassphrase,
+                        externalReferenceUri: existing?.externalReferenceUri ?? "",
+                        fido2CredentialIdBase64: existing?.fido2CredentialIdBase64 ?? "",
+                        totpSecretBase32: totpSecretBase32.trimmingCharacters(in: .whitespacesAndNewlines),
+                        updatedAtEpochMs: VaultClock.nowMs()
+                    )
+                    store.saveCredential(built)
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+                .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            .padding(14)
+            .background(.bar)
+        }
+        .frame(width: 540, height: 540)
+        .onAppear {
+            if let cred = existing {
+                name = cred.name
+                username = cred.username
+                domain = cred.domain
+                secretPassword = cred.secretPassword
+                totpSecretBase32 = cred.totpSecretBase32
+                privateKeyPem = cred.privateKeyPem
+                publicKeyOpenSsh = cred.publicKeyOpenSsh
+                keyFingerprintSha256 = cred.keyFingerprintSha256
+                keyPassphrase = cred.keyPassphrase
+            }
+        }
+    }
+}
+
+// MARK: - 7. Royal TS Import Placement Picker Sheet (.rtsz / .rtsx / .rjson)
+
+public struct RoyalTsImportPlacementSheet: View {
+    @EnvironmentObject private var store: WorkspaceStore
+    @Environment(\.dismiss) private var dismiss
+
+    public let pending: PendingRoyalTsImport
+
+    @State private var selectedMode: RoyalTsImportPlacementMode = .createNewFolder
+    @State private var newFolderName: String = ""
+
+    public init(pending: PendingRoyalTsImport) {
+        self.pending = pending
+    }
+
+    public var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                Image(systemName: "square.and.arrow.down.on.square.fill")
+                    .font(.title2)
+                    .foregroundStyle(Color.accentColor)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(store.strings.royalImportTitle)
+                        .font(.headline)
+                    Text(
+                        "\(pending.summary.detectedFormat) • \(pending.summary.importedConnections) connections, \(pending.summary.importedFolders) folders, \(pending.summary.importedCredentials) credentials"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+            .padding(18)
+            .background(.bar)
+
+            Divider()
+
+            Form {
+                Section("Choose How to Place the Imported Royal TS Hierarchy") {
+                    Picker("Import Placement", selection: $selectedMode) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(store.strings.royalImportNewFolder)
+                                .font(.body.weight(.medium))
+                            Text("Places the imported folder and connection structure inside a dedicated new folder.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .tag(RoyalTsImportPlacementMode.createNewFolder)
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(store.strings.royalImportRoot)
+                                .font(.body.weight(.medium))
+                            Text("Places the imported folders and connections directly at the top level alongside your existing items.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .tag(RoyalTsImportPlacementMode.placeAtRoot)
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(store.strings.royalImportReplaceAll)
+                                .font(.body.weight(.medium))
+                                .foregroundStyle(Color(nsColor: .systemRed))
+                            Text("Deletes all existing connections, folders, and credentials before importing this Royal TS file.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .tag(RoyalTsImportPlacementMode.replaceExisting)
+                    }
+                    .pickerStyle(.radioGroup)
+
+                    if selectedMode == .createNewFolder {
+                        TextField("New Folder Name", text: $newFolderName)
+                    }
+                }
+
+                Section {
+                    Label(
+                        "Imported credentials are automatically placed into the bottom-pinned \"Credentials\" system folder.",
+                        systemImage: "key.fill"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+            }
+            .formStyle(.grouped)
+
+            Divider()
+
+            HStack {
+                Button("Cancel", role: .cancel) {
+                    store.pendingRoyalImport = nil
+                    dismiss()
+                }
+                .keyboardShortcut(.cancelAction)
+
+                Spacer()
+
+                Button(selectedMode == .replaceExisting ? "Delete Existing & Import" : "Import Royal TS") {
+                    store.confirmRoyalTsImport(mode: selectedMode, folderName: newFolderName)
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(selectedMode == .replaceExisting ? Color(nsColor: .systemRed) : Color.accentColor)
+                .keyboardShortcut(.defaultAction)
+                .disabled(selectedMode == .createNewFolder && newFolderName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            .padding(14)
+            .background(.bar)
+        }
+        .frame(width: 560, height: 420)
+        .onAppear {
+            newFolderName = pending.suggestedFolderName
+        }
+    }
+}
+
+// MARK: - 8. Reset NexusTS Database Confirmation Sheet
+
+public struct ResetDatabaseConfirmationSheet: View {
+    @EnvironmentObject private var store: WorkspaceStore
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var confirmedUnderstanding: Bool = false
+    @State private var backupStatusText: String? = nil
+
+    public init() {}
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 12) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 28))
+                    .foregroundStyle(Color(nsColor: .systemRed))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(store.strings.resetDatabase)
+                        .font(.headline)
+                    Text("Permanently erases all local connections, folders, credentials, tasks, and saved vault passphrases.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            if !store.isVaultLocked {
+                HStack(spacing: 10) {
+                    Button {
+                        exportBackupBeforeReset()
+                    } label: {
+                        Label("Export Encrypted .nxts Backup First…", systemImage: "square.and.arrow.up")
+                    }
+                    if let backupStatusText {
+                        Text(backupStatusText)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
+            Toggle(
+                "I understand that resetting the NexusTS database permanently deletes all local vault items and cannot be undone.",
+                isOn: $confirmedUnderstanding
+            )
+            .toggleStyle(.checkbox)
+            .font(.callout)
+
+            Divider()
+
+            HStack {
+                Button("Cancel", role: .cancel) {
+                    store.isPresentingResetDatabaseSheet = false
+                    dismiss()
+                }
+                .keyboardShortcut(.cancelAction)
+
+                Spacer()
+
+                Button(role: .destructive) {
+                    store.resetVaultDatabase()
+                    dismiss()
+                } label: {
+                    Text(store.strings.resetDatabase)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Color(nsColor: .systemRed))
+                .disabled(!confirmedUnderstanding)
+            }
+        }
+        .padding(22)
+        .frame(width: 500)
+    }
+
+    private func exportBackupBeforeReset() {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "NexusTS-Backup-\(VaultClock.nowMs()).nxts"
+        panel.canCreateDirectories = true
+        if panel.runModal() == .OK, let destURL = panel.url {
+            do {
+                let data = try VaultDocumentExporter.export(document: store.document, format: .nxts)
+                try data.write(to: destURL, options: .atomic)
+                backupStatusText = "Saved backup to \(destURL.lastPathComponent)"
+            } catch {
+                backupStatusText = "Backup failed: \(error.localizedDescription)"
+            }
+        }
+    }
+}
+
+// MARK: - 9. Structured Application Error Diagnostic Sheet
+
+public struct NexusAppErrorSheet: View {
+    @EnvironmentObject private var store: WorkspaceStore
+    @Environment(\.dismiss) private var dismiss
+
+    public let error: NexusAppError
+
+    public init(error: NexusAppError) {
+        self.error = error
+    }
+
+    private var categorySymbol: String {
+        switch error.category {
+        case .networkUnreachable: return "wifi.exclamationmark"
+        case .authenticationFailed: return "key.slash.fill"
+        case .tlsCertificate: return "lock.trianglebadge.exclamationmark.fill"
+        case .portConflict: return "arrow.left.arrow.right.circle.fill"
+        case .vaultCryptoOrCorruption: return "externaldrive.badge.exclamationmark"
+        case .importExportFormat: return "doc.badge.gearshape.fill"
+        case .cloudSync: return "icloud.slash.fill"
+        case .validation: return "exclamationmark.circle.fill"
+        case .internal: return "ladybug.fill"
+        }
+    }
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 12) {
+                Image(systemName: categorySymbol)
+                    .font(.system(size: 26))
+                    .foregroundStyle(Color(nsColor: .systemOrange))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(error.title)
+                        .font(.headline)
+                    Text(error.userMessage)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+
+            if !error.remediationHint.isEmpty {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "lightbulb.fill")
+                        .foregroundStyle(Color(nsColor: .systemYellow))
+                    Text(error.remediationHint)
+                        .font(.callout)
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Color.primary.opacity(0.05))
+                )
+            }
+
+            if !error.technicalDetails.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Technical Diagnostics")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    ScrollView {
+                        Text(error.technicalDetails)
+                            .font(.system(size: 11, design: .monospaced))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxHeight: 110)
+                    .padding(8)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(Color.black.opacity(0.06))
+                    )
+                }
+            }
+
+            Divider()
+
+            HStack(spacing: 10) {
+                Button(store.strings.copyDiagnostics) {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(error.formatDiagnosticReport(), forType: .string)
+                }
+
+                if let connId = error.recoveryConnectionId,
+                   let conn = store.activeConnections.first(where: { $0.id == connId }) {
+                    Button(store.strings.editConnection) {
+                        store.activeAppError = nil
+                        store.editingConnection = conn
+                        dismiss()
+                    }
+                }
+
+                Spacer()
+
+                Button("OK") {
+                    store.activeAppError = nil
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 520)
     }
 }

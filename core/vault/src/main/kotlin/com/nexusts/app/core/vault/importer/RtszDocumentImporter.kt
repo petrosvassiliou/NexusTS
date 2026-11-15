@@ -301,6 +301,7 @@ class RtszDocumentImporter {
                 tag.equals("NexusSmartFolder", ignoreCase = true) ||
                     tag.equals("RoyalSmartFolder", ignoreCase = true) -> {
                     val includeTags = parseTagsList(elem.childText("IncludeTags").ifBlank { elem.childText("Tags") })
+                    val excludeTags = parseTagsList(elem.childText("ExcludeTags"))
                     val includeProtocols = elem.childText("IncludeProtocols")
                         .split(';', ',')
                         .mapNotNull { raw ->
@@ -312,7 +313,9 @@ class RtszDocumentImporter {
                         name = name,
                         filter = SmartFolderFilter(
                             includeTags = includeTags,
+                            excludeTags = excludeTags,
                             includeProtocols = includeProtocols,
+                            scopeFolderId = elem.childText("ScopeFolderId").nonEmptyRoyalIdOrNull(),
                             osFamilyFilter = elem.childText("OSFamilyFilter").takeIf { it.isNotBlank() },
                             hostPatternRegex = elem.childText("HostPatternRegex")
                                 .ifBlank { elem.childText("SearchPattern") }
@@ -474,6 +477,7 @@ class RtszDocumentImporter {
                             tags = connTags,
                             notes = elem.childText("Notes").ifBlank { elem.childText("Description") },
                             favorite = isFavorite,
+                            sortOrder = elem.childText("SortOrder").ifBlank { elem.childText("PositionNr") }.toIntOrNull() ?: 0,
                             inheritable = inheritable,
                             settings = settings
                         )
@@ -482,22 +486,24 @@ class RtszDocumentImporter {
             }
         }
 
-        return NxtsVaultDocument(
-            documentId = documentId,
-            name = docName,
-            description = docDescription,
-            revision = docRevision,
-            rootInheritable = rootInheritable,
-            folders = folders,
-            smartFolders = smartFolders,
-            dynamicFolders = dynamicFolders,
-            connections = connections,
-            credentials = credentials,
-            gateways = gateways,
-            commandTasks = commandTasks,
-            keySequenceTasks = keyTasks,
-            templates = templates,
-            todoItems = todoItems
+        return com.nexusts.app.core.vault.error.VaultHierarchySanitizer.sanitizeVaultDocument(
+            NxtsVaultDocument(
+                documentId = documentId,
+                name = docName,
+                description = docDescription,
+                revision = docRevision,
+                rootInheritable = rootInheritable,
+                folders = folders,
+                smartFolders = smartFolders,
+                dynamicFolders = dynamicFolders,
+                connections = connections,
+                credentials = credentials,
+                gateways = gateways,
+                commandTasks = commandTasks,
+                keySequenceTasks = keyTasks,
+                templates = templates,
+                todoItems = todoItems
+            )
         )
     }
 

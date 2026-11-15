@@ -9,6 +9,11 @@ public struct ImportedVaultSummary: Equatable, Sendable {
     public let importedConnections: Int
     public let importedFolders: Int
     public let importedCredentials: Int
+
+    public var isRoyalTsFormat: Bool {
+        let lower = detectedFormat.lowercased()
+        return lower.contains("royal ts") || lower.contains("royal json") || lower.contains(".rtsz") || lower.contains(".rtsx") || lower.contains(".rjson")
+    }
 }
 
 public enum EnterpriseVaultFormatImporter {
@@ -21,7 +26,9 @@ public enum EnterpriseVaultFormatImporter {
 
         // 1. Native .nxts v2 binary envelope
         if NxtsVaultSerializer.hasNxtsMagic(data) || lowerExt == "nxts" {
-            let doc = try NxtsVaultSerializer.open(sealedData: data, passphrase: passphrase)
+            let doc = VaultHierarchySanitizer.sanitizeVaultDocument(
+                try NxtsVaultSerializer.open(sealedData: data, passphrase: passphrase)
+            )
             return ImportedVaultSummary(
                 document: doc,
                 detectedFormat: "NexusTS v2 (.nxts)",
@@ -39,6 +46,9 @@ public enum EnterpriseVaultFormatImporter {
             if let extractedRtsx = extractZipEntry(data: data, matchingSuffix: ".rtsx")
                 ?? extractZipEntry(data: data, matchingSuffix: ".xml") {
                 return try importRoyalTsXml(extractedRtsx, vaultName: (fileName as NSString).deletingPathExtension)
+            }
+            if lowerExt == "rtsz" {
+                throw NativeBridgeError.serializationFailed("Royal TS .rtsz archive could not be extracted or is encrypted with an unsupported legacy cipher.")
             }
         }
 
@@ -62,7 +72,9 @@ public enum EnterpriseVaultFormatImporter {
         if text.hasPrefix("{") {
             let utf8 = Data(text.utf8)
             if text.contains("\"documentId\"") && text.contains("\"schemaVersion\"") {
-                let doc = try JSONDecoder().decode(NxtsVaultDocument.self, from: utf8)
+                let doc = VaultHierarchySanitizer.sanitizeVaultDocument(
+                    try JSONDecoder().decode(NxtsVaultDocument.self, from: utf8)
+                )
                 return ImportedVaultSummary(
                     document: doc,
                     detectedFormat: "NexusTS JSON",
@@ -77,7 +89,7 @@ public enum EnterpriseVaultFormatImporter {
             if text.contains("\"accounts\"") && text.contains("\"vaults\"") {
                 return try importOnePasswordJson(utf8, label: "1Password JSON")
             }
-            if text.contains("\"Objects\"") {
+            if text.contains("\"Objects\"") || lowerExt == "rjson" {
                 let dyn = DynamicFolder(name: "Royal JSON", scriptOrEndpointPayload: text)
                 let conns = PropertyInheritanceResolver.parseRoyalDynamicObjectsJson(data: utf8, dynamicFolder: dyn)
                 let doc = NxtsVaultDocument(name: (fileName as NSString).deletingPathExtension, connections: conns)
@@ -98,13 +110,22 @@ public enum EnterpriseVaultFormatImporter {
     // MARK: Royal TS .rtsx XML Parser
 
     public static func importRoyalTsXml(_ xmlData: Data, vaultName: String) throws -> ImportedVaultSummary {
+        let text = String(data: xmlData, encoding: .utf8) ?? ""
+        if !text.contains("<RoyalDocument") && !text.contains("<RTSZDocument") && !text.contains("<RoyalFolder") {
+            throw NativeBridgeError.serializationFailed("Selected XML file is not a valid Royal TS (.rtsx / .rtsz) document.")
+        }
         let delegate = RoyalTsXmlSAXParser()
         let parser = XMLParser(data: xmlData)
         parser.shouldResolveExternalEntities = false
         parser.delegate = delegate
-        _ = parser.parse()
+        guard parser.parse() || !delegate.hasNoCompletedNodes else {
+            throw NativeBridgeError.serializationFailed(
+                parser.parserError?.localizedDescription ?? "Malformed XML in Royal TS document."
+            )
+        }
 
-        let doc = delegate.buildVaultDocument(fallbackName: vaultName.isEmpty ? "Imported Royal TS Vault" : vaultName)
+        let rawDoc = delegate.buildVaultDocument(fallbackName: vaultName.isEmpty ? "Imported Royal TS Vault" : vaultName)
+        let doc = RoyalTsImportMerger.normalizeImportedRoyalDocument(rawDoc, unwrapBuiltInConnectionsRoot: true)
         return ImportedVaultSummary(
             document: doc,
             detectedFormat: "Royal TS (.rtsx/.rtsz)",
@@ -579,7 +600,7 @@ private final class RoyalTsXmlSAXParser: NSObject, XMLParserDelegate {
     }
 
     private static let objectTags: Set<String> = [
-        "RoyalDocument", "RoyalFolder", "RoyalTrash",
+        "RoyalDocument", "RoyalFolder", "RoyalSmartFolder", "RoyalDynamicFolder", "RoyalTrash",
         "RoyalRDSConnection", "RoyalSSHConnection", "RoyalVNCConnection",
         "RoyalFileTransferConnection", "RoyalWebPageConnection", "RoyalCredential"
     ]
@@ -587,6 +608,8 @@ private final class RoyalTsXmlSAXParser: NSObject, XMLParserDelegate {
     private var stack: [RawNode] = []
     private var completedNodes: [RawNode] = []
     private var currentText = ""
+
+    var hasNoCompletedNodes: Bool { completedNodes.isEmpty }
 
     func parser(
         _ parser: XMLParser,
@@ -632,6 +655,8 @@ private final class RoyalTsXmlSAXParser: NSObject, XMLParserDelegate {
         var docName = fallbackName
         var docId = UUID().uuidString.lowercased()
         var folders: [VaultFolder] = []
+        var smartFolders: [SmartFolder] = []
+        var dynamicFolders: [DynamicFolder] = []
         var creds: [VaultCredential] = []
         var conns: [VaultConnection] = []
 
@@ -642,11 +667,16 @@ private final class RoyalTsXmlSAXParser: NSObject, XMLParserDelegate {
 
         let rootIds = Set(completedNodes.filter { $0.elementType == "RoyalDocument" }.compactMap { $0.fields["ID"] })
 
-        for node in completedNodes {
+        for (seqIndex, node) in completedNodes.enumerated() {
             let id = node.fields["ID"] ?? UUID().uuidString.lowercased()
             let rawParent = node.fields["ParentID"]
             let parentFolderId = (rawParent == nil || rootIds.contains(rawParent!)) ? nil : rawParent
             let name = node.fields["Name"] ?? "Unnamed"
+            let sortOrder = Int(node.fields["SortOrder"] ?? node.fields["PositionNr"] ?? "") ?? seqIndex
+            let parsedTags = (node.fields["Tags"] ?? "")
+                .split(whereSeparator: { $0 == ";" || $0 == "," })
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
 
             func parseInheritable() -> InheritableProperties {
                 let modeInt = Int(node.fields["CredentialMode"] ?? "1") ?? 1
@@ -672,6 +702,7 @@ private final class RoyalTsXmlSAXParser: NSObject, XMLParserDelegate {
                 return InheritableProperties(
                     credentialMode: mode,
                     explicitCredentialId: node.fields["CredentialId"],
+                    environmentBadge: node.fields["Environment"],
                     displayColorAccentHex: node.fields["Color"],
                     customProperties: custom
                 )
@@ -684,14 +715,57 @@ private final class RoyalTsXmlSAXParser: NSObject, XMLParserDelegate {
                     parentFolderId: parentFolderId,
                     name: name,
                     description: node.fields["Description"] ?? "",
+                    tags: parsedTags,
+                    inheritable: parseInheritable(),
+                    sortOrder: sortOrder
+                ))
+            case "RoyalSmartFolder":
+                let includeTags = (node.fields["IncludeTags"] ?? node.fields["Tags"] ?? "")
+                    .split(whereSeparator: { $0 == ";" || $0 == "," })
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+                let excludeTags = (node.fields["ExcludeTags"] ?? "")
+                    .split(whereSeparator: { $0 == ";" || $0 == "," })
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+                let protoList = (node.fields["Protocols"] ?? "")
+                    .split(whereSeparator: { $0 == ";" || $0 == "," })
+                    .compactMap { VaultProtocolType(rawValue: $0.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()) }
+                smartFolders.append(SmartFolder(
+                    id: id,
+                    name: name,
+                    filter: SmartFolderFilter(
+                        includeTags: includeTags,
+                        excludeTags: excludeTags,
+                        includeProtocols: protoList,
+                        osFamilyFilter: node.fields["OSFamily"],
+                        hostPatternRegex: node.fields["HostPattern"] ?? node.fields["FilterPattern"],
+                        environmentFilter: node.fields["Environment"],
+                        scopeFolderId: node.fields["ScopeFolderId"]
+                    )
+                ))
+            case "RoyalDynamicFolder":
+                let interpRaw = (node.fields["ScriptInterpreter"] ?? "JSON_HTTP_API").uppercased()
+                let interp: DynamicScriptInterpreter = {
+                    if interpRaw.contains("PYTHON") { return .PYTHON3 }
+                    if interpRaw.contains("SH") || interpRaw.contains("BASH") { return .SHELL_SH }
+                    return .JSON_HTTP_API
+                }()
+                dynamicFolders.append(DynamicFolder(
+                    id: id,
+                    parentFolderId: parentFolderId,
+                    name: name,
+                    interpreter: interp,
+                    scriptOrEndpointPayload: node.fields["Script"] ?? "{\"Objects\":[]}",
                     inheritable: parseInheritable()
                 ))
             case "RoyalCredential":
                 creds.append(VaultCredential(
                     id: id,
-                    parentFolderId: parentFolderId,
+                    parentFolderId: nil,
                     name: name,
                     username: node.fields["UserName"] ?? "",
+                    domain: node.fields["Domain"] ?? "",
                     secretPassword: node.fields["Password"] ?? "",
                     privateKeyPem: node.fields["KeyFileContent"] ?? ""
                 ))
@@ -706,8 +780,10 @@ private final class RoyalTsXmlSAXParser: NSObject, XMLParserDelegate {
                     host: node.fields["URI"] ?? "",
                     protocolType: .RDP,
                     osFamily: "Windows",
+                    tags: parsedTags,
                     notes: node.fields["Description"] ?? "",
                     favorite: (node.fields["Favorite"] ?? "").lowercased() == "true",
+                    sortOrder: sortOrder,
                     inheritable: parseInheritable(),
                     settings: .rdp(rdp)
                 ))
@@ -722,8 +798,10 @@ private final class RoyalTsXmlSAXParser: NSObject, XMLParserDelegate {
                     host: node.fields["URI"] ?? "",
                     protocolType: isTelnet ? .TELNET : .SSH,
                     osFamily: "Linux",
+                    tags: parsedTags,
                     notes: node.fields["Description"] ?? "",
                     favorite: (node.fields["Favorite"] ?? "").lowercased() == "true",
+                    sortOrder: sortOrder,
                     inheritable: parseInheritable(),
                     settings: .ssh(ssh)
                 ))
@@ -737,7 +815,9 @@ private final class RoyalTsXmlSAXParser: NSObject, XMLParserDelegate {
                     host: node.fields["URI"] ?? "",
                     protocolType: vnc.appleArdDiffieHellmanAuth ? .APPLE_SCREEN_SHARING : .VNC,
                     osFamily: vnc.appleArdDiffieHellmanAuth ? "macOS" : "Linux",
+                    tags: parsedTags,
                     notes: node.fields["Description"] ?? "",
+                    sortOrder: sortOrder,
                     inheritable: parseInheritable(),
                     settings: .vnc(vnc)
                 ))
@@ -754,7 +834,9 @@ private final class RoyalTsXmlSAXParser: NSObject, XMLParserDelegate {
                     name: name,
                     host: node.fields["URI"] ?? "",
                     protocolType: proto,
+                    tags: parsedTags,
                     notes: node.fields["Description"] ?? "",
+                    sortOrder: sortOrder,
                     inheritable: parseInheritable(),
                     settings: .fileTransfer(ft)
                 ))
@@ -766,7 +848,9 @@ private final class RoyalTsXmlSAXParser: NSObject, XMLParserDelegate {
                     name: name,
                     host: uri,
                     protocolType: .WEB_PAGE,
+                    tags: parsedTags,
                     notes: node.fields["Description"] ?? "",
+                    sortOrder: sortOrder,
                     inheritable: parseInheritable(),
                     settings: .webPage(WebPageProtocolSettings(url: uri))
                 ))
@@ -779,6 +863,8 @@ private final class RoyalTsXmlSAXParser: NSObject, XMLParserDelegate {
             documentId: docId,
             name: docName,
             folders: folders,
+            smartFolders: smartFolders,
+            dynamicFolders: dynamicFolders,
             connections: conns,
             credentials: creds
         )
@@ -838,7 +924,7 @@ private final class KeePassXmlSAXParser: NSObject, XMLParserDelegate {
                 let credId = UUID().uuidString.lowercased()
                 creds.append(VaultCredential(
                     id: credId,
-                    parentFolderId: parentId,
+                    parentFolderId: nil,
                     name: title,
                     username: user,
                     secretPassword: pass
@@ -870,7 +956,9 @@ private final class KeePassXmlSAXParser: NSObject, XMLParserDelegate {
     }
 
     func buildDocument(vaultName: String) -> NxtsVaultDocument {
-        NxtsVaultDocument(name: vaultName, folders: folders, connections: conns, credentials: creds)
+        VaultHierarchySanitizer.sanitizeVaultDocument(
+            NxtsVaultDocument(name: vaultName, folders: folders, connections: conns, credentials: creds)
+        )
     }
 }
 
@@ -934,7 +1022,59 @@ public enum VaultDocumentExporter {
             lines.append("      <ParentID>\(esc(parent))</ParentID>")
             lines.append("      <Name>\(esc(folder.name))</Name>")
             lines.append("      <Description>\(esc(folder.description))</Description>")
+            lines.append("      <SortOrder>\(folder.sortOrder)</SortOrder>")
             lines.append("    </RoyalFolder>")
+        }
+        for sf in document.smartFolders where !document.tombstonedObjectIds.contains(sf.id) {
+            lines.append("    <RoyalSmartFolder>")
+            lines.append("      <ID>\(esc(sf.id))</ID>")
+            lines.append("      <ParentID>\(esc(document.documentId))</ParentID>")
+            lines.append("      <Name>\(esc(sf.name))</Name>")
+            if !sf.filter.includeTags.isEmpty {
+                lines.append("      <IncludeTags>\(esc(sf.filter.includeTags.joined(separator: ";")))</IncludeTags>")
+            }
+            if !sf.filter.excludeTags.isEmpty {
+                lines.append("      <ExcludeTags>\(esc(sf.filter.excludeTags.joined(separator: ";")))</ExcludeTags>")
+            }
+            if !sf.filter.includeProtocols.isEmpty {
+                lines.append("      <Protocols>\(esc(sf.filter.includeProtocols.map(\.rawValue).joined(separator: ";")))</Protocols>")
+            }
+            if let hostRegex = sf.filter.hostPatternRegex, !hostRegex.isEmpty {
+                lines.append("      <HostPattern>\(esc(hostRegex))</HostPattern>")
+            }
+            if let osFam = sf.filter.osFamilyFilter, !osFam.isEmpty {
+                lines.append("      <OSFamily>\(esc(osFam))</OSFamily>")
+            }
+            if let env = sf.filter.environmentFilter, !env.isEmpty {
+                lines.append("      <Environment>\(esc(env))</Environment>")
+            }
+            if let scopeId = sf.filter.scopeFolderId, !scopeId.isEmpty {
+                lines.append("      <ScopeFolderId>\(esc(scopeId))</ScopeFolderId>")
+            }
+            lines.append("    </RoyalSmartFolder>")
+        }
+        let activeCreds = document.credentials.filter { !document.tombstonedObjectIds.contains($0.id) }
+        if !activeCreds.isEmpty {
+            let sysCredFolderId = "royal-system-credentials-\(document.documentId)"
+            lines.append("    <RoyalFolder>")
+            lines.append("      <ID>\(esc(sysCredFolderId))</ID>")
+            lines.append("      <ParentID>\(esc(document.documentId))</ParentID>")
+            lines.append("      <Name>Credentials</Name>")
+            lines.append("    </RoyalFolder>")
+            for cred in activeCreds {
+                lines.append("    <RoyalCredential>")
+                lines.append("      <ID>\(esc(cred.id))</ID>")
+                lines.append("      <ParentID>\(esc(sysCredFolderId))</ParentID>")
+                lines.append("      <Name>\(esc(cred.name))</Name>")
+                lines.append("      <UserName>\(esc(cred.username))</UserName>")
+                if !cred.domain.isEmpty {
+                    lines.append("      <Domain>\(esc(cred.domain))</Domain>")
+                }
+                if !cred.secretPassword.isEmpty {
+                    lines.append("      <Password>\(esc(cred.secretPassword))</Password>")
+                }
+                lines.append("    </RoyalCredential>")
+            }
         }
         for conn in document.connections where !document.tombstonedObjectIds.contains(conn.id) {
             let parent = conn.parentFolderId ?? document.documentId
@@ -954,6 +1094,7 @@ public enum VaultDocumentExporter {
             lines.append("      <URI>\(esc(conn.host))</URI>")
             lines.append("      <Port>\(conn.settings.effectivePort)</Port>")
             lines.append("      <Description>\(esc(conn.notes))</Description>")
+            lines.append("      <SortOrder>\(conn.sortOrder)</SortOrder>")
             lines.append("      <Favorite>\(conn.favorite ? "True" : "False")</Favorite>")
             lines.append("    </\(tag)>")
         }

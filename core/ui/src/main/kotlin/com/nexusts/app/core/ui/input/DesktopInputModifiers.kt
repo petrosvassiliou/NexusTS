@@ -8,6 +8,7 @@ import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
 import androidx.compose.ui.geometry.Offset
@@ -25,6 +26,9 @@ import androidx.compose.ui.input.pointer.isTertiaryPressed
 import androidx.compose.ui.input.pointer.pointerHoverIcon
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.onLongClick
+import androidx.compose.ui.semantics.semantics
 
 /**
  * Hardware scan-code + modifier packet forwarded directly to native FreeRDP 3.x / russh / RFB engines.
@@ -50,25 +54,182 @@ data class RawHardwareKeyPacket(
 
 /**
  * Captures desktop mouse right-click (secondary button) and middle-click (tertiary button)
- * at exact local pointer coordinates without interfering with primary click or drag gestures.
+ * at exact local pointer coordinates without interfering with primary click or drag gestures,
+ * and without cancelling active pointer scopes when lambda references recompose on hover.
  */
 fun Modifier.nexusDesktopPointerButtons(
     onSecondaryClick: ((Offset) -> Unit)? = null,
     onTertiaryMiddleClick: ((Offset) -> Unit)? = null
-): Modifier = pointerInput(onSecondaryClick, onTertiaryMiddleClick) {
-    awaitPointerEventScope {
-        while (true) {
-            val event = awaitPointerEvent(PointerEventPass.Main)
-            if (event.type == PointerEventType.Press && event.changes.none { it.isConsumed }) {
-                val position = event.changes.firstOrNull()?.position ?: Offset.Zero
-                when {
-                    event.buttons.isSecondaryPressed && onSecondaryClick != null -> {
-                        event.changes.forEach { it.consume() }
-                        onSecondaryClick(position)
+): Modifier = composed {
+    val latestSecondary = rememberUpdatedState(onSecondaryClick)
+    val latestTertiary = rememberUpdatedState(onTertiaryMiddleClick)
+    pointerInput(Unit) {
+        awaitPointerEventScope {
+            var swallowNextRelease = false
+            while (true) {
+                val event = awaitPointerEvent(PointerEventPass.Main)
+                if (event.type == PointerEventType.Press && event.changes.none { it.isConsumed }) {
+                    val position = event.changes.firstOrNull()?.position ?: Offset.Zero
+                    val sec = latestSecondary.value
+                    val ter = latestTertiary.value
+                    when {
+                        event.buttons.isSecondaryPressed && sec != null -> {
+                            event.changes.forEach { it.consume() }
+                            swallowNextRelease = true
+                            sec(position)
+                        }
+                        event.buttons.isTertiaryPressed && ter != null -> {
+                            event.changes.forEach { it.consume() }
+                            swallowNextRelease = true
+                            ter(position)
+                        }
                     }
-                    event.buttons.isTertiaryPressed && onTertiaryMiddleClick != null -> {
-                        event.changes.forEach { it.consume() }
-                        onTertiaryMiddleClick(position)
+                } else if (swallowNextRelease && event.type == PointerEventType.Release) {
+                    event.changes.forEach { it.consume() }
+                    swallowNextRelease = false
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Unified row-level desktop & touch pointer handler for tree hierarchy items (folders, connections,
+ * smart folders, and credentials).
+ *
+ * Eliminates the Jetpack Compose `.clickable` bug where `clickable` consumes right-click `down`
+ * events on `PointerEventPass.Main` before secondary-button handlers run or accidentally triggers
+ * primary `onClick` / parent folder properties on right-click.
+ */
+fun Modifier.nexusInteractiveRow(
+    rowKey: Any,
+    doubleClickIntervalMs: Long = 360L,
+    onClick: () -> Unit,
+    onDoubleClick: (() -> Unit)? = null,
+    onSecondaryClick: ((Offset) -> Unit)? = null,
+    onTertiaryMiddleClick: ((Offset) -> Unit)? = null
+): Modifier = composed {
+    val latestOnClick = rememberUpdatedState(onClick)
+    val latestOnDoubleClick = rememberUpdatedState(onDoubleClick)
+    val latestSecondary = rememberUpdatedState(onSecondaryClick)
+    val latestTertiary = rememberUpdatedState(onTertiaryMiddleClick)
+
+    semantics {
+        onClick {
+            latestOnClick.value.invoke()
+            true
+        }
+        if (latestSecondary.value != null) {
+            onLongClick {
+                latestSecondary.value?.invoke(Offset.Zero)
+                true
+            }
+        }
+    }.pointerInput(rowKey) {
+        val touchSlopPx = viewConfiguration.touchSlop
+        val longPressTimeoutMs = viewConfiguration.longPressTimeoutMillis
+        var lastPrimaryClickEpochMs = 0L
+        var lastPrimaryClickPos = Offset.Zero
+
+        awaitPointerEventScope {
+            var primaryDownPos: Offset? = null
+            var primaryDownTimeMs = 0L
+            var primaryDownIsTouch = false
+            var primaryMovedPastSlop = false
+            var swallowButtonRelease = false
+
+            while (true) {
+                val event = awaitPointerEvent(PointerEventPass.Main)
+                val firstChange = event.changes.firstOrNull() ?: continue
+                val pos = firstChange.position
+
+                when (event.type) {
+                    PointerEventType.Press -> {
+                        if (event.changes.any { it.isConsumed }) {
+                            primaryDownPos = null
+                            continue
+                        }
+                        val secHandler = latestSecondary.value
+                        val terHandler = latestTertiary.value
+                        when {
+                            event.buttons.isSecondaryPressed -> {
+                                event.changes.forEach { it.consume() }
+                                primaryDownPos = null
+                                swallowButtonRelease = true
+                                secHandler?.invoke(pos)
+                            }
+                            event.buttons.isTertiaryPressed -> {
+                                event.changes.forEach { it.consume() }
+                                primaryDownPos = null
+                                swallowButtonRelease = true
+                                terHandler?.invoke(pos)
+                            }
+                            else -> {
+                                primaryDownPos = pos
+                                primaryDownTimeMs = firstChange.uptimeMillis
+                                primaryDownIsTouch = firstChange.type == androidx.compose.ui.input.pointer.PointerType.Touch
+                                primaryMovedPastSlop = false
+                            }
+                        }
+                    }
+
+                    PointerEventType.Move -> {
+                        val downPos = primaryDownPos
+                        if (downPos != null && !primaryMovedPastSlop) {
+                            if ((pos - downPos).getDistance() > touchSlopPx || event.changes.any { it.isConsumed }) {
+                                primaryMovedPastSlop = true
+                            } else if (primaryDownIsTouch &&
+                                latestSecondary.value != null &&
+                                (firstChange.uptimeMillis - primaryDownTimeMs) >= longPressTimeoutMs
+                            ) {
+                                event.changes.forEach { it.consume() }
+                                primaryDownPos = null
+                                swallowButtonRelease = true
+                                latestSecondary.value?.invoke(pos)
+                            }
+                        }
+                    }
+
+                    PointerEventType.Release -> {
+                        if (swallowButtonRelease) {
+                            event.changes.forEach { it.consume() }
+                            swallowButtonRelease = false
+                            primaryDownPos = null
+                            continue
+                        }
+                        val downPos = primaryDownPos
+                        primaryDownPos = null
+                        if (downPos != null && !primaryMovedPastSlop && event.changes.none { it.isConsumed }) {
+                            val inBounds = pos.x in 0f..size.width.toFloat() &&
+                                pos.y in 0f..size.height.toFloat()
+                            if (inBounds) {
+                                event.changes.forEach { it.consume() }
+                                if (primaryDownIsTouch &&
+                                    latestSecondary.value != null &&
+                                    (firstChange.uptimeMillis - primaryDownTimeMs) >= longPressTimeoutMs
+                                ) {
+                                    latestSecondary.value?.invoke(pos)
+                                } else {
+                                    val now = System.currentTimeMillis()
+                                    val dbl = latestOnDoubleClick.value
+                                    if (dbl != null &&
+                                        (now - lastPrimaryClickEpochMs) in 1L..doubleClickIntervalMs &&
+                                        (pos - lastPrimaryClickPos).getDistance() <= touchSlopPx * 2f
+                                    ) {
+                                        lastPrimaryClickEpochMs = 0L
+                                        dbl.invoke()
+                                    } else {
+                                        lastPrimaryClickEpochMs = now
+                                        lastPrimaryClickPos = pos
+                                        latestOnClick.value.invoke()
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    PointerEventType.Exit -> {
+                        // Keep primaryDownPos until Release checks inBounds
                     }
                 }
             }

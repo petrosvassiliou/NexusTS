@@ -924,6 +924,12 @@ public final class NativeRdpSession: @unchecked Sendable {
         return String(cString: ptr)
     }
 
+    public func lastErrorMessage() -> String {
+        guard handle > 0, let ptr = nexusts_rdp_copy_last_error(handle) else { return "" }
+        defer { nexusts_rdp_free_cstr(ptr) }
+        return String(cString: ptr)
+    }
+
     public var frameSequence: UInt64 {
         handle > 0 ? nexusts_rdp_frame_sequence(handle) : 0
     }

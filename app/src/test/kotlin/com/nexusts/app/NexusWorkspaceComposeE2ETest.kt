@@ -21,7 +21,9 @@ import com.nexusts.app.core.vault.automation.AutomationTaskEngine
 import com.nexusts.app.core.vault.credentials.EnterpriseCredentialHub
 import com.nexusts.app.core.vault.crypto.KdfSecurityParameters
 import com.nexusts.app.core.vault.crypto.NxtsVaultSerializer
+import com.nexusts.app.core.vault.error.VaultHierarchySanitizer
 import com.nexusts.app.core.vault.gateway.SecureGatewayTunnelManager
+import com.nexusts.app.core.vault.importer.RoyalTsImportPlacementMode
 import com.nexusts.app.core.vault.inheritance.PropertyInheritanceResolver
 import com.nexusts.app.core.vault.model.CommandTask
 import com.nexusts.app.core.vault.model.ConnectionTemplate
@@ -43,6 +45,7 @@ import com.nexusts.app.core.vault.model.VaultCredential
 import com.nexusts.app.core.vault.model.VaultFolder
 import com.nexusts.app.core.vault.model.VaultProtocolType
 import com.nexusts.app.feature.workspace.ActiveVaultSessionStore
+import com.nexusts.app.feature.workspace.FolderDropPlacement
 import com.nexusts.app.feature.workspace.NexusWorkspaceScreen
 import com.nexusts.app.feature.workspace.NexusWorkspaceViewModel
 import com.nexusts.app.feature.workspace.SidebarQuickFilter
@@ -153,6 +156,23 @@ class NexusWorkspaceComposeE2ETest {
             assertTrue(res.getString(R.string.action_delete_folder_and_contents).isNotBlank())
             assertTrue(res.getString(R.string.action_delete_folder_keep_contents).isNotBlank())
             assertTrue(res.getString(R.string.nav_studios_menu).isNotBlank())
+            // v1.2.0 localization keys
+            assertTrue(res.getString(R.string.action_edit_smart_folder).isNotBlank())
+            assertTrue(res.getString(R.string.action_duplicate_smart_folder).isNotBlank())
+            assertTrue(res.getString(R.string.smart_folder_all_folders).isNotBlank())
+            assertTrue(res.getString(R.string.smart_folder_scope_label).isNotBlank())
+            assertTrue(res.getString(R.string.smart_folder_exclude_tags_label).isNotBlank())
+            assertTrue(res.getString(R.string.action_new_dynamic_folder).isNotBlank())
+            assertTrue(res.getString(R.string.action_reset_database).isNotBlank())
+            assertTrue(res.getString(R.string.dialog_reset_database_title).isNotBlank())
+            assertTrue(res.getString(R.string.action_confirm_reset_database).isNotBlank())
+            assertTrue(res.getString(R.string.dialog_royal_import_title).isNotBlank())
+            assertTrue(res.getString(R.string.royal_import_mode_new_folder).isNotBlank())
+            assertTrue(res.getString(R.string.royal_import_mode_root).isNotBlank())
+            assertTrue(res.getString(R.string.royal_import_mode_replace_all).isNotBlank())
+            assertTrue(res.getString(R.string.system_credentials_folder_title).isNotBlank())
+            assertTrue(res.getString(R.string.action_edit_credential).isNotBlank())
+            assertTrue(res.getString(R.string.action_copy_diagnostic_report).isNotBlank())
         }
     }
 
@@ -939,6 +959,16 @@ class NexusWorkspaceComposeE2ETest {
         }
         composeRule.waitUntil(timeoutMillis = 5_000L) {
             Shadows.shadowOf(Looper.getMainLooper()).idle()
+            vm.uiState.value.pendingRoyalTsImport != null
+        }
+        composeRule.waitForIdle()
+        assertTextRendered(strings.dialogRoyalImportTitle)
+
+        composeRule.runOnIdle {
+            vm.confirmRoyalTsImport(RoyalTsImportPlacementMode.PLACE_AT_ROOT)
+        }
+        composeRule.waitUntil(timeoutMillis = 5_000L) {
+            Shadows.shadowOf(Looper.getMainLooper()).idle()
             vm.uiState.value.vaultDocument.connections.any { it.id == "conn-imported-rdp" }
         }
         composeRule.waitForIdle()
@@ -1463,10 +1493,10 @@ class NexusWorkspaceComposeE2ETest {
 
     @Test
     fun compactFlushLeftSidebarFolderContextMenusStartAllRdpRenameDeleteAndV117UpgradeParity() {
-        assertEquals(10109, BuildConfig.VERSION_CODE)
+        assertEquals(10200, BuildConfig.VERSION_CODE)
         assertTrue(
-            "Expected BuildConfig.VERSION_NAME (${BuildConfig.VERSION_NAME}) to start with 1.1.9",
-            BuildConfig.VERSION_NAME.startsWith("1.1.9")
+            "Expected BuildConfig.VERSION_NAME (${BuildConfig.VERSION_NAME}) to start with 1.2.0",
+            BuildConfig.VERSION_NAME.startsWith("1.2.0")
         )
 
         val serializer = buildFastSerializer()
@@ -1755,5 +1785,303 @@ class NexusWorkspaceComposeE2ETest {
         assertTrue(mixedGroups.all { it.showsHeader })
         assertEquals(listOf("g-wts-b", "g-rdp-a"), mixedGroups[0].connections.map { it.id })
         assertEquals(listOf("g-ssh-c"), mixedGroups[1].connections.map { it.id })
+    }
+
+    @Test
+    fun v120RoyalTsPlacementSystemCredentialsDragDropIntelligentFoldersResetDbAndCorruptQuarantineWorkEndToEnd() {
+        val serializer = buildFastSerializer()
+        val store = ActiveVaultSessionStore()
+        val vm = buildRealViewModel(serializer = serializer, store = store)
+        val strings = WorkspaceLocalizedStrings.defaultEnglish()
+        val resetDir = Files.createTempDirectory("nexusts-v120-reset-and-quarantine").toFile()
+
+        try {
+            composeRule.setContent {
+                NexusTSTheme {
+                    NexusWorkspaceScreen(
+                        viewModel = vm,
+                        strings = strings,
+                        connectedDisplays = emptyList(),
+                        flexibleUpdateDownloaded = false,
+                        onCompleteFlexibleUpdate = {},
+                        onRequestImportFilePicker = {},
+                        onRequestGoogleDriveSync = {},
+                        onDetachTabToNativeWindow = { _, _ -> },
+                        onResetNexusDatabase = {
+                            val fresh = store.resetLocalVaultDatabase(resetDir, serializer)
+                            vm.resetWorkspaceStateAfterDatabaseWipe(fresh, strings.resetDatabaseSuccess)
+                        }
+                    )
+                }
+            }
+            composeRule.waitForIdle()
+
+            // 1. Clean empty vault + bottom-pinned system "Credentials" folder always rendered at bottom of sidebar
+            assertTrue(vm.uiState.value.vaultDocument.connections.isEmpty())
+            assertTrue(vm.uiState.value.vaultDocument.folders.isEmpty())
+            assertTrue(vm.uiState.value.vaultDocument.credentials.isEmpty())
+            assertTextRendered(strings.systemCredentialsFolderTitle)
+
+            // Root folder named "Credentials" is reserved & blocked; system Credentials folder cannot hold connections/folders
+            assertNotNull(vm.validateFolderName("Credentials", parentFolderId = null))
+            composeRule.runOnIdle {
+                vm.saveFolderAndCredentialToVault(VaultFolder(id = "bad-creds-folder", name = "Credentials"))
+            }
+            composeRule.waitForIdle()
+            assertFalse(vm.uiState.value.vaultDocument.folders.any { it.id == "bad-creds-folder" })
+
+            // Create two real folders (Empty Folder + Active Folder) and verify clicking an empty folder NEVER opens Folder Properties
+            composeRule.runOnIdle {
+                vm.saveFolderAndCredentialToVault(VaultFolder(id = "fld-empty", name = "Empty Staging Folder", sortOrder = 10))
+                vm.saveFolderAndCredentialToVault(VaultFolder(id = "fld-ops", name = "Ops Production", sortOrder = 20))
+                vm.saveFolderAndCredentialToVault(VaultFolder(id = "fld-dr", name = "DR Failover", sortOrder = 30))
+                vm.saveConnectionToVault(
+                    VaultConnection(
+                        id = "conn-ops-01",
+                        parentFolderId = "fld-ops",
+                        name = "Ops-Core-Jump",
+                        host = "10.220.44.88",
+                        protocol = VaultProtocolType.RDP,
+                        tags = listOf("prod", "jump"),
+                        settings = ProtocolSpecificSettings.Rdp()
+                    )
+                )
+            }
+            composeRule.waitForIdle()
+
+            // Sidebar connection row shows ONLY the connection name, NEVER the IP address
+            assertTextRendered("Ops-Core-Jump")
+            assertEquals(
+                "Connection item must never display IP address in sidebar",
+                0,
+                composeRule.onAllNodesWithText("10.220.44.88", substring = true).fetchSemanticsNodes().size
+            )
+
+            // Left-clicking empty folder expands/collapses & selects it WITHOUT opening Folder Properties dialog!
+            composeRule
+                .onAllNodesWithText("Empty Staging Folder", substring = false)
+                .onFirst()
+                .performClick()
+            composeRule.waitForIdle()
+            assertFalse(
+                "Clicking an empty folder must NEVER auto-open the Folder Properties dialog",
+                vm.uiState.value.isFolderDialogVisible
+            )
+
+            // 2. Folder drag & drop BEFORE / INSIDE / AFTER + blocking drops into system "Credentials" folder
+            assertFalse(
+                vm.moveOrReorderFolder(
+                    draggedFolderId = "fld-dr",
+                    targetFolderId = VaultHierarchySanitizer.SYSTEM_CREDENTIALS_FOLDER_ID,
+                    placement = FolderDropPlacement.INSIDE
+                )
+            )
+            assertFalse(
+                vm.moveConnectionToFolder("conn-ops-01", VaultHierarchySanitizer.SYSTEM_CREDENTIALS_FOLDER_ID)
+            )
+
+            composeRule.runOnIdle {
+                // Reorder DR Failover BEFORE Empty Staging Folder
+                assertTrue(
+                    vm.moveOrReorderFolder(
+                        draggedFolderId = "fld-dr",
+                        targetFolderId = "fld-empty",
+                        placement = FolderDropPlacement.BEFORE
+                    )
+                )
+            }
+            composeRule.waitForIdle()
+            val rootOrdered = NexusWorkspaceViewModel.sortedSiblingFolders(
+                vm.uiState.value.vaultDocument.folders,
+                parentFolderId = null
+            ).map { it.id }
+            assertEquals(listOf("fld-dr", "fld-empty", "fld-ops"), rootOrdered)
+
+            // 3. Edit existing connection dialog opens with exact connection populated
+            composeRule.runOnIdle {
+                val target = vm.uiState.value.vaultDocument.connections.first { it.id == "conn-ops-01" }
+                vm.openEditConnectionDialog(target)
+            }
+            composeRule.waitForIdle()
+            assertTrue(vm.uiState.value.isNewConnectionDialogVisible)
+            assertEquals("conn-ops-01", vm.uiState.value.editingConnection?.id)
+            assertFalse(vm.uiState.value.isFolderDialogVisible)
+            composeRule.runOnIdle {
+                vm.dismissNewConnectionDialog()
+            }
+            composeRule.waitForIdle()
+
+            // 4. Intelligent Folders (SmartFolder) creation, editing, duplication, live matching, and invalid regex rejection
+            composeRule.runOnIdle {
+                vm.openNewSmartFolderDialog()
+            }
+            composeRule.waitForIdle()
+            assertTrue(vm.uiState.value.isNewSmartFolderDialogVisible)
+            assertTextRendered(strings.smartFolderScopeLabel)
+
+            // Invalid regex triggers structured validation error instead of saving corrupt filter
+            composeRule.runOnIdle {
+                vm.saveSmartFolderToVault(
+                    SmartFolder(
+                        id = "sf-invalid",
+                        name = "Broken Filter",
+                        filter = SmartFolderFilter(hostPatternRegex = "[unclosed")
+                    )
+                )
+            }
+            composeRule.waitForIdle()
+            assertNotNull(vm.uiState.value.activeAppError)
+            assertFalse(vm.uiState.value.vaultDocument.smartFolders.any { it.id == "sf-invalid" })
+            composeRule.runOnIdle { vm.dismissActiveAppError() }
+            composeRule.waitForIdle()
+
+            // Save valid scoped Intelligent Folder & duplicate it
+            val validSmart = SmartFolder(
+                id = "sf-ops-rdp",
+                name = "Ops RDP Jump Hosts",
+                filter = SmartFolderFilter(
+                    includeProtocols = listOf(VaultProtocolType.RDP),
+                    includeTags = listOf("prod"),
+                    excludeTags = listOf("retired"),
+                    scopeFolderId = "fld-ops"
+                )
+            )
+            composeRule.runOnIdle {
+                vm.saveSmartFolderToVault(validSmart)
+            }
+            composeRule.waitForIdle()
+            assertEquals(1, vm.evaluateSmartFolderCount(validSmart))
+            assertTextRendered("Ops RDP Jump Hosts")
+
+            composeRule.runOnIdle {
+                vm.duplicateSmartFolder(validSmart)
+            }
+            composeRule.waitForIdle()
+            assertEquals(2, vm.uiState.value.vaultDocument.smartFolders.size)
+
+            // 5. Royal TS import placement modes: CREATE_NEW_FOLDER and REPLACE_EXISTING
+            val rtsxBytes = """
+                <?xml version="1.0" encoding="utf-8"?>
+                <RTSZDocument>
+                  <RoyalDocument>
+                    <ID>doc-rtsx-120</ID>
+                    <Name>Vienna Branch</Name>
+                  </RoyalDocument>
+                  <RoyalFolder>
+                    <ID>fld-rtsx-conns</ID>
+                    <ParentID>doc-rtsx-120</ParentID>
+                    <Name>Connections</Name>
+                  </RoyalFolder>
+                  <RoyalFolder>
+                    <ID>fld-rtsx-creds</ID>
+                    <ParentID>doc-rtsx-120</ParentID>
+                    <Name>Credentials</Name>
+                  </RoyalFolder>
+                  <RoyalRDSConnection>
+                    <ID>conn-vienna-01</ID>
+                    <ParentID>fld-rtsx-conns</ParentID>
+                    <Name>VIE-DC01</Name>
+                    <URI>10.43.1.10</URI>
+                  </RoyalRDSConnection>
+                  <RoyalCredential>
+                    <ID>cred-vienna-da</ID>
+                    <ParentID>fld-rtsx-creds</ParentID>
+                    <Name>Vienna Admin</Name>
+                    <UserName>VIE\admin</UserName>
+                    <Password>Secret!</Password>
+                  </RoyalCredential>
+                </RTSZDocument>
+            """.trimIndent().toByteArray(StandardCharsets.UTF_8)
+
+            // Import into a brand-new folder "Vienna Imported"
+            composeRule.runOnIdle {
+                vm.importVaultOrRtszBytes("vienna.rtsx", rtsxBytes)
+            }
+            composeRule.waitUntil(timeoutMillis = 5_000L) {
+                Shadows.shadowOf(Looper.getMainLooper()).idle()
+                vm.uiState.value.pendingRoyalTsImport != null
+            }
+            composeRule.runOnIdle {
+                vm.confirmRoyalTsImport(RoyalTsImportPlacementMode.CREATE_NEW_FOLDER, "Vienna Imported")
+            }
+            composeRule.waitForIdle()
+
+            val wrapperFolder = vm.uiState.value.vaultDocument.folders.firstOrNull { it.name == "Vienna Imported" }
+            assertNotNull(wrapperFolder)
+            assertEquals(
+                wrapperFolder!!.id,
+                vm.uiState.value.vaultDocument.connections.first { it.name == "VIE-DC01" }.parentFolderId
+            )
+            assertTrue(vm.uiState.value.vaultDocument.connections.any { it.id == "conn-ops-01" })
+            assertTrue(vm.uiState.value.vaultDocument.credentials.any { it.name == "Vienna Admin" && it.parentFolderId == null })
+
+            // Import with REPLACE_EXISTING -> deletes all existing connection folders & connections
+            composeRule.runOnIdle {
+                vm.importVaultOrRtszBytes("vienna.rtsx", rtsxBytes)
+            }
+            composeRule.waitUntil(timeoutMillis = 5_000L) {
+                Shadows.shadowOf(Looper.getMainLooper()).idle()
+                vm.uiState.value.pendingRoyalTsImport != null
+            }
+            composeRule.runOnIdle {
+                vm.confirmRoyalTsImport(RoyalTsImportPlacementMode.REPLACE_EXISTING)
+            }
+            composeRule.waitForIdle()
+            assertFalse(vm.uiState.value.vaultDocument.connections.any { it.id == "conn-ops-01" })
+            assertEquals(listOf("VIE-DC01"), vm.uiState.value.vaultDocument.connections.map { it.name })
+
+            // 6. Reset NexusTS Database via confirmation dialog -> wipes vault back to clean empty state
+            store.persistVaultToDisk(resetDir, serializer)
+            composeRule.runOnIdle {
+                vm.openResetDatabaseDialog()
+            }
+            composeRule.waitForIdle()
+            assertTextRendered(strings.dialogResetDatabaseTitle)
+
+            // Safety guard: clicking reset before checking confirmation leaves vault intact
+            composeRule
+                .onAllNodesWithText(strings.actionConfirmResetDatabase, substring = false)
+                .onFirst()
+                .performClick()
+            composeRule.waitForIdle()
+            assertFalse(vm.uiState.value.vaultDocument.connections.isEmpty())
+
+            // Check the confirmation checkbox row, then click confirm reset
+            composeRule
+                .onAllNodesWithText(strings.resetDatabaseWarningBody, substring = false)
+                .onFirst()
+                .performClick()
+            composeRule.waitForIdle()
+
+            composeRule
+                .onAllNodesWithText(strings.actionConfirmResetDatabase, substring = false)
+                .onFirst()
+                .performClick()
+            composeRule.waitForIdle()
+
+            assertTrue(vm.uiState.value.vaultDocument.connections.isEmpty())
+            assertTrue(vm.uiState.value.vaultDocument.folders.isEmpty())
+            assertTrue(vm.uiState.value.vaultDocument.credentials.isEmpty())
+            assertTrue(vm.uiState.value.vaultDocument.smartFolders.isEmpty())
+
+            // 7. Corrupt local .nxts file on cold start is quarantined as .corrupt-*.nxts.bak and surfaces startupRecoveryError
+            val corruptDir = Files.createTempDirectory("nexusts-corrupt-quarantine").toFile()
+            try {
+                val targetVaultFile = java.io.File(corruptDir, ActiveVaultSessionStore.LOCAL_VAULT_FILE_NAME)
+                targetVaultFile.writeBytes("CORRUPT-PARTIAL-WRITE-BYTES".toByteArray(StandardCharsets.UTF_8))
+
+                val coldRecoveryStore = ActiveVaultSessionStore()
+                val loaded = coldRecoveryStore.loadPersistedVaultIfNeeded(corruptDir, serializer)
+                assertFalse(loaded)
+                assertFalse("Corrupted primary vault file must be moved aside", targetVaultFile.exists())
+                val quarantinedFiles = corruptDir.listFiles()?.filter { it.name.contains(".corrupt-") && it.name.endsWith(".bak") }.orEmpty()
+                assertEquals("Corrupted file must be preserved as a .corrupt-*.bak backup", 1, quarantinedFiles.size)
+                assertNotNull(coldRecoveryStore.snapshot.value.startupRecoveryError)
+            } finally {
+                corruptDir.deleteRecursively()
+            }
+        } finally {
+            resetDir.deleteRecursively()
+        }
     }
 }

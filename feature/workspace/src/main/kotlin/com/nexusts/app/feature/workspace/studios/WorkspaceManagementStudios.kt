@@ -39,8 +39,10 @@ import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.SystemUpdateAlt
 import androidx.compose.material.icons.outlined.UploadFile
 import androidx.compose.material.icons.outlined.VpnKey
+import androidx.compose.material.icons.outlined.WarningAmber
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilledTonalButton
@@ -76,6 +78,7 @@ import com.nexusts.app.core.ui.input.nexusDesktopPointerButtons
 import com.nexusts.app.core.ui.input.nexusHoverTracker
 import com.nexusts.app.core.ui.input.rememberDesktopHoverState
 import com.nexusts.app.core.ui.theme.NexusTheme
+import com.nexusts.app.core.vault.error.VaultHierarchySanitizer
 import com.nexusts.app.core.vault.gateway.ActiveTunnelLease
 import com.nexusts.app.core.vault.gateway.GatewayHealthReport
 import com.nexusts.app.core.vault.model.CommandTask
@@ -169,6 +172,14 @@ fun FolderPropertiesAndCredentialDialog(
         allFolders.filterNot { isSelfOrDescendant(it.id) }
     }
 
+    val reservedRootNameError = remember(folderName, parentFolderId, strings) {
+        if (parentFolderId == null && VaultHierarchySanitizer.isReservedCredentialsFolderName(folderName)) {
+            strings.credentialsSystemFolderReservedError
+        } else {
+            null
+        }
+    }
+
     AlertDialog(
         onDismissRequest = onDismiss,
         icon = {
@@ -192,6 +203,17 @@ fun FolderPropertiesAndCredentialDialog(
                     value = folderName,
                     onValueChange = { folderName = it },
                     label = { Text(strings.dialogFieldName) },
+                    isError = reservedRootNameError != null,
+                    supportingText = if (reservedRootNameError != null) {
+                        {
+                            Text(
+                                text = reservedRootNameError,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        }
+                    } else {
+                        null
+                    },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -359,14 +381,14 @@ fun FolderPropertiesAndCredentialDialog(
         confirmButton = {
             val inlineValid = credAssignChoice != 0 || inlineUsername.isNotBlank()
             Button(
-                enabled = folderName.isNotBlank() && inlineValid,
+                enabled = folderName.isNotBlank() && inlineValid && reservedRootNameError == null,
                 onClick = {
                     val newInlineCred = if (credAssignChoice == 0) {
                         val resolvedCredTitle = inlineCredName.trim().ifBlank {
                             "${folderName.trim()} (${if (inlineDomain.isNotBlank()) "${inlineDomain.trim()}\\" else ""}${inlineUsername.trim()})"
                         }
                         VaultCredential(
-                            parentFolderId = folderId,
+                            parentFolderId = null,
                             name = resolvedCredTitle,
                             sourceKind = CredentialSourceKind.VAULT_INTERNAL,
                             username = inlineUsername.trim(),
@@ -1666,6 +1688,166 @@ private fun RdpOptionSwitchRow(
 }
 
 /**
+ * Standalone Credential Creator & Editor Dialog used by both [CredentialVaultStudioView]
+ * and the bottom-pinned `"Credentials"` system folder in the left sidebar.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun CredentialEditorDialog(
+    visible: Boolean,
+    existingCredential: VaultCredential?,
+    strings: WorkspaceLocalizedStrings,
+    onDismiss: () -> Unit,
+    onSaveCredential: (VaultCredential) -> Unit,
+    onDeleteCredential: ((String) -> Unit)? = null
+) {
+    if (!visible) return
+    var credName by remember(existingCredential) { mutableStateOf(existingCredential?.name.orEmpty()) }
+    var credDomain by remember(existingCredential) { mutableStateOf(existingCredential?.domain.orEmpty()) }
+    var credUser by remember(existingCredential) { mutableStateOf(existingCredential?.username.orEmpty()) }
+    var credSecret by remember(existingCredential) { mutableStateOf(existingCredential?.secretPassword.orEmpty()) }
+    var credTotpSecret by remember(existingCredential) { mutableStateOf(existingCredential?.totpSecretBase32.orEmpty()) }
+    var credKind by remember(existingCredential) {
+        mutableStateOf(existingCredential?.sourceKind ?: CredentialSourceKind.VAULT_INTERNAL)
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = {
+            Icon(Icons.Outlined.Key, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+        },
+        title = {
+            Text(
+                if (existingCredential != null) {
+                    "${strings.dialogActionSave} • ${existingCredential.name}"
+                } else {
+                    strings.studioActionAddCredential
+                }
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    listOf(
+                        CredentialSourceKind.VAULT_INTERNAL,
+                        CredentialSourceKind.ONEPASSWORD_CONNECT,
+                        CredentialSourceKind.BITWARDEN_VAULT,
+                        CredentialSourceKind.KEEPASS_KDBX,
+                        CredentialSourceKind.HARDWARE_FIDO2_PASSKEY
+                    ).forEach { kind ->
+                        NexusChoiceChip(
+                            selected = credKind == kind,
+                            onClick = { credKind = kind },
+                            label = kind.name.substringBefore('_')
+                        )
+                    }
+                }
+                OutlinedTextField(
+                    value = credName,
+                    onValueChange = { credName = it },
+                    label = { Text(strings.dialogFieldName) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = credDomain,
+                    onValueChange = { credDomain = it },
+                    label = { Text(strings.dialogFieldDomain) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = credUser,
+                    onValueChange = { credUser = it },
+                    label = { Text(strings.dialogFieldUsername) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = credSecret,
+                    onValueChange = { credSecret = it },
+                    label = { Text(strings.vaultPassphraseLabel) },
+                    visualTransformation = PasswordVisualTransformation(),
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = credTotpSecret,
+                    onValueChange = { credTotpSecret = it },
+                    label = { Text("${strings.inspectorTotpCode} (Base32)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                enabled = credName.isNotBlank(),
+                onClick = {
+                    val saved = if (existingCredential != null) {
+                        existingCredential.copy(
+                            parentFolderId = null,
+                            name = credName.trim(),
+                            sourceKind = credKind,
+                            domain = credDomain.trim(),
+                            username = credUser.trim(),
+                            secretPassword = credSecret,
+                            totpSecretBase32 = credTotpSecret.trim(),
+                            externalReferenceUri = if (credKind != CredentialSourceKind.VAULT_INTERNAL) {
+                                credUser.trim()
+                            } else {
+                                existingCredential.externalReferenceUri
+                            }
+                        )
+                    } else {
+                        VaultCredential(
+                            parentFolderId = null,
+                            name = credName.trim(),
+                            sourceKind = credKind,
+                            domain = credDomain.trim(),
+                            username = credUser.trim(),
+                            secretPassword = credSecret,
+                            totpSecretBase32 = credTotpSecret.trim(),
+                            externalReferenceUri = if (credKind != CredentialSourceKind.VAULT_INTERNAL) {
+                                credUser.trim()
+                            } else {
+                                ""
+                            }
+                        )
+                    }
+                    onSaveCredential(saved)
+                }
+            ) {
+                Text(strings.dialogActionSave)
+            }
+        },
+        dismissButton = {
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                if (existingCredential != null && onDeleteCredential != null) {
+                    TextButton(
+                        onClick = {
+                            onDeleteCredential(existingCredential.id)
+                            onDismiss()
+                        }
+                    ) {
+                        Text(strings.actionDeleteItem, color = MaterialTheme.colorScheme.error)
+                    }
+                }
+                TextButton(onClick = onDismiss) {
+                    Text(strings.dialogActionCancel)
+                }
+            }
+        }
+    )
+}
+
+/**
  * 2. Credential Vault & SSH Agent Studio supporting Internal Zero-Knowledge Credentials,
  *    OpenSSH Ed25519 Keygen, 1Password Connect, Bitwarden, KeePass (.kdbx), and FIDO2 Passkeys.
  */
@@ -1685,142 +1867,33 @@ fun CredentialVaultStudioView(
     val clipboard = LocalClipboardManager.current
     var showCredDialog by remember { mutableStateOf(false) }
     var editingCredential by remember { mutableStateOf<VaultCredential?>(null) }
-    var credName by remember { mutableStateOf("") }
-    var credDomain by remember { mutableStateOf("") }
-    var credUser by remember { mutableStateOf("") }
-    var credSecret by remember { mutableStateOf("") }
-    var credTotpSecret by remember { mutableStateOf("") }
-    var credKind by remember { mutableStateOf(CredentialSourceKind.VAULT_INTERNAL) }
     var bgMenuOpen by remember { mutableStateOf(false) }
 
     fun openForCreate() {
         editingCredential = null
-        credName = ""
-        credDomain = ""
-        credUser = ""
-        credSecret = ""
-        credTotpSecret = ""
-        credKind = CredentialSourceKind.VAULT_INTERNAL
         showCredDialog = true
     }
 
     fun openForEdit(cred: VaultCredential) {
         editingCredential = cred
-        credName = cred.name
-        credDomain = cred.domain
-        credUser = cred.username
-        credSecret = cred.secretPassword
-        credTotpSecret = cred.totpSecretBase32
-        credKind = cred.sourceKind
         showCredDialog = true
     }
 
-    if (showCredDialog) {
-        AlertDialog(
-            onDismissRequest = { showCredDialog = false },
-            title = { Text(if (editingCredential != null) strings.dialogActionSave else strings.studioActionAddCredential) },
-            text = {
-                Column(
-                    modifier = Modifier.verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        listOf(
-                            CredentialSourceKind.VAULT_INTERNAL,
-                            CredentialSourceKind.ONEPASSWORD_CONNECT,
-                            CredentialSourceKind.BITWARDEN_VAULT,
-                            CredentialSourceKind.KEEPASS_KDBX,
-                            CredentialSourceKind.HARDWARE_FIDO2_PASSKEY
-                        ).forEach { kind ->
-                            NexusChoiceChip(
-                                selected = credKind == kind,
-                                onClick = { credKind = kind },
-                                label = kind.name.substringBefore('_')
-                            )
-                        }
-                    }
-                    OutlinedTextField(
-                        value = credName,
-                        onValueChange = { credName = it },
-                        label = { Text(strings.dialogFieldName) },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    OutlinedTextField(
-                        value = credDomain,
-                        onValueChange = { credDomain = it },
-                        label = { Text(strings.dialogFieldDomain) },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    OutlinedTextField(
-                        value = credUser,
-                        onValueChange = { credUser = it },
-                        label = { Text(strings.dialogFieldUsername) },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    OutlinedTextField(
-                        value = credSecret,
-                        onValueChange = { credSecret = it },
-                        label = { Text(strings.vaultPassphraseLabel) },
-                        visualTransformation = PasswordVisualTransformation(),
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    OutlinedTextField(
-                        value = credTotpSecret,
-                        onValueChange = { credTotpSecret = it },
-                        label = { Text("${strings.inspectorTotpCode} (Base32)") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-            },
-            confirmButton = {
-                Button(
-                    enabled = credName.isNotBlank(),
-                    onClick = {
-                        val existing = editingCredential
-                        if (existing != null) {
-                            onUpdateCredential(
-                                existing.copy(
-                                    name = credName.trim(),
-                                    sourceKind = credKind,
-                                    domain = credDomain.trim(),
-                                    username = credUser.trim(),
-                                    secretPassword = credSecret,
-                                    totpSecretBase32 = credTotpSecret.trim(),
-                                    externalReferenceUri = if (credKind != CredentialSourceKind.VAULT_INTERNAL) credUser.trim() else existing.externalReferenceUri
-                                )
-                            )
-                        } else {
-                            onCreateCredential(
-                                VaultCredential(
-                                    name = credName.trim(),
-                                    sourceKind = credKind,
-                                    domain = credDomain.trim(),
-                                    username = credUser.trim(),
-                                    secretPassword = credSecret,
-                                    totpSecretBase32 = credTotpSecret.trim(),
-                                    externalReferenceUri = if (credKind != CredentialSourceKind.VAULT_INTERNAL) credUser.trim() else ""
-                                )
-                            )
-                        }
-                        showCredDialog = false
-                    }
-                ) {
-                    Text(strings.dialogActionSave)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showCredDialog = false }) { Text(strings.dialogActionCancel) }
+    CredentialEditorDialog(
+        visible = showCredDialog,
+        existingCredential = editingCredential,
+        strings = strings,
+        onDismiss = { showCredDialog = false },
+        onSaveCredential = { saved ->
+            if (editingCredential != null) {
+                onUpdateCredential(saved)
+            } else {
+                onCreateCredential(saved)
             }
-        )
-    }
+            showCredDialog = false
+        },
+        onDeleteCredential = onDeleteCredential
+    )
 
     Box(
         modifier = modifier
@@ -3147,6 +3220,7 @@ fun DriveSyncAndConflictStudioView(
     githubReleaseUrl: String = "",
     onCheckGitHubReleases: () -> Unit = {},
     onOpenGitHubReleaseUrl: (String) -> Unit = {},
+    onRequestResetDatabase: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val clipboard = LocalClipboardManager.current
@@ -3503,6 +3577,51 @@ fun DriveSyncAndConflictStudioView(
                         Button(onClick = { onOpenGitHubReleaseUrl(githubReleaseUrl) }) {
                             Text("Open Verified GitHub Release")
                         }
+                    }
+                }
+            }
+        }
+
+        // Card 4: Danger Zone — Reset Local NexusTS Database
+        if (onRequestResetDatabase != null) {
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.28f),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.45f)),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.WarningAmber,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Text(
+                            text = strings.resetDatabaseTitle,
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                    Text(
+                        text = strings.resetDatabaseWarningBody,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Button(
+                        onClick = onRequestResetDatabase,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.error,
+                            contentColor = MaterialTheme.colorScheme.onError
+                        )
+                    ) {
+                        Icon(Icons.Outlined.Delete, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(strings.actionResetDatabase)
                     }
                 }
             }

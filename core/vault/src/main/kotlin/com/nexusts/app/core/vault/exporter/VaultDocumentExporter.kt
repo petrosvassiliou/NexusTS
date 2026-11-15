@@ -86,8 +86,14 @@ class VaultDocumentExporter {
             if (sf.filter.includeTags.isNotEmpty()) {
                 appendXmlTag("IncludeTags", sf.filter.includeTags.joinToString(";"), indent = 4)
             }
+            if (sf.filter.excludeTags.isNotEmpty()) {
+                appendXmlTag("ExcludeTags", sf.filter.excludeTags.joinToString(";"), indent = 4)
+            }
             if (sf.filter.includeProtocols.isNotEmpty()) {
                 appendXmlTag("IncludeProtocols", sf.filter.includeProtocols.joinToString(";") { it.name }, indent = 4)
+            }
+            sf.filter.scopeFolderId?.takeIf { it.isNotBlank() }?.let {
+                appendXmlTag("ScopeFolderId", it, indent = 4)
             }
             sf.filter.osFamilyFilter?.takeIf { it.isNotBlank() }?.let {
                 appendXmlTag("OSFamilyFilter", it, indent = 4)

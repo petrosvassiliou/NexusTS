@@ -1,0 +1,7 @@
+• Spazio di lavoro iniziale pulito senza progetti o connessioni di esempio
+• Scelta posizionamento importazione Royal TS: nuova cartella, radice o sostituisci esistenti
+• Drag & drop completo per cartelle e connessioni
+• Cartella di sistema Credenziali fissata in fondo alla barra laterale
+• Menu contestuali tasto destro precisi per cartelle e connessioni + Modifica connessione
+• Creazione e gestione completa delle cartelle intelligenti e dinamiche
+• Ripristino database e diagnostica errori

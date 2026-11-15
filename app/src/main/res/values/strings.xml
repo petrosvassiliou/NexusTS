@@ -200,6 +200,35 @@
     <string name="action_delete_folder_keep_contents">Delete Folder Only (Move Items Up)</string>
     <string name="nav_studios_menu">Studios</string>
 
+    <!-- v1.2.0 Royal TS Import Placement, System Credentials Folder, Smart/Dynamic Folders, Database Reset & Error Diagnostics -->
+    <string name="action_edit_smart_folder">Edit Smart Folder…</string>
+    <string name="action_duplicate_smart_folder">Duplicate Smart Folder</string>
+    <string name="smart_folder_all_folders">All Folders (Entire Vault)</string>
+    <string name="smart_folder_scope_label">Folder Scope</string>
+    <string name="smart_folder_exclude_tags_label">Exclude Tags (comma-separated)</string>
+    <string name="smart_folder_invalid_regex_error">Invalid Regular Expression</string>
+    <string name="smart_folder_preview_count_format">Matched Connections (%1$d)</string>
+    <string name="action_new_dynamic_folder">New Dynamic Folder</string>
+    <string name="action_edit_dynamic_folder">Edit Dynamic Folder…</string>
+    <string name="action_duplicate_dynamic_folder">Duplicate Dynamic Folder</string>
+    <string name="action_reset_database">Reset NexusTS Database…</string>
+    <string name="reset_database_title">Reset NexusTS Database</string>
+    <string name="reset_database_warning_body">Permanently deletes all local connections, folders, credentials, templates, and tasks on this device.</string>
+    <string name="dialog_reset_database_title">Reset NexusTS Database?</string>
+    <string name="dialog_reset_database_message">This permanently deletes all local connections, folders, credentials, templates, and tasks on this device. Export a backup first if you want to keep a copy.</string>
+    <string name="action_confirm_reset_database">Delete All &amp; Reset Database</string>
+    <string name="reset_database_success">NexusTS database has been reset to a clean empty vault.</string>
+    <string name="dialog_royal_import_title">Import Royal TS Document</string>
+    <string name="royal_import_mode_new_folder">Create a new folder for imported items</string>
+    <string name="royal_import_mode_root">Place imported hierarchy at root</string>
+    <string name="royal_import_mode_replace_all">Delete all existing connections and replace</string>
+    <string name="royal_import_folder_name_label">New Folder Name</string>
+    <string name="system_credentials_folder_title">Credentials</string>
+    <string name="credentials_system_folder_only_hint">The Credentials system folder can only hold credentials. Connections and folders cannot be placed inside Credentials.</string>
+    <string name="credentials_system_folder_reserved_error">\"Credentials\" is reserved for the system credentials folder at the bottom of the sidebar.</string>
+    <string name="action_edit_credential">Edit Credential…</string>
+    <string name="action_copy_diagnostic_report">Copy Diagnostics</string>
+
     <!-- Language Names -->
     <string name="lang_en">English</string>
     <string name="lang_de">Deutsch</string>

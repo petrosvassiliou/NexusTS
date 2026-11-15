@@ -200,6 +200,35 @@
     <string name="action_delete_folder_keep_contents">Διαγραφή μόνο φακέλου (Μετακίνηση στοιχείων πάνω)</string>
     <string name="nav_studios_menu">Στούντιο</string>
 
+    <!-- v1.2.0 -->
+    <string name="action_edit_smart_folder">Επεξεργασία έξυπνου φακέλου…</string>
+    <string name="action_duplicate_smart_folder">Διπλασιασμός έξυπνου φακέλου</string>
+    <string name="smart_folder_all_folders">Όλοι οι φάκελοι (Ολόκληρο θησαυροφυλάκιο)</string>
+    <string name="smart_folder_scope_label">Εύρος φακέλου</string>
+    <string name="smart_folder_exclude_tags_label">Εξαίρεση ετικετών (με κόμμα)</string>
+    <string name="smart_folder_invalid_regex_error">Μη έγκυρη κανονική έκφραση</string>
+    <string name="smart_folder_preview_count_format">Συνδέσεις που ταιριάζουν (%1$d)</string>
+    <string name="action_new_dynamic_folder">Νέος δυναμικός φάκελος</string>
+    <string name="action_edit_dynamic_folder">Επεξεργασία δυναμικού φακέλου…</string>
+    <string name="action_duplicate_dynamic_folder">Διπλασιασμός δυναμικού φακέλου</string>
+    <string name="action_reset_database">Επαναφορά βάσης δεδομένων NexusTS…</string>
+    <string name="reset_database_title">Επαναφορά βάσης δεδομένων NexusTS</string>
+    <string name="reset_database_warning_body">Διαγράφει οριστικά όλες τις τοπικές συνδέσεις, φακέλους, διαπιστευτήρια, πρότυπα και εργασίες σε αυτήν τη συσκευή.</string>
+    <string name="dialog_reset_database_title">Επαναφορά βάσης δεδομένων NexusTS;</string>
+    <string name="dialog_reset_database_message">Διαγράφονται οριστικά όλες οι τοπικές συνδέσεις, φάκελοι, διαπιστευτήρια, πρότυπα και εργασίες. Εξαγάγετε πρώτα αντίγραφο ασφαλείας αν θέλετε να το διατηρήσετε.</string>
+    <string name="action_confirm_reset_database">Διαγραφή όλων &amp; επαναφορά</string>
+    <string name="reset_database_success">Η βάση δεδομένων NexusTS επαναφέρθηκε σε κενό θησαυροφυλάκιο.</string>
+    <string name="dialog_royal_import_title">Εισαγωγή εγγράφου Royal TS</string>
+    <string name="royal_import_mode_new_folder">Δημιουργία νέου φακέλου για τα εισερχόμενα στοιχεία</string>
+    <string name="royal_import_mode_root">Τοποθέτηση της ιεραρχίας στο κύριο επίπεδο</string>
+    <string name="royal_import_mode_replace_all">Διαγραφή όλων των υπαρχουσών συνδέσεων και αντικατάσταση</string>
+    <string name="royal_import_folder_name_label">Όνομα νέου φακέλου</string>
+    <string name="system_credentials_folder_title">Διαπιστευτήρια</string>
+    <string name="credentials_system_folder_only_hint">Ο φάκελος συστήματος Διαπιστευτήρια μπορεί να περιέχει μόνο διαπιστευτήρια.</string>
+    <string name="credentials_system_folder_reserved_error">Το \"Credentials\" είναι δεσμευμένο για τον φάκελο συστήματος στο κάτω μέρος της πλαϊνής στήλης.</string>
+    <string name="action_edit_credential">Επεξεργασία διαπιστευτηρίων…</string>
+    <string name="action_copy_diagnostic_report">Αντιγραφή διαγνωστικών</string>
+
     <!-- Language Names -->
     <string name="lang_en">English</string>
     <string name="lang_de">Deutsch</string>

@@ -152,10 +152,16 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
     // MARK: 5. Vector Clock & 3-Way Object-Level Delta Merge + Tombstones
 
     func testVectorClock3WayDeltaMergeAndTombstones() {
-        var androidDoc = NxtsVaultDocument.sampleStarterVault()
+        let starter = NxtsVaultDocument.sampleStarterVault()
+        XCTAssertTrue(starter.connections.isEmpty, "v1.2.0 starter vault must contain zero example connections")
+        XCTAssertTrue(starter.folders.isEmpty, "v1.2.0 starter vault must contain zero example folders")
+        XCTAssertTrue(starter.credentials.isEmpty, "v1.2.0 starter vault must contain zero example credentials")
+
+        let sharedConn = VaultConnection(id: "c-shared-01", name: "shared-bastion", host: "10.0.10.5", protocolType: .SSH)
+        var androidDoc = NxtsVaultDocument(connections: [sharedConn])
         var macDoc = androidDoc
 
-        let deletedId = androidDoc.connections[0].id
+        let deletedId = sharedConn.id
         androidDoc.tombstonedObjectIds.insert(deletedId)
         androidDoc.connections.removeAll { $0.id == deletedId }
         androidDoc.vectorClock["android"] = 2
@@ -173,7 +179,14 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
     // MARK: 6. Royal TS .rtsx & CSV Import/Export + BSP Tiling + Rust VT/Ed25519 FFI
 
     func testRoyalTsAndCsvExportImportAndNativeEngines() throws {
-        let doc = NxtsVaultDocument.sampleStarterVault()
+        let doc = NxtsVaultDocument(
+            name: "Roundtrip Fleet",
+            folders: [VaultFolder(id: "f-eu", name: "Europe")],
+            connections: [
+                VaultConnection(id: "c-rdp", parentFolderId: "f-eu", name: "EU-DC01", host: "10.10.0.10", protocolType: .RDP),
+                VaultConnection(id: "c-ssh", parentFolderId: "f-eu", name: "EU-Bastion", host: "10.10.0.20", protocolType: .SSH)
+            ]
+        )
 
         let rtsxBytes = try VaultDocumentExporter.export(document: doc, format: .rtsx)
         let importedRtsx = try EnterpriseVaultFormatImporter.importData(rtsxBytes, fileName: "team.rtsx")
@@ -290,11 +303,12 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
         )
         XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("1.1.8", isNewerThan: "1.1.7"))
         XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("1.1.9", isNewerThan: "1.1.8"))
-        XCTAssertFalse(MacGitHubReleaseUpdater.compareSemver("1.1.8", isNewerThan: "1.1.8"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("1.2.0", isNewerThan: "1.1.9"))
+        XCTAssertFalse(MacGitHubReleaseUpdater.compareSemver("1.2.0", isNewerThan: "1.2.0"))
     }
 
     func testV118LocalizationUpgradeVersionAndVaultReplacementCompatibility() throws {
-        XCTAssertEqual(MacGitHubReleaseUpdater.currentVersion, "1.1.9")
+        XCTAssertEqual(MacGitHubReleaseUpdater.currentVersion, "1.2.0")
 
         for lang in NexusAppLanguage.allCases {
             let catalog = LocalizedWorkspaceStrings.catalog(for: lang)
@@ -303,9 +317,14 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
             XCTAssertFalse(catalog.startAllRdp.isEmpty)
             XCTAssertFalse(catalog.deleteFolderAndContents.isEmpty)
             XCTAssertFalse(catalog.deleteFolderKeepContents.isEmpty)
+            XCTAssertFalse(catalog.royalImportTitle.isEmpty)
+            XCTAssertFalse(catalog.resetDatabaseTitle.isEmpty)
+            XCTAssertFalse(catalog.systemCredentialsFolder.isEmpty)
+            XCTAssertFalse(catalog.newSmartFolder.isEmpty)
+            XCTAssertFalse(catalog.editConnection.isEmpty)
         }
 
-        // Verify a persisted v1.1.7 .nxts v2 vault with nested folders + RDP/SSH hosts upgrades seamlessly in v1.1.8
+        // Verify a persisted v1.1.7 .nxts v2 vault with nested folders + RDP/SSH hosts upgrades seamlessly in v1.2.0
         let rootFolder = VaultFolder(id: "f-dc", name: "Datacenter Europe", sortOrder: 0)
         let subFolder = VaultFolder(id: "f-win", parentFolderId: rootFolder.id, name: "Windows RDS Farm", sortOrder: 1)
         let rdp1 = VaultConnection(id: "c-rdp-1", parentFolderId: rootFolder.id, name: "DC01", host: "10.10.1.10", protocolType: .RDP)
@@ -324,13 +343,13 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
             passphrase: NxtsVaultSerializer.defaultTransparentPassphrase,
             kdf: .interactiveFast
         )
-        let openedInV118 = try NxtsVaultSerializer.open(
+        let openedInV120 = try NxtsVaultSerializer.open(
             sealedData: sealed,
             passphrase: NxtsVaultSerializer.defaultTransparentPassphrase
         )
-        XCTAssertEqual(openedInV118.documentId, "doc-upgrade-v117-to-v118")
-        XCTAssertEqual(openedInV118.folders.count, 2)
-        XCTAssertEqual(openedInV118.connections.count, 3)
+        XCTAssertEqual(openedInV120.documentId, "doc-upgrade-v117-to-v118")
+        XCTAssertEqual(openedInV120.folders.count, 2)
+        XCTAssertEqual(openedInV120.connections.count, 3)
     }
 
     func testIntelligentSidebarProtocolGroupingSuppressesSingleTypeAndGroupsMixedTypes() {
@@ -354,5 +373,83 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
         XCTAssertTrue(mixedGroups.allSatisfy(\.showsHeader), "Mixed-protocol folder must group by connection type with subtle headers")
         XCTAssertEqual(mixedGroups[0].connections.map(\.id), ["r3"])
         XCTAssertEqual(mixedGroups[1].connections.map(\.id), ["s1", "s2"])
+    }
+
+    func testV120CleanVaultRoyalTsPlacementSmartFoldersAndErrorHandling() throws {
+        // 1. Legacy starter demo objects stripped while preserving user items
+        let dirtyDoc = NxtsVaultDocument(
+            folders: [
+                VaultFolder(id: "folder-prod-core", name: "Demo Prod"),
+                VaultFolder(id: "f-creds-root", name: "Credentials"),
+                VaultFolder(id: "f-real", name: "Customer Prod")
+            ],
+            connections: [
+                VaultConnection(id: "conn-bastion-01", name: "Demo Bastion", host: "10.0.0.1", protocolType: .SSH),
+                VaultConnection(id: "c-real", parentFolderId: "f-real", name: "Real-Host", host: "10.99.0.1", protocolType: .RDP)
+            ],
+            credentials: [
+                VaultCredential(id: "cred-prod-ops", name: "Demo Ops", username: "ops"),
+                VaultCredential(id: "cred-real", parentFolderId: "f-creds-root", name: "Real Admin", username: "admin")
+            ]
+        )
+        let sanitized = VaultHierarchySanitizer.sanitize(dirtyDoc)
+        XCTAssertEqual(sanitized.folders.map(\.id), ["f-real"])
+        XCTAssertEqual(sanitized.connections.map(\.id), ["c-real"])
+        XCTAssertEqual(sanitized.credentials.map(\.id), ["cred-real"])
+        XCTAssertNil(sanitized.credentials.first?.parentFolderId)
+
+        // 2. Royal TS placement modes (createNewFolder, placeAtRoot, replaceExisting) + built-in Connections unwrap
+        let importedRoyal = NxtsVaultDocument(
+            name: "Zurich DC",
+            folders: [
+                VaultFolder(id: "r-conns", name: "Connections"),
+                VaultFolder(id: "r-zrh", parentFolderId: "r-conns", name: "Zurich Core")
+            ],
+            connections: [
+                VaultConnection(id: "r-c1", parentFolderId: "r-zrh", name: "ZRH-DC01", host: "10.41.0.10", protocolType: .RDP)
+            ]
+        )
+        let inNewFolder = RoyalTsImportMerger.applyPlacement(
+            existingDoc: sanitized,
+            rawImportedDoc: importedRoyal,
+            mode: .createNewFolder,
+            newFolderName: "Zurich Import"
+        )
+        let wrapper = try XCTUnwrap(inNewFolder.folders.first(where: { $0.name == "Zurich Import" }))
+        let zrhFolder = try XCTUnwrap(inNewFolder.folders.first(where: { $0.name == "Zurich Core" }))
+        XCTAssertEqual(zrhFolder.parentFolderId, wrapper.id)
+        XCTAssertEqual(inNewFolder.connections.count, 2)
+
+        let replaced = RoyalTsImportMerger.applyPlacement(
+            existingDoc: sanitized,
+            rawImportedDoc: importedRoyal,
+            mode: .replaceExisting
+        )
+        XCTAssertEqual(replaced.folders.map(\.name), ["Zurich Core"])
+        XCTAssertEqual(replaced.connections.map(\.name), ["ZRH-DC01"])
+
+        // 3. SmartFolder scopeFolderId, excludeTags, and regex validation
+        XCTAssertNil(PropertyInheritanceResolver.validateSmartFolderRegex("^10\\.41\\..*"))
+        XCTAssertNotNil(PropertyInheritanceResolver.validateSmartFolderRegex("[unclosed"))
+        let smart = SmartFolder(
+            name: "Scoped Zurich RDP",
+            filter: SmartFolderFilter(
+                includeProtocols: [.RDP],
+                excludeTags: ["retired"],
+                scopeFolderId: wrapper.id
+            )
+        )
+        let matches = PropertyInheritanceResolver.evaluateSmartFolder(smart, in: inNewFolder)
+        XCTAssertEqual(matches.map(\.name), ["ZRH-DC01"])
+
+        // 4. NexusErrorClassifier FreeRDP error diagnostics
+        let rdpErr = NexusErrorClassifier.classifyRdpError(
+            host: "10.41.0.10",
+            port: 3389,
+            rawNativeError: "[0x00020009] ERRCONNECT_AUTHENTICATION_FAILED",
+            connectionId: "r-c1"
+        )
+        XCTAssertEqual(rdpErr.category, .authenticationFailed)
+        XCTAssertEqual(rdpErr.recoveryConnectionId, "r-c1")
     }
 }

@@ -200,6 +200,35 @@
     <string name="action_delete_folder_keep_contents">Nur Ordner löschen (Elemente nach oben verschieben)</string>
     <string name="nav_studios_menu">Studios</string>
 
+    <!-- v1.2.0 Royal TS Import, Systemordner Anmeldeinformationen, Intelligente Ordner, Datenbank-Reset & Fehlerdiagnose -->
+    <string name="action_edit_smart_folder">Intelligenten Ordner bearbeiten…</string>
+    <string name="action_duplicate_smart_folder">Intelligenten Ordner duplizieren</string>
+    <string name="smart_folder_all_folders">Alle Ordner (Gesamter Tresor)</string>
+    <string name="smart_folder_scope_label">Ordnerbereich</string>
+    <string name="smart_folder_exclude_tags_label">Tags ausschließen (kommagetrennt)</string>
+    <string name="smart_folder_invalid_regex_error">Ungültiger regulärer Ausdruck</string>
+    <string name="smart_folder_preview_count_format">Gefundene Verbindungen (%1$d)</string>
+    <string name="action_new_dynamic_folder">Neuer dynamischer Ordner</string>
+    <string name="action_edit_dynamic_folder">Dynamischen Ordner bearbeiten…</string>
+    <string name="action_duplicate_dynamic_folder">Dynamischen Ordner duplizieren</string>
+    <string name="action_reset_database">NexusTS-Datenbank zurücksetzen…</string>
+    <string name="reset_database_title">NexusTS-Datenbank zurücksetzen</string>
+    <string name="reset_database_warning_body">Löscht dauerhaft alle lokalen Verbindungen, Ordner, Anmeldeinformationen, Vorlagen und Aufgaben auf diesem Gerät.</string>
+    <string name="dialog_reset_database_title">NexusTS-Datenbank zurücksetzen?</string>
+    <string name="dialog_reset_database_message">Dadurch werden alle lokalen Verbindungen, Ordner, Anmeldeinformationen, Vorlagen und Aufgaben auf diesem Gerät dauerhaft gelöscht. Exportieren Sie zuvor ein Backup, wenn Sie eine Kopie behalten möchten.</string>
+    <string name="action_confirm_reset_database">Alles löschen &amp; Datenbank zurücksetzen</string>
+    <string name="reset_database_success">Die NexusTS-Datenbank wurde auf einen leeren Tresor zurückgesetzt.</string>
+    <string name="dialog_royal_import_title">Royal TS-Dokument importieren</string>
+    <string name="royal_import_mode_new_folder">Neuen Ordner für importierte Elemente erstellen</string>
+    <string name="royal_import_mode_root">Importierte Struktur auf oberster Ebene einfügen</string>
+    <string name="royal_import_mode_replace_all">Alle vorhandenen Verbindungen löschen und ersetzen</string>
+    <string name="royal_import_folder_name_label">Name des neuen Ordners</string>
+    <string name="system_credentials_folder_title">Anmeldeinformationen</string>
+    <string name="credentials_system_folder_only_hint">Der Systemordner „Anmeldeinformationen“ darf nur Anmeldeinformationen enthalten. Verbindungen und Ordner können dort nicht abgelegt werden.</string>
+    <string name="credentials_system_folder_reserved_error">„Credentials“ / „Anmeldeinformationen“ ist für den Systemordner unten in der Seitenleiste reserviert.</string>
+    <string name="action_edit_credential">Anmeldeinformationen bearbeiten…</string>
+    <string name="action_copy_diagnostic_report">Diagnosebericht kopieren</string>
+
     <!-- Language Names -->
     <string name="lang_en">English</string>
     <string name="lang_de">Deutsch</string>

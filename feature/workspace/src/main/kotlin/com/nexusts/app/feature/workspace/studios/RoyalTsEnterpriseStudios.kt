@@ -2108,7 +2108,9 @@ fun ConnectWithOptionsDialog(
 }
 
 /**
- * Interactive Creator for Royal TS [SmartFolder] Dynamic Rules.
+ * Interactive Creator & Editor for Royal TS [SmartFolder] Intelligent Folder Rules.
+ * Supports multi-protocol filter chips, folder subtree scope, include/exclude tags,
+ * OS family, environment, live regex validation, and live matched-connection preview.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -2116,23 +2118,106 @@ fun NewSmartFolderDialog(
     visible: Boolean,
     strings: WorkspaceLocalizedStrings,
     onDismiss: () -> Unit,
-    onSaveSmartFolder: (SmartFolder) -> Unit
+    onSaveSmartFolder: (SmartFolder) -> Unit,
+    existingSmartFolder: SmartFolder? = null,
+    allFolders: List<VaultFolder> = emptyList(),
+    validateRegex: (String?) -> String? = { null },
+    previewMatches: (SmartFolderFilter) -> List<VaultConnection> = { emptyList() },
+    onDeleteSmartFolder: ((String) -> Unit)? = null
 ) {
     if (!visible) return
-    var name by remember { mutableStateOf("") }
-    var osFilter by remember { mutableStateOf("") }
-    var envFilter by remember { mutableStateOf("") }
-    var hostRegex by remember { mutableStateOf("") }
-    var tagsCsv by remember { mutableStateOf("") }
+
+    var name by remember(existingSmartFolder) { mutableStateOf(existingSmartFolder?.name.orEmpty()) }
+    var selectedProtocols by remember(existingSmartFolder) {
+        mutableStateOf<Set<VaultProtocolType>>(
+            existingSmartFolder?.filter?.includeProtocols?.toSet() ?: emptySet()
+        )
+    }
+    var scopeFolderId by remember(existingSmartFolder) {
+        mutableStateOf(existingSmartFolder?.filter?.scopeFolderId)
+    }
+    var scopeMenuOpen by remember { mutableStateOf(false) }
+    var osFilter by remember(existingSmartFolder) {
+        mutableStateOf(existingSmartFolder?.filter?.osFamilyFilter.orEmpty())
+    }
+    var envFilter by remember(existingSmartFolder) {
+        mutableStateOf(existingSmartFolder?.filter?.environmentFilter.orEmpty())
+    }
+    var hostRegex by remember(existingSmartFolder) {
+        mutableStateOf(existingSmartFolder?.filter?.hostPatternRegex.orEmpty())
+    }
+    var includeTagsCsv by remember(existingSmartFolder) {
+        mutableStateOf(existingSmartFolder?.filter?.includeTags?.joinToString(", ").orEmpty())
+    }
+    var excludeTagsCsv by remember(existingSmartFolder) {
+        mutableStateOf(existingSmartFolder?.filter?.excludeTags?.joinToString(", ").orEmpty())
+    }
+
+    val regexError = remember(hostRegex, validateRegex) { validateRegex(hostRegex) }
+
+    val draftFilter = remember(
+        selectedProtocols,
+        scopeFolderId,
+        osFilter,
+        envFilter,
+        hostRegex,
+        includeTagsCsv,
+        excludeTagsCsv,
+        regexError
+    ) {
+        SmartFolderFilter(
+            includeTags = includeTagsCsv.split(',').map { it.trim() }.filter { it.isNotEmpty() },
+            excludeTags = excludeTagsCsv.split(',').map { it.trim() }.filter { it.isNotEmpty() },
+            includeProtocols = selectedProtocols.toList(),
+            osFamilyFilter = osFilter.ifBlank { null },
+            environmentFilter = envFilter.trim().ifBlank { null },
+            hostPatternRegex = if (regexError == null) hostRegex.trim().ifBlank { null } else null,
+            scopeFolderId = scopeFolderId
+        )
+    }
+
+    val liveMatches = remember(draftFilter, previewMatches) {
+        if (regexError != null) emptyList() else previewMatches(draftFilter)
+    }
+
+    val commonProtocols = remember {
+        listOf(
+            VaultProtocolType.RDP,
+            VaultProtocolType.SSH,
+            VaultProtocolType.SFTP,
+            VaultProtocolType.VNC,
+            VaultProtocolType.WEB_PAGE,
+            VaultProtocolType.PROXMOX_VE,
+            VaultProtocolType.VMWARE_VSPHERE,
+            VaultProtocolType.KUBERNETES_POD,
+            VaultProtocolType.DOCKER_CONTAINER,
+            VaultProtocolType.SERIAL,
+            VaultProtocolType.TELNET,
+            VaultProtocolType.APPLE_SCREEN_SHARING
+        )
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
         icon = {
             Icon(Icons.Outlined.AutoAwesome, contentDescription = null, tint = MaterialTheme.colorScheme.tertiary)
         },
-        title = { Text(strings.actionNewSmartFolder) },
+        title = {
+            Text(
+                if (existingSmartFolder != null) {
+                    strings.actionEditSmartFolder
+                } else {
+                    strings.actionNewSmartFolder
+                }
+            )
+        },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
                 OutlinedTextField(
                     value = name,
                     onValueChange = { name = it },
@@ -2140,11 +2225,86 @@ fun NewSmartFolderDialog(
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
+
+                // Scope Folder Subtree Selector
+                if (allFolders.isNotEmpty()) {
+                    val scopeLabel = allFolders.firstOrNull { it.id == scopeFolderId }?.name
+                        ?: strings.smartFolderAllFolders
+                    Box(modifier = Modifier.fillMaxWidth()) {
+                        OutlinedButton(
+                            onClick = { scopeMenuOpen = true },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(Icons.Outlined.Folder, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("${strings.smartFolderScopeLabel}: $scopeLabel")
+                        }
+                        DropdownMenu(
+                            expanded = scopeMenuOpen,
+                            onDismissRequest = { scopeMenuOpen = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text(strings.smartFolderAllFolders) },
+                                onClick = {
+                                    scopeFolderId = null
+                                    scopeMenuOpen = false
+                                }
+                            )
+                            allFolders.forEach { folder ->
+                                DropdownMenuItem(
+                                    text = { Text(folder.name) },
+                                    onClick = {
+                                        scopeFolderId = folder.id
+                                        scopeMenuOpen = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Multi-Select Protocol Filter Chips
+                Text(
+                    text = strings.dialogFieldProtocol,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.secondary
+                )
                 FlowRow(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    listOf("" to "Any OS", "Windows" to "Windows", "Linux" to "Linux").forEach { (value, label) ->
+                    NexusChoiceChip(
+                        selected = selectedProtocols.isEmpty(),
+                        onClick = { selectedProtocols = emptySet() },
+                        label = "All"
+                    )
+                    commonProtocols.forEach { proto ->
+                        val active = proto in selectedProtocols
+                        NexusChoiceChip(
+                            selected = active,
+                            onClick = {
+                                selectedProtocols = if (active) {
+                                    selectedProtocols - proto
+                                } else {
+                                    selectedProtocols + proto
+                                }
+                            },
+                            label = proto.name
+                        )
+                    }
+                }
+
+                // OS Family Filter Chips
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    listOf(
+                        "" to "Any OS",
+                        "Windows" to "Windows",
+                        "Linux" to "Linux",
+                        "macOS" to "macOS"
+                    ).forEach { (value, label) ->
                         NexusChoiceChip(
                             selected = osFilter == value,
                             onClick = { osFilter = value },
@@ -2152,43 +2312,107 @@ fun NewSmartFolderDialog(
                         )
                     }
                 }
+
                 OutlinedTextField(
                     value = envFilter,
                     onValueChange = { envFilter = it },
-                    label = { Text("Environment (e.g. PROD, LAB)") },
+                    label = { Text("Environment (e.g. PROD, STAGE, LAB)") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
+
+                OutlinedTextField(
+                    value = includeTagsCsv,
+                    onValueChange = { includeTagsCsv = it },
+                    label = { Text("Include Tags (comma-separated)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                OutlinedTextField(
+                    value = excludeTagsCsv,
+                    onValueChange = { excludeTagsCsv = it },
+                    label = { Text(strings.smartFolderExcludeTagsLabel) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
                 OutlinedTextField(
                     value = hostRegex,
                     onValueChange = { hostRegex = it },
-                    label = { Text("Host Regex (optional)") },
+                    label = { Text("Name / Host Regex (optional)") },
+                    isError = regexError != null,
+                    supportingText = if (regexError != null) {
+                        {
+                            Text(
+                                text = "${strings.smartFolderInvalidRegexError}: $regexError",
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        }
+                    } else {
+                        null
+                    },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
-                OutlinedTextField(
-                    value = tagsCsv,
-                    onValueChange = { tagsCsv = it },
-                    label = { Text("Required Tags (comma-separated)") },
-                    singleLine = true,
+
+                // Live Matched Connections Preview Card
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainer,
                     modifier = Modifier.fillMaxWidth()
-                )
+                ) {
+                    Column(
+                        modifier = Modifier.padding(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(
+                            text = String.format(strings.smartFolderPreviewCountFormat, liveMatches.size),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.tertiary
+                        )
+                        if (liveMatches.isNotEmpty()) {
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                liveMatches.take(6).forEach { conn ->
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = MaterialTheme.colorScheme.surfaceContainerHigh
+                                    ) {
+                                        Text(
+                                            text = "${conn.name} (${conn.protocol.name})",
+                                            style = NexusTheme.monospace.keycapShortcut,
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                }
+                                if (liveMatches.size > 6) {
+                                    Text(
+                                        text = "+${liveMatches.size - 6}",
+                                        style = NexusTheme.monospace.keycapShortcut,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 3.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
             }
         },
         confirmButton = {
             Button(
-                enabled = name.isNotBlank(),
+                enabled = name.isNotBlank() && regexError == null,
                 onClick = {
-                    val tags = tagsCsv.split(',').map { it.trim() }.filter { it.isNotEmpty() }
                     onSaveSmartFolder(
                         SmartFolder(
+                            id = existingSmartFolder?.id ?: java.util.UUID.randomUUID().toString(),
                             name = name.trim(),
-                            filter = SmartFolderFilter(
-                                includeTags = tags,
-                                osFamilyFilter = osFilter.ifBlank { null },
-                                environmentFilter = envFilter.trim().ifBlank { null },
-                                hostPatternRegex = hostRegex.trim().ifBlank { null }
-                            )
+                            filter = draftFilter
                         )
                     )
                 }
@@ -2197,35 +2421,76 @@ fun NewSmartFolderDialog(
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text(strings.dialogActionCancel) }
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                if (existingSmartFolder != null && onDeleteSmartFolder != null) {
+                    TextButton(
+                        onClick = {
+                            onDeleteSmartFolder(existingSmartFolder.id)
+                            onDismiss()
+                        }
+                    ) {
+                        Text(strings.actionDeleteItem, color = MaterialTheme.colorScheme.error)
+                    }
+                }
+                TextButton(onClick = onDismiss) {
+                    Text(strings.dialogActionCancel)
+                }
+            }
         }
     )
 }
 
 /**
- * Interactive Creator for Royal TS [DynamicFolder] Inventory (`JSON_HTTP_API` JSON array or HTTPS URL).
+ * Interactive Creator & Editor for Royal TS [DynamicFolder] Inventory (`JSON_HTTP_API` JSON array or HTTPS URL).
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun NewDynamicFolderDialog(
     visible: Boolean,
     folders: List<VaultFolder> = emptyList(),
     strings: WorkspaceLocalizedStrings,
     onDismiss: () -> Unit,
-    onSaveDynamicFolder: (DynamicFolder) -> Unit
+    onSaveDynamicFolder: (DynamicFolder) -> Unit,
+    existingDynamicFolder: DynamicFolder? = null,
+    onDeleteDynamicFolder: ((String) -> Unit)? = null
 ) {
     if (!visible) return
-    var name by remember { mutableStateOf("") }
-    var selectedParentId by remember { mutableStateOf<String?>(null) }
+    var name by remember(existingDynamicFolder) { mutableStateOf(existingDynamicFolder?.name.orEmpty()) }
+    var selectedParentId by remember(existingDynamicFolder) {
+        mutableStateOf(existingDynamicFolder?.parentFolderId)
+    }
+    var interpreter by remember(existingDynamicFolder) {
+        mutableStateOf(existingDynamicFolder?.interpreter ?: DynamicScriptInterpreter.JSON_HTTP_API)
+    }
     var parentMenuOpen by remember { mutableStateOf(false) }
-    var scriptPayload by remember {
-        mutableStateOf(
-            """
-            [
-              { "name": "k8s-edge-01", "host": "10.90.0.11", "protocol": "SSH" },
-              { "name": "win-hyperv-01", "host": "10.90.0.25", "protocol": "RDP" }
-            ]
-            """.trimIndent()
-        )
+    var scriptPayload by remember(existingDynamicFolder) {
+        mutableStateOf(existingDynamicFolder?.scriptOrEndpointPayload.orEmpty())
+    }
+
+    val jsonValidationError = remember(interpreter, scriptPayload) {
+        val trimmed = scriptPayload.trim()
+        if (trimmed.isEmpty()) {
+            null
+        } else if (interpreter == DynamicScriptInterpreter.JSON_HTTP_API &&
+            !trimmed.startsWith("https://", ignoreCase = true) &&
+            !trimmed.startsWith("http://", ignoreCase = true)
+        ) {
+            runCatching {
+                if (trimmed.startsWith("[")) {
+                    org.json.JSONArray(trimmed)
+                } else if (trimmed.startsWith("{")) {
+                    org.json.JSONObject(trimmed)
+                } else {
+                    throw IllegalArgumentException("Expected HTTPS URL or JSON array/object.")
+                }
+            }.exceptionOrNull()?.localizedMessage ?: if (!trimmed.startsWith("[") && !trimmed.startsWith("{")) {
+                "Expected HTTPS URL or JSON array/object."
+            } else {
+                null
+            }
+        } else {
+            null
+        }
     }
 
     AlertDialog(
@@ -2233,7 +2498,15 @@ fun NewDynamicFolderDialog(
         icon = {
             Icon(Icons.Outlined.DynamicFeed, contentDescription = null, tint = MaterialTheme.colorScheme.secondary)
         },
-        title = { Text(strings.vaultSectionDynamicFolders) },
+        title = {
+            Text(
+                if (existingDynamicFolder != null) {
+                    strings.actionEditDynamicFolder
+                } else {
+                    strings.actionNewDynamicFolder
+                }
+            )
+        },
         text = {
             Column(
                 modifier = Modifier.verticalScroll(rememberScrollState()),
@@ -2246,6 +2519,18 @@ fun NewDynamicFolderDialog(
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    DynamicScriptInterpreter.entries.forEach { candidate ->
+                        NexusChoiceChip(
+                            selected = interpreter == candidate,
+                            onClick = { interpreter = candidate },
+                            label = candidate.name
+                        )
+                    }
+                }
                 if (folders.isNotEmpty()) {
                     val parentLabel = folders.firstOrNull { it.id == selectedParentId }?.name ?: "-"
                     Box(modifier = Modifier.fillMaxWidth()) {
@@ -2282,6 +2567,23 @@ fun NewDynamicFolderDialog(
                     value = scriptPayload,
                     onValueChange = { scriptPayload = it },
                     label = { Text("JSON Inventory Array or https:// Inventory Endpoint") },
+                    placeholder = {
+                        Text(
+                            text = "[ { \"name\": \"server-01\", \"host\": \"server.example.internal\", \"protocol\": \"SSH\" } ]",
+                            style = MaterialTheme.typography.labelSmall
+                        )
+                    },
+                    isError = jsonValidationError != null,
+                    supportingText = if (jsonValidationError != null) {
+                        {
+                            Text(
+                                text = jsonValidationError,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        }
+                    } else {
+                        null
+                    },
                     minLines = 4,
                     maxLines = 8,
                     modifier = Modifier.fillMaxWidth()
@@ -2290,13 +2592,14 @@ fun NewDynamicFolderDialog(
         },
         confirmButton = {
             Button(
-                enabled = name.isNotBlank() && scriptPayload.isNotBlank(),
+                enabled = name.isNotBlank() && scriptPayload.isNotBlank() && jsonValidationError == null,
                 onClick = {
                     onSaveDynamicFolder(
                         DynamicFolder(
+                            id = existingDynamicFolder?.id ?: java.util.UUID.randomUUID().toString(),
                             parentFolderId = selectedParentId,
                             name = name.trim(),
-                            interpreter = DynamicScriptInterpreter.JSON_HTTP_API,
+                            interpreter = interpreter,
                             scriptOrEndpointPayload = scriptPayload.trim()
                         )
                     )
@@ -2306,7 +2609,21 @@ fun NewDynamicFolderDialog(
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text(strings.dialogActionCancel) }
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                if (existingDynamicFolder != null && onDeleteDynamicFolder != null) {
+                    TextButton(
+                        onClick = {
+                            onDeleteDynamicFolder(existingDynamicFolder.id)
+                            onDismiss()
+                        }
+                    ) {
+                        Text(strings.actionDeleteItem, color = MaterialTheme.colorScheme.error)
+                    }
+                }
+                TextButton(onClick = onDismiss) {
+                    Text(strings.dialogActionCancel)
+                }
+            }
         }
     )
 }

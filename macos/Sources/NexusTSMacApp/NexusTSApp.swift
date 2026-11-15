@@ -59,12 +59,25 @@ public struct NexusTSApp: App {
 
     private func handleIncomingURL(_ url: URL) {
         if url.isFileURL {
-            _ = try? store.importExternalVaultFile(url: url)
+            do {
+                _ = try store.importExternalVaultFile(url: url)
+            } catch {
+                store.reportError(error, operationTitle: "Vault File Open Failed")
+            }
         } else if let adHoc = QuickConnectParser.parseAdHocUri(url.absoluteString) {
             store.openConnection(
                 adHoc.toAdHocVaultConnection(),
                 adHocUsername: adHoc.username,
                 adHocDomain: adHoc.domain
+            )
+        } else {
+            store.reportAppError(
+                NexusAppError(
+                    category: .validation,
+                    title: "Unsupported Connection URI",
+                    userMessage: "Could not parse the incoming URI: \(url.absoluteString)",
+                    remediationHint: "Supported schemes include ssh://, rdp://, vnc://, ard://, sftp://, serial://, k8s://, and docker://."
+                )
             )
         }
     }
@@ -78,17 +91,35 @@ struct NexusMenuBarCommands: Commands {
     var body: some Commands {
         CommandGroup(after: .newItem) {
             Button("New Connection…") {
-                store.newConnectionInitialFolderId = store.selectedFolderId
+                let targetFolder = store.selectedFolderId == VaultHierarchySanitizer.systemCredentialsFolderId
+                    ? nil
+                    : store.selectedFolderId
+                store.newConnectionInitialFolderId = targetFolder
                 store.newConnectionInitialProtocol = .SSH
                 store.isPresentingNewConnectionSheet = true
             }
             .keyboardShortcut("n", modifiers: [.command])
 
             Button("New Folder…") {
-                store.newFolderInitialParentId = store.selectedFolderId
+                let parentFolder = store.selectedFolderId == VaultHierarchySanitizer.systemCredentialsFolderId
+                    ? nil
+                    : store.selectedFolderId
+                store.newFolderInitialParentId = parentFolder
                 store.isPresentingNewFolderSheet = true
             }
             .keyboardShortcut("n", modifiers: [.command, .shift])
+
+            Button(store.strings.newSmartFolder) {
+                store.isPresentingNewSmartFolderSheet = true
+            }
+
+            Button(store.strings.newDynamicFolder) {
+                store.isPresentingNewDynamicFolderSheet = true
+            }
+
+            Button(store.strings.newCredential) {
+                store.isPresentingNewCredentialSheet = true
+            }
 
             Button("New Local Terminal (/bin/zsh)") {
                 store.openLocalTerminal()
@@ -165,7 +196,7 @@ struct NexusMenuBarCommands: Commands {
             Divider()
 
             Button("Synchronize Cloud Vault Now") {
-                Task { await store.syncCloudNow() }
+                Task { await store.syncCloudNow(reportErrors: true) }
             }
             .keyboardShortcut("s", modifiers: [.command, .shift])
 
@@ -173,6 +204,14 @@ struct NexusMenuBarCommands: Commands {
                 store.lockVault()
             }
             .keyboardShortcut("l", modifiers: [.command, .shift])
+
+            Divider()
+
+            Button(role: .destructive) {
+                store.isPresentingResetDatabaseSheet = true
+            } label: {
+                Text(store.strings.resetDatabase)
+            }
         }
     }
 }

@@ -197,6 +197,8 @@ public:
     bool connect();
     void disconnect();
     bool is_connected() const noexcept { return connected_.load(); }
+    std::string last_error() const;
+    void set_last_error(std::string message);
 
     void on_surface_bound();
     void set_disp_context(void* disp_context) noexcept;
@@ -238,6 +240,8 @@ private:
     std::atomic<bool> stop_requested_{false};
     std::atomic<uint32_t> active_scale_percent_{100};
     std::mutex state_mutex_;
+    mutable std::mutex error_mutex_;
+    std::string last_error_;
     std::unique_ptr<RdpGdiSurfacePresenter> gdi_presenter_;
     RdpVirtualChannelHub channels_;
     RdpHardwareH264Decoder h264_decoder_;

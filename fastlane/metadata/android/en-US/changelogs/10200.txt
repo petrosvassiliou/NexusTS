@@ -1,0 +1,7 @@
+• Clean empty workspace on first launch (all demo projects & connections removed)
+• Royal TS (.rtsz / .rtsx / .rjson) import placement picker: new folder, root hierarchy, or replace existing
+• Full drag & drop reordering and nesting for folders & connections
+• Dedicated bottom-pinned Credentials system folder
+• Precise cursor-targeted right-click menus for folders & connections + Edit Connection
+• Full Intelligent & Dynamic Folder creation and editing
+• Database reset & rich error diagnostics

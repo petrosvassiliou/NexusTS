@@ -1,0 +1,7 @@
+• Espace de travail initial vierge sans projets ni connexions d’exemple
+• Choix d’emplacement à l’import Royal TS : nouveau dossier, racine ou remplacer l’existant
+• Glisser-déposer complet pour dossiers et connexions
+• Dossier système Identifiants épinglé en bas de la barre latérale
+• Menus contextuels clic droit précis pour dossiers et connexions + Modifier la connexion
+• Création et gestion complète des dossiers intelligents et dynamiques
+• Réinitialisation de la base et diagnostics d’erreurs

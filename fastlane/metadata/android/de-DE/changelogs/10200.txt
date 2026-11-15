@@ -1,0 +1,7 @@
+• Sauberer leerer Tresor ohne Beispielprojekte und Beispielverbindungen
+• Royal TS-Importauswahl: neuer Ordner, Stammverzeichnis oder vorhandene Verbindungen ersetzen
+• Drag & Drop für Ordner und Verbindungen inkl. Sortierung
+• Systemordner „Anmeldeinformationen“ fest unten in der Seitenleiste
+• Präzise Rechtsklick-Kontextmenüs für Ordner & Verbindungen inkl. Verbindung bearbeiten
+• Intelligente & dynamische Ordner erstellen und verwalten
+• Datenbank-Reset & detaillierte Fehlerdiagnose

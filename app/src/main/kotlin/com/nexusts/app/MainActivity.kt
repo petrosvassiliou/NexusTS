@@ -213,7 +213,11 @@ class MainActivity : AppCompatActivity() {
                     withContext(Dispatchers.IO) {
                         val kp = driveAuthManager.readVaultPassphraseOrNull(sharedVaultSnapshot.vaultDocument.documentId)
                         try {
-                            workspaceViewModel.sessionStore.persistVaultToDisk(filesDir, vaultSerializer, kp)
+                            runCatching {
+                                workspaceViewModel.sessionStore.persistVaultToDisk(filesDir, vaultSerializer, kp)
+                            }.onFailure { err ->
+                                workspaceViewModel.reportException(err, "Local Vault Save Failed")
+                            }
                         } finally {
                             kp?.fill('\u0000')
                         }
@@ -257,6 +261,11 @@ class MainActivity : AppCompatActivity() {
                                     sharedFolderId = driveAuthManager.resolveConfiguredSharedFolderId()
                                 )
                                 GoogleDriveVaultSyncEngine.triggerImmediateDeltaSync(this@MainActivity)
+                            }.onFailure { err ->
+                                workspaceViewModel.updateDriveSyncProgress(
+                                    false,
+                                    "Google Drive auto-sync staging failed: ${err.message}"
+                                )
                             }
                         } finally {
                             pass.fill('\u0000')
@@ -300,7 +309,7 @@ class MainActivity : AppCompatActivity() {
                         }.onSuccess {
                             workspaceViewModel.notifyUserMessage("Exported '$targetName' (${payload.size} bytes).")
                         }.onFailure { err ->
-                            workspaceViewModel.reportImportFailure("Export failed for '$targetName': ${err.message}")
+                            workspaceViewModel.reportException(err, "Export Failed ('$targetName')")
                         }
                     }
                 }
@@ -341,6 +350,8 @@ class MainActivity : AppCompatActivity() {
                             treeUri,
                             Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
                         )
+                    }.onFailure { err ->
+                        workspaceViewModel.reportException(err, "SAF Folder Permission Failed")
                     }
                     callback(treeUri.toString())
                 }
@@ -383,10 +394,15 @@ class MainActivity : AppCompatActivity() {
                         launchDetachedTabActivity(tab, targetDisplayId)
                     },
                     onRequestExportVault = { format ->
-                        val (suggestedFileName, payloadBytes) = workspaceViewModel.buildVaultExportPayload(format)
-                        pendingExportBytes = payloadBytes
-                        pendingExportFileName = suggestedFileName
-                        fileExportLauncher.launch(suggestedFileName)
+                        runCatching {
+                            workspaceViewModel.buildVaultExportPayload(format)
+                        }.onSuccess { (suggestedFileName, payloadBytes) ->
+                            pendingExportBytes = payloadBytes
+                            pendingExportFileName = suggestedFileName
+                            fileExportLauncher.launch(suggestedFileName)
+                        }.onFailure { err ->
+                            workspaceViewModel.reportException(err, "Vault Export Failed")
+                        }
                     },
                     initialOAuthWebClientId = effectiveInitialClientId,
                     initialSharedDriveFolderId = savedFolderId,
@@ -410,7 +426,11 @@ class MainActivity : AppCompatActivity() {
                         syncBiometricAndVaultSecurityState()
                         lifecycleScope.launch(Dispatchers.IO) {
                             try {
-                                workspaceViewModel.sessionStore.persistVaultToDisk(filesDir, vaultSerializer, chars)
+                                runCatching {
+                                    workspaceViewModel.sessionStore.persistVaultToDisk(filesDir, vaultSerializer, chars)
+                                }.onFailure { err ->
+                                    workspaceViewModel.reportException(err, "Local Vault Save Failed")
+                                }
                             } finally {
                                 chars.fill('\u0000')
                             }
@@ -536,6 +556,26 @@ class MainActivity : AppCompatActivity() {
                     onPickRdpSharedSafFolder = { onFolderSelected ->
                         pendingRdpSafFolderCallback = onFolderSelected
                         pickRdpSafFolderLauncher.launch(null)
+                    },
+                    onResetNexusDatabase = {
+                        lifecycleScope.launch {
+                            runCatching {
+                                biometricUnlockManager.clearEnrolledPassphrase()
+                                driveAuthManager.clearSavedVaultPassphrase()
+                                withContext(Dispatchers.IO) {
+                                    workspaceViewModel.sessionStore.resetLocalVaultDatabase(filesDir, vaultSerializer)
+                                }
+                            }.onSuccess { freshDoc ->
+                                workspaceViewModel.updateDriveAccountAndSafState(rememberVaultPassphrase = false)
+                                workspaceViewModel.resetWorkspaceStateAfterDatabaseWipe(
+                                    freshDoc = freshDoc,
+                                    confirmationMessage = localizedStrings.resetDatabaseSuccess
+                                )
+                                syncBiometricAndVaultSecurityState()
+                            }.onFailure { err ->
+                                workspaceViewModel.reportException(err, "Database Reset Failed")
+                            }
+                        }
                     }
                 )
             }
@@ -863,11 +903,17 @@ class MainActivity : AppCompatActivity() {
             "ssh", "rdp", "vnc", "sftp", "scp", "ftp", "ftps",
             "telnet", "serial", "k8s", "kubectl", "docker",
             "http", "https", "nexusts" -> {
-                AdHocConnectionSyntaxParser.parseOrNull(dataUri.toString())?.let { candidate ->
+                val parsed = AdHocConnectionSyntaxParser.parseOrNull(dataUri.toString())
+                if (parsed != null) {
                     workspaceViewModel.launchQuickCandidate(
-                        candidate = candidate,
+                        candidate = parsed,
                         placement = QuickLaunchPlacement.ACTIVE_PANE_TAB,
                         onDetachWindowRequested = { tab -> launchDetachedTabActivity(tab, null) }
+                    )
+                } else {
+                    workspaceViewModel.reportException(
+                        IllegalArgumentException("Invalid connection URI syntax: '$dataUri'"),
+                        "Invalid Connection URI"
                     )
                 }
             }
@@ -888,7 +934,7 @@ class MainActivity : AppCompatActivity() {
             }.onSuccess { (fileName, rawBytes) ->
                 workspaceViewModel.importVaultOrRtszBytes(fileName = fileName, bytes = rawBytes)
             }.onFailure { err ->
-                workspaceViewModel.reportImportFailure("Unable to read selected file: ${err.message}")
+                workspaceViewModel.reportImportFailure("Unable to read selected file: ${err.message}", err)
             }
         }
     }

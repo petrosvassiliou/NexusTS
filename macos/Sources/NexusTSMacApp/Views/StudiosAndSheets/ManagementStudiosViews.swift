@@ -273,10 +273,13 @@ public struct TemplatesStudioView: View {
                         }
                         Spacer()
                         Button("Spawn Connection") {
+                            let targetFolder = store.selectedFolderId == VaultHierarchySanitizer.systemCredentialsFolderId
+                                ? nil
+                                : store.selectedFolderId
                             let conn = VaultConnection(
-                                parentFolderId: store.selectedFolderId,
+                                parentFolderId: targetFolder,
                                 name: "\(tpl.name) Host",
-                                host: "10.0.0.10",
+                                host: "",
                                 protocolType: tpl.protocolType,
                                 inheritable: tpl.inheritable,
                                 settings: tpl.settings
@@ -324,8 +327,8 @@ public struct CredentialsStudioView: View {
     public var body: some View {
         HSplitView {
             List {
-                Section("Vault Credentials (\(store.document.credentials.count))") {
-                    ForEach(store.document.credentials) { cred in
+                Section("Vault Credentials (\(store.activeCredentials.count))") {
+                    ForEach(store.activeCredentials) { cred in
                         VStack(alignment: .leading, spacing: 6) {
                             HStack {
                                 Image(systemName: cred.privateKeyPem.isEmpty ? "key.fill" : "key.radiowaves.forward.fill")
@@ -366,6 +369,11 @@ public struct CredentialsStudioView: View {
 
                                 Spacer()
 
+                                Button("Edit…") {
+                                    store.editingCredential = cred
+                                }
+                                .controlSize(.mini)
+
                                 if !cred.publicKeyOpenSsh.isEmpty {
                                     Button("Copy Public Key") {
                                         NSPasteboard.general.clearContents()
@@ -394,10 +402,7 @@ public struct CredentialsStudioView: View {
                                 }
 
                                 Button(role: .destructive) {
-                                    store.commitMutation("Deleted credential \(cred.name)") { doc in
-                                        doc.tombstonedObjectIds.insert(cred.id)
-                                        doc.credentials.removeAll { $0.id == cred.id }
-                                    }
+                                    store.deleteCredential(cred.id)
                                 } label: {
                                     Image(systemName: "trash")
                                 }
@@ -428,9 +433,7 @@ public struct CredentialsStudioView: View {
                             secretPassword: credPassword,
                             totpSecretBase32: credTotpSecret
                         )
-                        store.commitMutation("Added credential \(created.name)") { doc in
-                            doc.credentials.append(created)
-                        }
+                        store.saveCredential(created)
                         credName = ""
                         credPassword = ""
                         credTotpSecret = ""
@@ -444,7 +447,10 @@ public struct CredentialsStudioView: View {
                         .foregroundStyle(.secondary)
 
                     Button {
-                        if let pair = try? NativeSshCryptoBridge.generateEd25519Keypair(comment: "\(NSUserName())@\(Host.current().localizedName ?? "macOS")") {
+                        do {
+                            let pair = try NativeSshCryptoBridge.generateEd25519Keypair(
+                                comment: "\(NSUserName())@\(Host.current().localizedName ?? "macOS")"
+                            )
                             let sshCred = VaultCredential(
                                 name: credName.isEmpty ? "Ed25519 SSH Key (\(pair.keyId.prefix(6)))" : credName,
                                 sourceKind: .SSH_KEY_PAIR,
@@ -453,11 +459,11 @@ public struct CredentialsStudioView: View {
                                 publicKeyOpenSsh: pair.publicKeyOpenSsh,
                                 keyFingerprintSha256: pair.sha256Fingerprint
                             )
-                            store.commitMutation("Generated Ed25519 SSH keypair") { doc in
-                                doc.credentials.append(sshCred)
-                            }
+                            store.saveCredential(sshCred)
                             NSPasteboard.general.clearContents()
                             NSPasteboard.general.setString(pair.publicKeyOpenSsh, forType: .string)
+                        } catch {
+                            store.reportError(error, operationTitle: "SSH Key Generation Failed")
                         }
                     } label: {
                         Label("Generate Ed25519 Keypair & Copy Public Key", systemImage: "wand.and.stars")
@@ -739,7 +745,7 @@ public struct CloudSyncStudioView: View {
 
                 HStack {
                     Button {
-                        Task { await store.syncCloudNow() }
+                        Task { await store.syncCloudNow(reportErrors: true) }
                     } label: {
                         Label("Synchronize & 3-Way Delta Merge Now", systemImage: "arrow.triangle.2.circlepath.icloud.fill")
                     }
@@ -772,8 +778,12 @@ public struct CloudSyncStudioView: View {
                         Spacer()
                         Button("Create & Link Shared Vault Here") {
                             let fileUrl = entry.url.appendingPathComponent("NexusTS-Shared-Vault.nxts")
-                            try? FileManager.default.createDirectory(at: entry.url, withIntermediateDirectories: true)
-                            try? store.linkCloudVaultURL(fileUrl)
+                            do {
+                                try FileManager.default.createDirectory(at: entry.url, withIntermediateDirectories: true)
+                                try store.linkCloudVaultURL(fileUrl)
+                            } catch {
+                                store.reportError(error, operationTitle: "Cloud Vault Link Failed")
+                            }
                         }
                         .controlSize(.small)
                     }
@@ -793,7 +803,7 @@ public struct CloudSyncStudioView: View {
                 SecureField("Google OAuth 2.0 Bearer Token (drive.file / drive.appdata)", text: $googleOauthBearerInput)
                 Button("Save Google Drive Token to macOS Keychain & Sync") {
                     MacKeychainAndBiometrics.shared.saveToken(googleOauthBearerInput, key: "gdrive_oauth_bearer")
-                    Task { await store.syncCloudNow() }
+                    Task { await store.syncCloudNow(reportErrors: true) }
                 }
                 .disabled(googleOauthBearerInput.trimmingCharacters(in: .whitespaces).isEmpty)
             }
@@ -804,8 +814,16 @@ public struct CloudSyncStudioView: View {
             allowedContentTypes: [.data],
             allowsMultipleSelection: false
         ) { res in
-            if case .success(let urls) = res, let url = urls.first {
-                try? store.linkCloudVaultURL(url)
+            switch res {
+            case .success(let urls):
+                guard let url = urls.first else { return }
+                do {
+                    try store.linkCloudVaultURL(url)
+                } catch {
+                    store.reportError(error, operationTitle: "Cloud Vault Link Failed")
+                }
+            case .failure(let error):
+                store.reportError(error, operationTitle: "File Picker Error")
             }
         }
         .onAppear {

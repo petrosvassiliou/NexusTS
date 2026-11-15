@@ -266,7 +266,9 @@ data class VaultFolder(
 @Serializable
 data class SmartFolderFilter(
     val includeTags: List<String> = emptyList(),
+    val excludeTags: List<String> = emptyList(),
     val includeProtocols: List<VaultProtocolType> = emptyList(),
+    val scopeFolderId: String? = null,
     val osFamilyFilter: String? = null,
     val hostPatternRegex: String? = null,
     val environmentFilter: String? = null

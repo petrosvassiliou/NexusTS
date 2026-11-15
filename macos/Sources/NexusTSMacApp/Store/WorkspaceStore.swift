@@ -43,6 +43,36 @@ public struct AuditLogEntry: Identifiable, Equatable {
     public let message: String
 }
 
+public enum FolderDropPlacement: String, Equatable, Sendable {
+    case before
+    case inside
+    case after
+}
+
+public struct PendingRoyalTsImport: Identifiable, Equatable, Sendable {
+    public let id: String
+    public let summary: ImportedVaultSummary
+    public let suggestedFolderName: String
+
+    public init(
+        id: String = UUID().uuidString.lowercased(),
+        summary: ImportedVaultSummary,
+        suggestedFolderName: String
+    ) {
+        self.id = id
+        self.summary = summary
+        let cleanDocName = summary.document.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanFile = suggestedFolderName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !cleanDocName.isEmpty && cleanDocName != "Imported Royal TS Vault" && cleanDocName != "NexusTS Vault" {
+            self.suggestedFolderName = cleanDocName
+        } else if !cleanFile.isEmpty {
+            self.suggestedFolderName = cleanFile
+        } else {
+            self.suggestedFolderName = "Imported Royal TS"
+        }
+    }
+}
+
 // MARK: - Persistent Live Terminal Runtime (Survives Tab Switch & Window Detach/Re-Dock)
 
 @MainActor
@@ -56,6 +86,8 @@ public final class LiveTerminalController: ObservableObject {
     @Published public private(set) var isConnected: Bool = false
     @Published public private(set) var statusBanner: String = "Initializing…"
     @Published public private(set) var activeForwardsCount: Int = 0
+    @Published public private(set) var portForwardWarnings: [String] = []
+    @Published public private(set) var lastConnectError: NexusAppError? = nil
     @Published public var isRecordingCast: Bool = false
 
     private let vtEngine: NativeVtTerminalEngine
@@ -109,10 +141,12 @@ public final class LiveTerminalController: ObservableObject {
             try pty.launchLoginShell(cols: currentCols, rows: currentRows)
             self.localPty = pty
             self.isConnected = true
+            self.lastConnectError = nil
             self.statusBanner = "Local macOS Login Shell (/bin/zsh)"
             startOutputPump()
         } catch {
             self.statusBanner = error.localizedDescription
+            self.lastConnectError = NexusErrorClassifier.classify(error, operationTitle: "Local Terminal Failed")
             feedBannerText("\r\n\u{1B}[31m[Local PTY Error] \(error.localizedDescription)\u{1B}[0m\r\n")
         }
     }
@@ -167,30 +201,40 @@ public final class LiveTerminalController: ObservableObject {
 
         let forwards = sshSettings.portForwards.filter(\.enabled)
         let startupCmd = sshSettings.startupCommand
-
         let terminalType = sshSettings.terminalType
+        let connId = connection.id
+        let connHost = connection.host
 
         Task { @MainActor [weak self] in
             do {
-                let (session, finalBoundCount) = try await Task.detached(priority: .userInitiated) { () -> (NativeSshSession, Int) in
+                let (session, finalBoundCount, warnings) = try await Task.detached(priority: .userInitiated) { () -> (NativeSshSession, Int, [String]) in
                     let session = try NativeSshSession.connect(spec: spec, bastion: bastionSpec, openPty: true)
                     var boundCount = 0
+                    var forwardFailures: [String] = []
                     for rule in forwards {
                         switch rule.kind {
                         case .LOCAL:
-                            try? session.startLocalPortForward(
-                                bindAddress: rule.bindAddress,
-                                bindPort: UInt16(clamping: rule.bindPort),
-                                targetHost: rule.targetHost,
-                                targetPort: UInt16(clamping: rule.targetPort)
-                            )
-                            boundCount += 1
+                            do {
+                                try session.startLocalPortForward(
+                                    bindAddress: rule.bindAddress,
+                                    bindPort: UInt16(clamping: rule.bindPort),
+                                    targetHost: rule.targetHost,
+                                    targetPort: UInt16(clamping: rule.targetPort)
+                                )
+                                boundCount += 1
+                            } catch {
+                                forwardFailures.append("L \(rule.bindAddress):\(rule.bindPort) → \(rule.targetHost):\(rule.targetPort): \(error.localizedDescription)")
+                            }
                         case .DYNAMIC_SOCKS5:
-                            try? session.startDynamicSocks5Forward(
-                                bindAddress: rule.bindAddress,
-                                bindPort: UInt16(clamping: rule.bindPort)
-                            )
-                            boundCount += 1
+                            do {
+                                try session.startDynamicSocks5Forward(
+                                    bindAddress: rule.bindAddress,
+                                    bindPort: UInt16(clamping: rule.bindPort)
+                                )
+                                boundCount += 1
+                            } catch {
+                                forwardFailures.append("D \(rule.bindAddress):\(rule.bindPort): \(error.localizedDescription)")
+                            }
                         case .REMOTE:
                             break
                         }
@@ -198,7 +242,7 @@ public final class LiveTerminalController: ObservableObject {
                     if !startupCmd.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         _ = session.sendInput(Data((startupCmd + "\n").utf8))
                     }
-                    return (session, boundCount)
+                    return (session, boundCount, forwardFailures)
                 }.value
 
                 guard let self else {
@@ -207,13 +251,26 @@ public final class LiveTerminalController: ObservableObject {
                 }
                 self.sshSession = session
                 self.isConnected = true
+                self.lastConnectError = nil
                 self.activeForwardsCount = finalBoundCount
-                self.statusBanner = "Connected • SSH-2.0 (\(terminalType))"
+                self.portForwardWarnings = warnings
+                self.statusBanner = warnings.isEmpty
+                    ? "Connected • SSH-2.0 (\(terminalType))"
+                    : "Connected • \(warnings.count) port-forward warning(s)"
+                for warning in warnings {
+                    self.feedBannerText("\r\n\u{1B}[33m⚠ [Port Forward Warning] \(warning)\u{1B}[0m\r\n")
+                }
                 self.startOutputPump()
             } catch {
+                let classified = NexusErrorClassifier.classify(
+                    error,
+                    operationTitle: "SSH Connection Failed (\(connHost))",
+                    recoveryConnectionId: connId
+                )
                 self?.isConnected = false
-                self?.statusBanner = "Disconnected"
-                self?.feedBannerText("\r\n\u{1B}[38;2;255;99;99m✖ \(error.localizedDescription)\u{1B}[0m\r\n")
+                self?.lastConnectError = classified
+                self?.statusBanner = classified.userMessage
+                self?.feedBannerText("\r\n\u{1B}[38;2;255;99;99m✖ \(classified.userMessage)\r\n  ↳ \(classified.remediationHint)\r\n  [\(error.localizedDescription)]\u{1B}[0m\r\n")
             }
         }
     }
@@ -350,8 +407,10 @@ public final class WorkspaceStore: ObservableObject {
     @Published public var activeSection: WorkspacePrimarySection = .sessions
     @Published public var sidebarFilterMode: SidebarFilterMode = .all
     @Published public var collapsedFolderIds: Set<String> = []
+    @Published public var isSystemCredentialsCollapsed: Bool = false
     @Published public var selectedConnectionId: String? = nil
     @Published public var selectedFolderId: String? = nil
+    @Published public var selectedCredentialId: String? = nil
     @Published public var sidebarSearchQuery: String = ""
     @Published public var isInspectorPresented: Bool = false
     @Published public var isBottomConsolePresented: Bool = false
@@ -377,7 +436,7 @@ public final class WorkspaceStore: ObservableObject {
     @Published public var auditLog: [AuditLogEntry] = []
     @Published public var dynamicFolderCache: [String: [VaultConnection]] = [:]
 
-    // Sheet Presentation Triggers
+    // Sheet Presentation Triggers & Global Error State
     @Published public var editingConnection: VaultConnection? = nil
     @Published public var isPresentingNewConnectionSheet: Bool = false
     @Published public var newConnectionInitialFolderId: String? = nil
@@ -388,6 +447,16 @@ public final class WorkspaceStore: ObservableObject {
     @Published public var renamingFolder: VaultFolder? = nil
     @Published public var deletingFolderCandidate: VaultFolder? = nil
     @Published public var connectWithOptionsTarget: VaultConnection? = nil
+    @Published public var editingSmartFolder: SmartFolder? = nil
+    @Published public var isPresentingNewSmartFolderSheet: Bool = false
+    @Published public var editingDynamicFolder: DynamicFolder? = nil
+    @Published public var isPresentingNewDynamicFolderSheet: Bool = false
+    @Published public var editingCredential: VaultCredential? = nil
+    @Published public var isPresentingNewCredentialSheet: Bool = false
+    @Published public var pendingRoyalImport: PendingRoyalTsImport? = nil
+    @Published public var isPresentingResetDatabaseSheet: Bool = false
+    @Published public var activeAppError: NexusAppError? = nil
+    @Published public var statusToastMessage: String? = nil
 
     private var activePassphrase: String = NxtsVaultSerializer.defaultTransparentPassphrase
     private var terminalControllers: [UUID: LiveTerminalController] = [:]
@@ -417,15 +486,61 @@ public final class WorkspaceStore: ObservableObject {
         }
     }
 
-    // MARK: - Persistence, Locking & Touch ID
+    // MARK: - Structured Error Reporting
+
+    public func reportAppError(_ appError: NexusAppError) {
+        self.activeAppError = appError
+        appendAudit("Error", "\(appError.title): \(appError.userMessage)")
+    }
+
+    public func reportError(
+        _ error: Error,
+        operationTitle: String,
+        recoveryConnectionId: String? = nil
+    ) {
+        let classified = NexusErrorClassifier.classify(
+            error,
+            operationTitle: operationTitle,
+            recoveryConnectionId: recoveryConnectionId
+        )
+        reportAppError(classified)
+    }
+
+    // MARK: - Persistence, Locking, Corrupt Vault Quarantine & Touch ID
 
     private func loadPersistedLocalVault() {
         let url = Self.localVaultFileURL
-        guard FileManager.default.fileExists(atPath: url.path),
-              let data = try? Data(contentsOf: url),
-              NxtsVaultSerializer.hasNxtsMagic(data) else {
+        guard FileManager.default.fileExists(atPath: url.path) else {
             persistLocalVault()
             MacSpotlightVaultIndexer.reindexConnections(in: document, enabled: spotlightIndexingEnabled)
+            return
+        }
+
+        let data: Data
+        do {
+            data = try Data(contentsOf: url)
+        } catch {
+            reportError(error, operationTitle: "Local Vault Read Failed")
+            return
+        }
+
+        guard NxtsVaultSerializer.hasNxtsMagic(data) else {
+            // Quarantine corrupt local .nxts file instead of overwriting or bricking launch
+            let backupURL = url.deletingLastPathComponent()
+                .appendingPathComponent("nexusts_local_vault.corrupt-\(VaultClock.nowMs()).nxts.bak")
+            try? FileManager.default.moveItem(at: url, to: backupURL)
+            self.document = NxtsVaultDocument.sampleStarterVault()
+            persistLocalVault()
+            MacSpotlightVaultIndexer.reindexConnections(in: document, enabled: spotlightIndexingEnabled)
+            reportAppError(
+                NexusAppError(
+                    category: .vaultCryptoOrCorruption,
+                    title: "Corrupted Local Vault Quarantined",
+                    userMessage: "The local vault file had an invalid header and was safely quarantined so NexusTS could start.",
+                    remediationHint: "Your original file was preserved at \(backupURL.lastPathComponent). You can re-import a backup or sync from Cloud Sync.",
+                    technicalDetails: "Quarantined path: \(backupURL.path) (\(data.count) bytes)"
+                )
+            )
             return
         }
 
@@ -433,10 +548,14 @@ public final class WorkspaceStore: ObservableObject {
             sealedData: data,
             passphrase: NxtsVaultSerializer.defaultTransparentPassphrase
         ) {
-            self.document = opened
+            let sanitized = VaultHierarchySanitizer.sanitizeVaultDocument(opened)
+            self.document = sanitized
             self.hasCustomPassphrase = false
             self.isVaultLocked = false
-            MacSpotlightVaultIndexer.reindexConnections(in: opened, enabled: spotlightIndexingEnabled)
+            if sanitized != opened {
+                persistLocalVault()
+            }
+            MacSpotlightVaultIndexer.reindexConnections(in: sanitized, enabled: spotlightIndexingEnabled)
         } else {
             // Custom master passphrase is set -> present Zero-Knowledge Lock Shield + Touch ID!
             self.hasCustomPassphrase = true
@@ -465,7 +584,7 @@ public final class WorkspaceStore: ObservableObject {
                 Task { await syncCloudNow() }
             }
         } catch {
-            appendAudit("Error", "Vault persistence error: \(error.localizedDescription)")
+            reportError(error, operationTitle: "Vault Persistence Failed")
         }
     }
 
@@ -501,10 +620,14 @@ public final class WorkspaceStore: ObservableObject {
                 : [trimmed]
             for pass in tryPassphrases {
                 if let opened = try? NxtsVaultSerializer.open(sealedData: data, passphrase: pass) {
+                    let sanitized = VaultHierarchySanitizer.sanitizeVaultDocument(opened)
                     self.activePassphrase = pass
-                    self.document = opened
+                    self.document = sanitized
                     self.isVaultLocked = false
                     self.unlockErrorText = nil
+                    if sanitized != opened {
+                        persistLocalVault()
+                    }
                     appendAudit("Security", "Vault unlocked successfully.")
                     return true
                 }
@@ -545,6 +668,37 @@ public final class WorkspaceStore: ObservableObject {
         }
     }
 
+    public func resetVaultDatabase() {
+        for (_, ctrl) in terminalControllers { ctrl.shutdown() }
+        terminalControllers.removeAll()
+        for (_, rdp) in rdpSessions { rdp.destroy() }
+        rdpSessions.removeAll()
+        paneTree = .initialEmpty()
+        detachedWindowTabs.removeAll()
+        dynamicFolderCache.removeAll()
+        NativeSshCryptoBridge.clearAgentKeys()
+        MacKeychainAndBiometrics.shared.deleteAllVaultPassphrases()
+
+        let url = Self.localVaultFileURL
+        try? FileManager.default.removeItem(at: url)
+
+        self.activePassphrase = NxtsVaultSerializer.defaultTransparentPassphrase
+        self.hasCustomPassphrase = false
+        self.isVaultLocked = false
+        self.unlockErrorText = nil
+        self.selectedConnectionId = nil
+        self.selectedFolderId = nil
+        self.selectedCredentialId = nil
+        self.collapsedFolderIds.removeAll()
+        self.pendingRoyalImport = nil
+        self.isPresentingResetDatabaseSheet = false
+        self.document = NxtsVaultDocument.sampleStarterVault()
+        MacSpotlightVaultIndexer.reindexConnections(in: document, enabled: false)
+        persistLocalVault()
+        statusToastMessage = "NexusTS database has been reset to a clean empty vault."
+        appendAudit("Reset", "Reset local NexusTS database to a clean empty vault.")
+    }
+
     // MARK: - Sessions, BSP Tiling & Multi-Window Detach / Re-Dock
 
     public var activeConnections: [VaultConnection] {
@@ -553,11 +707,27 @@ public final class WorkspaceStore: ObservableObject {
 
     public var activeFolders: [VaultFolder] {
         document.folders
-            .filter { !document.tombstonedObjectIds.contains($0.id) }
+            .filter {
+                !document.tombstonedObjectIds.contains($0.id)
+                    && $0.id != VaultHierarchySanitizer.systemCredentialsFolderId
+                    && !($0.parentFolderId == nil && VaultHierarchySanitizer.isReservedCredentialsFolderName($0.name))
+            }
             .sorted {
                 if $0.sortOrder != $1.sortOrder { return $0.sortOrder < $1.sortOrder }
                 return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
             }
+    }
+
+    public var activeCredentials: [VaultCredential] {
+        document.credentials.filter { !document.tombstonedObjectIds.contains($0.id) }
+    }
+
+    public var activeSmartFolders: [SmartFolder] {
+        document.smartFolders.filter { !document.tombstonedObjectIds.contains($0.id) }
+    }
+
+    public var activeDynamicFolders: [DynamicFolder] {
+        document.dynamicFolders.filter { !document.tombstonedObjectIds.contains($0.id) }
     }
 
     public var selectedConnection: VaultConnection? {
@@ -704,7 +874,8 @@ public final class WorkspaceStore: ObservableObject {
         if let existing = terminalControllers[tab.id] {
             return existing
         }
-        let resolved = PropertyInheritanceResolver.resolve(connection: tab.connection, in: document)
+        let latestConnection = activeConnections.first(where: { $0.id == tab.connection.id }) ?? tab.connection
+        let resolved = PropertyInheritanceResolver.resolve(connection: latestConnection, in: document)
         var effectiveCred = resolved.effectiveCredential
         if tab.adHocUsernameOverride != nil || tab.adHocPasswordOverride != nil {
             var copy = effectiveCred ?? VaultCredential(name: "Ad-Hoc")
@@ -716,7 +887,7 @@ public final class WorkspaceStore: ObservableObject {
 
         var bastionConn: VaultConnection? = nil
         var bastionCred: VaultCredential? = nil
-        if case .ssh(let sshCfg) = tab.connection.settings,
+        if case .ssh(let sshCfg) = latestConnection.settings,
            let bastionId = sshCfg.bastionJumpConnectionId,
            let foundBastion = activeConnections.first(where: { $0.id == bastionId }) {
             bastionConn = foundBastion
@@ -725,7 +896,7 @@ public final class WorkspaceStore: ObservableObject {
 
         let created = LiveTerminalController(
             tabId: tab.id,
-            connection: tab.connection,
+            connection: latestConnection,
             isLocalShell: tab.isLocalShell,
             effectiveCredential: effectiveCred,
             bastionConnection: bastionConn,
@@ -739,9 +910,20 @@ public final class WorkspaceStore: ObservableObject {
         if let existing = rdpSessions[tab.id] {
             return existing
         }
-        let resolved = PropertyInheritanceResolver.resolve(connection: tab.connection, in: document)
+        return buildAndConnectRdpSession(for: tab)
+    }
+
+    @discardableResult
+    public func reconnectRdpSession(for tab: WorkspaceSessionTab) -> NativeRdpSession {
+        rdpSessions.removeValue(forKey: tab.id)?.destroy()
+        return buildAndConnectRdpSession(for: tab)
+    }
+
+    private func buildAndConnectRdpSession(for tab: WorkspaceSessionTab) -> NativeRdpSession {
+        let latestConnection = activeConnections.first(where: { $0.id == tab.connection.id }) ?? tab.connection
+        let resolved = PropertyInheritanceResolver.resolve(connection: latestConnection, in: document)
         let rdpSettings: RdpProtocolSettings = {
-            if case .rdp(let s) = tab.connection.settings { return s }
+            if case .rdp(let s) = latestConnection.settings { return s }
             return RdpProtocolSettings()
         }()
         let user = tab.adHocUsernameOverride ?? resolved.effectiveCredential?.username ?? "Administrator"
@@ -749,7 +931,7 @@ public final class WorkspaceStore: ObservableObject {
         let dom = tab.adHocDomainOverride ?? resolved.effectiveCredential?.domain ?? ""
 
         let session = NativeRdpSession(
-            host: tab.connection.host,
+            host: latestConnection.host,
             username: user,
             password: pass,
             domain: dom,
@@ -826,9 +1008,24 @@ public final class WorkspaceStore: ObservableObject {
         appendAudit("Automation", "Dispatched key sequence '\(macro.name)'.")
     }
 
-    // MARK: - Drag-and-Drop Folder Reparenting, Reordering, Import/Export & Cloud Sync
+    // MARK: - Drag-and-Drop Folder Reparenting, Reordering, System "Credentials" Guard & CRUD
+
+    public func rejectDropIntoSystemCredentialsFolder() {
+        reportAppError(
+            NexusAppError(
+                category: .validation,
+                title: "Credentials System Folder",
+                userMessage: "The system folder \"Credentials\" can only hold credentials, not connections or subfolders.",
+                remediationHint: "Drop connections or folders onto a regular folder or the connection hierarchy root."
+            )
+        )
+    }
 
     public func moveConnection(_ connectionId: String, toFolderId targetFolderId: String?) {
+        if targetFolderId == VaultHierarchySanitizer.systemCredentialsFolderId {
+            rejectDropIntoSystemCredentialsFolder()
+            return
+        }
         commitMutation("Moved connection") { doc in
             if let idx = doc.connections.firstIndex(where: { $0.id == connectionId }) {
                 let siblingMaxOrder = doc.connections
@@ -850,6 +1047,7 @@ public final class WorkspaceStore: ObservableObject {
                 return
             }
             let destFolderId = target.parentFolderId
+            if destFolderId == VaultHierarchySanitizer.systemCredentialsFolderId { return }
             doc.connections[draggedIdx].parentFolderId = destFolderId
             let orderedSiblings = doc.connections
                 .filter { $0.parentFolderId == destFolderId && !doc.tombstonedObjectIds.contains($0.id) && $0.id != draggedConnectionId }
@@ -874,9 +1072,13 @@ public final class WorkspaceStore: ObservableObject {
     }
 
     public func canMoveFolder(_ folderId: String, toParentFolderId targetParentId: String?) -> Bool {
+        if folderId == VaultHierarchySanitizer.systemCredentialsFolderId { return false }
+        if targetParentId == VaultHierarchySanitizer.systemCredentialsFolderId { return false }
         if folderId == targetParentId { return false }
         var cursor = targetParentId
+        var visited = Set<String>()
         while let current = cursor {
+            if !visited.insert(current).inserted { return false }
             if current == folderId { return false }
             cursor = document.folders.first(where: { $0.id == current })?.parentFolderId
         }
@@ -884,6 +1086,10 @@ public final class WorkspaceStore: ObservableObject {
     }
 
     public func moveFolder(_ folderId: String, toParentFolderId targetParentId: String?) {
+        if targetParentId == VaultHierarchySanitizer.systemCredentialsFolderId {
+            rejectDropIntoSystemCredentialsFolder()
+            return
+        }
         guard canMoveFolder(folderId, toParentFolderId: targetParentId) else { return }
         commitMutation("Moved folder") { doc in
             if let idx = doc.folders.firstIndex(where: { $0.id == folderId }) {
@@ -898,9 +1104,72 @@ public final class WorkspaceStore: ObservableObject {
         }
     }
 
+    public func moveOrReorderFolder(
+        _ draggedFolderId: String,
+        relativeTo targetFolderId: String,
+        placement: FolderDropPlacement
+    ) {
+        if draggedFolderId == VaultHierarchySanitizer.systemCredentialsFolderId { return }
+        if targetFolderId == VaultHierarchySanitizer.systemCredentialsFolderId {
+            rejectDropIntoSystemCredentialsFolder()
+            return
+        }
+        guard draggedFolderId != targetFolderId else { return }
+
+        switch placement {
+        case .inside:
+            moveFolder(draggedFolderId, toParentFolderId: targetFolderId)
+        case .before, .after:
+            guard let target = activeFolders.first(where: { $0.id == targetFolderId }) else { return }
+            let newParentId = target.parentFolderId
+            guard canMoveFolder(draggedFolderId, toParentFolderId: newParentId) else { return }
+            commitMutation("Reordered folder") { doc in
+                guard let draggedIdx = doc.folders.firstIndex(where: { $0.id == draggedFolderId }) else { return }
+                doc.folders[draggedIdx].parentFolderId = newParentId
+                let siblings = doc.folders
+                    .filter {
+                        $0.parentFolderId == newParentId
+                            && !doc.tombstonedObjectIds.contains($0.id)
+                            && $0.id != draggedFolderId
+                            && $0.id != VaultHierarchySanitizer.systemCredentialsFolderId
+                    }
+                    .sorted {
+                        if $0.sortOrder != $1.sortOrder { return $0.sortOrder < $1.sortOrder }
+                        return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+                    }
+                var orderedIds = siblings.map(\.id)
+                if let targetPos = orderedIds.firstIndex(of: targetFolderId) {
+                    let insertIndex = placement == .before ? targetPos : (targetPos + 1)
+                    orderedIds.insert(draggedFolderId, at: min(insertIndex, orderedIds.count))
+                } else {
+                    orderedIds.append(draggedFolderId)
+                }
+                let now = VaultClock.nowMs()
+                for (rank, id) in orderedIds.enumerated() {
+                    if let i = doc.folders.firstIndex(where: { $0.id == id }) {
+                        doc.folders[i].sortOrder = rank
+                        doc.folders[i].updatedAtEpochMs = now
+                    }
+                }
+            }
+        }
+    }
+
     public func renameFolder(_ folderId: String, newName: String) {
+        guard folderId != VaultHierarchySanitizer.systemCredentialsFolderId else { return }
         let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        if VaultHierarchySanitizer.isReservedCredentialsFolderName(trimmed) {
+            reportAppError(
+                NexusAppError(
+                    category: .validation,
+                    title: "Reserved Folder Name",
+                    userMessage: "\"Credentials\" is reserved for the bottom-pinned system Credentials folder.",
+                    remediationHint: "Choose a different folder name for your connections."
+                )
+            )
+            return
+        }
         commitMutation("Renamed folder to \(trimmed)") { doc in
             if let idx = doc.folders.firstIndex(where: { $0.id == folderId }) {
                 doc.folders[idx].name = trimmed
@@ -911,6 +1180,7 @@ public final class WorkspaceStore: ObservableObject {
     }
 
     public func reorderFolder(_ folderId: String, moveUp: Bool) {
+        guard folderId != VaultHierarchySanitizer.systemCredentialsFolderId else { return }
         guard let target = activeFolders.first(where: { $0.id == folderId }) else { return }
         let siblings = activeFolders.filter { $0.parentFolderId == target.parentFolderId }
         guard let currentPos = siblings.firstIndex(where: { $0.id == folderId }) else { return }
@@ -931,6 +1201,7 @@ public final class WorkspaceStore: ObservableObject {
     }
 
     public func duplicateFolder(_ folder: VaultFolder) {
+        guard folder.id != VaultHierarchySanitizer.systemCredentialsFolderId else { return }
         commitMutation("Duplicated folder \(folder.name)") { doc in
             let now = VaultClock.nowMs()
             let newFolderId = UUID().uuidString.lowercased()
@@ -959,6 +1230,10 @@ public final class WorkspaceStore: ObservableObject {
     }
 
     public func deleteFolder(_ folderId: String, deleteContents: Bool) {
+        guard folderId != VaultHierarchySanitizer.systemCredentialsFolderId else {
+            deletingFolderCandidate = nil
+            return
+        }
         guard let folder = document.folders.first(where: { $0.id == folderId }) else {
             deletingFolderCandidate = nil
             return
@@ -1003,6 +1278,139 @@ public final class WorkspaceStore: ObservableObject {
             collapsedFolderIds.remove(folder.id)
         }
         deletingFolderCandidate = nil
+    }
+
+    // MARK: - Intelligent Folders (SmartFolder), Dynamic Folders & Credentials CRUD
+
+    public func saveSmartFolder(_ smartFolder: SmartFolder) {
+        if let regexError = PropertyInheritanceResolver.validateSmartFolderRegex(smartFolder.filter.hostPatternRegex) {
+            reportAppError(
+                NexusAppError(
+                    category: .validation,
+                    title: "Invalid Intelligent Folder Regex",
+                    userMessage: regexError,
+                    remediationHint: "Fix the regular expression syntax before saving the Intelligent Folder."
+                )
+            )
+            return
+        }
+        commitMutation("Saved Intelligent Folder \(smartFolder.name)") { doc in
+            doc.tombstonedObjectIds.remove(smartFolder.id)
+            if let idx = doc.smartFolders.firstIndex(where: { $0.id == smartFolder.id }) {
+                doc.smartFolders[idx] = smartFolder
+            } else {
+                doc.smartFolders.append(smartFolder)
+            }
+        }
+    }
+
+    public func duplicateSmartFolder(_ smartFolder: SmartFolder) {
+        var copy = smartFolder
+        copy.id = "smart-\(UUID().uuidString.lowercased())"
+        copy.name = "\(smartFolder.name) Copy"
+        copy.updatedAtEpochMs = VaultClock.nowMs()
+        commitMutation("Duplicated Intelligent Folder \(smartFolder.name)") { doc in
+            doc.smartFolders.append(copy)
+        }
+    }
+
+    public func deleteSmartFolder(_ smartFolderId: String) {
+        commitMutation("Deleted Intelligent Folder") { doc in
+            doc.tombstonedObjectIds.insert(smartFolderId)
+            doc.smartFolders.removeAll { $0.id == smartFolderId }
+        }
+    }
+
+    public func saveDynamicFolder(_ dynamicFolder: DynamicFolder) {
+        if dynamicFolder.interpreter == .JSON_HTTP_API,
+           !dynamicFolder.scriptOrEndpointPayload.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().hasPrefix("http"),
+           let jsonErr = PropertyInheritanceResolver.validateDynamicFolderJsonPayload(dynamicFolder.scriptOrEndpointPayload) {
+            reportAppError(
+                NexusAppError(
+                    category: .validation,
+                    title: "Invalid Dynamic Folder JSON",
+                    userMessage: jsonErr,
+                    remediationHint: "Provide an HTTPS endpoint URL or valid RoyalJSON {\"Objects\": [...]}."
+                )
+            )
+            return
+        }
+        commitMutation("Saved Dynamic Folder \(dynamicFolder.name)") { doc in
+            doc.tombstonedObjectIds.remove(dynamicFolder.id)
+            if let idx = doc.dynamicFolders.firstIndex(where: { $0.id == dynamicFolder.id }) {
+                doc.dynamicFolders[idx] = dynamicFolder
+            } else {
+                doc.dynamicFolders.append(dynamicFolder)
+            }
+        }
+        Task { await refreshDynamicFolder(dynamicFolder) }
+    }
+
+    public func duplicateDynamicFolder(_ dynamicFolder: DynamicFolder) {
+        var copy = dynamicFolder
+        copy.id = "dyn-\(UUID().uuidString.lowercased())"
+        copy.name = "\(dynamicFolder.name) Copy"
+        copy.updatedAtEpochMs = VaultClock.nowMs()
+        commitMutation("Duplicated Dynamic Folder \(dynamicFolder.name)") { doc in
+            doc.dynamicFolders.append(copy)
+        }
+    }
+
+    public func deleteDynamicFolder(_ dynamicFolderId: String) {
+        dynamicFolderCache.removeValue(forKey: dynamicFolderId)
+        commitMutation("Deleted Dynamic Folder") { doc in
+            doc.tombstonedObjectIds.insert(dynamicFolderId)
+            doc.dynamicFolders.removeAll { $0.id == dynamicFolderId }
+        }
+    }
+
+    public func saveCredential(_ credential: VaultCredential) {
+        var normalized = credential
+        normalized.parentFolderId = nil
+        normalized.updatedAtEpochMs = VaultClock.nowMs()
+        commitMutation("Saved credential \(normalized.name)") { doc in
+            doc.tombstonedObjectIds.remove(normalized.id)
+            if let idx = doc.credentials.firstIndex(where: { $0.id == normalized.id }) {
+                doc.credentials[idx] = normalized
+            } else {
+                doc.credentials.append(normalized)
+            }
+        }
+    }
+
+    public func duplicateCredential(_ credential: VaultCredential) {
+        var copy = credential
+        copy.id = "cred-\(UUID().uuidString.lowercased())"
+        copy.parentFolderId = nil
+        copy.name = "\(credential.name) Copy"
+        copy.updatedAtEpochMs = VaultClock.nowMs()
+        commitMutation("Duplicated credential \(credential.name)") { doc in
+            doc.credentials.append(copy)
+        }
+    }
+
+    public func deleteCredential(_ credentialId: String) {
+        if selectedCredentialId == credentialId {
+            selectedCredentialId = nil
+        }
+        commitMutation("Deleted credential") { doc in
+            doc.tombstonedObjectIds.insert(credentialId)
+            doc.credentials.removeAll { $0.id == credentialId }
+        }
+    }
+
+    public func reorderCredential(_ draggedCredentialId: String, before targetCredentialId: String) {
+        guard draggedCredentialId != targetCredentialId else { return }
+        commitMutation("Reordered credential") { doc in
+            guard let dragged = doc.credentials.first(where: { $0.id == draggedCredentialId }) else { return }
+            var remaining = doc.credentials.filter { $0.id != draggedCredentialId }
+            if let pos = remaining.firstIndex(where: { $0.id == targetCredentialId }) {
+                remaining.insert(dragged, at: pos)
+            } else {
+                remaining.append(dragged)
+            }
+            doc.credentials = remaining
+        }
     }
 
     public func orderedConnectionsInSubtree(_ folderId: String) -> [VaultConnection] {
@@ -1073,7 +1481,9 @@ public final class WorkspaceStore: ObservableObject {
     }
 
     public func collapseAllFolders() {
-        collapsedFolderIds = Set(activeFolders.map(\.id))
+        var ids = Set(activeFolders.map(\.id))
+        ids.insert(VaultHierarchySanitizer.systemCredentialsFolderId)
+        collapsedFolderIds = ids
     }
 
     public func expandSubtree(_ folderId: String) {
@@ -1085,8 +1495,24 @@ public final class WorkspaceStore: ObservableObject {
     }
 
     public func handleSidebarDrop(_ payloads: [String], intoFolderId targetFolderId: String?) {
+        if targetFolderId == VaultHierarchySanitizer.systemCredentialsFolderId {
+            let hasNonCred = payloads.contains { !$0.hasPrefix("cred:") }
+            if hasNonCred {
+                rejectDropIntoSystemCredentialsFolder()
+            }
+            return
+        }
         for raw in payloads {
-            if raw.hasPrefix("folder:") {
+            if raw.hasPrefix("cred:") {
+                reportAppError(
+                    NexusAppError(
+                        category: .validation,
+                        title: "Credential Placement Restricted",
+                        userMessage: "Credentials always remain inside the bottom-pinned \"Credentials\" system folder.",
+                        remediationHint: "Assign credentials to folders or connections via Folder Properties or Edit Connection."
+                    )
+                )
+            } else if raw.hasPrefix("folder:") {
                 let fId = String(raw.dropFirst("folder:".count))
                 moveFolder(fId, toParentFolderId: targetFolderId)
             } else if raw.hasPrefix("conn:") {
@@ -1123,6 +1549,7 @@ public final class WorkspaceStore: ObservableObject {
         }
     }
 
+    @discardableResult
     public func importExternalVaultFile(url: URL, passphrase: String = "") throws -> ImportedVaultSummary {
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
@@ -1132,24 +1559,61 @@ public final class WorkspaceStore: ObservableObject {
             fileName: url.lastPathComponent,
             passphrase: passphrase.isEmpty ? activePassphrase : passphrase
         )
+        if summary.isRoyalTsFormat {
+            let suggestedName = url.deletingPathExtension().lastPathComponent
+            self.pendingRoyalImport = PendingRoyalTsImport(
+                summary: summary,
+                suggestedFolderName: suggestedName
+            )
+            appendAudit("Import", "Parsed \(summary.detectedFormat) (\(summary.importedConnections) connections, \(summary.importedFolders) folders) — awaiting placement choice.")
+            return summary
+        }
+
+        let sanitizedImported = VaultHierarchySanitizer.sanitizeVaultDocument(summary.document)
         let outcome = VaultDeltaConflictResolver.mergeDocuments(
             local: document,
-            remote: summary.document,
+            remote: sanitizedImported,
             localDeviceId: "macos"
         )
-        document = outcome.mergedDocument
+        document = VaultHierarchySanitizer.sanitizeVaultDocument(outcome.mergedDocument)
         persistLocalVault()
         appendAudit("Import", "Imported \(summary.detectedFormat): \(summary.importedConnections) connections, \(summary.importedFolders) folders.")
         return summary
     }
 
+    public func confirmRoyalTsImport(mode: RoyalTsImportPlacementMode, folderName: String) {
+        guard let pending = pendingRoyalImport else { return }
+        let merged = RoyalTsImportMerger.applyPlacement(
+            existing: document,
+            importedRaw: pending.summary.document,
+            mode: mode,
+            newFolderName: folderName
+        )
+        if mode == .replaceExisting {
+            for (_, ctrl) in terminalControllers { ctrl.shutdown() }
+            terminalControllers.removeAll()
+            for (_, rdp) in rdpSessions { rdp.destroy() }
+            rdpSessions.removeAll()
+            paneTree = .initialEmpty()
+            detachedWindowTabs.removeAll()
+            selectedConnectionId = nil
+            selectedFolderId = nil
+        }
+        self.document = merged
+        self.pendingRoyalImport = nil
+        persistLocalVault()
+        let summary = pending.summary
+        statusToastMessage = "Imported \(summary.importedConnections) connection(s), \(summary.importedFolders) folder(s), and \(summary.importedCredentials) credential(s) from Royal TS."
+        appendAudit("Import", "Completed Royal TS import (\(mode.rawValue)): \(summary.importedConnections) connections, \(summary.importedFolders) folders.")
+    }
+
     public func linkCloudVaultURL(_ url: URL) throws {
         try cloudBookmarkBridge.linkVaultFileURL(url)
         linkedCloudFileURL = url
-        Task { await syncCloudNow() }
+        Task { await syncCloudNow(reportErrors: true) }
     }
 
-    public func syncCloudNow() async {
+    public func syncCloudNow(reportErrors: Bool = false) async {
         if let url = linkedCloudFileURL ?? cloudBookmarkBridge.resolveLinkedURL() {
             do {
                 let res = try cloudBookmarkBridge.syncWithLinkedFile(
@@ -1158,13 +1622,16 @@ public final class WorkspaceStore: ObservableObject {
                     explicitURL: url,
                     kdf: .interactiveFast
                 )
-                self.document = res.document
+                self.document = VaultHierarchySanitizer.sanitizeVaultDocument(res.document)
                 self.linkedCloudFileURL = res.syncedFileURL
                 self.syncStatusSummary = "\(res.action.rawValue) (\(res.syncedFileURL.lastPathComponent))"
                 appendAudit("Cloud Sync", "\(res.action.rawValue) via \(res.syncedFileURL.path) (\(res.conflictCount) conflicts resolved).")
             } catch {
                 syncStatusSummary = "Sync error: \(error.localizedDescription)"
                 appendAudit("Cloud Sync", "Error: \(error.localizedDescription)")
+                if reportErrors {
+                    reportError(error, operationTitle: "Cloud Sync Failed")
+                }
             }
         } else if let googleToken = MacKeychainAndBiometrics.shared.loadToken(key: "gdrive_oauth_bearer"),
                   !googleToken.isEmpty {
@@ -1176,13 +1643,16 @@ public final class WorkspaceStore: ObservableObject {
                     zone: driveStorageZone,
                     kdf: .interactiveFast
                 )
-                self.document = res.document
+                self.document = VaultHierarchySanitizer.sanitizeVaultDocument(res.document)
                 self.syncStatusSummary = "Google Drive: \(res.action.rawValue)"
                 persistLocalVault()
                 appendAudit("Google Drive", "\(res.action.rawValue) (\(res.conflicts) conflicts merged).")
             } catch {
                 syncStatusSummary = "Drive API error"
                 appendAudit("Google Drive", error.localizedDescription)
+                if reportErrors {
+                    reportError(error, operationTitle: "Google Drive Sync Failed")
+                }
             }
         }
     }

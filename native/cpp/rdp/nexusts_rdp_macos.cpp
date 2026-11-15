@@ -210,6 +210,19 @@ char* nexusts_rdp_copy_remote_clipboard(int64_t handle) {
     return nullptr;
 }
 
+char* nexusts_rdp_copy_last_error(int64_t handle) {
+    if (auto ctx = lookup_session(handle)) {
+        const std::string err = ctx->last_error();
+        auto* dup = static_cast<char*>(std::malloc(err.size() + 1u));
+        if (dup) {
+            std::memcpy(dup, err.data(), err.size());
+            dup[err.size()] = '\0';
+        }
+        return dup;
+    }
+    return nullptr;
+}
+
 void nexusts_rdp_free_cstr(char* ptr) {
     std::free(ptr);
 }

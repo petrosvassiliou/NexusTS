@@ -157,6 +157,19 @@ class PropertyInheritanceResolver(
     }
 
     /**
+     * Validates [rawRegex] syntax and returns `null` if valid/blank, or a concise human-readable error message.
+     */
+    fun validateSmartFolderRegex(rawRegex: String?): String? {
+        if (rawRegex.isNullOrBlank()) return null
+        return runCatching {
+            Regex(rawRegex, RegexOption.IGNORE_CASE)
+            null
+        }.getOrElse { err ->
+            "Invalid regular expression: ${err.message?.lineSequence()?.firstOrNull().orEmpty().ifBlank { "check brackets/parentheses" }}"
+        }
+    }
+
+    /**
      * Checks whether a single [VaultConnection] matches a [SmartFolder]'s filter criteria.
      * Returns `false` if `hostPatternRegex` contains invalid regular expression syntax.
      */
@@ -173,7 +186,8 @@ class PropertyInheritanceResolver(
         } else {
             null
         }
-        return matchesSmartFolderCompiled(document, connection, smartFolder, compiledRegex)
+        val scopedFolderIds = resolveScopedSubtreeIds(document, filter.scopeFolderId)
+        return matchesSmartFolderCompiled(document, connection, smartFolder, compiledRegex, scopedFolderIds)
     }
 
     /**
@@ -191,22 +205,46 @@ class PropertyInheritanceResolver(
         } else {
             null
         }
+        val scopedFolderIds = resolveScopedSubtreeIds(document, filter.scopeFolderId)
 
         return document.connections.filter { conn ->
-            matchesSmartFolderCompiled(document, conn, smartFolder, compiledRegex)
+            matchesSmartFolderCompiled(document, conn, smartFolder, compiledRegex, scopedFolderIds)
         }
+    }
+
+    private fun resolveScopedSubtreeIds(document: NxtsVaultDocument, rootScopeFolderId: String?): Set<String>? {
+        val rootId = rootScopeFolderId?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        val collected = mutableSetOf(rootId)
+        var changed = true
+        while (changed) {
+            changed = false
+            for (folder in document.folders) {
+                if (folder.id !in document.tombstonedObjectIds &&
+                    folder.parentFolderId != null &&
+                    folder.parentFolderId in collected &&
+                    collected.add(folder.id)
+                ) {
+                    changed = true
+                }
+            }
+        }
+        return collected
     }
 
     private fun matchesSmartFolderCompiled(
         document: NxtsVaultDocument,
         conn: VaultConnection,
         smartFolder: SmartFolder,
-        compiledRegex: Regex?
+        compiledRegex: Regex?,
+        scopedFolderIds: Set<String>?
     ): Boolean {
         if (conn.id in document.tombstonedObjectIds) return false
         val filter = smartFolder.filter
+        val scopeMatch = scopedFolderIds == null || (conn.parentFolderId != null && conn.parentFolderId in scopedFolderIds)
         val tagsMatch = filter.includeTags.isEmpty() ||
             filter.includeTags.all { wanted -> conn.tags.any { it.equals(wanted, ignoreCase = true) } }
+        val excludeTagsMatch = filter.excludeTags.isEmpty() ||
+            filter.excludeTags.none { forbidden -> conn.tags.any { it.equals(forbidden, ignoreCase = true) } }
         val protoMatch = filter.includeProtocols.isEmpty() || conn.protocol in filter.includeProtocols
         val osMatch = filter.osFamilyFilter.isNullOrBlank() ||
             conn.osFamily.equals(filter.osFamilyFilter, ignoreCase = true)
@@ -217,7 +255,7 @@ class PropertyInheritanceResolver(
             resolveEffectiveProfile(document, conn).effectiveEnvironmentBadge
                 .equals(filter.environmentFilter, ignoreCase = true)
 
-        return tagsMatch && protoMatch && osMatch && hostMatch && envMatch
+        return scopeMatch && tagsMatch && excludeTagsMatch && protoMatch && osMatch && hostMatch && envMatch
     }
 
     @Serializable

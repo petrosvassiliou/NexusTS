@@ -373,6 +373,30 @@ Java_com_nexusts_app_protocols_rdp_bridge_FreeRdpNativeBridge_nativePullRemoteCl
     return utf8_to_jstring(env, "");
 }
 
+JNIEXPORT jstring JNICALL
+Java_com_nexusts_app_protocols_rdp_bridge_FreeRdpNativeBridge_nativeGetLastError(
+    JNIEnv* env,
+    jclass /*clazz*/,
+    jlong handle
+) {
+    if (const auto session = lookup_session_shared(handle)) {
+        return utf8_to_jstring(env, session->last_error());
+    }
+    return utf8_to_jstring(env, "");
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_nexusts_app_protocols_rdp_bridge_FreeRdpNativeBridge_nativeIsConnected(
+    JNIEnv* /*env*/,
+    jclass /*clazz*/,
+    jlong handle
+) {
+    if (const auto session = lookup_session_shared(handle)) {
+        return session->is_connected() ? JNI_TRUE : JNI_FALSE;
+    }
+    return JNI_FALSE;
+}
+
 JNIEXPORT void JNICALL
 Java_com_nexusts_app_protocols_rdp_bridge_FreeRdpNativeBridge_nativeDestroySession(
     JNIEnv* /*env*/,

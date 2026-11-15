@@ -200,6 +200,35 @@
     <string name="action_delete_folder_keep_contents">Supprimer uniquement le dossier (Remonter les éléments)</string>
     <string name="nav_studios_menu">Studios</string>
 
+    <!-- v1.2.0 -->
+    <string name="action_edit_smart_folder">Modifier le dossier intelligent…</string>
+    <string name="action_duplicate_smart_folder">Dupliquer le dossier intelligent</string>
+    <string name="smart_folder_all_folders">Tous les dossiers (Coffre entier)</string>
+    <string name="smart_folder_scope_label">Portée du dossier</string>
+    <string name="smart_folder_exclude_tags_label">Exclure les étiquettes (séparées par des virgules)</string>
+    <string name="smart_folder_invalid_regex_error">Expression régulière invalide</string>
+    <string name="smart_folder_preview_count_format">Connexions correspondantes (%1$d)</string>
+    <string name="action_new_dynamic_folder">Nouveau dossier dynamique</string>
+    <string name="action_edit_dynamic_folder">Modifier le dossier dynamique…</string>
+    <string name="action_duplicate_dynamic_folder">Dupliquer le dossier dynamique</string>
+    <string name="action_reset_database">Réinitialiser la base NexusTS…</string>
+    <string name="reset_database_title">Réinitialiser la base NexusTS</string>
+    <string name="reset_database_warning_body">Supprime définitivement tous les dossiers, connexions, identifiants, modèles et tâches locaux sur cet appareil.</string>
+    <string name="dialog_reset_database_title">Réinitialiser la base NexusTS ?</string>
+    <string name="dialog_reset_database_message">Cela supprime définitivement toutes les connexions, dossiers, identifiants, modèles et tâches locaux sur cet appareil. Exportez une sauvegarde au préalable si nécessaire.</string>
+    <string name="action_confirm_reset_database">Tout supprimer et réinitialiser</string>
+    <string name="reset_database_success">La base NexusTS a été réinitialisée vers un coffre vide.</string>
+    <string name="dialog_royal_import_title">Importer un document Royal TS</string>
+    <string name="royal_import_mode_new_folder">Créer un nouveau dossier pour les éléments importés</string>
+    <string name="royal_import_mode_root">Placer la hiérarchie importée à la racine</string>
+    <string name="royal_import_mode_replace_all">Supprimer toutes les connexions existantes et remplacer</string>
+    <string name="royal_import_folder_name_label">Nom du nouveau dossier</string>
+    <string name="system_credentials_folder_title">Identifiants</string>
+    <string name="credentials_system_folder_only_hint">Le dossier système Identifiants ne peut contenir que des identifiants.</string>
+    <string name="credentials_system_folder_reserved_error">\"Credentials\" est réservé au dossier système en bas de la barre latérale.</string>
+    <string name="action_edit_credential">Modifier l’identifiant…</string>
+    <string name="action_copy_diagnostic_report">Copier le diagnostic</string>
+
     <!-- Language Names -->
     <string name="lang_en">English</string>
     <string name="lang_de">Deutsch</string>

@@ -132,6 +132,12 @@ object FreeRdpNativeBridge {
     external fun nativePullRemoteClipboardText(handle: Long): String
 
     @JvmStatic
+    external fun nativeGetLastError(handle: Long): String
+
+    @JvmStatic
+    external fun nativeIsConnected(handle: Long): Boolean
+
+    @JvmStatic
     external fun nativeDestroySession(handle: Long)
 }
 
@@ -377,6 +383,9 @@ class RdpManagedSession(
     private val _isConnected = MutableStateFlow(false)
     val isConnected: StateFlow<Boolean> = _isConnected.asStateFlow()
 
+    private val _lastError = MutableStateFlow<com.nexusts.app.core.vault.error.NexusAppError?>(null)
+    val lastError: StateFlow<com.nexusts.app.core.vault.error.NexusAppError?> = _lastError.asStateFlow()
+
     private val _liveResizeBehavior = MutableStateFlow(settings.resizeBehavior)
     val liveResizeBehavior: StateFlow<RdpResizeBehavior> = _liveResizeBehavior.asStateFlow()
 
@@ -399,6 +408,49 @@ class RdpManagedSession(
     var isMicrophoneRedirected: Boolean = false
         private set
 
+    fun reconnect(
+        initialWidthPx: Int,
+        initialHeightPx: Int,
+        effectiveScalePercent: Int = settings.desktopScaleFactorPercent,
+        context: Context? = appContext
+    ): Boolean {
+        val prevHandle = nativeHandle
+        nativeHandle = 0L
+        started.set(false)
+        _isConnected.value = false
+        _lastError.value = null
+        if (prevHandle != 0L && FreeRdpNativeBridge.isNativeLoaded) {
+            runCatching { FreeRdpNativeBridge.nativeDestroySession(prevHandle) }
+        }
+        return start(
+            initialWidthPx = initialWidthPx,
+            initialHeightPx = initialHeightPx,
+            effectiveScalePercent = effectiveScalePercent,
+            context = context
+        )
+    }
+
+    fun pollSessionHealth() {
+        val handle = nativeHandle
+        if (handle == 0L || !FreeRdpNativeBridge.isNativeLoaded || _isConnecting.value) return
+        if (_isConnected.value) {
+            val stillAlive = runCatching { FreeRdpNativeBridge.nativeIsConnected(handle) }.getOrDefault(true)
+            if (!stillAlive) {
+                val rawErr = runCatching { FreeRdpNativeBridge.nativeGetLastError(handle) }.getOrDefault("")
+                _isConnected.value = false
+                started.set(false)
+                if (rawErr.isNotBlank()) {
+                    _lastError.value = com.nexusts.app.core.vault.error.NexusErrorClassifier.classifyRdpError(
+                        host = connection.host,
+                        port = settings.port,
+                        rawNativeError = rawErr,
+                        connectionId = connection.id
+                    )
+                }
+            }
+        }
+    }
+
     fun start(
         initialWidthPx: Int,
         initialHeightPx: Int,
@@ -409,6 +461,17 @@ class RdpManagedSession(
         } ?: false
     ): Boolean {
         context?.applicationContext?.let { appContext = it }
+        if (connection.host.isBlank()) {
+            _isConnecting.value = false
+            _isConnected.value = false
+            _lastError.value = com.nexusts.app.core.vault.error.NexusErrorClassifier.classifyRdpError(
+                host = "(empty)",
+                port = settings.port,
+                rawNativeError = "DNS_NAME_NOT_FOUND: Hostname is empty.",
+                connectionId = connection.id
+            )
+            return false
+        }
         val wantsSharedDrive = settings.redirectDrives || settings.redirectedDriveSafUris.isNotEmpty()
         val stagedDrive = if (wantsSharedDrive) {
             SafRdpSharedDriveSynchronizer.prepareSessionDrive(
@@ -429,11 +492,21 @@ class RdpManagedSession(
 
         if (!FreeRdpNativeBridge.isNativeLoaded) {
             _isConnecting.value = false
+            _isConnected.value = false
+            _lastError.value = com.nexusts.app.core.vault.error.NexusAppError(
+                category = com.nexusts.app.core.vault.error.NexusErrorCategory.INTERNAL,
+                title = "FreeRDP Native Engine Unavailable",
+                userMessage = "The native FreeRDP 3.x shared library could not be loaded for this CPU ABI.",
+                remediationHint = "Install the matching ABI APK (arm64-v8a / x86_64) or universal APK from GitHub Releases.",
+                technicalDetails = "FreeRdpNativeBridge.isNativeLoaded == false",
+                recoveryConnectionId = connection.id
+            )
             return false
         }
         if (!started.compareAndSet(false, true)) {
-            return nativeHandle != 0L
+            return nativeHandle != 0L && _isConnected.value
         }
+        _lastError.value = null
         _isConnecting.value = true
         return try {
             val useFixedSize = _liveResizeBehavior.value == RdpResizeBehavior.FIXED_SERVER_RESOLUTION
@@ -496,7 +569,30 @@ class RdpManagedSession(
             }
             val connected = createdHandle != 0L && FreeRdpNativeBridge.nativeConnect(createdHandle)
             _isConnected.value = connected
+            if (!connected) {
+                val rawNativeErr = if (createdHandle != 0L) {
+                    runCatching { FreeRdpNativeBridge.nativeGetLastError(createdHandle) }.getOrDefault("")
+                } else {
+                    "nativeCreateSession returned 0"
+                }
+                _lastError.value = com.nexusts.app.core.vault.error.NexusErrorClassifier.classifyRdpError(
+                    host = connection.host,
+                    port = settings.port,
+                    rawNativeError = rawNativeErr,
+                    connectionId = connection.id
+                )
+                started.set(false)
+            }
             connected
+        } catch (t: Throwable) {
+            _isConnected.value = false
+            started.set(false)
+            _lastError.value = com.nexusts.app.core.vault.error.NexusErrorClassifier.classifyThrowable(
+                throwable = t,
+                operationTitle = "RDP Session Error (${connection.host}:${settings.port})",
+                recoveryConnectionId = connection.id
+            )
+            false
         } finally {
             _isConnecting.value = false
         }

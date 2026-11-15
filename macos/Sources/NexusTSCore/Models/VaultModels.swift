@@ -895,36 +895,44 @@ public struct VaultFolder: VaultTimestampedEntity, Hashable {
 
 public struct SmartFolderFilter: Codable, Equatable, Hashable, Sendable {
     public var includeTags: [String]
+    public var excludeTags: [String]
     public var includeProtocols: [VaultProtocolType]
     public var osFamilyFilter: String?
     public var hostPatternRegex: String?
     public var environmentFilter: String?
+    public var scopeFolderId: String?
 
     public init(
         includeTags: [String] = [],
+        excludeTags: [String] = [],
         includeProtocols: [VaultProtocolType] = [],
         osFamilyFilter: String? = nil,
         hostPatternRegex: String? = nil,
-        environmentFilter: String? = nil
+        environmentFilter: String? = nil,
+        scopeFolderId: String? = nil
     ) {
         self.includeTags = includeTags
+        self.excludeTags = excludeTags
         self.includeProtocols = includeProtocols
         self.osFamilyFilter = osFamilyFilter
         self.hostPatternRegex = hostPatternRegex
         self.environmentFilter = environmentFilter
+        self.scopeFolderId = scopeFolderId
     }
 
     enum CodingKeys: String, CodingKey {
-        case includeTags, includeProtocols, osFamilyFilter, hostPatternRegex, environmentFilter
+        case includeTags, excludeTags, includeProtocols, osFamilyFilter, hostPatternRegex, environmentFilter, scopeFolderId
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.includeTags = try c.decodeIfPresent([String].self, forKey: .includeTags) ?? []
+        self.excludeTags = try c.decodeIfPresent([String].self, forKey: .excludeTags) ?? []
         self.includeProtocols = try c.decodeIfPresent([VaultProtocolType].self, forKey: .includeProtocols) ?? []
         self.osFamilyFilter = try c.decodeIfPresent(String.self, forKey: .osFamilyFilter)
         self.hostPatternRegex = try c.decodeIfPresent(String.self, forKey: .hostPatternRegex)
         self.environmentFilter = try c.decodeIfPresent(String.self, forKey: .environmentFilter)
+        self.scopeFolderId = try c.decodeIfPresent(String.self, forKey: .scopeFolderId)
     }
 }
 
@@ -972,7 +980,7 @@ public struct DynamicFolder: VaultTimestampedEntity, Hashable {
         parentFolderId: String? = nil,
         name: String,
         interpreter: DynamicScriptInterpreter = .JSON_HTTP_API,
-        scriptOrEndpointPayload: String,
+        scriptOrEndpointPayload: String = "{\"Objects\":[]}",
         refreshIntervalMinutes: Int = 30,
         inheritable: InheritableProperties = InheritableProperties(),
         updatedAtEpochMs: Int64 = VaultClock.nowMs()
@@ -1391,8 +1399,8 @@ public struct NxtsVaultDocument: Codable, Equatable, Sendable {
     public var tombstonedObjectIds: Set<String>
 
     public init(
-        documentId: String = UUID().uuidString.lowercased(),
-        name: String = "Enterprise Infrastructure Vault",
+        documentId: String = "nxts-default-vault",
+        name: String = "NexusTS Vault",
         description: String = "Zero-Knowledge Argon2id + AES-256-GCM Encrypted Workspace",
         schemaVersion: Int = 2,
         revision: Int64 = 1,
@@ -1482,126 +1490,10 @@ public struct NxtsVaultDocument: Codable, Equatable, Sendable {
     }
 
     public static func sampleStarterVault() -> NxtsVaultDocument {
-        let now = VaultClock.nowMs()
-        let prodCred = VaultCredential(
-            id: "cred-prod-ops",
-            name: "Production Bastion & Fleet Ops",
-            sourceKind: .VAULT_INTERNAL,
-            username: "ops-admin",
-            domain: "CORP",
-            secretPassword: "",
-            totpSecretBase32: "JBSWY3DPEHPK3PXP",
-            updatedAtEpochMs: now
-        )
-        let prodFolder = VaultFolder(
-            id: "folder-prod-core",
-            name: "Production Cloud",
-            description: "EU-Central & US-East Core Fleet",
-            tags: ["prod", "tier-0"],
-            inheritable: InheritableProperties(
-                credentialMode: .OVERRIDE_EXPLICIT,
-                explicitCredentialId: prodCred.id,
-                environmentBadge: "PROD",
-                displayColorAccentHex: "#5B9BFF"
-            ),
-            sortOrder: 0,
-            updatedAtEpochMs: now
-        )
-        let labFolder = VaultFolder(
-            id: "folder-homelab",
-            name: "Edge & Lab Hardware",
-            description: "Proxmox Nodes, Switches & Out-of-Band Serial",
-            tags: ["lab", "edge"],
-            inheritable: InheritableProperties(
-                environmentBadge: "LAB",
-                displayColorAccentHex: "#38BDF8"
-            ),
-            sortOrder: 1,
-            updatedAtEpochMs: now
-        )
-        let sshBastion = VaultConnection(
-            id: "conn-bastion-01",
-            parentFolderId: prodFolder.id,
-            name: "bastion-eu-central-01",
-            host: "bastion.eu-central.example.internal",
-            protocolType: .SSH,
-            osFamily: "Linux",
-            tags: ["prod", "ssh", "bastion"],
-            notes: "Primary jump host for EU production VPC.",
-            favorite: true,
-            updatedAtEpochMs: now
-        )
-        let winRdp = VaultConnection(
-            id: "conn-dc-01",
-            parentFolderId: prodFolder.id,
-            name: "AD-DC01 Core Controller",
-            host: "dc01.corp.example.internal",
-            protocolType: .RDP,
-            osFamily: "Windows",
-            tags: ["prod", "ad", "windows"],
-            notes: "Active Directory Domain Controller (/admin console enabled).",
-            favorite: true,
-            updatedAtEpochMs: now
-        )
-        let pveNode = VaultConnection(
-            id: "conn-pve-01",
-            parentFolderId: labFolder.id,
-            name: "Proxmox Cluster Node 01",
-            host: "pve01.lab.internal",
-            protocolType: .PROXMOX_VE,
-            osFamily: "Linux",
-            tags: ["lab", "hypervisor"],
-            updatedAtEpochMs: now
-        )
-        let macMiniArd = VaultConnection(
-            id: "conn-mac-build-01",
-            parentFolderId: labFolder.id,
-            name: "Mac Studio CI Runner",
-            host: "mac-studio-ci.lab.internal",
-            protocolType: .APPLE_SCREEN_SHARING,
-            osFamily: "macOS",
-            tags: ["lab", "macos", "ci"],
-            favorite: true,
-            updatedAtEpochMs: now
-        )
-        let smartProd = SmartFolder(
-            id: "smart-prod-all",
-            name: "All Production Hosts",
-            filter: SmartFolderFilter(environmentFilter: "PROD"),
-            updatedAtEpochMs: now
-        )
-        let sshTemplate = ConnectionTemplate(
-            id: "tpl-hardened-ssh",
-            name: "Hardened Production SSH",
-            description: "xterm-256color with 30s keepalive & agent forwarding",
-            protocolType: .SSH,
-            colorAccentHex: "#818CF8",
-            updatedAtEpochMs: now
-        )
-        let uptimeTask = CommandTask(
-            id: "task-fleet-health",
-            name: "System Health & Uptime Snapshot",
-            commandTemplate: "uname -a && uptime && df -h /",
-            broadcastToAllSelectedSessions: false,
-            appendNewline: true,
-            updatedAtEpochMs: now
-        )
-        return NxtsVaultDocument(
-            folders: [prodFolder, labFolder],
-            smartFolders: [smartProd],
-            connections: [sshBastion, winRdp, pveNode, macMiniArd],
-            credentials: [prodCred],
-            commandTasks: [uptimeTask],
-            templates: [sshTemplate],
-            todoItems: [
-                VaultTodoItem(
-                    targetObjectId: winRdp.id,
-                    title: "Rotate Kerberos krbtgt keys during Sunday maintenance window",
-                    priority: "HIGH",
-                    updatedAtEpochMs: now
-                )
-            ],
-            recentConnectionIds: [sshBastion.id, macMiniArd.id]
+        NxtsVaultDocument(
+            documentId: "nxts-default-vault",
+            name: "NexusTS Vault",
+            description: "Zero-Knowledge Argon2id + AES-256-GCM Encrypted Workspace"
         )
     }
 }

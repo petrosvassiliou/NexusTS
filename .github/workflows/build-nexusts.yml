@@ -21,7 +21,7 @@ on:
       release_tag:
         description: "Tag name when publishing via workflow_dispatch"
         required: false
-        default: "v1.1.9"
+        default: "v1.2.0"
         type: string
 
 permissions:
@@ -318,7 +318,7 @@ jobs:
           set -euo pipefail
           TAG_NAME="${GITHUB_REF_NAME}"
           if [[ "${TAG_NAME}" != v* ]]; then
-            TAG_NAME="${{ inputs.release_tag || 'v1.1.9' }}"
+            TAG_NAME="${{ inputs.release_tag || 'v1.2.0' }}"
           fi
           echo "tag_name=${TAG_NAME}" >> "${GITHUB_OUTPUT}"
 
@@ -354,16 +354,19 @@ jobs:
             **Native Enterprise Remote Management & Connection Manager for Googlebook OS, Android Tablets & macOS**
 
             ### Signed Deliverables (100% In-Place Upgrade Compatible with Prior Releases)
-            - **`NexusTS-${{ steps.stage.outputs.tag_name }}-googlebook-android-release.apk`**: Cryptographically signed (APK Signature Scheme v2/v3/v4, RSA-4096) universal `arm64-v8a` + `x86_64` APK with 16 KB ELF page alignment (`0x4000`) and 100% Google Play Protect compliance. Upgrades `v1.1.7` (`10107`) directly in place while preserving all `.nxts` v2 vaults & Android Keystore secrets.
+            - **`NexusTS-${{ steps.stage.outputs.tag_name }}-googlebook-android-release.apk`**: Cryptographically signed (APK Signature Scheme v2/v3/v4, RSA-4096) universal `arm64-v8a` + `x86_64` APK with 16 KB ELF page alignment (`0x4000`) and 100% Google Play Protect compliance. Upgrades `v1.1.7`–`v1.1.9` directly in place while preserving all `.nxts` v2 vaults & Android Keystore secrets.
             - **`NexusTS-${{ steps.stage.outputs.tag_name }}-playstore-release.aab`**: Signed Android App Bundle for optional future Google Play / Managed Google Play distribution.
+            - **`NexusTS-${{ steps.stage.outputs.tag_name }}-macOS-Universal.dmg` & `.zip`**: Universal2 (`arm64` + `x86_64`) macOS application bundle with bundled OpenSSL 3.4 + FreeRDP 3.12.
             - **`nexusts-upload-certificate.pem` & `oauth-and-mdm-registration.json`**: Public X.509 upload certificate (`SHA-1: A6:AF:15:A9:BF:0B:FE:38:D4:66:46:3E:3E:72:A6:5B:4F:9C:4D:F6`, `SHA-256: 4A:BD:80:F1:20:14:B9:88:09:1C:97:92:2F:87:02:D1:BF:B7:93:9C:73:B6:9A:DB:1A:9B:76:30:6A:30:27:82`) and Managed Google Play `app_restrictions` template.
 
             ### What's New in ${{ steps.stage.outputs.tag_name }}
-            - **macOS Liquid Glass Design System (Apple HIG)**: Optical translucency (`ultraThinMaterial` / `thinMaterial`), directional specular rim highlights, top refraction sheen, capsule controls & session tabs, and ambient window aura.
-            - **Clean Distraction-Free Connection List & Intelligent Protocol Grouping**: Removed cluttering IP addresses and repetitive `RDP`/`SSH` prefixes from the sidebar connection list; mixed-protocol folders automatically group by protocol (`RDP`, `SSH`, etc.), while single-protocol folders suppress redundant headers and reveal the connection type pill smoothly on mouse hover.
-            - **Compact Flush Far-Left Connection & Folder Explorer**: Removed the wide outer navigation rail so folders, subfolders, and connections sit flush at the far-left edge in a sleek, resizable (`180–440dp` / `185–340pt`) single-line tree view; moved Studios (`Templates`, `Credentials`, `Gateways`, `Tasks`, `Drive Sync`) to a compact top-toolbar switcher.
-            - **Rich Folder Right-Click Context Menus**: Right-click any folder for **Start All RDP Connections** (recursively across nested subfolders), **Connect All / Disconnect All**, **Rename Folder…**, **Move Folder to…** (with cycle protection), **Move Up / Down**, **New RDP / SSH / Subfolder**, **Duplicate Folder**, **Expand / Collapse Subfolders**, **Folder Credentials & Inheritance**, and **Delete Folder…** (choose between deleting all contents or moving items up).
-            - **Seamless In-Place Replacement (`v1.1.7` → `v1.1.9`)**: 100% `.nxts` v2 wire compatibility (`NXTS\x00\x02`, Argon2id + AES-256-GCM) and SHA-256-verified APK/DMG updates.
+            - **Clean Empty Vault & Demo Sanitization**: Removed all example projects, demo connections, folders, credentials, tasks, templates, and to-dos; existing vaults automatically strip legacy demo entries on load while preserving user data. Sidebar connection rows display only connection names without IP addresses.
+            - **Royal TS (`.rtsz` / `.rtsx` / `.rjson`) Import Placement Picker**: Choose whether imported connections are placed in a **new folder**, **merged at the root** of the hierarchy, or **replace all existing connections**.
+            - **Full Drag & Drop for Folders & Connections**: Reorder sibling folders (`BEFORE` / `INSIDE` / `AFTER`), nest folders with cycle protection, drag items to the root hierarchy, and reorder connections.
+            - **Dedicated Bottom-Pinned `"Credentials"` System Folder**: Restricted exclusively to credentials, pinned permanently at the bottom of the left sidebar, and automatically absorbs Royal TS `Credentials` containers on import.
+            - **Robust Folder Selection & Right-Click `Edit Connection…`**: Fixed cursor right-click targeting across nested folders and connections so right-clicking always targets the exact item under the cursor without opening parent folder properties; added direct **Edit Connection…** context-menu support.
+            - **Full Intelligent Folders (`SmartFolder`) & Dynamic Folder Management**: Create, edit, duplicate, and delete Intelligent Folders with multi-protocol filters, folder subtree scope, include/exclude tags, live regex validation, and live matched-connection previews.
+            - **Confirmation-Protected Database Reset & Structured Error Diagnostics**: Added a confirmation-gated **Reset NexusTS Database** flow (with one-click `.nxts` backup export), corrupt local vault quarantine recovery, and structured error classification (`NexusAppError` + native FreeRDP 3.x `freerdp_get_last_error` diagnostic cards).
           files: release-assets/*
 
       - name: Check Optional Google Play Service Account Secret

@@ -265,19 +265,24 @@ public struct InspectorColumnView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         Button {
-                            if let kp = try? NativeSshCryptoBridge.generateEd25519Keypair(comment: "\(NSUserName())@\(Host.current().localizedName ?? "mac")") {
-                                store.commitMutation("Generated Ed25519 SSH keypair") { doc in
-                                    doc.credentials.append(VaultCredential(
+                            do {
+                                let kp = try NativeSshCryptoBridge.generateEd25519Keypair(
+                                    comment: "\(NSUserName())@\(Host.current().localizedName ?? "mac")"
+                                )
+                                store.saveCredential(
+                                    VaultCredential(
                                         name: "Ed25519 (\(kp.sha256Fingerprint.prefix(16))…)",
                                         sourceKind: .SSH_KEY_PAIR,
                                         username: NSUserName(),
                                         privateKeyPem: kp.privateKeyOpenSshPem,
                                         publicKeyOpenSsh: kp.publicKeyOpenSsh,
                                         keyFingerprintSha256: kp.sha256Fingerprint
-                                    ))
-                                }
+                                    )
+                                )
                                 NSPasteboard.general.clearContents()
                                 NSPasteboard.general.setString(kp.publicKeyOpenSsh, forType: .string)
+                            } catch {
+                                store.reportError(error, operationTitle: "SSH Key Generation Failed")
                             }
                         } label: {
                             Label("Generate Ed25519 Key & Copy Public Key", systemImage: "key.radiowaves.forward.fill")

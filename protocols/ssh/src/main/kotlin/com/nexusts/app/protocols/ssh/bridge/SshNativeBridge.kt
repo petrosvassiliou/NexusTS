@@ -369,7 +369,11 @@ class SshTerminalSessionController(
                         }
                         onBytesReceived(buildPrompt().encodeToByteArray())
                     }
-                }.onFailure {
+                }.onFailure { err ->
+                    val reason = err.message?.takeIf { it.isNotBlank() } ?: err::class.java.simpleName
+                    onBytesReceived(
+                        "\u001B[1;33m[Transport Notice] Could not reach $host:$port ($reason).\u001B[0m\r\n".encodeToByteArray()
+                    )
                     onBytesReceived(buildPrompt().encodeToByteArray())
                 }
             }
@@ -870,8 +874,13 @@ class SshTerminalSessionController(
                         val client = server.accept()
                         launch { relayForwardedSocket(client, rule) }
                     }
-                } catch (_: Throwable) {
-                    // Rule failed to bind (e.g., port in use); activeBoundPortForwardsCount is NOT incremented
+                } catch (bindErr: Throwable) {
+                    if (boundServer == null) {
+                        val reason = bindErr.message?.takeIf { it.isNotBlank() } ?: bindErr::class.java.simpleName
+                        onBytesReceived(
+                            "\u001B[1;31m[Port Forward Error] Could not bind ${rule.bindAddress}:${rule.bindPort}: $reason\u001B[0m\r\n".encodeToByteArray()
+                        )
+                    }
                 } finally {
                     boundServer?.let { srv ->
                         runCatching { srv.close() }

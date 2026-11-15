@@ -87,6 +87,14 @@ public final class MacKeychainAndBiometrics: @unchecked Sendable {
         SecItemDelete(query as CFDictionary)
     }
 
+    public func deleteAllVaultPassphrases() {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: serviceName
+        ]
+        SecItemDelete(query as CFDictionary)
+    }
+
     public func unlockPassphraseWithBiometrics(
         forVaultId vaultId: String,
         reason: String = "Unlock your encrypted NexusTS connection vault"
@@ -578,7 +586,7 @@ public struct MacReleaseUpdateCandidate: Equatable, Sendable {
 }
 
 public enum MacGitHubReleaseUpdater {
-    public static let currentVersion = "1.1.9"
+    public static let currentVersion = "1.2.0"
 
     public static func checkForUpdates(
         repoSlug: String = "petrosvassiliou/NexusTS"

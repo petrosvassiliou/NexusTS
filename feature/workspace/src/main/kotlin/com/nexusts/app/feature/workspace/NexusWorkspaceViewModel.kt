@@ -16,6 +16,10 @@ import com.nexusts.app.core.vault.automation.AutomationTaskEngine
 import com.nexusts.app.core.vault.credentials.EnterpriseCredentialHub
 import com.nexusts.app.core.vault.credentials.ResolvedSessionSecret
 import com.nexusts.app.core.vault.crypto.NxtsVaultSerializer
+import com.nexusts.app.core.vault.error.NexusAppError
+import com.nexusts.app.core.vault.error.NexusErrorCategory
+import com.nexusts.app.core.vault.error.NexusErrorClassifier
+import com.nexusts.app.core.vault.error.VaultHierarchySanitizer
 import com.nexusts.app.core.vault.exporter.VaultDocumentExporter
 import com.nexusts.app.core.vault.exporter.VaultExportFormat
 import com.nexusts.app.core.vault.gateway.ActiveTunnelLease
@@ -23,6 +27,8 @@ import com.nexusts.app.core.vault.gateway.GatewayHealthReport
 import com.nexusts.app.core.vault.gateway.SecureGatewayTunnelManager
 import com.nexusts.app.core.vault.importer.DetectedExternalVaultFormat
 import com.nexusts.app.core.vault.importer.EnterpriseVaultFormatImporter
+import com.nexusts.app.core.vault.importer.RoyalTsImportMerger
+import com.nexusts.app.core.vault.importer.RoyalTsImportPlacementMode
 import com.nexusts.app.core.vault.importer.RtszDocumentImporter
 import com.nexusts.app.core.vault.inheritance.EffectiveConnectionProfile
 import com.nexusts.app.core.vault.inheritance.PropertyInheritanceResolver
@@ -70,6 +76,18 @@ enum class SidebarQuickFilter {
     RECENTS
 }
 
+enum class FolderDropPlacement {
+    BEFORE,
+    INSIDE,
+    AFTER
+}
+
+data class PendingRoyalTsImportState(
+    val fileName: String,
+    val importedDocument: NxtsVaultDocument,
+    val suggestedFolderName: String
+)
+
 data class WorkspaceUiState(
     val activeRailId: String = "connections",
     val isSidebarVisible: Boolean = true,
@@ -85,13 +103,20 @@ data class WorkspaceUiState(
     val newFolderDefaultParentId: String? = null,
     val connectWithOptionsTarget: VaultConnection? = null,
     val isNewSmartFolderDialogVisible: Boolean = false,
+    val editingSmartFolder: SmartFolder? = null,
     val isNewDynamicFolderDialogVisible: Boolean = false,
+    val editingDynamicFolder: DynamicFolder? = null,
+    val isCredentialDialogVisible: Boolean = false,
+    val editingCredential: VaultCredential? = null,
     val isNewTemplateDialogVisible: Boolean = false,
     val isLockVaultDialogVisible: Boolean = false,
+    val isResetDatabaseDialogVisible: Boolean = false,
+    val pendingRoyalTsImport: PendingRoyalTsImportState? = null,
     val pendingEncryptedImportFileName: String? = null,
     val pendingEncryptedImportFormat: DetectedExternalVaultFormat? = null,
     val pendingEncryptedImportError: String? = null,
     val importErrorDialogMessage: String? = null,
+    val activeAppError: NexusAppError? = null,
     val userSnackbarMessage: String? = null,
     val sidebarFilterQuery: String = "",
     val sidebarQuickFilter: SidebarQuickFilter = SidebarQuickFilter.ALL,
@@ -136,6 +161,7 @@ data class WorkspaceUiState(
     val isStarterUninitialized: Boolean = true,
     val vaultDocument: NxtsVaultDocument = NexusWorkspaceViewModel.createEnterpriseStarterVault(),
     val selectedConnectionId: String? = null,
+    val selectedFolderId: String? = null,
     val selectedSmartFolderId: String? = null,
     val selectedDynamicFolderId: String? = null,
     val hydratedDynamicConnections: Map<String, List<VaultConnection>> = emptyMap(),
@@ -176,9 +202,10 @@ class NexusWorkspaceViewModel @Inject constructor(
 
     private val _uiState = MutableStateFlow(
         WorkspaceUiState(
-            vaultDocument = activeVaultStore.snapshot.value.vaultDocument,
+            vaultDocument = VaultHierarchySanitizer.sanitizeVaultDocument(activeVaultStore.snapshot.value.vaultDocument),
             isVaultLocked = activeVaultStore.snapshot.value.isVaultLocked,
             vaultUnlockError = activeVaultStore.snapshot.value.vaultUnlockError,
+            activeAppError = activeVaultStore.snapshot.value.startupRecoveryError,
             hasPreImportBackup = activeVaultStore.snapshot.value.hasPreImportBackup,
             pendingImportFileName = activeVaultStore.snapshot.value.pendingImportFileName,
             isStarterUninitialized = activeVaultStore.snapshot.value.isStarterUninitialized,
@@ -195,24 +222,35 @@ class NexusWorkspaceViewModel @Inject constructor(
                         tilingController.closeTab(tab.tabId)
                     }
                 }
+                val recoveryErr = shared.startupRecoveryError
+                if (recoveryErr != null) {
+                    activeVaultStore.clearStartupRecoveryError()
+                }
+                val cleanDoc = VaultHierarchySanitizer.sanitizeVaultDocument(shared.vaultDocument)
                 _uiState.update { current ->
                     val dynamicAll = current.hydratedDynamicConnections.values.flatten()
-                    val activeConns = shared.vaultDocument.connections.filterNot {
-                        it.id in shared.vaultDocument.tombstonedObjectIds
+                    val activeConns = cleanDoc.connections.filterNot {
+                        it.id in cleanDoc.tombstonedObjectIds
                     }
                     val validSelectedId = current.selectedConnectionId
                         ?.takeIf { selId ->
                             activeConns.any { it.id == selId } || dynamicAll.any { it.id == selId }
                         }
                         ?: activeConns.firstOrNull()?.id
+                    val validSelectedFolderId = current.selectedFolderId?.takeIf { fid ->
+                        fid == VaultHierarchySanitizer.SYSTEM_CREDENTIALS_FOLDER_ID ||
+                            cleanDoc.folders.any { it.id == fid && it.id !in cleanDoc.tombstonedObjectIds }
+                    }
                     current.copy(
-                        vaultDocument = shared.vaultDocument,
+                        vaultDocument = cleanDoc,
                         isVaultLocked = shared.isVaultLocked,
                         vaultUnlockError = shared.vaultUnlockError,
+                        activeAppError = recoveryErr ?: current.activeAppError,
                         hasPreImportBackup = shared.hasPreImportBackup,
                         pendingImportFileName = shared.pendingImportFileName,
                         isStarterUninitialized = shared.isStarterUninitialized,
                         selectedConnectionId = validSelectedId,
+                        selectedFolderId = validSelectedFolderId,
                         remoteKeyCaptureEnabled = if (shared.isVaultLocked) false else current.remoteKeyCaptureEnabled,
                         isQuickConnectVisible = if (shared.isVaultLocked) false else current.isQuickConnectVisible
                     )
@@ -357,6 +395,12 @@ class NexusWorkspaceViewModel @Inject constructor(
         protocol: VaultProtocolType = VaultProtocolType.RDP
     ) {
         if (_uiState.value.isVaultLocked) return
+        if (folderId == VaultHierarchySanitizer.SYSTEM_CREDENTIALS_FOLDER_ID) {
+            _uiState.update {
+                it.copy(userSnackbarMessage = "The 'Credentials' folder can only hold credentials.")
+            }
+            return
+        }
         _uiState.update {
             it.copy(
                 editingConnection = null,
@@ -403,6 +447,12 @@ class NexusWorkspaceViewModel @Inject constructor(
 
     fun openNewSubfolder(parentFolderId: String?) {
         if (_uiState.value.isVaultLocked) return
+        if (parentFolderId == VaultHierarchySanitizer.SYSTEM_CREDENTIALS_FOLDER_ID) {
+            _uiState.update {
+                it.copy(userSnackbarMessage = "The 'Credentials' folder can only hold credentials.")
+            }
+            return
+        }
         _uiState.update {
             it.copy(
                 editingFolder = null,
@@ -413,11 +463,12 @@ class NexusWorkspaceViewModel @Inject constructor(
     }
 
     fun openEditFolderDialog(folder: VaultFolder) {
-        if (_uiState.value.isVaultLocked) return
+        if (_uiState.value.isVaultLocked || folder.id == VaultHierarchySanitizer.SYSTEM_CREDENTIALS_FOLDER_ID) return
         _uiState.update {
             it.copy(
                 editingFolder = folder,
                 newFolderDefaultParentId = folder.parentFolderId,
+                selectedFolderId = folder.id,
                 isFolderDialogVisible = true
             )
         }
@@ -459,14 +510,32 @@ class NexusWorkspaceViewModel @Inject constructor(
         _uiState.update { it.copy(isLockVaultDialogVisible = false) }
     }
 
+    fun selectFolderInTree(folderId: String?) {
+        _uiState.update {
+            it.copy(
+                selectedFolderId = folderId,
+                selectedSmartFolderId = null,
+                selectedDynamicFolderId = null
+            )
+        }
+    }
+
     fun selectConnectionInTree(connectionId: String) {
-        _uiState.update { it.copy(selectedConnectionId = connectionId) }
+        _uiState.update {
+            it.copy(
+                selectedConnectionId = connectionId,
+                selectedFolderId = null
+            )
+        }
     }
 
     fun toggleSmartFolderSelection(smartFolderId: String) {
         _uiState.update { state ->
             val next = if (state.selectedSmartFolderId == smartFolderId) null else smartFolderId
-            state.copy(selectedSmartFolderId = next)
+            state.copy(
+                selectedSmartFolderId = next,
+                selectedFolderId = null
+            )
         }
     }
 
@@ -896,6 +965,15 @@ class NexusWorkspaceViewModel @Inject constructor(
      */
     fun moveConnectionToFolder(connectionId: String, targetFolderId: String?): Boolean {
         if (_uiState.value.isVaultLocked) return false
+        if (targetFolderId == VaultHierarchySanitizer.SYSTEM_CREDENTIALS_FOLDER_ID) {
+            _uiState.update {
+                it.copy(
+                    movingConnectionTarget = null,
+                    userSnackbarMessage = "The 'Credentials' folder can only hold credentials."
+                )
+            }
+            return false
+        }
         val currentDoc = _uiState.value.vaultDocument
         val existing = currentDoc.connections.firstOrNull {
             it.id == connectionId && it.id !in currentDoc.tombstonedObjectIds
@@ -955,6 +1033,7 @@ class NexusWorkspaceViewModel @Inject constructor(
 
     fun openMoveFolderDialog(folder: VaultFolder) {
         if (_uiState.value.isVaultLocked) return
+        if (folder.id == VaultHierarchySanitizer.SYSTEM_CREDENTIALS_FOLDER_ID) return
         _uiState.update { it.copy(movingFolderTarget = folder) }
     }
 
@@ -964,14 +1043,22 @@ class NexusWorkspaceViewModel @Inject constructor(
 
     /**
      * Verifies that moving [folderId] under [targetParentFolderId] will not create a cycle
-     * (moving a folder into itself or any of its own nested descendants).
+     * (moving a folder into itself or any of its own nested descendants) or target Credentials.
      */
     fun canMoveFolderToParent(folderId: String, targetParentFolderId: String?): Boolean {
         if (_uiState.value.isVaultLocked) return false
+        if (folderId == VaultHierarchySanitizer.SYSTEM_CREDENTIALS_FOLDER_ID ||
+            targetParentFolderId == VaultHierarchySanitizer.SYSTEM_CREDENTIALS_FOLDER_ID
+        ) {
+            return false
+        }
         val doc = _uiState.value.vaultDocument
         val folder = doc.folders.firstOrNull {
             it.id == folderId && it.id !in doc.tombstonedObjectIds
         } ?: return false
+        if (targetParentFolderId == null && VaultHierarchySanitizer.isReservedCredentialsFolderName(folder.name)) {
+            return false
+        }
         if (targetParentFolderId == folderId) return false
         if (targetParentFolderId != null) {
             val targetExists = doc.folders.any {
@@ -990,6 +1077,17 @@ class NexusWorkspaceViewModel @Inject constructor(
      */
     fun moveFolderToParent(folderId: String, targetParentFolderId: String?): Boolean {
         if (_uiState.value.isVaultLocked) return false
+        if (folderId == VaultHierarchySanitizer.SYSTEM_CREDENTIALS_FOLDER_ID ||
+            targetParentFolderId == VaultHierarchySanitizer.SYSTEM_CREDENTIALS_FOLDER_ID
+        ) {
+            _uiState.update {
+                it.copy(
+                    movingFolderTarget = null,
+                    userSnackbarMessage = "The 'Credentials' folder can only hold credentials."
+                )
+            }
+            return false
+        }
         val currentDoc = _uiState.value.vaultDocument
         val existing = currentDoc.folders.firstOrNull {
             it.id == folderId && it.id !in currentDoc.tombstonedObjectIds
@@ -999,6 +1097,16 @@ class NexusWorkspaceViewModel @Inject constructor(
             currentDoc.folders.any { it.id == fid && it.id !in currentDoc.tombstonedObjectIds }
         }
         if (targetParentFolderId != null && normalizedTargetId == null) return false
+
+        if (normalizedTargetId == null && VaultHierarchySanitizer.isReservedCredentialsFolderName(existing.name)) {
+            _uiState.update {
+                it.copy(
+                    movingFolderTarget = null,
+                    userSnackbarMessage = "The root 'Credentials' folder is reserved for credentials."
+                )
+            }
+            return false
+        }
 
         if (normalizedTargetId == folderId ||
             (normalizedTargetId != null && normalizedTargetId in collectDescendantFolderIds(currentDoc.folders, folderId))
@@ -1019,7 +1127,8 @@ class NexusWorkspaceViewModel @Inject constructor(
         ).maxOfOrNull { it.sortOrder } ?: 0) + 10
         val movedFolder = existing.copy(
             parentFolderId = normalizedTargetId,
-            sortOrder = nextSortOrder
+            sortOrder = nextSortOrder,
+            updatedAtEpochMs = System.currentTimeMillis()
         )
 
         activeVaultStore.updateVaultDocument { doc ->
@@ -1028,7 +1137,106 @@ class NexusWorkspaceViewModel @Inject constructor(
             )
         }
         val updatedDoc = activeVaultStore.snapshot.value.vaultDocument
-        val subtreeFolderIds = collectDescendantFolderIds(updatedDoc.folders, folderId)
+        refreshLiveTabInheritanceForSubtree(updatedDoc, folderId)
+
+        val destLabel = normalizedTargetId?.let { fid ->
+            updatedDoc.folders.firstOrNull { it.id == fid }?.name
+        } ?: "Top Level"
+        val moveMessage = "Moved folder '${movedFolder.name}' to '$destLabel'"
+        _uiState.update {
+            it.copy(
+                vaultDocument = updatedDoc,
+                selectedFolderId = folderId,
+                movingFolderTarget = null,
+                userSnackbarMessage = moveMessage
+            )
+        }
+        appendLog("[Vault] $moveMessage")
+        return true
+    }
+
+    /**
+     * Drag-and-drop handler for folders supporting nesting (`INSIDE`) and relative sibling reordering
+     * (`BEFORE` / `AFTER`) across any depth with cycle and `"Credentials"` system folder protection.
+     */
+    fun moveOrReorderFolder(
+        draggedFolderId: String,
+        targetFolderId: String,
+        placement: FolderDropPlacement
+    ): Boolean {
+        if (_uiState.value.isVaultLocked) return false
+        if (draggedFolderId == targetFolderId) return false
+        if (draggedFolderId == VaultHierarchySanitizer.SYSTEM_CREDENTIALS_FOLDER_ID ||
+            targetFolderId == VaultHierarchySanitizer.SYSTEM_CREDENTIALS_FOLDER_ID
+        ) {
+            _uiState.update {
+                it.copy(userSnackbarMessage = "The 'Credentials' folder cannot be moved or hold connection folders.")
+            }
+            return false
+        }
+        if (placement == FolderDropPlacement.INSIDE) {
+            return moveFolderToParent(draggedFolderId, targetFolderId)
+        }
+
+        val doc = _uiState.value.vaultDocument
+        val dragged = doc.folders.firstOrNull {
+            it.id == draggedFolderId && it.id !in doc.tombstonedObjectIds
+        } ?: return false
+        val target = doc.folders.firstOrNull {
+            it.id == targetFolderId && it.id !in doc.tombstonedObjectIds
+        } ?: return false
+
+        val destParentId = target.parentFolderId
+        if (destParentId == draggedFolderId ||
+            (destParentId != null && destParentId in collectDescendantFolderIds(doc.folders, draggedFolderId))
+        ) {
+            _uiState.update {
+                it.copy(userSnackbarMessage = "Cannot move '${dragged.name}' into itself or a child folder")
+            }
+            return false
+        }
+        if (destParentId == null && VaultHierarchySanitizer.isReservedCredentialsFolderName(dragged.name)) {
+            _uiState.update {
+                it.copy(userSnackbarMessage = "The root 'Credentials' folder is reserved for credentials.")
+            }
+            return false
+        }
+
+        val destSiblings = sortedSiblingFolders(doc.folders, destParentId, doc.tombstonedObjectIds)
+            .filterNot { it.id == draggedFolderId }
+            .toMutableList()
+        val targetIdx = destSiblings.indexOfFirst { it.id == targetFolderId }
+        if (targetIdx < 0) return false
+        val insertIdx = (if (placement == FolderDropPlacement.AFTER) targetIdx + 1 else targetIdx)
+            .coerceIn(0, destSiblings.size)
+        val now = System.currentTimeMillis()
+        val movedDragged = dragged.copy(parentFolderId = destParentId, updatedAtEpochMs = now)
+        destSiblings.add(insertIdx, movedDragged)
+
+        val updatedById = destSiblings.mapIndexed { idx, f ->
+            f.id to f.copy(sortOrder = (idx + 1) * 10, updatedAtEpochMs = now)
+        }.toMap()
+
+        activeVaultStore.updateVaultDocument { current ->
+            bumpDocRevisionAndClock(current).copy(
+                folders = current.folders.map { f -> updatedById[f.id] ?: f }
+            )
+        }
+        val updatedDoc = activeVaultStore.snapshot.value.vaultDocument
+        if (dragged.parentFolderId != destParentId) {
+            refreshLiveTabInheritanceForSubtree(updatedDoc, draggedFolderId)
+        }
+        _uiState.update {
+            it.copy(
+                vaultDocument = updatedDoc,
+                selectedFolderId = draggedFolderId
+            )
+        }
+        return true
+    }
+
+    private fun refreshLiveTabInheritanceForSubtree(updatedDoc: NxtsVaultDocument, rootFolderId: String) {
+        val subtreeFolderIds = collectDescendantFolderIds(updatedDoc.folders, rootFolderId)
         val subtreeConns = updatedDoc.connections
             .filter { it.parentFolderId in subtreeFolderIds && it.id !in updatedDoc.tombstonedObjectIds }
             .associateBy { it.id }
@@ -1043,27 +1251,13 @@ class NexusWorkspaceViewModel @Inject constructor(
                 )
             }
         }
-
-        val destLabel = normalizedTargetId?.let { fid ->
-            updatedDoc.folders.firstOrNull { it.id == fid }?.name
-        } ?: "Top Level"
-        val moveMessage = "Moved folder '${movedFolder.name}' to '$destLabel'"
-        _uiState.update {
-            it.copy(
-                vaultDocument = updatedDoc,
-                movingFolderTarget = null,
-                userSnackbarMessage = moveMessage
-            )
-        }
-        appendLog("[Vault] $moveMessage")
-        return true
     }
 
     /**
      * Reorders [folderId] up or down among its sibling folders under the same `parentFolderId`.
      */
     fun reorderFolder(folderId: String, moveUp: Boolean): Boolean {
-        if (_uiState.value.isVaultLocked) return false
+        if (_uiState.value.isVaultLocked || folderId == VaultHierarchySanitizer.SYSTEM_CREDENTIALS_FOLDER_ID) return false
         val doc = _uiState.value.vaultDocument
         val target = doc.folders.firstOrNull {
             it.id == folderId && it.id !in doc.tombstonedObjectIds
@@ -1277,6 +1471,7 @@ class NexusWorkspaceViewModel @Inject constructor(
     }
 
     fun duplicateFolder(folder: VaultFolder) {
+        if (folder.id == VaultHierarchySanitizer.SYSTEM_CREDENTIALS_FOLDER_ID) return
         val cloned = folder.copy(
             id = UUID.randomUUID().toString(),
             name = "${folder.name} (Copy)",
@@ -1286,7 +1481,7 @@ class NexusWorkspaceViewModel @Inject constructor(
     }
 
     fun openRenameFolderDialog(folder: VaultFolder) {
-        if (_uiState.value.isVaultLocked) return
+        if (_uiState.value.isVaultLocked || folder.id == VaultHierarchySanitizer.SYSTEM_CREDENTIALS_FOLDER_ID) return
         _uiState.update { it.copy(renamingFolderTarget = folder) }
     }
 
@@ -1299,13 +1494,22 @@ class NexusWorkspaceViewModel @Inject constructor(
      * without tearing down active SSH/RDP sessions inside the folder.
      */
     fun renameFolder(folderId: String, newName: String): Boolean {
-        if (_uiState.value.isVaultLocked) return false
+        if (_uiState.value.isVaultLocked || folderId == VaultHierarchySanitizer.SYSTEM_CREDENTIALS_FOLDER_ID) return false
         val trimmed = newName.trim()
         if (trimmed.isEmpty()) return false
         val currentDoc = _uiState.value.vaultDocument
         val existing = currentDoc.folders.firstOrNull {
             it.id == folderId && it.id !in currentDoc.tombstonedObjectIds
         } ?: return false
+        if (existing.parentFolderId == null && VaultHierarchySanitizer.isReservedCredentialsFolderName(trimmed)) {
+            _uiState.update {
+                it.copy(
+                    renamingFolderTarget = null,
+                    userSnackbarMessage = "The root 'Credentials' folder is reserved for credentials."
+                )
+            }
+            return false
+        }
         if (existing.name == trimmed) {
             _uiState.update { it.copy(renamingFolderTarget = null) }
             return true
@@ -1332,7 +1536,7 @@ class NexusWorkspaceViewModel @Inject constructor(
     }
 
     fun requestDeleteFolderConfirmation(folder: VaultFolder) {
-        if (_uiState.value.isVaultLocked) return
+        if (_uiState.value.isVaultLocked || folder.id == VaultHierarchySanitizer.SYSTEM_CREDENTIALS_FOLDER_ID) return
         _uiState.update { it.copy(deletingFolderTarget = folder) }
     }
 
@@ -1368,6 +1572,7 @@ class NexusWorkspaceViewModel @Inject constructor(
     }
 
     fun deleteFolder(folderId: String, deleteContents: Boolean = false) {
+        if (folderId == VaultHierarchySanitizer.SYSTEM_CREDENTIALS_FOLDER_ID) return
         val currentDoc = _uiState.value.vaultDocument
         val targetFolder = currentDoc.folders.firstOrNull { it.id == folderId } ?: return
 
@@ -1406,6 +1611,7 @@ class NexusWorkspaceViewModel @Inject constructor(
                     movingFolderTarget = if (state.movingFolderTarget?.id in subtreeFolderIds) null else state.movingFolderTarget,
                     editingFolder = if (state.editingFolder?.id in subtreeFolderIds) null else state.editingFolder,
                     isFolderDialogVisible = if (state.editingFolder?.id in subtreeFolderIds) false else state.isFolderDialogVisible,
+                    selectedFolderId = if (state.selectedFolderId in subtreeFolderIds) null else state.selectedFolderId,
                     selectedConnectionId = if (state.selectedConnectionId in deletedConnIds) {
                         updatedDoc.connections.firstOrNull { it.id !in updatedDoc.tombstonedObjectIds }?.id
                     } else {
@@ -1455,6 +1661,7 @@ class NexusWorkspaceViewModel @Inject constructor(
                 movingFolderTarget = if (state.movingFolderTarget?.id == folderId) null else state.movingFolderTarget,
                 editingFolder = if (state.editingFolder?.id == folderId) null else state.editingFolder,
                 isFolderDialogVisible = if (state.editingFolder?.id == folderId) false else state.isFolderDialogVisible,
+                selectedFolderId = if (state.selectedFolderId == folderId) fallbackParentId else state.selectedFolderId,
                 vaultDocument = activeVaultStore.snapshot.value.vaultDocument,
                 userSnackbarMessage = "Deleted folder '${targetFolder.name}' (items moved up)"
             )
@@ -1488,42 +1695,81 @@ class NexusWorkspaceViewModel @Inject constructor(
                 }
                 appendLog("[DynamicFolder] Hydrated ${items.size} host(s) from '${dynamicFolder.name}'")
             }.onFailure { err ->
-                appendLog("[DynamicFolder Error] '${dynamicFolder.name}': ${err.message}")
+                reportException(err, "Dynamic Folder '${dynamicFolder.name}' Failed")
             }
         }
     }
 
     fun openNewDynamicFolderDialog() {
         if (_uiState.value.isVaultLocked) return
-        _uiState.update { it.copy(isNewDynamicFolderDialogVisible = true) }
+        _uiState.update {
+            it.copy(
+                editingDynamicFolder = null,
+                isNewDynamicFolderDialogVisible = true
+            )
+        }
+    }
+
+    fun openEditDynamicFolderDialog(dynamicFolder: DynamicFolder) {
+        if (_uiState.value.isVaultLocked) return
+        _uiState.update {
+            it.copy(
+                editingDynamicFolder = dynamicFolder,
+                isNewDynamicFolderDialogVisible = true
+            )
+        }
     }
 
     fun dismissNewDynamicFolderDialog() {
-        _uiState.update { it.copy(isNewDynamicFolderDialogVisible = false) }
+        _uiState.update {
+            it.copy(
+                editingDynamicFolder = null,
+                isNewDynamicFolderDialogVisible = false
+            )
+        }
     }
 
     fun saveDynamicFolderToVault(dynamicFolder: DynamicFolder) {
+        val stamped = dynamicFolder.copy(
+            parentFolderId = dynamicFolder.parentFolderId?.takeUnless {
+                it == VaultHierarchySanitizer.SYSTEM_CREDENTIALS_FOLDER_ID
+            },
+            name = dynamicFolder.name.trim().ifBlank { "Dynamic Folder" },
+            updatedAtEpochMs = System.currentTimeMillis()
+        )
         activeVaultStore.updateVaultDocument { doc ->
-            val exists = doc.dynamicFolders.any { it.id == dynamicFolder.id }
+            val exists = doc.dynamicFolders.any { it.id == stamped.id }
             val nextList = if (exists) {
-                doc.dynamicFolders.map { if (it.id == dynamicFolder.id) dynamicFolder else it }
+                doc.dynamicFolders.map { if (it.id == stamped.id) stamped else it }
             } else {
-                doc.dynamicFolders + dynamicFolder
+                doc.dynamicFolders + stamped
             }
             bumpDocRevisionAndClock(doc).copy(
                 dynamicFolders = nextList,
-                tombstonedObjectIds = doc.tombstonedObjectIds - dynamicFolder.id
+                tombstonedObjectIds = doc.tombstonedObjectIds - stamped.id
             )
         }
         _uiState.update {
             it.copy(
+                editingDynamicFolder = null,
                 isNewDynamicFolderDialogVisible = false,
-                selectedDynamicFolderId = dynamicFolder.id,
-                vaultDocument = activeVaultStore.snapshot.value.vaultDocument
+                selectedDynamicFolderId = stamped.id,
+                vaultDocument = activeVaultStore.snapshot.value.vaultDocument,
+                userSnackbarMessage = "Saved dynamic folder '${stamped.name}'"
             )
         }
-        reloadDynamicFolder(dynamicFolder)
-        appendLog("[DynamicFolder] Saved '${dynamicFolder.name}' (${dynamicFolder.interpreter.name})")
+        reloadDynamicFolder(stamped)
+        appendLog("[DynamicFolder] Saved '${stamped.name}' (${stamped.interpreter.name})")
+    }
+
+    fun duplicateDynamicFolder(dynamicFolder: DynamicFolder) {
+        saveDynamicFolderToVault(
+            dynamicFolder.copy(
+                id = UUID.randomUUID().toString(),
+                name = "${dynamicFolder.name} (Copy)",
+                updatedAtEpochMs = System.currentTimeMillis()
+            )
+        )
     }
 
     fun deleteDynamicFolderFromVault(dynamicFolderId: String) {
@@ -1535,6 +1781,7 @@ class NexusWorkspaceViewModel @Inject constructor(
         }
         _uiState.update { state ->
             state.copy(
+                editingDynamicFolder = state.editingDynamicFolder.takeUnless { it?.id == dynamicFolderId },
                 selectedDynamicFolderId = state.selectedDynamicFolderId.takeUnless { it == dynamicFolderId },
                 hydratedDynamicConnections = state.hydratedDynamicConnections - dynamicFolderId,
                 vaultDocument = activeVaultStore.snapshot.value.vaultDocument
@@ -1545,34 +1792,83 @@ class NexusWorkspaceViewModel @Inject constructor(
 
     fun openNewSmartFolderDialog() {
         if (_uiState.value.isVaultLocked) return
-        _uiState.update { it.copy(isNewSmartFolderDialogVisible = true) }
+        _uiState.update {
+            it.copy(
+                editingSmartFolder = null,
+                isNewSmartFolderDialogVisible = true
+            )
+        }
+    }
+
+    fun openEditSmartFolderDialog(smartFolder: SmartFolder) {
+        if (_uiState.value.isVaultLocked) return
+        _uiState.update {
+            it.copy(
+                editingSmartFolder = smartFolder,
+                isNewSmartFolderDialogVisible = true
+            )
+        }
     }
 
     fun dismissNewSmartFolderDialog() {
-        _uiState.update { it.copy(isNewSmartFolderDialogVisible = false) }
+        _uiState.update {
+            it.copy(
+                editingSmartFolder = null,
+                isNewSmartFolderDialogVisible = false
+            )
+        }
     }
 
     fun saveSmartFolderToVault(smartFolder: SmartFolder) {
+        val regexError = inheritanceResolver.validateSmartFolderRegex(smartFolder.filter.hostPatternRegex)
+        if (regexError != null) {
+            reportStructuredError(
+                NexusAppError(
+                    category = NexusErrorCategory.VALIDATION,
+                    title = "Invalid Intelligent Folder Regex",
+                    userMessage = "The host regular expression pattern '${smartFolder.filter.hostPatternRegex}' is invalid.",
+                    remediationHint = "Fix or clear the regex pattern so all parentheses and character classes are balanced.",
+                    technicalDetails = regexError
+                )
+            )
+            return
+        }
+        val stamped = smartFolder.copy(
+            name = smartFolder.name.trim().ifBlank { "Intelligent Folder" },
+            updatedAtEpochMs = System.currentTimeMillis()
+        )
         activeVaultStore.updateVaultDocument { doc ->
-            val exists = doc.smartFolders.any { it.id == smartFolder.id }
+            val exists = doc.smartFolders.any { it.id == stamped.id }
             val nextList = if (exists) {
-                doc.smartFolders.map { if (it.id == smartFolder.id) smartFolder else it }
+                doc.smartFolders.map { if (it.id == stamped.id) stamped else it }
             } else {
-                doc.smartFolders + smartFolder
+                doc.smartFolders + stamped
             }
             bumpDocRevisionAndClock(doc).copy(
                 smartFolders = nextList,
-                tombstonedObjectIds = doc.tombstonedObjectIds - smartFolder.id
+                tombstonedObjectIds = doc.tombstonedObjectIds - stamped.id
             )
         }
         _uiState.update {
             it.copy(
+                editingSmartFolder = null,
                 isNewSmartFolderDialogVisible = false,
-                selectedSmartFolderId = smartFolder.id,
-                vaultDocument = activeVaultStore.snapshot.value.vaultDocument
+                selectedSmartFolderId = stamped.id,
+                vaultDocument = activeVaultStore.snapshot.value.vaultDocument,
+                userSnackbarMessage = "Saved intelligent folder '${stamped.name}'"
             )
         }
-        appendLog("[SmartFolder] Saved dynamic filter '${smartFolder.name}'")
+        appendLog("[SmartFolder] Saved dynamic filter '${stamped.name}'")
+    }
+
+    fun duplicateSmartFolder(smartFolder: SmartFolder) {
+        saveSmartFolderToVault(
+            smartFolder.copy(
+                id = UUID.randomUUID().toString(),
+                name = "${smartFolder.name} (Copy)",
+                updatedAtEpochMs = System.currentTimeMillis()
+            )
+        )
     }
 
     fun deleteSmartFolderFromVault(smartFolderId: String) {
@@ -1584,6 +1880,7 @@ class NexusWorkspaceViewModel @Inject constructor(
         }
         _uiState.update { state ->
             state.copy(
+                editingSmartFolder = state.editingSmartFolder.takeUnless { it?.id == smartFolderId },
                 selectedSmartFolderId = state.selectedSmartFolderId.takeUnless { it == smartFolderId },
                 vaultDocument = activeVaultStore.snapshot.value.vaultDocument
             )
@@ -1906,6 +2203,20 @@ class NexusWorkspaceViewModel @Inject constructor(
     }
 
     fun saveConnectionToVault(connection: VaultConnection) {
+        if (connection.host.isBlank() && connection.protocol != VaultProtocolType.WEB_PAGE) {
+            reportStructuredError(
+                NexusAppError(
+                    category = NexusErrorCategory.VALIDATION,
+                    title = "Invalid Connection Host",
+                    userMessage = "Hostname or IP address cannot be empty.",
+                    remediationHint = "Enter a valid hostname, FQDN, or IPv4/IPv6 address before saving."
+                )
+            )
+            return
+        }
+        val safeParentFolderId = connection.parentFolderId?.takeUnless {
+            it == VaultHierarchySanitizer.SYSTEM_CREDENTIALS_FOLDER_ID
+        }
         evictLiveSessionsForConnections(setOf(connection.id))
 
         var wasUpdated = false
@@ -1914,12 +2225,15 @@ class NexusWorkspaceViewModel @Inject constructor(
             val exists = doc.connections.any { it.id == connection.id }
             wasUpdated = exists
             val effectiveSortOrder = if (!exists && connection.sortOrder == 0) {
-                (sortedSiblingConnections(doc.connections, connection.parentFolderId, doc.tombstonedObjectIds)
+                (sortedSiblingConnections(doc.connections, safeParentFolderId, doc.tombstonedObjectIds)
                     .maxOfOrNull { it.sortOrder } ?: 0) + 10
             } else {
                 connection.sortOrder
             }
             val stamped = connection.copy(
+                name = connection.name.trim().ifBlank { connection.host.trim() },
+                host = connection.host.trim(),
+                parentFolderId = safeParentFolderId,
                 sortOrder = effectiveSortOrder,
                 updatedAtEpochMs = System.currentTimeMillis()
             )
@@ -1967,16 +2281,42 @@ class NexusWorkspaceViewModel @Inject constructor(
         appendLog("[Vault] $verb ${stamped.protocol.name} connection '${stamped.name}' (${stamped.host})")
     }
 
+    fun validateFolderName(name: String, parentFolderId: String?): String? {
+        val trimmed = name.trim()
+        if (trimmed.isEmpty()) return "Folder name cannot be empty."
+        if (parentFolderId == null && VaultHierarchySanitizer.isReservedCredentialsFolderName(trimmed)) {
+            return "The root 'Credentials' folder is reserved for credentials at the bottom of the sidebar."
+        }
+        return null
+    }
+
     fun saveFolderAndCredentialToVault(folder: VaultFolder, inlineNewCredential: VaultCredential? = null) {
+        if (folder.id == VaultHierarchySanitizer.SYSTEM_CREDENTIALS_FOLDER_ID) return
+        val safeParentId = folder.parentFolderId?.takeUnless {
+            it == VaultHierarchySanitizer.SYSTEM_CREDENTIALS_FOLDER_ID
+        }
+        val trimmedName = folder.name.trim()
+        if (trimmedName.isEmpty()) return
+        if (safeParentId == null && VaultHierarchySanitizer.isReservedCredentialsFolderName(trimmedName)) {
+            _uiState.update {
+                it.copy(userSnackbarMessage = "The 'Credentials' system folder can only hold credentials.")
+            }
+            return
+        }
+
+        val normalizedFolder = folder.copy(
+            name = trimmedName,
+            parentFolderId = safeParentId
+        )
         val baseFolder = if (inlineNewCredential != null) {
-            folder.copy(
-                inheritable = folder.inheritable.copy(
+            normalizedFolder.copy(
+                inheritable = normalizedFolder.inheritable.copy(
                     credentialMode = InheritanceMode.OVERRIDE_EXPLICIT,
                     explicitCredentialId = inlineNewCredential.id
                 )
             )
         } else {
-            folder
+            normalizedFolder
         }
 
         val currentDoc = _uiState.value.vaultDocument
@@ -1989,7 +2329,7 @@ class NexusWorkspaceViewModel @Inject constructor(
 
         activeVaultStore.updateVaultDocument { doc ->
             val updatedCredentials = if (inlineNewCredential != null) {
-                doc.credentials + inlineNewCredential.copy(parentFolderId = baseFolder.id)
+                doc.credentials + inlineNewCredential.copy(parentFolderId = null)
             } else {
                 doc.credentials
             }
@@ -2017,6 +2357,7 @@ class NexusWorkspaceViewModel @Inject constructor(
                 isFolderDialogVisible = false,
                 editingFolder = null,
                 newFolderDefaultParentId = null,
+                selectedFolderId = baseFolder.id,
                 vaultDocument = activeVaultStore.snapshot.value.vaultDocument
             )
         }
@@ -2024,27 +2365,101 @@ class NexusWorkspaceViewModel @Inject constructor(
         appendLog("[Folder] Saved folder '${baseFolder.name}' (${baseFolder.inheritable.credentialMode.name})$credSummary")
     }
 
-    fun addCredentialToVault(credential: VaultCredential) {
+    fun openNewCredentialDialog() {
+        if (_uiState.value.isVaultLocked) return
+        _uiState.update {
+            it.copy(
+                editingCredential = null,
+                isCredentialDialogVisible = true
+            )
+        }
+    }
+
+    fun openEditCredentialDialog(credential: VaultCredential) {
+        if (_uiState.value.isVaultLocked) return
+        _uiState.update {
+            it.copy(
+                editingCredential = credential,
+                isCredentialDialogVisible = true
+            )
+        }
+    }
+
+    fun dismissCredentialDialog() {
+        _uiState.update {
+            it.copy(
+                editingCredential = null,
+                isCredentialDialogVisible = false
+            )
+        }
+    }
+
+    fun saveCredentialFromDialog(credential: VaultCredential) {
+        val cleanCred = credential.copy(
+            parentFolderId = null,
+            name = credential.name.trim().ifBlank { credential.username.trim().ifBlank { "Credential" } },
+            updatedAtEpochMs = System.currentTimeMillis()
+        )
+        val exists = _uiState.value.vaultDocument.credentials.any { it.id == cleanCred.id }
+        if (exists) {
+            updateCredentialInVault(cleanCred)
+        } else {
+            addCredentialToVault(cleanCred)
+        }
+        _uiState.update {
+            it.copy(
+                editingCredential = null,
+                isCredentialDialogVisible = false,
+                selectedFolderId = VaultHierarchySanitizer.SYSTEM_CREDENTIALS_FOLDER_ID,
+                userSnackbarMessage = "Saved credential '${cleanCred.name}'"
+            )
+        }
+    }
+
+    fun reorderCredentialRelativeTo(
+        draggedCredentialId: String,
+        targetCredentialId: String,
+        placeAfter: Boolean
+    ): Boolean {
+        if (_uiState.value.isVaultLocked || draggedCredentialId == targetCredentialId) return false
+        val creds = _uiState.value.vaultDocument.credentials.toMutableList()
+        val draggedIdx = creds.indexOfFirst { it.id == draggedCredentialId }
+        if (draggedIdx < 0) return false
+        val dragged = creds.removeAt(draggedIdx)
+        val targetIdx = creds.indexOfFirst { it.id == targetCredentialId }
+        if (targetIdx < 0) return false
+        val insertIdx = (if (placeAfter) targetIdx + 1 else targetIdx).coerceIn(0, creds.size)
+        creds.add(insertIdx, dragged)
         activeVaultStore.updateVaultDocument { doc ->
-            val exists = doc.credentials.any { it.id == credential.id }
+            bumpDocRevisionAndClock(doc).copy(credentials = creds)
+        }
+        _uiState.update { it.copy(vaultDocument = activeVaultStore.snapshot.value.vaultDocument) }
+        return true
+    }
+
+    fun addCredentialToVault(credential: VaultCredential) {
+        val normalized = credential.copy(parentFolderId = null)
+        activeVaultStore.updateVaultDocument { doc ->
+            val exists = doc.credentials.any { it.id == normalized.id }
             val nextCreds = if (exists) {
-                doc.credentials.map { if (it.id == credential.id) credential else it }
+                doc.credentials.map { if (it.id == normalized.id) normalized else it }
             } else {
-                doc.credentials + credential
+                doc.credentials + normalized
             }
             bumpDocRevisionAndClock(doc).copy(
                 credentials = nextCreds,
-                tombstonedObjectIds = doc.tombstonedObjectIds - credential.id
+                tombstonedObjectIds = doc.tombstonedObjectIds - normalized.id
             )
         }
         _uiState.update { it.copy(vaultDocument = activeVaultStore.snapshot.value.vaultDocument) }
-        appendLog("[Credentials] Stored '${credential.name}' (${credential.sourceKind.name})")
+        appendLog("[Credentials] Stored '${normalized.name}' (${normalized.sourceKind.name})")
     }
 
     fun duplicateCredential(credential: VaultCredential) {
         addCredentialToVault(
             credential.copy(
                 id = UUID.randomUUID().toString(),
+                parentFolderId = null,
                 name = "${credential.name} (Copy)",
                 updatedAtEpochMs = System.currentTimeMillis()
             )
@@ -2061,7 +2476,7 @@ class NexusWorkspaceViewModel @Inject constructor(
             .toSet()
         evictLiveSessionsForConnections(affectedConns)
 
-        val stamped = credential.copy(updatedAtEpochMs = System.currentTimeMillis())
+        val stamped = credential.copy(parentFolderId = null, updatedAtEpochMs = System.currentTimeMillis())
         activeVaultStore.updateVaultDocument { doc ->
             bumpDocRevisionAndClock(doc).copy(
                 credentials = doc.credentials.map { if (it.id == stamped.id) stamped else it }
@@ -2211,7 +2626,7 @@ class NexusWorkspaceViewModel @Inject constructor(
             }.onSuccess { lease ->
                 appendLog("[Gateway Lease] Bound ${lease.localBindHost}:${lease.localBindPort} -> ${lease.remoteTargetHost}:${lease.remoteTargetPort} via '${gateway.name}'")
             }.onFailure { err ->
-                appendLog("[Gateway Lease Error] ${gateway.name}: ${err.message}")
+                reportException(err, "Gateway Tunnel Failed (${gateway.name})")
             }
         }
     }
@@ -2467,13 +2882,14 @@ class NexusWorkspaceViewModel @Inject constructor(
     }
 
     fun applySyncedVaultDocument(syncedDoc: NxtsVaultDocument, summaryBanner: String) {
-        activeVaultStore.replaceUnlockedVault(syncedDoc, markInitialized = true)
+        val cleaned = VaultHierarchySanitizer.sanitizeVaultDocument(syncedDoc)
+        activeVaultStore.replaceUnlockedVault(cleaned, markInitialized = true)
         _uiState.update {
             it.copy(
-                vaultDocument = syncedDoc,
+                vaultDocument = cleaned,
                 selectedConnectionId = it.selectedConnectionId
-                    ?.takeIf { selId -> syncedDoc.connections.any { c -> c.id == selId && c.id !in syncedDoc.tombstonedObjectIds } }
-                    ?: syncedDoc.connections.firstOrNull { c -> c.id !in syncedDoc.tombstonedObjectIds }?.id,
+                    ?.takeIf { selId -> cleaned.connections.any { c -> c.id == selId && c.id !in cleaned.tombstonedObjectIds } }
+                    ?: cleaned.connections.firstOrNull { c -> c.id !in cleaned.tombstonedObjectIds }?.id,
                 isVaultLocked = false,
                 isStarterUninitialized = false,
                 driveIsSyncing = false,
@@ -2583,13 +2999,17 @@ class NexusWorkspaceViewModel @Inject constructor(
             state.connectWithOptionsTarget != null ||
             state.isNewSmartFolderDialogVisible ||
             state.isNewDynamicFolderDialogVisible ||
+            state.isCredentialDialogVisible ||
             state.isNewTemplateDialogVisible ||
             state.isLockVaultDialogVisible ||
+            state.isResetDatabaseDialogVisible ||
+            state.pendingRoyalTsImport != null ||
             state.isLanguageMenuExpanded ||
             state.movingConnectionTarget != null ||
             state.isAutoUpdateDialogVisible ||
             state.pendingEncryptedImportFileName != null ||
             state.importErrorDialogMessage != null ||
+            state.activeAppError != null ||
             state.isBottomDrawerVisible
     }
 
@@ -2638,27 +3058,32 @@ class NexusWorkspaceViewModel @Inject constructor(
     }
 
     fun generateAndStoreSshKeyPair() {
-        val generated = credentialHub.generateEd25519SshKeyPair("ops@nexusts.app")
-        val newCred = VaultCredential(
-            name = "Ed25519 Key (${generated.sha256_fingerprint.take(19)}…)",
-            sourceKind = CredentialSourceKind.SSH_KEY_PAIR,
-            username = "ops",
-            privateKeyPem = generated.private_key_openssh_pem,
-            publicKeyOpenSsh = generated.public_key_openssh,
-            keyFingerprintSha256 = generated.sha256_fingerprint
-        )
-        activeVaultStore.updateVaultDocument { doc ->
-            bumpDocRevisionAndClock(doc).copy(
-                credentials = doc.credentials + newCred
+        runCatching {
+            credentialHub.generateEd25519SshKeyPair("ops@nexusts.app")
+        }.onSuccess { generated ->
+            val newCred = VaultCredential(
+                name = "Ed25519 Key (${generated.sha256_fingerprint.take(19)}…)",
+                sourceKind = CredentialSourceKind.SSH_KEY_PAIR,
+                username = "ops",
+                privateKeyPem = generated.private_key_openssh_pem,
+                publicKeyOpenSsh = generated.public_key_openssh,
+                keyFingerprintSha256 = generated.sha256_fingerprint
             )
+            activeVaultStore.updateVaultDocument { doc ->
+                bumpDocRevisionAndClock(doc).copy(
+                    credentials = doc.credentials + newCred
+                )
+            }
+            _uiState.update {
+                it.copy(
+                    vaultDocument = activeVaultStore.snapshot.value.vaultDocument,
+                    userSnackbarMessage = "Generated Ed25519 SSH key (${generated.sha256_fingerprint.take(19)}…)"
+                )
+            }
+            appendLog("[SSH Agent] Generated OpenSSH Ed25519 key ${generated.sha256_fingerprint}")
+        }.onFailure { err ->
+            reportException(err, "SSH Key Generation Failed")
         }
-        _uiState.update {
-            it.copy(
-                vaultDocument = activeVaultStore.snapshot.value.vaultDocument,
-                userSnackbarMessage = "Generated Ed25519 SSH key (${generated.sha256_fingerprint.take(19)}…)"
-            )
-        }
-        appendLog("[SSH Agent] Generated OpenSSH Ed25519 key ${generated.sha256_fingerprint}")
     }
 
     fun updateBiometricAndAutoLockState(
@@ -2682,35 +3107,41 @@ class NexusWorkspaceViewModel @Inject constructor(
         Arrays.fill(passphrase, '\u0000')
         val docSnapshot = _uiState.value.vaultDocument
         viewModelScope.launch {
-            val sealed = try {
-                withContext(Dispatchers.Default) {
-                    vaultSerializer.sealDocument(docSnapshot, passCopy.copyOf())
+            val sealedResult = try {
+                runCatching {
+                    withContext(Dispatchers.Default) {
+                        vaultSerializer.sealDocument(docSnapshot, passCopy.copyOf())
+                    }
                 }
             } finally {
                 Arrays.fill(passCopy, '\u0000')
             }
-            tilingController.allActiveTabs().forEach { tilingController.closeTab(it.tabId) }
-            gatewayTunnelManager.closeAllLeases()
-            activeVaultStore.lockWithSealedBytes(sealed)
-            _uiState.update {
-                it.copy(
-                    isVaultLocked = true,
-                    isLockVaultDialogVisible = false,
-                    isLanguageMenuExpanded = false,
-                    movingConnectionTarget = null,
-                    movingFolderTarget = null,
-                    isAutoUpdateDialogVisible = false,
-                    remoteKeyCaptureEnabled = false,
-                    isQuickConnectVisible = false,
-                    hydratedDynamicConnections = emptyMap()
-                )
+            sealedResult.onSuccess { sealed ->
+                tilingController.allActiveTabs().forEach { tilingController.closeTab(it.tabId) }
+                gatewayTunnelManager.closeAllLeases()
+                activeVaultStore.lockWithSealedBytes(sealed)
+                _uiState.update {
+                    it.copy(
+                        isVaultLocked = true,
+                        isLockVaultDialogVisible = false,
+                        isLanguageMenuExpanded = false,
+                        movingConnectionTarget = null,
+                        movingFolderTarget = null,
+                        isAutoUpdateDialogVisible = false,
+                        remoteKeyCaptureEnabled = false,
+                        isQuickConnectVisible = false,
+                        hydratedDynamicConnections = emptyMap()
+                    )
+                }
+                appendLog("[Vault] Sealed .nxts container (${sealed.size} bytes, Argon2id + AES-256-GCM)")
+            }.onFailure { err ->
+                reportException(err, "Failed to Lock Vault")
             }
-            appendLog("[Vault] Sealed .nxts container (${sealed.size} bytes, Argon2id + AES-256-GCM)")
         }
     }
 
     fun cancelPendingVaultImport() {
-        val restored = activeVaultStore.cancelPendingImport()
+        val restored = VaultHierarchySanitizer.sanitizeVaultDocument(activeVaultStore.cancelPendingImport())
         _uiState.update {
             it.copy(
                 vaultDocument = restored,
@@ -2722,6 +3153,27 @@ class NexusWorkspaceViewModel @Inject constructor(
             )
         }
         appendLog("[Import] Canceled encrypted vault import and restored active workspace.")
+    }
+
+    private fun isRoyalTsImportFormat(format: DetectedExternalVaultFormat): Boolean = when (format) {
+        DetectedExternalVaultFormat.ROYAL_TS_RTSZ_OR_RTSX,
+        DetectedExternalVaultFormat.ROYAL_TS_ENCRYPTED_ARCHIVE,
+        DetectedExternalVaultFormat.ROYAL_JSON -> true
+        else -> false
+    }
+
+    private fun suggestRoyalTsFolderName(fileName: String, importedDoc: NxtsVaultDocument): String {
+        val stem = fileName
+            .substringAfterLast('/')
+            .substringAfterLast('\\')
+            .substringBeforeLast('.')
+            .trim()
+        val candidate = stem.ifBlank { importedDoc.name.trim() }.ifBlank { "Imported Connections" }
+        return if (VaultHierarchySanitizer.isReservedCredentialsFolderName(candidate)) {
+            "$candidate (Imported)"
+        } else {
+            candidate
+        }
     }
 
     fun unlockVaultWithPassphrase(passphrase: CharArray) {
@@ -2756,11 +3208,33 @@ class NexusWorkspaceViewModel @Inject constructor(
                             else -> vaultSerializer.unsealDocument(blob, passCopy.copyOf())
                         }
                     }
-                }.onSuccess { unlockedDoc ->
-                    val isExternalEncrypted = detected == DetectedExternalVaultFormat.KEEPASS_KDBX_BINARY ||
-                        detected == DetectedExternalVaultFormat.ROYAL_TS_ENCRYPTED_ARCHIVE
+                }.onSuccess { rawUnlockedDoc ->
+                    val unlockedDoc = VaultHierarchySanitizer.sanitizeVaultDocument(rawUnlockedDoc)
+                    if (detected == DetectedExternalVaultFormat.ROYAL_TS_ENCRYPTED_ARCHIVE && snap.hasPreImportBackup) {
+                        val baseDoc = VaultHierarchySanitizer.sanitizeVaultDocument(activeVaultStore.cancelPendingImport())
+                        activeVaultStore.replaceUnlockedVault(baseDoc, markInitialized = !snap.isStarterUninitialized)
+                        val normalizedRoyal = RoyalTsImportMerger.normalizeImportedRoyalDocument(unlockedDoc)
+                        _uiState.update {
+                            it.copy(
+                                vaultDocument = baseDoc,
+                                isVaultLocked = false,
+                                vaultUnlockError = null,
+                                hasPreImportBackup = false,
+                                pendingImportFileName = null,
+                                pendingRoyalTsImport = PendingRoyalTsImportState(
+                                    fileName = pendingFile.ifBlank { "RoyalTS Archive" },
+                                    importedDocument = normalizedRoyal,
+                                    suggestedFolderName = suggestRoyalTsFolderName(pendingFile, normalizedRoyal)
+                                )
+                            )
+                        }
+                        appendLog("[Import] Decrypted Royal TS archive '$pendingFile' — awaiting placement selection.")
+                        return@onSuccess
+                    }
+
+                    val isExternalEncrypted = detected == DetectedExternalVaultFormat.KEEPASS_KDBX_BINARY
                     val finalDoc = if (isExternalEncrypted && snap.hasPreImportBackup) {
-                        val baseDoc = activeVaultStore.cancelPendingImport()
+                        val baseDoc = VaultHierarchySanitizer.sanitizeVaultDocument(activeVaultStore.cancelPendingImport())
                         mergeImportedIntoCurrentVault(baseDoc, unlockedDoc)
                     } else {
                         activeVaultStore.setActivePassphrase(passCopy)
@@ -2780,10 +3254,11 @@ class NexusWorkspaceViewModel @Inject constructor(
                     }
                     appendLog("[Vault] Unlocked '${finalDoc.name}' (Revision ${finalDoc.revision})")
                 }.onFailure { err ->
-                    val message = err.message ?: "Invalid passphrase or corrupted encrypted vault container."
+                    val classified = NexusErrorClassifier.classifyThrowable(err, "Vault Unlock Failed")
+                    val message = "${classified.userMessage} ${classified.remediationHint}".trim()
                     activeVaultStore.setUnlockError(message)
                     _uiState.update { it.copy(vaultUnlockError = message) }
-                    appendLog("[Vault Error] $message")
+                    appendLog("[Vault Error] $message (${classified.technicalDetails})")
                 }
             } finally {
                 Arrays.fill(passCopy, '\u0000')
@@ -2795,44 +3270,46 @@ class NexusWorkspaceViewModel @Inject constructor(
         cur: NxtsVaultDocument,
         importedDoc: NxtsVaultDocument
     ): NxtsVaultDocument {
-        val currentIsEmpty = cur.folders.isEmpty() &&
-            cur.connections.isEmpty() &&
-            cur.credentials.isEmpty() &&
-            cur.gateways.isEmpty() &&
-            cur.commandTasks.isEmpty() &&
-            cur.keySequenceTasks.isEmpty() &&
-            cur.templates.isEmpty() &&
-            cur.smartFolders.isEmpty() &&
-            cur.dynamicFolders.isEmpty() &&
-            cur.todoItems.isEmpty()
+        val cleanCur = VaultHierarchySanitizer.sanitizeVaultDocument(cur)
+        val cleanImported = VaultHierarchySanitizer.sanitizeVaultDocument(importedDoc)
+        val currentIsEmpty = cleanCur.folders.isEmpty() &&
+            cleanCur.connections.isEmpty() &&
+            cleanCur.credentials.isEmpty() &&
+            cleanCur.gateways.isEmpty() &&
+            cleanCur.commandTasks.isEmpty() &&
+            cleanCur.keySequenceTasks.isEmpty() &&
+            cleanCur.templates.isEmpty() &&
+            cleanCur.smartFolders.isEmpty() &&
+            cleanCur.dynamicFolders.isEmpty() &&
+            cleanCur.todoItems.isEmpty()
 
-        val mergedFolders = cur.folders.filterNot { f -> importedDoc.folders.any { it.id == f.id } } + importedDoc.folders
-        val mergedSmartFolders = cur.smartFolders.filterNot { s -> importedDoc.smartFolders.any { it.id == s.id } } + importedDoc.smartFolders
-        val mergedDynamicFolders = cur.dynamicFolders.filterNot { d -> importedDoc.dynamicFolders.any { it.id == d.id } } + importedDoc.dynamicFolders
-        val mergedConns = cur.connections.filterNot { c -> importedDoc.connections.any { it.id == c.id } } + importedDoc.connections
-        val mergedCreds = cur.credentials.filterNot { c -> importedDoc.credentials.any { it.id == c.id } } + importedDoc.credentials
-        val mergedGateways = cur.gateways.filterNot { g -> importedDoc.gateways.any { it.id == g.id } } + importedDoc.gateways
-        val mergedCommandTasks = cur.commandTasks.filterNot { t -> importedDoc.commandTasks.any { it.id == t.id } } + importedDoc.commandTasks
-        val mergedKeyTasks = cur.keySequenceTasks.filterNot { k -> importedDoc.keySequenceTasks.any { it.id == k.id } } + importedDoc.keySequenceTasks
-        val mergedTemplates = cur.templates.filterNot { t -> importedDoc.templates.any { it.id == t.id } } + importedDoc.templates
-        val mergedTodos = cur.todoItems.filterNot { t -> importedDoc.todoItems.any { it.id == t.id } } + importedDoc.todoItems
+        val mergedFolders = cleanCur.folders.filterNot { f -> cleanImported.folders.any { it.id == f.id } } + cleanImported.folders
+        val mergedSmartFolders = cleanCur.smartFolders.filterNot { s -> cleanImported.smartFolders.any { it.id == s.id } } + cleanImported.smartFolders
+        val mergedDynamicFolders = cleanCur.dynamicFolders.filterNot { d -> cleanImported.dynamicFolders.any { it.id == d.id } } + cleanImported.dynamicFolders
+        val mergedConns = cleanCur.connections.filterNot { c -> cleanImported.connections.any { it.id == c.id } } + cleanImported.connections
+        val mergedCreds = cleanCur.credentials.filterNot { c -> cleanImported.credentials.any { it.id == c.id } } + cleanImported.credentials
+        val mergedGateways = cleanCur.gateways.filterNot { g -> cleanImported.gateways.any { it.id == g.id } } + cleanImported.gateways
+        val mergedCommandTasks = cleanCur.commandTasks.filterNot { t -> cleanImported.commandTasks.any { it.id == t.id } } + cleanImported.commandTasks
+        val mergedKeyTasks = cleanCur.keySequenceTasks.filterNot { k -> cleanImported.keySequenceTasks.any { it.id == k.id } } + cleanImported.keySequenceTasks
+        val mergedTemplates = cleanCur.templates.filterNot { t -> cleanImported.templates.any { it.id == t.id } } + cleanImported.templates
+        val mergedTodos = cleanCur.todoItems.filterNot { t -> cleanImported.todoItems.any { it.id == t.id } } + cleanImported.todoItems
 
         val importedIds = buildSet {
-            importedDoc.folders.forEach { add(it.id) }
-            importedDoc.smartFolders.forEach { add(it.id) }
-            importedDoc.dynamicFolders.forEach { add(it.id) }
-            importedDoc.connections.forEach { add(it.id) }
-            importedDoc.credentials.forEach { add(it.id) }
-            importedDoc.gateways.forEach { add(it.id) }
-            importedDoc.commandTasks.forEach { add(it.id) }
-            importedDoc.keySequenceTasks.forEach { add(it.id) }
-            importedDoc.templates.forEach { add(it.id) }
-            importedDoc.todoItems.forEach { add(it.id) }
+            cleanImported.folders.forEach { add(it.id) }
+            cleanImported.smartFolders.forEach { add(it.id) }
+            cleanImported.dynamicFolders.forEach { add(it.id) }
+            cleanImported.connections.forEach { add(it.id) }
+            cleanImported.credentials.forEach { add(it.id) }
+            cleanImported.gateways.forEach { add(it.id) }
+            cleanImported.commandTasks.forEach { add(it.id) }
+            cleanImported.keySequenceTasks.forEach { add(it.id) }
+            cleanImported.templates.forEach { add(it.id) }
+            cleanImported.todoItems.forEach { add(it.id) }
         }
 
-        return bumpDocRevisionAndClock(cur).copy(
-            name = if (currentIsEmpty && importedDoc.name.isNotBlank()) importedDoc.name else cur.name,
-            rootInheritable = if (currentIsEmpty) importedDoc.rootInheritable else cur.rootInheritable,
+        return bumpDocRevisionAndClock(cleanCur).copy(
+            name = if (currentIsEmpty && cleanImported.name.isNotBlank()) cleanImported.name else cleanCur.name,
+            rootInheritable = if (currentIsEmpty) cleanImported.rootInheritable else cleanCur.rootInheritable,
             folders = mergedFolders,
             smartFolders = mergedSmartFolders,
             dynamicFolders = mergedDynamicFolders,
@@ -2843,7 +3320,7 @@ class NexusWorkspaceViewModel @Inject constructor(
             keySequenceTasks = mergedKeyTasks,
             templates = mergedTemplates,
             todoItems = mergedTodos,
-            tombstonedObjectIds = cur.tombstonedObjectIds - importedIds
+            tombstonedObjectIds = cleanCur.tombstonedObjectIds - importedIds
         )
     }
 
@@ -2851,7 +3328,9 @@ class NexusWorkspaceViewModel @Inject constructor(
         fileName: String,
         bytes: ByteArray,
         passphraseOrNull: CharArray? = null,
-        mergePasswordManagerEntries: Boolean = true
+        mergePasswordManagerEntries: Boolean = true,
+        royalTsPlacementMode: RoyalTsImportPlacementMode? = null,
+        royalTsNewFolderName: String = ""
     ) {
         if (bytes.isEmpty()) {
             passphraseOrNull?.let { Arrays.fill(it, '\u0000') }
@@ -2939,7 +3418,41 @@ class NexusWorkspaceViewModel @Inject constructor(
                                 throw IllegalArgumentException("Unsupported vault file format: '$fileName'")
                         }
                     }
-                }.onSuccess { importedDoc ->
+                }.onSuccess { rawImportedDoc ->
+                    val importedDoc = VaultHierarchySanitizer.sanitizeVaultDocument(rawImportedDoc)
+                    pendingEncryptedImportBytes?.let { Arrays.fill(it, 0.toByte()) }
+                    pendingEncryptedImportBytes = null
+
+                    if (isRoyalTsImportFormat(detected)) {
+                        val normalizedRoyal = RoyalTsImportMerger.normalizeImportedRoyalDocument(importedDoc)
+                        if (royalTsPlacementMode == null) {
+                            _uiState.update {
+                                it.copy(
+                                    pendingRoyalTsImport = PendingRoyalTsImportState(
+                                        fileName = fileName,
+                                        importedDocument = normalizedRoyal,
+                                        suggestedFolderName = suggestRoyalTsFolderName(fileName, normalizedRoyal)
+                                    ),
+                                    pendingEncryptedImportFileName = null,
+                                    pendingEncryptedImportFormat = null,
+                                    pendingEncryptedImportError = null,
+                                    importErrorDialogMessage = null,
+                                    activeAppError = null
+                                )
+                            }
+                            appendLog("[Import ${detected.name}] Parsed '$fileName' (${normalizedRoyal.connections.size} connections) — awaiting placement choice.")
+                            return@onSuccess
+                        } else {
+                            applyRoyalTsPlacementToVault(
+                                fileName = fileName,
+                                normalizedRoyal = normalizedRoyal,
+                                mode = royalTsPlacementMode,
+                                folderName = royalTsNewFolderName
+                            )
+                            return@onSuccess
+                        }
+                    }
+
                     val shouldMerge = detected != DetectedExternalVaultFormat.NXTS_ENCRYPTED_BINARY && mergePasswordManagerEntries
                     val finalDoc = if (shouldMerge) {
                         mergeImportedIntoCurrentVault(activeVaultStore.snapshot.value.vaultDocument, importedDoc)
@@ -2949,9 +3462,6 @@ class NexusWorkspaceViewModel @Inject constructor(
                         }
                         importedDoc
                     }
-
-                    pendingEncryptedImportBytes?.let { Arrays.fill(it, 0.toByte()) }
-                    pendingEncryptedImportBytes = null
 
                     activeVaultStore.replaceUnlockedVault(finalDoc, markInitialized = true)
                     val summaryMsg = "Imported ${importedDoc.connections.size} connection(s), " +
@@ -2973,18 +3483,79 @@ class NexusWorkspaceViewModel @Inject constructor(
                             pendingEncryptedImportFormat = null,
                             pendingEncryptedImportError = null,
                             importErrorDialogMessage = null,
+                            activeAppError = null,
                             userSnackbarMessage = summaryMsg
                         )
                     }
                     appendLog("[Import ${detected.name}] $summaryMsg")
                 }.onFailure { err ->
                     val errMsg = err.message ?: "Failed to import '$fileName'."
-                    reportImportFailure("Failed to import '$fileName': $errMsg")
+                    reportImportFailure("Failed to import '$fileName': $errMsg", err)
                 }
             } finally {
                 passCopy?.let { Arrays.fill(it, '\u0000') }
             }
         }
+    }
+
+    fun confirmRoyalTsImport(mode: RoyalTsImportPlacementMode, folderName: String = "") {
+        val pending = _uiState.value.pendingRoyalTsImport ?: return
+        applyRoyalTsPlacementToVault(
+            fileName = pending.fileName,
+            normalizedRoyal = pending.importedDocument,
+            mode = mode,
+            folderName = folderName.ifBlank { pending.suggestedFolderName }
+        )
+    }
+
+    fun dismissRoyalTsImportDialog() {
+        _uiState.update { it.copy(pendingRoyalTsImport = null) }
+    }
+
+    private fun applyRoyalTsPlacementToVault(
+        fileName: String,
+        normalizedRoyal: NxtsVaultDocument,
+        mode: RoyalTsImportPlacementMode,
+        folderName: String
+    ) {
+        if (mode == RoyalTsImportPlacementMode.REPLACE_EXISTING) {
+            tilingController.allActiveTabs().forEach { closeSessionTab(it.tabId) }
+            gatewayTunnelManager.closeAllLeases()
+            activeVaultStore.closeAllLiveSessions()
+        }
+        val finalDoc = RoyalTsImportMerger.applyPlacement(
+            existingDoc = activeVaultStore.snapshot.value.vaultDocument,
+            rawImportedDoc = normalizedRoyal,
+            mode = mode,
+            newFolderName = folderName,
+            actorDevice = "googlebook"
+        )
+        activeVaultStore.replaceUnlockedVault(finalDoc, markInitialized = true)
+        val summaryMsg = "Imported ${normalizedRoyal.connections.size} connection(s), " +
+            "${normalizedRoyal.folders.size} folder(s), ${normalizedRoyal.credentials.size} credential(s) from '$fileName'"
+        _uiState.update {
+            it.copy(
+                vaultDocument = finalDoc,
+                activeRailId = "connections",
+                isSidebarVisible = true,
+                selectedConnectionId = finalDoc.connections.lastOrNull()?.id
+                    ?: finalDoc.connections.firstOrNull()?.id,
+                selectedSmartFolderId = null,
+                selectedDynamicFolderId = null,
+                pendingRoyalTsImport = null,
+                isVaultLocked = false,
+                vaultUnlockError = null,
+                hasPreImportBackup = false,
+                pendingImportFileName = null,
+                pendingEncryptedImportFileName = null,
+                pendingEncryptedImportFormat = null,
+                pendingEncryptedImportError = null,
+                importErrorDialogMessage = null,
+                activeAppError = null,
+                userSnackbarMessage = summaryMsg
+            )
+        }
+        appendLog("[RoyalTS Import:${mode.name}] $summaryMsg")
     }
 
     fun submitEncryptedImportPassword(passphrase: CharArray) {
@@ -3012,9 +3583,28 @@ class NexusWorkspaceViewModel @Inject constructor(
                             masterPassphrase = passCopy.copyOf()
                         )
                     }
-                }.onSuccess { importedDoc ->
+                }.onSuccess { rawImportedDoc ->
+                    val importedDoc = VaultHierarchySanitizer.sanitizeVaultDocument(rawImportedDoc)
                     pendingEncryptedImportBytes?.let { Arrays.fill(it, 0.toByte()) }
                     pendingEncryptedImportBytes = null
+
+                    if (isRoyalTsImportFormat(format)) {
+                        val normalizedRoyal = RoyalTsImportMerger.normalizeImportedRoyalDocument(importedDoc)
+                        _uiState.update {
+                            it.copy(
+                                pendingRoyalTsImport = PendingRoyalTsImportState(
+                                    fileName = fileName,
+                                    importedDocument = normalizedRoyal,
+                                    suggestedFolderName = suggestRoyalTsFolderName(fileName, normalizedRoyal)
+                                ),
+                                pendingEncryptedImportFileName = null,
+                                pendingEncryptedImportFormat = null,
+                                pendingEncryptedImportError = null
+                            )
+                        }
+                        appendLog("[Import ${format.name}] Decrypted '$fileName' — awaiting placement choice.")
+                        return@onSuccess
+                    }
 
                     val finalDoc = mergeImportedIntoCurrentVault(
                         activeVaultStore.snapshot.value.vaultDocument,
@@ -3040,9 +3630,10 @@ class NexusWorkspaceViewModel @Inject constructor(
                     }
                     appendLog("[Import ${format.name}] $summaryMsg")
                 }.onFailure { err ->
-                    val errMsg = err.message ?: "Incorrect password or corrupted encrypted archive."
+                    val classified = NexusErrorClassifier.classifyThrowable(err, "Encrypted Import Failed")
+                    val errMsg = "${classified.userMessage} ${classified.remediationHint}".trim()
                     _uiState.update { it.copy(pendingEncryptedImportError = errMsg) }
-                    appendLog("[Import Error] '$fileName': $errMsg")
+                    appendLog("[Import Error] '$fileName': $errMsg (${classified.technicalDetails})")
                 }
             } finally {
                 Arrays.fill(passCopy, '\u0000')
@@ -3062,13 +3653,107 @@ class NexusWorkspaceViewModel @Inject constructor(
         }
     }
 
-    fun reportImportFailure(message: String) {
-        _uiState.update { it.copy(importErrorDialogMessage = message) }
+    fun openResetDatabaseDialog() {
+        _uiState.update { it.copy(isResetDatabaseDialogVisible = true) }
+    }
+
+    fun dismissResetDatabaseDialog() {
+        _uiState.update { it.copy(isResetDatabaseDialogVisible = false) }
+    }
+
+    fun resetWorkspaceStateAfterDatabaseWipe(freshDoc: NxtsVaultDocument, confirmationMessage: String) {
+        tilingController.allActiveTabs().forEach { tilingController.closeTab(it.tabId) }
+        gatewayTunnelManager.closeAllLeases()
+        _uiState.update {
+            it.copy(
+                vaultDocument = freshDoc,
+                activeRailId = "connections",
+                selectedConnectionId = null,
+                selectedFolderId = null,
+                selectedSmartFolderId = null,
+                selectedDynamicFolderId = null,
+                hydratedDynamicConnections = emptyMap(),
+                gatewayHealthReports = emptyMap(),
+                activeGatewayLeases = emptyList(),
+                isResetDatabaseDialogVisible = false,
+                isVaultLocked = false,
+                vaultUnlockError = null,
+                hasSavedVaultLockPassphrase = false,
+                biometricUnlockEnabled = false,
+                pendingRoyalTsImport = null,
+                importErrorDialogMessage = null,
+                activeAppError = null,
+                userSnackbarMessage = confirmationMessage
+            )
+        }
+        appendLog("[Database Reset] $confirmationMessage")
+    }
+
+    fun reportStructuredError(error: NexusAppError) {
+        _uiState.update {
+            it.copy(
+                activeAppError = error,
+                importErrorDialogMessage = if (error.category == NexusErrorCategory.IMPORT_EXPORT_FORMAT) {
+                    error.userMessage
+                } else {
+                    it.importErrorDialogMessage
+                }
+            )
+        }
+        appendLog("[Error:${error.category.name}] ${error.title}: ${error.userMessage} (${error.technicalDetails})")
+    }
+
+    fun reportException(
+        throwable: Throwable,
+        operationTitle: String,
+        recoveryConnectionId: String? = null
+    ) {
+        val structured = NexusErrorClassifier.classifyThrowable(
+            throwable = throwable,
+            operationTitle = operationTitle,
+            recoveryConnectionId = recoveryConnectionId
+        )
+        reportStructuredError(structured)
+    }
+
+    fun dismissActiveAppError() {
+        _uiState.update {
+            it.copy(
+                activeAppError = null,
+                importErrorDialogMessage = null
+            )
+        }
+    }
+
+    fun reportImportFailure(message: String, throwable: Throwable? = null) {
+        val structured = if (throwable != null) {
+            NexusErrorClassifier.classifyThrowable(throwable, "Import Failed").copy(
+                userMessage = message
+            )
+        } else {
+            NexusAppError(
+                category = NexusErrorCategory.IMPORT_EXPORT_FORMAT,
+                title = "Import Failed",
+                userMessage = message,
+                remediationHint = "Verify that the selected file is a valid, uncorrupted .rtsz, .rtsx, .rjson, .nxts, .kdbx, Bitwarden, 1Password, or CSV export."
+            )
+        }
+        _uiState.update {
+            it.copy(
+                importErrorDialogMessage = message,
+                activeAppError = structured
+            )
+        }
         appendLog("[Import Error] $message")
     }
 
     fun dismissImportErrorDialog() {
-        _uiState.update { it.copy(importErrorDialogMessage = null) }
+        _uiState.update {
+            it.copy(
+                importErrorDialogMessage = null,
+                activeAppError = null
+            )
+        }
     }
 
     fun notifyUserMessage(message: String) {
@@ -3160,6 +3845,15 @@ class NexusWorkspaceViewModel @Inject constructor(
     fun evaluateSmartFolderCount(smartFolder: SmartFolder): Int =
         evaluateSmartFolderConnections(smartFolder).size
 
+    fun validateSmartFolderRegex(pattern: String?): String? =
+        inheritanceResolver.validateSmartFolderRegex(pattern)
+
+    fun previewSmartFolderMatches(filter: SmartFolderFilter): List<VaultConnection> =
+        inheritanceResolver.evaluateSmartFolder(
+            _uiState.value.vaultDocument,
+            SmartFolder(name = "Preview", filter = filter)
+        )
+
     private fun findFocusedActiveTab(focusedPaneId: String): WorkspaceSessionTab? {
         fun search(node: com.nexusts.app.core.ui.workspace.PaneNode): WorkspaceSessionTab? = when (node) {
             is com.nexusts.app.core.ui.workspace.PaneNode.Leaf ->
@@ -3212,98 +3906,21 @@ class NexusWorkspaceViewModel @Inject constructor(
         const val DEFAULT_VAULT_DOCUMENT_ID = "nxts-default-vault"
         const val DEFAULT_VAULT_NAME = "NexusTS Vault"
 
-        private val LEGACY_DEMO_CONNECTION_IDS = setOf(
-            "conn-win-rds-01",
-            "conn-win-rds-02",
-            "conn-k8s-bastion-ssh",
-            "conn-prod-sftp",
-            "conn-macos-ard",
-            "conn-proxmox-ve",
-            "conn-net-scanner",
-            "conn-serial-switch-01",
-            "conn-k8s-pod-exec-01"
-        )
-
-        private val LEGACY_DEMO_FOLDER_IDS = setOf(
-            "folder-prod-core",
-            "folder-win-ad",
-            "folder-hybrid-cloud"
-        )
-
-        private val LEGACY_DEMO_CREDENTIAL_IDS = setOf(
-            "cred-ops-root",
-            "cred-corp-domain"
-        )
-
-        private val LEGACY_DEMO_GATEWAY_IDS = setOf(
-            "gw-eu-bastion"
-        )
-
-        private val LEGACY_DEMO_DYNAMIC_FOLDER_IDS = setOf(
-            "dyn-cloud-fleet"
-        )
-
-        private val LEGACY_DEMO_TEMPLATE_IDS = setOf(
-            "tpl-win-console-hidpi",
-            "tpl-hardened-ssh"
-        )
-
-        private val LEGACY_DEMO_TODO_IDS = setOf(
-            "todo-cert-rotate",
-            "todo-k8s-etcd"
-        )
-
-        private val LEGACY_DEMO_SMART_FOLDER_NAMES = setOf(
-            "All Production Linux Nodes",
-            "All Remote Desktop (RDP/VNC)"
-        )
-
-        private val LEGACY_DEMO_COMMAND_TASK_NAMES = setOf(
-            "Cluster Pod Health Audit"
-        )
-
-        private val LEGACY_DEMO_MACRO_NAMES = setOf(
-            "Windows Domain Elevated Sign-In + 2FA Macro"
-        )
-
         /**
-         * Returns `true` when [doc] is the auto-seeded legacy `v1.1.1` demo vault (`nxts-enterprise-core`)
-         * with zero user-added connections, allowing `ActiveVaultSessionStore` to discard it cleanly on upgrade.
+         * Returns `true` when [doc] contains only legacy demo objects and zero user-created folders,
+         * connections, or credentials, allowing `ActiveVaultSessionStore` to discard it cleanly on upgrade.
          */
         fun isPureLegacyStarterDemoVault(doc: NxtsVaultDocument): Boolean {
-            if (doc.documentId != "nxts-enterprise-core") return false
-            val hasUserConnections = doc.connections.any { it.id !in LEGACY_DEMO_CONNECTION_IDS }
-            val hasUserFolders = doc.folders.any { it.id !in LEGACY_DEMO_FOLDER_IDS }
-            val hasUserCredentials = doc.credentials.any { it.id !in LEGACY_DEMO_CREDENTIAL_IDS }
-            return !hasUserConnections && !hasUserFolders && !hasUserCredentials
+            if (doc.documentId != "nxts-enterprise-core" && doc.name != "Production Infrastructure") return false
+            val cleaned = VaultHierarchySanitizer.sanitizeVaultDocument(doc)
+            return cleaned.connections.isEmpty() && cleaned.folders.isEmpty() && cleaned.credentials.isEmpty()
         }
 
         /**
-         * Strips any legacy `v1.1.1` demo entries if a user created custom connections inside the old starter vault.
+         * Strips any legacy demo entries and absorbs empty/credential-only root `"Credentials"` folders.
          */
-        fun sanitizeLegacyDemoEntries(doc: NxtsVaultDocument): NxtsVaultDocument {
-            if (doc.documentId != "nxts-enterprise-core") return doc
-            val referencedFolderIds = doc.connections
-                .filterNot { it.id in LEGACY_DEMO_CONNECTION_IDS }
-                .mapNotNull { it.parentFolderId }
-                .toSet()
-            return doc.copy(
-                documentId = DEFAULT_VAULT_DOCUMENT_ID,
-                name = DEFAULT_VAULT_NAME,
-                rootInheritable = InheritableProperties(),
-                folders = doc.folders.filter { it.id !in LEGACY_DEMO_FOLDER_IDS || it.id in referencedFolderIds },
-                smartFolders = doc.smartFolders.filterNot { it.name in LEGACY_DEMO_SMART_FOLDER_NAMES },
-                dynamicFolders = doc.dynamicFolders.filterNot { it.id in LEGACY_DEMO_DYNAMIC_FOLDER_IDS },
-                connections = doc.connections.filterNot { it.id in LEGACY_DEMO_CONNECTION_IDS },
-                credentials = doc.credentials.filterNot { it.id in LEGACY_DEMO_CREDENTIAL_IDS },
-                gateways = doc.gateways.filterNot { it.id in LEGACY_DEMO_GATEWAY_IDS },
-                commandTasks = doc.commandTasks.filterNot { it.name in LEGACY_DEMO_COMMAND_TASK_NAMES },
-                keySequenceTasks = doc.keySequenceTasks.filterNot { it.name in LEGACY_DEMO_MACRO_NAMES },
-                templates = doc.templates.filterNot { it.id in LEGACY_DEMO_TEMPLATE_IDS },
-                todoItems = doc.todoItems.filterNot { it.id in LEGACY_DEMO_TODO_IDS },
-                recentConnectionIds = doc.recentConnectionIds.filterNot { it in LEGACY_DEMO_CONNECTION_IDS }
-            )
-        }
+        fun sanitizeLegacyDemoEntries(doc: NxtsVaultDocument): NxtsVaultDocument =
+            VaultHierarchySanitizer.sanitizeVaultDocument(doc)
 
         /**
          * Clean, zero-clutter default empty vault initialized on first launch.

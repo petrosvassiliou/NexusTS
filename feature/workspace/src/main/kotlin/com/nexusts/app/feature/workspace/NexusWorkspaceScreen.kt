@@ -89,9 +89,11 @@ import androidx.compose.material.icons.outlined.UploadFile
 import androidx.compose.material.icons.outlined.VerticalSplit
 import androidx.compose.material.icons.outlined.ViewSidebar
 import androidx.compose.material.icons.outlined.VpnKey
+import androidx.compose.material.icons.outlined.WarningAmber
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -103,6 +105,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
@@ -139,6 +142,7 @@ import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
@@ -146,6 +150,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -159,6 +164,7 @@ import com.nexusts.app.core.ui.input.LocalNexusShortcutEngine
 import com.nexusts.app.core.ui.input.NexusShortcutAction
 import com.nexusts.app.core.ui.input.nexusDesktopPointerButtons
 import com.nexusts.app.core.ui.input.nexusHoverTracker
+import com.nexusts.app.core.ui.input.nexusInteractiveRow
 import com.nexusts.app.core.ui.input.rememberDesktopHoverState
 import com.nexusts.app.core.ui.theme.NexusTheme
 import com.nexusts.app.core.ui.workspace.ExternalDisplayDescriptor
@@ -172,8 +178,12 @@ import com.nexusts.app.core.ui.workspace.SplitWorkspaceLabels
 import com.nexusts.app.core.ui.workspace.WorkspaceSessionTab
 import com.nexusts.app.core.ui.workspace.protocolAccentColor
 import com.nexusts.app.core.ui.workspace.protocolIcon
+import com.nexusts.app.core.vault.error.NexusAppError
+import com.nexusts.app.core.vault.error.NexusErrorCategory
+import com.nexusts.app.core.vault.error.VaultHierarchySanitizer
 import com.nexusts.app.core.vault.exporter.VaultExportFormat
 import com.nexusts.app.core.vault.importer.DetectedExternalVaultFormat
+import com.nexusts.app.core.vault.importer.RoyalTsImportPlacementMode
 import com.nexusts.app.core.vault.inheritance.EffectiveConnectionProfile
 import com.nexusts.app.core.vault.model.CustomPropertyEntry
 import com.nexusts.app.core.vault.model.DynamicFolder
@@ -182,6 +192,7 @@ import com.nexusts.app.core.vault.model.ProtocolSpecificSettings
 import com.nexusts.app.core.vault.model.RdpAudioRedirectionMode
 import com.nexusts.app.core.vault.model.SmartFolder
 import com.nexusts.app.core.vault.model.VaultConnection
+import com.nexusts.app.core.vault.model.VaultCredential
 import com.nexusts.app.core.vault.model.VaultFolder
 import com.nexusts.app.core.vault.model.VaultProtocolType
 import com.nexusts.app.core.vault.model.VaultTodoItem
@@ -191,6 +202,7 @@ import com.nexusts.app.feature.workspace.i18n.WorkspaceLocalizedStrings
 import com.nexusts.app.feature.workspace.studios.AutomationTasksStudioView
 import com.nexusts.app.feature.workspace.studios.ConnectWithOptionsDialog
 import com.nexusts.app.feature.workspace.studios.ConnectionTemplatesStudioView
+import com.nexusts.app.feature.workspace.studios.CredentialEditorDialog
 import com.nexusts.app.feature.workspace.studios.CredentialVaultStudioView
 import com.nexusts.app.feature.workspace.studios.DriveSyncAndConflictStudioView
 import com.nexusts.app.feature.workspace.studios.ExpressiveVaultOverviewDashboard
@@ -251,6 +263,7 @@ fun NexusWorkspaceScreen(
     onEnrollBiometricPassphrase: ((CharArray, Boolean) -> Unit)? = null,
     onChangeIdleAutoLockMinutes: ((Int) -> Unit)? = null,
     onPickRdpSharedSafFolder: (((String) -> Unit) -> Unit)? = null,
+    onResetNexusDatabase: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val uiState by viewModel.uiState.collectAsState()
@@ -271,20 +284,43 @@ fun NexusWorkspaceScreen(
     // Full-Screen Zero-Knowledge Vault Lock Shield:
     // Completely isolates sidebar, studios, inspector, sessions, Ctrl+K, and exports while locked.
     if (uiState.isVaultLocked) {
-        FullScreenVaultUnlockShield(
-            vaultTitle = uiState.pendingImportFileName ?: uiState.vaultDocument.name,
-            unlockError = uiState.vaultUnlockError,
-            hasPreImportBackup = uiState.hasPreImportBackup,
-            strings = strings,
-            onUnlock = { pass -> viewModel.unlockVaultWithPassphrase(pass.toCharArray()) },
-            onCancelPendingImport = viewModel::cancelPendingVaultImport,
-            onOpenVaultPicker = onRequestImportFilePicker,
-            biometricUnlockAvailable = uiState.biometricUnlockEnabled &&
-                !uiState.hasPreImportBackup &&
-                onRequestBiometricUnlock != null,
-            onBiometricUnlock = { onRequestBiometricUnlock?.invoke() },
-            modifier = modifier
-        )
+        Box(modifier = modifier.fillMaxSize()) {
+            FullScreenVaultUnlockShield(
+                vaultTitle = uiState.pendingImportFileName ?: uiState.vaultDocument.name,
+                unlockError = uiState.vaultUnlockError,
+                hasPreImportBackup = uiState.hasPreImportBackup,
+                strings = strings,
+                onUnlock = { pass -> viewModel.unlockVaultWithPassphrase(pass.toCharArray()) },
+                onCancelPendingImport = viewModel::cancelPendingVaultImport,
+                onOpenVaultPicker = onRequestImportFilePicker,
+                biometricUnlockAvailable = uiState.biometricUnlockEnabled &&
+                    !uiState.hasPreImportBackup &&
+                    onRequestBiometricUnlock != null,
+                onBiometricUnlock = { onRequestBiometricUnlock?.invoke() },
+                onRequestResetDatabase = if (onResetNexusDatabase != null) {
+                    viewModel::openResetDatabaseDialog
+                } else {
+                    null
+                },
+                modifier = Modifier.fillMaxSize()
+            )
+            ResetDatabaseConfirmationDialog(
+                visible = uiState.isResetDatabaseDialogVisible,
+                canExportBackup = false,
+                strings = strings,
+                onExportBackupFirst = {},
+                onConfirmReset = {
+                    onResetNexusDatabase?.invoke()
+                },
+                onDismiss = viewModel::dismissResetDatabaseDialog
+            )
+            NexusErrorDialog(
+                error = uiState.activeAppError,
+                strings = strings,
+                onEditRelatedConnection = null,
+                onDismiss = viewModel::dismissActiveAppError
+            )
+        }
         return
     }
 
@@ -401,6 +437,7 @@ fun NexusWorkspaceScreen(
                     onNewSmartFolder = viewModel::openNewSmartFolderDialog,
                     onNewDynamicFolder = viewModel::openNewDynamicFolderDialog,
                     onNewTemplate = viewModel::openNewTemplateDialog,
+                    onNewCredential = viewModel::openNewCredentialDialog,
                     onNewLocalShell = viewModel::launchLocalShellTab,
                     onImportRtsz = onRequestImportFilePicker,
                     onExportVault = onRequestExportVault,
@@ -416,7 +453,8 @@ fun NexusWorkspaceScreen(
                         viewModel.dismissLanguageMenu()
                     },
                     onOpenAutoUpdateDialog = viewModel::openAutoUpdateDialog,
-                    onCompleteFlexibleUpdate = onCompleteFlexibleUpdate
+                    onCompleteFlexibleUpdate = onCompleteFlexibleUpdate,
+                    onRequestResetDatabase = viewModel::openResetDatabaseDialog
                 )
             },
             sidebarTreeContent = {
@@ -429,12 +467,17 @@ fun NexusWorkspaceScreen(
                     smartFolderConnectionsProvider = viewModel::evaluateSmartFolderConnections,
                     onToggleSmartFolder = viewModel::toggleSmartFolderSelection,
                     onNewSmartFolder = viewModel::openNewSmartFolderDialog,
+                    onEditSmartFolder = viewModel::openEditSmartFolderDialog,
+                    onDuplicateSmartFolder = viewModel::duplicateSmartFolder,
                     onDeleteSmartFolder = viewModel::deleteSmartFolderFromVault,
                     onNewDynamicFolder = viewModel::openNewDynamicFolderDialog,
+                    onEditDynamicFolder = viewModel::openEditDynamicFolderDialog,
+                    onDuplicateDynamicFolder = viewModel::duplicateDynamicFolder,
                     onToggleDynamicFolder = viewModel::toggleDynamicFolder,
                     onReloadDynamicFolder = viewModel::reloadDynamicFolder,
                     onDeleteDynamicFolder = viewModel::deleteDynamicFolderFromVault,
                     onNewFolder = viewModel::openNewFolderDialog,
+                    onSelectFolder = viewModel::selectFolderInTree,
                     onNewConnection = viewModel::openNewConnectionDialog,
                     onNewRdpInFolder = { folderId ->
                         viewModel.openNewConnectionInFolder(folderId, VaultProtocolType.RDP)
@@ -482,6 +525,9 @@ fun NexusWorkspaceScreen(
                     onMoveFolderToParent = { folderId, targetParentId ->
                         viewModel.moveFolderToParent(folderId, targetParentId)
                     },
+                    onMoveOrReorderFolder = { draggedId, targetId, placement ->
+                        viewModel.moveOrReorderFolder(draggedId, targetId, placement)
+                    },
                     onReorderFolder = { folderId, moveUp ->
                         viewModel.reorderFolder(folderId, moveUp)
                     },
@@ -490,6 +536,23 @@ fun NexusWorkspaceScreen(
                     },
                     onReorderConnectionRelativeTo = { draggedId, targetId, placeAfter ->
                         viewModel.reorderConnectionRelativeTo(draggedId, targetId, placeAfter)
+                    },
+                    onNewCredential = viewModel::openNewCredentialDialog,
+                    onEditCredential = viewModel::openEditCredentialDialog,
+                    onDuplicateCredential = viewModel::duplicateCredential,
+                    onDeleteCredential = viewModel::deleteCredentialFromVault,
+                    onGenerateSshKeyPair = viewModel::generateAndStoreSshKeyPair,
+                    onReorderCredentialRelativeTo = viewModel::reorderCredentialRelativeTo,
+                    onRejectedDropIntoCredentials = {
+                        viewModel.reportStructuredError(
+                            com.nexusts.app.core.vault.error.NexusAppError(
+                                category = com.nexusts.app.core.vault.error.NexusErrorCategory.VALIDATION,
+                                title = strings.credentialsSystemFolderTitle,
+                                userMessage = strings.credentialsSystemFolderOnlyHint,
+                                remediationHint = "Drop connections and folders onto a connection folder or the root hierarchy instead.",
+                                technicalDetails = "NXTS-CRED-DROP-REJECTED"
+                            )
+                        )
                     },
                     onLaunchConnection = { conn, placement ->
                         viewModel.selectRailDestination("connections")
@@ -582,7 +645,12 @@ fun NexusWorkspaceScreen(
                         githubReleaseBanner = uiState.githubLatestReleaseBanner,
                         githubReleaseUrl = uiState.githubLatestReleaseUrl,
                         onCheckGitHubReleases = onCheckGitHubReleases,
-                        onOpenGitHubReleaseUrl = onOpenGitHubReleaseUrl
+                        onOpenGitHubReleaseUrl = onOpenGitHubReleaseUrl,
+                        onRequestResetDatabase = if (onResetNexusDatabase != null) {
+                            viewModel::openResetDatabaseDialog
+                        } else {
+                            null
+                        }
                     )
 
                     else -> SplitPaneWorkspaceContainer(
@@ -767,6 +835,14 @@ fun NexusWorkspaceScreen(
                     onDeleteFolder = viewModel::deleteFolder,
                     defaultParentFolderId = uiState.newFolderDefaultParentId
                 )
+                CredentialEditorDialog(
+                    visible = uiState.isCredentialDialogVisible,
+                    existingCredential = uiState.editingCredential,
+                    strings = strings,
+                    onDismiss = viewModel::dismissCredentialDialog,
+                    onSaveCredential = viewModel::saveCredentialFromDialog,
+                    onDeleteCredential = viewModel::deleteCredentialFromVault
+                )
                 ConnectWithOptionsDialog(
                     targetConnection = uiState.connectWithOptionsTarget,
                     credentials = uiState.vaultDocument.credentials.filterNot { it.id in uiState.vaultDocument.tombstonedObjectIds },
@@ -783,14 +859,21 @@ fun NexusWorkspaceScreen(
                     visible = uiState.isNewSmartFolderDialogVisible,
                     strings = strings,
                     onDismiss = viewModel::dismissNewSmartFolderDialog,
-                    onSaveSmartFolder = viewModel::saveSmartFolderToVault
+                    onSaveSmartFolder = viewModel::saveSmartFolderToVault,
+                    existingSmartFolder = uiState.editingSmartFolder,
+                    allFolders = uiState.vaultDocument.folders.filterNot { it.id in uiState.vaultDocument.tombstonedObjectIds },
+                    validateRegex = viewModel::validateSmartFolderRegex,
+                    previewMatches = viewModel::previewSmartFolderMatches,
+                    onDeleteSmartFolder = viewModel::deleteSmartFolderFromVault
                 )
                 NewDynamicFolderDialog(
                     visible = uiState.isNewDynamicFolderDialogVisible,
                     folders = uiState.vaultDocument.folders.filterNot { it.id in uiState.vaultDocument.tombstonedObjectIds },
                     strings = strings,
                     onDismiss = viewModel::dismissNewDynamicFolderDialog,
-                    onSaveDynamicFolder = viewModel::saveDynamicFolderToVault
+                    onSaveDynamicFolder = viewModel::saveDynamicFolderToVault,
+                    existingDynamicFolder = uiState.editingDynamicFolder,
+                    onDeleteDynamicFolder = viewModel::deleteDynamicFolderFromVault
                 )
                 NewTemplateDialog(
                     visible = uiState.isNewTemplateDialogVisible,
@@ -838,6 +921,26 @@ fun NexusWorkspaceScreen(
                     },
                     onDismiss = viewModel::dismissDeleteFolderConfirmation
                 )
+                RoyalTsImportPlacementDialog(
+                    pendingImport = uiState.pendingRoyalTsImport,
+                    strings = strings,
+                    onConfirmPlacement = viewModel::confirmRoyalTsImport,
+                    onDismiss = viewModel::dismissRoyalTsImportDialog
+                )
+                ResetDatabaseConfirmationDialog(
+                    visible = uiState.isResetDatabaseDialogVisible,
+                    canExportBackup = uiState.vaultDocument.connections.isNotEmpty() ||
+                        uiState.vaultDocument.folders.isNotEmpty() ||
+                        uiState.vaultDocument.credentials.isNotEmpty(),
+                    strings = strings,
+                    onExportBackupFirst = {
+                        onRequestExportVault(VaultExportFormat.NXTS_VAULT)
+                    },
+                    onConfirmReset = {
+                        onResetNexusDatabase?.invoke()
+                    },
+                    onDismiss = viewModel::dismissResetDatabaseDialog
+                )
                 PlayProtectAutoUpdateDialog(
                     visible = uiState.isAutoUpdateDialogVisible,
                     uiState = uiState,
@@ -884,8 +987,23 @@ fun NexusWorkspaceScreen(
                     onDismiss = viewModel::dismissEncryptedImportDialog,
                     onSubmitPassphrase = { pass -> viewModel.submitEncryptedImportPassword(pass.toCharArray()) }
                 )
+                NexusErrorDialog(
+                    error = uiState.activeAppError,
+                    strings = strings,
+                    onEditRelatedConnection = uiState.activeAppError?.recoveryConnectionId?.let { relId ->
+                        uiState.vaultDocument.connections.firstOrNull {
+                            it.id == relId && it.id !in uiState.vaultDocument.tombstonedObjectIds
+                        }?.let { targetConn ->
+                            {
+                                viewModel.dismissActiveAppError()
+                                viewModel.openEditConnectionDialog(targetConn)
+                            }
+                        }
+                    },
+                    onDismiss = viewModel::dismissActiveAppError
+                )
                 ImportErrorAlertDialog(
-                    errorMessage = uiState.importErrorDialogMessage,
+                    errorMessage = if (uiState.activeAppError == null) uiState.importErrorDialogMessage else null,
                     strings = strings,
                     onDismiss = viewModel::dismissImportErrorDialog
                 )
@@ -933,7 +1051,10 @@ fun ActiveProtocolSessionDispatcher(
                 clipboardSyncLabel = strings.rdpSyncClipboardChip,
                 consoleBadgeLabel = strings.rdpConsoleBadge,
                 externalZoomFactor = tab.zoomFactor,
-                onZoomFactorChanged = onZoomChanged
+                onZoomFactorChanged = onZoomChanged,
+                onEditConnection = conn?.let { target ->
+                    { viewModel.openEditConnectionDialog(target) }
+                }
             )
         }
 
@@ -1078,6 +1199,7 @@ private fun DesktopTopWindowChrome(
     onNewSmartFolder: () -> Unit,
     onNewDynamicFolder: () -> Unit,
     onNewTemplate: () -> Unit,
+    onNewCredential: () -> Unit = {},
     onNewLocalShell: () -> Unit,
     onImportRtsz: () -> Unit,
     onExportVault: (VaultExportFormat) -> Unit,
@@ -1090,7 +1212,8 @@ private fun DesktopTopWindowChrome(
     onDismissLanguageMenu: () -> Unit,
     onSelectLocale: (SupportedNexusLocale) -> Unit,
     onOpenAutoUpdateDialog: () -> Unit,
-    onCompleteFlexibleUpdate: () -> Unit
+    onCompleteFlexibleUpdate: () -> Unit,
+    onRequestResetDatabase: (() -> Unit)? = null
 ) {
     var createMenuExpanded by remember { mutableStateOf(false) }
     var toolsMenuExpanded by remember { mutableStateOf(false) }
@@ -1452,11 +1575,19 @@ private fun DesktopTopWindowChrome(
                             }
                         )
                         DropdownMenuItem(
-                            text = { Text(strings.vaultSectionDynamicFolders) },
+                            text = { Text(strings.actionNewDynamicFolder) },
                             leadingIcon = { Icon(Icons.Outlined.DynamicFeed, contentDescription = null) },
                             onClick = {
                                 createMenuExpanded = false
                                 onNewDynamicFolder()
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text(strings.studioActionAddCredential) },
+                            leadingIcon = { Icon(Icons.Outlined.Key, contentDescription = null) },
+                            onClick = {
+                                createMenuExpanded = false
+                                onNewCredential()
                             }
                         )
                         DropdownMenuItem(
@@ -1691,6 +1822,23 @@ private fun DesktopTopWindowChrome(
                                 }
                             )
                         }
+                        if (onRequestResetDatabase != null) {
+                            HorizontalDivider()
+                            DropdownMenuItem(
+                                text = { Text(strings.actionResetDatabase, color = MaterialTheme.colorScheme.error) },
+                                leadingIcon = {
+                                    Icon(
+                                        Icons.Outlined.Delete,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.error
+                                    )
+                                },
+                                onClick = {
+                                    toolsMenuExpanded = false
+                                    onRequestResetDatabase()
+                                }
+                            )
+                        }
                     }
                 }
             }
@@ -1709,17 +1857,23 @@ private const val ROOT_DROP_TARGET_KEY = "__NEXUSTS_ROOT_LEVEL__"
 private class SidebarTreeDragDropState {
     var draggingConnection by mutableStateOf<VaultConnection?>(null)
     var draggingFolder by mutableStateOf<VaultFolder?>(null)
+    var draggingCredential by mutableStateOf<VaultCredential?>(null)
     var pointerPositionInRoot by mutableStateOf(Offset.Zero)
     var hoveredDropTargetKey by mutableStateOf<String?>(null)
+    var hoveredFolderDropPlacement by mutableStateOf(FolderDropPlacement.INSIDE)
     var hoveredConnectionTargetId by mutableStateOf<String?>(null)
     var hoveredConnectionPlaceAfter by mutableStateOf(false)
+    var hoveredCredentialTargetId by mutableStateOf<String?>(null)
+    var hoveredCredentialPlaceAfter by mutableStateOf(false)
     var canMoveFolderValidator: (String, String?) -> Boolean = { _, _ -> false }
+    var folderParentLookup: (String) -> String? = { null }
 
     private val targetBoundsInRoot = mutableStateMapOf<String, Rect>()
     private val connectionBoundsInRoot = mutableStateMapOf<String, Rect>()
+    private val credentialBoundsInRoot = mutableStateMapOf<String, Rect>()
 
     val isDragging: Boolean
-        get() = draggingConnection != null || draggingFolder != null
+        get() = draggingConnection != null || draggingFolder != null || draggingCredential != null
 
     fun registerDropTarget(key: String, bounds: Rect) {
         targetBoundsInRoot[key] = bounds
@@ -1743,8 +1897,20 @@ private class SidebarTreeDragDropState {
         }
     }
 
+    fun registerCredentialTarget(credentialId: String, bounds: Rect) {
+        credentialBoundsInRoot[credentialId] = bounds
+    }
+
+    fun unregisterCredentialTarget(credentialId: String) {
+        credentialBoundsInRoot.remove(credentialId)
+        if (hoveredCredentialTargetId == credentialId) {
+            hoveredCredentialTargetId = null
+        }
+    }
+
     fun startDrag(connection: VaultConnection, initialRootPos: Offset) {
         draggingFolder = null
+        draggingCredential = null
         draggingConnection = connection
         pointerPositionInRoot = initialRootPos
         updateHoveredTarget(initialRootPos)
@@ -1752,7 +1918,16 @@ private class SidebarTreeDragDropState {
 
     fun startFolderDrag(folder: VaultFolder, initialRootPos: Offset) {
         draggingConnection = null
+        draggingCredential = null
         draggingFolder = folder
+        pointerPositionInRoot = initialRootPos
+        updateHoveredTarget(initialRootPos)
+    }
+
+    fun startCredentialDrag(credential: VaultCredential, initialRootPos: Offset) {
+        draggingConnection = null
+        draggingFolder = null
+        draggingCredential = credential
         pointerPositionInRoot = initialRootPos
         updateHoveredTarget(initialRootPos)
     }
@@ -1771,6 +1946,31 @@ private class SidebarTreeDragDropState {
     private fun updateHoveredTarget(rootPos: Offset) {
         val conn = draggingConnection
         val folder = draggingFolder
+        val cred = draggingCredential
+        if (cred != null) {
+            hoveredDropTargetKey = null
+            hoveredConnectionTargetId = null
+            val matchedCred = credentialBoundsInRoot.entries
+                .firstOrNull { (credId, rect) -> credId != cred.id && rect.contains(rootPos) }
+            if (matchedCred != null) {
+                hoveredCredentialTargetId = matchedCred.key
+                hoveredCredentialPlaceAfter = rootPos.y >= matchedCred.value.center.y
+            } else {
+                hoveredCredentialTargetId = null
+            }
+            return
+        }
+        hoveredCredentialTargetId = null
+
+        // Check if dragging a connection or folder over the bottom-pinned "Credentials" system folder
+        val sysCredBounds = targetBoundsInRoot[VaultHierarchySanitizer.SYSTEM_CREDENTIALS_FOLDER_ID]
+        if ((conn != null || folder != null) && sysCredBounds != null && sysCredBounds.contains(rootPos)) {
+            hoveredConnectionTargetId = null
+            hoveredFolderDropPlacement = FolderDropPlacement.INSIDE
+            hoveredDropTargetKey = VaultHierarchySanitizer.SYSTEM_CREDENTIALS_FOLDER_ID
+            return
+        }
+
         if (conn != null) {
             val matchedConn = connectionBoundsInRoot.entries
                 .firstOrNull { (connId, rect) -> connId != conn.id && rect.contains(rootPos) }
@@ -1781,10 +1981,12 @@ private class SidebarTreeDragDropState {
                 return
             }
             hoveredConnectionTargetId = null
+            hoveredFolderDropPlacement = FolderDropPlacement.INSIDE
             hoveredDropTargetKey = targetBoundsInRoot.entries
                 .firstOrNull { (key, rect) ->
                     rect.contains(rootPos) &&
                         when (key) {
+                            VaultHierarchySanitizer.SYSTEM_CREDENTIALS_FOLDER_ID -> true
                             ROOT_DROP_TARGET_KEY -> conn.parentFolderId != null
                             else -> key != conn.parentFolderId
                         }
@@ -1792,15 +1994,45 @@ private class SidebarTreeDragDropState {
                 ?.key
         } else if (folder != null) {
             hoveredConnectionTargetId = null
-            hoveredDropTargetKey = targetBoundsInRoot.entries
+            val matchedTarget = targetBoundsInRoot.entries
                 .firstOrNull { (key, rect) ->
-                    rect.contains(rootPos) &&
-                        when (key) {
-                            ROOT_DROP_TARGET_KEY -> folder.parentFolderId != null
-                            else -> canMoveFolderValidator(folder.id, key)
+                    if (!rect.contains(rootPos) || key == folder.id) return@firstOrNull false
+                    when (key) {
+                        VaultHierarchySanitizer.SYSTEM_CREDENTIALS_FOLDER_ID -> true
+                        ROOT_DROP_TARGET_KEY -> folder.parentFolderId != null
+                        else -> {
+                            val relY = ((rootPos.y - rect.top) / rect.height.coerceAtLeast(1f)).coerceIn(0f, 1f)
+                            val candidatePlacement = when {
+                                relY < 0.27f -> FolderDropPlacement.BEFORE
+                                relY > 0.73f -> FolderDropPlacement.AFTER
+                                else -> FolderDropPlacement.INSIDE
+                            }
+                            if (candidatePlacement == FolderDropPlacement.INSIDE) {
+                                canMoveFolderValidator(folder.id, key)
+                            } else {
+                                val targetParent = folderParentLookup(key)
+                                targetParent == folder.parentFolderId || canMoveFolderValidator(folder.id, targetParent)
+                            }
                         }
+                    }
                 }
-                ?.key
+            if (matchedTarget != null) {
+                val (key, rect) = matchedTarget
+                hoveredDropTargetKey = key
+                hoveredFolderDropPlacement = if (key == ROOT_DROP_TARGET_KEY || key == VaultHierarchySanitizer.SYSTEM_CREDENTIALS_FOLDER_ID) {
+                    FolderDropPlacement.INSIDE
+                } else {
+                    val relY = ((rootPos.y - rect.top) / rect.height.coerceAtLeast(1f)).coerceIn(0f, 1f)
+                    when {
+                        relY < 0.27f -> FolderDropPlacement.BEFORE
+                        relY > 0.73f -> FolderDropPlacement.AFTER
+                        else -> FolderDropPlacement.INSIDE
+                    }
+                }
+            } else {
+                hoveredDropTargetKey = null
+                hoveredFolderDropPlacement = FolderDropPlacement.INSIDE
+            }
         } else {
             hoveredDropTargetKey = null
             hoveredConnectionTargetId = null
@@ -1809,18 +2041,18 @@ private class SidebarTreeDragDropState {
 
     fun finishDrag(
         onMoveConnectionToFolder: (String, String?) -> Unit,
-        onReorderConnectionRelativeTo: (String, String, Boolean) -> Unit = { _, _, _ -> }
+        onReorderConnectionRelativeTo: (String, String, Boolean) -> Unit = { _, _, _ -> },
+        onRejectedDropIntoCredentials: () -> Unit = {}
     ) {
         val conn = draggingConnection
         val targetConnId = hoveredConnectionTargetId
         val placeAfter = hoveredConnectionPlaceAfter
         val targetKey = hoveredDropTargetKey
-        draggingConnection = null
-        draggingFolder = null
-        hoveredDropTargetKey = null
-        hoveredConnectionTargetId = null
+        cancelDrag()
         if (conn != null) {
-            if (targetConnId != null && targetConnId != conn.id) {
+            if (targetKey == VaultHierarchySanitizer.SYSTEM_CREDENTIALS_FOLDER_ID) {
+                onRejectedDropIntoCredentials()
+            } else if (targetConnId != null && targetConnId != conn.id) {
                 onReorderConnectionRelativeTo(conn.id, targetConnId, placeAfter)
             } else if (targetKey != null) {
                 val destinationFolderId = if (targetKey == ROOT_DROP_TARGET_KEY) null else targetKey
@@ -1831,26 +2063,52 @@ private class SidebarTreeDragDropState {
         }
     }
 
-    fun finishFolderDrag(onMoveFolderToParent: (String, String?) -> Unit) {
+    fun finishFolderDrag(
+        onMoveFolderToParent: (String, String?) -> Unit,
+        onMoveOrReorderFolder: (String, String, FolderDropPlacement) -> Unit = { _, _, _ -> },
+        onRejectedDropIntoCredentials: () -> Unit = {}
+    ) {
         val folder = draggingFolder
         val targetKey = hoveredDropTargetKey
-        draggingConnection = null
-        draggingFolder = null
-        hoveredDropTargetKey = null
-        hoveredConnectionTargetId = null
+        val placement = hoveredFolderDropPlacement
+        cancelDrag()
         if (folder != null && targetKey != null) {
-            val destinationParentId = if (targetKey == ROOT_DROP_TARGET_KEY) null else targetKey
-            if (canMoveFolderValidator(folder.id, destinationParentId)) {
-                onMoveFolderToParent(folder.id, destinationParentId)
+            when (targetKey) {
+                VaultHierarchySanitizer.SYSTEM_CREDENTIALS_FOLDER_ID -> {
+                    onRejectedDropIntoCredentials()
+                }
+                ROOT_DROP_TARGET_KEY -> {
+                    if (canMoveFolderValidator(folder.id, null)) {
+                        onMoveFolderToParent(folder.id, null)
+                    }
+                }
+                else -> {
+                    onMoveOrReorderFolder(folder.id, targetKey, placement)
+                }
             }
+        }
+    }
+
+    fun finishCredentialDrag(
+        onReorderCredentialRelativeTo: (String, String, Boolean) -> Unit
+    ) {
+        val cred = draggingCredential
+        val targetCredId = hoveredCredentialTargetId
+        val placeAfter = hoveredCredentialPlaceAfter
+        cancelDrag()
+        if (cred != null && targetCredId != null && targetCredId != cred.id) {
+            onReorderCredentialRelativeTo(cred.id, targetCredId, placeAfter)
         }
     }
 
     fun cancelDrag() {
         draggingConnection = null
         draggingFolder = null
+        draggingCredential = null
         hoveredDropTargetKey = null
+        hoveredFolderDropPlacement = FolderDropPlacement.INSIDE
         hoveredConnectionTargetId = null
+        hoveredCredentialTargetId = null
     }
 }
 
@@ -1940,12 +2198,17 @@ private fun VaultHierarchySidebarTree(
     smartFolderConnectionsProvider: (SmartFolder) -> List<VaultConnection>,
     onToggleSmartFolder: (String) -> Unit,
     onNewSmartFolder: () -> Unit,
+    onEditSmartFolder: (SmartFolder) -> Unit = {},
+    onDuplicateSmartFolder: (SmartFolder) -> Unit = {},
     onDeleteSmartFolder: (String) -> Unit,
     onNewDynamicFolder: () -> Unit,
+    onEditDynamicFolder: (DynamicFolder) -> Unit = {},
+    onDuplicateDynamicFolder: (DynamicFolder) -> Unit = {},
     onToggleDynamicFolder: (DynamicFolder) -> Unit,
     onReloadDynamicFolder: (DynamicFolder) -> Unit,
     onDeleteDynamicFolder: (String) -> Unit,
     onNewFolder: () -> Unit,
+    onSelectFolder: (String?) -> Unit = {},
     onNewConnection: () -> Unit = {},
     onNewRdpInFolder: (String) -> Unit = {},
     onNewSshInFolder: (String) -> Unit = {},
@@ -1970,9 +2233,17 @@ private fun VaultHierarchySidebarTree(
     canMoveFolderToParent: (String, String?) -> Boolean = { _, _ -> false },
     onOpenMoveFolderDialog: (VaultFolder) -> Unit = {},
     onMoveFolderToParent: (String, String?) -> Unit = { _, _ -> },
+    onMoveOrReorderFolder: (String, String, FolderDropPlacement) -> Unit = { _, _, _ -> },
     onReorderFolder: (String, Boolean) -> Unit = { _, _ -> },
     onReorderConnection: (String, Boolean) -> Unit = { _, _ -> },
     onReorderConnectionRelativeTo: (String, String, Boolean) -> Unit = { _, _, _ -> },
+    onNewCredential: () -> Unit = {},
+    onEditCredential: (VaultCredential) -> Unit = {},
+    onDuplicateCredential: (VaultCredential) -> Unit = {},
+    onDeleteCredential: (String) -> Unit = {},
+    onGenerateSshKeyPair: () -> Unit = {},
+    onReorderCredentialRelativeTo: (String, String, Boolean) -> Unit = { _, _, _ -> },
+    onRejectedDropIntoCredentials: () -> Unit = {},
     onLaunchConnection: (VaultConnection, QuickLaunchPlacement) -> Unit,
     onLaunchConnectionInSplitDown: (VaultConnection) -> Unit = {},
     onLaunchLocalShell: () -> Unit = {},
@@ -1981,6 +2252,7 @@ private fun VaultHierarchySidebarTree(
     val doc = uiState.vaultDocument
     val query = uiState.sidebarFilterQuery.trim().lowercase()
     var sidebarBgMenuOpen by remember { mutableStateOf(false) }
+    var sidebarBgMenuOffsetPx by remember { mutableStateOf(Offset.Zero) }
     val dragDropState = remember { SidebarTreeDragDropState() }
     dragDropState.canMoveFolderValidator = canMoveFolderToParent
     var sidebarOriginInRoot by remember { mutableStateOf(Offset.Zero) }
@@ -2018,7 +2290,22 @@ private fun VaultHierarchySidebarTree(
                     .thenBy { it.id }
             )
     }
+    val activeCredentials = remember(doc.credentials, doc.tombstonedObjectIds, query) {
+        doc.credentials
+            .filterNot { it.id in doc.tombstonedObjectIds }
+            .filter { cred ->
+                query.isEmpty() ||
+                    cred.name.lowercase().contains(query) ||
+                    cred.username.lowercase().contains(query) ||
+                    cred.domain.lowercase().contains(query)
+            }
+    }
+    val totalActiveCredentialCount = remember(doc.credentials, doc.tombstonedObjectIds) {
+        doc.credentials.count { it.id !in doc.tombstonedObjectIds }
+    }
     val activeFolderIds = remember(activeFolders) { activeFolders.map { it.id }.toSet() }
+    val folderByIdMap = remember(activeFolders) { activeFolders.associateBy { it.id } }
+    dragDropState.folderParentLookup = { id -> folderByIdMap[id]?.parentFolderId }
     val childrenByParentMap = remember(activeFolders, activeFolderIds) {
         activeFolders.groupBy { folder ->
             folder.parentFolderId?.takeIf { it in activeFolderIds && it != folder.id }
@@ -2034,6 +2321,7 @@ private fun VaultHierarchySidebarTree(
             )
     }
     var collapsedFolderIds by remember { mutableStateOf(emptySet<String>()) }
+    var isSystemCredentialsExpanded by remember { mutableStateOf(true) }
 
     fun collectSubtreeIds(folderId: String): Set<String> {
         val visited = mutableSetOf<String>()
@@ -2048,12 +2336,19 @@ private fun VaultHierarchySidebarTree(
         return visited
     }
 
-    // Automatically expand a collapsed folder when hovering a dragged connection or folder over it for 480ms
-    LaunchedEffect(dragDropState.hoveredDropTargetKey) {
+    // Automatically expand a collapsed folder when hovering a dragged connection or folder INSIDE it for 480ms
+    LaunchedEffect(dragDropState.hoveredDropTargetKey, dragDropState.hoveredFolderDropPlacement) {
         val hoveredKey = dragDropState.hoveredDropTargetKey
-        if (hoveredKey != null && hoveredKey != ROOT_DROP_TARGET_KEY && hoveredKey in collapsedFolderIds) {
+        if (hoveredKey != null &&
+            hoveredKey != ROOT_DROP_TARGET_KEY &&
+            hoveredKey != VaultHierarchySanitizer.SYSTEM_CREDENTIALS_FOLDER_ID &&
+            dragDropState.hoveredFolderDropPlacement == FolderDropPlacement.INSIDE &&
+            hoveredKey in collapsedFolderIds
+        ) {
             delay(480L)
-            if (dragDropState.hoveredDropTargetKey == hoveredKey) {
+            if (dragDropState.hoveredDropTargetKey == hoveredKey &&
+                dragDropState.hoveredFolderDropPlacement == FolderDropPlacement.INSIDE
+            ) {
                 collapsedFolderIds = collapsedFolderIds - hoveredKey
             }
         }
@@ -2164,7 +2459,12 @@ private fun VaultHierarchySidebarTree(
             .onGloballyPositioned { coords ->
                 sidebarOriginInRoot = coords.positionInRoot()
             }
-            .nexusDesktopPointerButtons(onSecondaryClick = { sidebarBgMenuOpen = true })
+            .nexusDesktopPointerButtons(
+                onSecondaryClick = { pos ->
+                    sidebarBgMenuOffsetPx = pos
+                    sidebarBgMenuOpen = true
+                }
+            )
     ) {
         Column(
             modifier = Modifier.fillMaxSize()
@@ -2335,7 +2635,8 @@ private fun VaultHierarchySidebarTree(
 
             LazyColumn(
                 modifier = Modifier
-                    .fillMaxSize()
+                    .weight(1f)
+                    .fillMaxWidth()
                     .padding(horizontal = 6.dp, vertical = 4.dp),
                 verticalArrangement = Arrangement.spacedBy(2.dp)
             ) {
@@ -2507,6 +2808,7 @@ private fun VaultHierarchySidebarTree(
                                 FolderTreeRow(
                                     folder = folder,
                                     depth = entry.depth,
+                                    isSelectedFolder = folder.id == uiState.selectedFolderId,
                                     isExpanded = entry.isExpanded,
                                     hasExpandableChildren = entry.hasChildFolders || entry.directConnections.isNotEmpty(),
                                     explicitFolderCredentialName = explicitFolderCred?.name,
@@ -2515,6 +2817,7 @@ private fun VaultHierarchySidebarTree(
                                     activeSessionCountInSubtree = entry.subtreeActiveSessionCount,
                                     dragDropState = dragDropState,
                                     strings = strings,
+                                    onSelectFolder = { onSelectFolder(folder.id) },
                                     onToggleExpand = {
                                         collapsedFolderIds = if (folder.id in collapsedFolderIds) {
                                             collapsedFolderIds - folder.id
@@ -2541,6 +2844,10 @@ private fun VaultHierarchySidebarTree(
                                     onDisconnectAllInFolder = { onDisconnectAllInFolder(folder.id) },
                                     onOpenMoveFolderDialog = { onOpenMoveFolderDialog(folder) },
                                     onMoveFolderToParent = { targetParentId -> onMoveFolderToParent(folder.id, targetParentId) },
+                                    onMoveOrReorderFolder = { draggedId, targetId, placement ->
+                                        onMoveOrReorderFolder(draggedId, targetId, placement)
+                                    },
+                                    onRejectedDropIntoCredentials = onRejectedDropIntoCredentials,
                                     onMoveUp = { onReorderFolder(folder.id, true) },
                                     onMoveDown = { onReorderFolder(folder.id, false) }
                                 )
@@ -2577,6 +2884,7 @@ private fun VaultHierarchySidebarTree(
                                             onReorderRelativeTo = { targetConnId, placeAfter ->
                                                 onReorderConnectionRelativeTo(conn.id, targetConnId, placeAfter)
                                             },
+                                            onRejectedDropIntoCredentials = onRejectedDropIntoCredentials,
                                             onMoveUp = { onReorderConnection(conn.id, true) },
                                             onMoveDown = { onReorderConnection(conn.id, false) },
                                             onLaunch = { placement -> onLaunchConnection(conn, placement) },
@@ -2618,166 +2926,12 @@ private fun VaultHierarchySidebarTree(
                                     onReorderRelativeTo = { targetConnId, placeAfter ->
                                         onReorderConnectionRelativeTo(conn.id, targetConnId, placeAfter)
                                     },
+                                    onRejectedDropIntoCredentials = onRejectedDropIntoCredentials,
                                     onMoveUp = { onReorderConnection(conn.id, true) },
                                     onMoveDown = { onReorderConnection(conn.id, false) },
                                     onLaunch = { placement -> onLaunchConnection(conn, placement) },
                                     onLaunchSplitDown = { onLaunchConnectionInSplitDown(conn) }
                                 )
-                            }
-                        }
-
-                        // Optional Smart & Dynamic Folders tucked cleanly below the main tree only when defined
-                        if (activeSmartFolders.isNotEmpty()) {
-                            item(key = "header-smart-folders") {
-                                Spacer(modifier = Modifier.height(6.dp))
-                                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 6.dp, vertical = 3.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.SpaceBetween
-                                ) {
-                                    Text(
-                                        text = strings.vaultSectionSmartFolders,
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.secondary
-                                    )
-                                    IconButton(onClick = onNewSmartFolder, modifier = Modifier.size(22.dp)) {
-                                        Icon(
-                                            imageVector = Icons.Outlined.Add,
-                                            contentDescription = strings.actionNewSmartFolder,
-                                            modifier = Modifier.size(14.dp),
-                                            tint = MaterialTheme.colorScheme.secondary
-                                        )
-                                    }
-                                }
-                            }
-                            activeSmartFolders.forEach { smart ->
-                                val matchedConnections = smartFolderConnectionsProvider(smart).filter(::matchesFilter)
-                                val isExpanded = uiState.selectedSmartFolderId == smart.id
-                                item(key = "smart-${smart.id}") {
-                                    SmartFolderTreeRow(
-                                        smartFolder = smart,
-                                        matchedCount = matchedConnections.size,
-                                        isExpanded = isExpanded,
-                                        strings = strings,
-                                        onToggle = { onToggleSmartFolder(smart.id) },
-                                        onConnectAll = {
-                                            matchedConnections.forEach { conn ->
-                                                onLaunchConnection(conn, QuickLaunchPlacement.ACTIVE_PANE_TAB)
-                                            }
-                                        },
-                                        onNewSmartFolder = onNewSmartFolder,
-                                        onDelete = { onDeleteSmartFolder(smart.id) }
-                                    )
-                                }
-                                if (isExpanded) {
-                                    groupConnectionsIntelligently(matchedConnections).forEach { group ->
-                                        if (group.showsHeader) {
-                                            item(key = "smart-hdr-${smart.id}-${group.badge}") {
-                                                SidebarProtocolGroupHeaderRow(
-                                                    badge = group.badge,
-                                                    count = group.connections.size,
-                                                    indentLevel = 1
-                                                )
-                                            }
-                                        }
-                                        items(group.connections, key = { "smart-${smart.id}-${it.id}" }) { conn ->
-                                            ConnectionTreeRow(
-                                                connection = conn,
-                                                indentLevel = 1,
-                                                isSelected = conn.id == uiState.selectedConnectionId,
-                                                strings = strings,
-                                                activeSessionCount = activeSessionCountByConnectionId[conn.id] ?: 0,
-                                                onSelect = { onSelectConnection(conn.id) },
-                                                onEdit = { onEditConnection(conn) },
-                                                onConnectWithOptions = { onConnectWithOptions(conn) },
-                                                onToggleFavorite = { onToggleFavorite(conn.id) },
-                                                onDuplicate = { onDuplicateConnection(conn) },
-                                                onDelete = { onDeleteConnection(conn.id) },
-                                                onDisconnect = { onDisconnectConnection(conn.id) },
-                                                onOpenMoveDialog = { onOpenMoveConnectionDialog(conn) },
-                                                onLaunch = { placement -> onLaunchConnection(conn, placement) },
-                                                onLaunchSplitDown = { onLaunchConnectionInSplitDown(conn) }
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        if (activeDynamicFolders.isNotEmpty()) {
-                            item(key = "header-dynamic-folders") {
-                                Spacer(modifier = Modifier.height(6.dp))
-                                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 6.dp, vertical = 3.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.SpaceBetween
-                                ) {
-                                    Text(
-                                        text = strings.vaultSectionDynamicFolders,
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.secondary
-                                    )
-                                    IconButton(onClick = onNewDynamicFolder, modifier = Modifier.size(22.dp)) {
-                                        Icon(
-                                            imageVector = Icons.Outlined.Add,
-                                            contentDescription = strings.vaultSectionDynamicFolders,
-                                            modifier = Modifier.size(14.dp),
-                                            tint = MaterialTheme.colorScheme.secondary
-                                        )
-                                    }
-                                }
-                            }
-                            activeDynamicFolders.forEach { dyn ->
-                                val hydrated = uiState.hydratedDynamicConnections[dyn.id].orEmpty().filter(::matchesFilter)
-                                val isExpanded = uiState.selectedDynamicFolderId == dyn.id
-                                item(key = "dyn-${dyn.id}") {
-                                    DynamicFolderTreeRow(
-                                        dynamicFolder = dyn,
-                                        isExpanded = isExpanded,
-                                        strings = strings,
-                                        onToggle = { onToggleDynamicFolder(dyn) },
-                                        onReload = { onReloadDynamicFolder(dyn) },
-                                        onNewDynamicFolder = onNewDynamicFolder,
-                                        onDelete = { onDeleteDynamicFolder(dyn.id) }
-                                    )
-                                }
-                                if (isExpanded) {
-                                    groupConnectionsIntelligently(hydrated).forEach { group ->
-                                        if (group.showsHeader) {
-                                            item(key = "dyn-hdr-${dyn.id}-${group.badge}") {
-                                                SidebarProtocolGroupHeaderRow(
-                                                    badge = group.badge,
-                                                    count = group.connections.size,
-                                                    indentLevel = 1
-                                                )
-                                            }
-                                        }
-                                        items(group.connections, key = { "dyn-${dyn.id}-${it.id}" }) { conn ->
-                                            ConnectionTreeRow(
-                                                connection = conn,
-                                                indentLevel = 1,
-                                                isSelected = conn.id == uiState.selectedConnectionId,
-                                                strings = strings,
-                                                activeSessionCount = activeSessionCountByConnectionId[conn.id] ?: 0,
-                                                onSelect = { onSelectConnection(conn.id) },
-                                                onEdit = { onEditConnection(conn) },
-                                                onConnectWithOptions = { onConnectWithOptions(conn) },
-                                                onToggleFavorite = { onToggleFavorite(conn.id) },
-                                                onDuplicate = { onDuplicateConnection(conn) },
-                                                onDelete = { onDeleteConnection(conn.id) },
-                                                onDisconnect = { onDisconnectConnection(conn.id) },
-                                                onLaunch = { placement -> onLaunchConnection(conn, placement) },
-                                                onLaunchSplitDown = { onLaunchConnectionInSplitDown(conn) }
-                                            )
-                                        }
-                                    }
-                                }
                             }
                         }
 
@@ -2818,16 +2972,213 @@ private fun VaultHierarchySidebarTree(
                                 }
                             }
                         }
+
+                        // Always-discoverable Intelligent Folders (Smart Folders) section with inline `+` action
+                        item(key = "header-smart-folders") {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 6.dp, vertical = 3.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Outlined.AutoAwesome,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(13.dp),
+                                        tint = MaterialTheme.colorScheme.tertiary
+                                    )
+                                    Text(
+                                        text = strings.vaultSectionSmartFolders,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.secondary
+                                    )
+                                }
+                                IconButton(onClick = onNewSmartFolder, modifier = Modifier.size(22.dp)) {
+                                    Icon(
+                                        imageVector = Icons.Outlined.Add,
+                                        contentDescription = strings.actionNewSmartFolder,
+                                        modifier = Modifier.size(14.dp),
+                                        tint = MaterialTheme.colorScheme.secondary
+                                    )
+                                }
+                            }
+                        }
+                        activeSmartFolders.forEach { smart ->
+                            val matchedConnections = smartFolderConnectionsProvider(smart).filter(::matchesFilter)
+                            val isExpanded = uiState.selectedSmartFolderId == smart.id
+                            item(key = "smart-${smart.id}") {
+                                SmartFolderTreeRow(
+                                    smartFolder = smart,
+                                    matchedCount = matchedConnections.size,
+                                    isExpanded = isExpanded,
+                                    strings = strings,
+                                    onToggle = { onToggleSmartFolder(smart.id) },
+                                    onEdit = { onEditSmartFolder(smart) },
+                                    onDuplicate = { onDuplicateSmartFolder(smart) },
+                                    onConnectAll = {
+                                        matchedConnections.forEach { conn ->
+                                            onLaunchConnection(conn, QuickLaunchPlacement.ACTIVE_PANE_TAB)
+                                        }
+                                    },
+                                    onNewSmartFolder = onNewSmartFolder,
+                                    onDelete = { onDeleteSmartFolder(smart.id) }
+                                )
+                            }
+                            if (isExpanded) {
+                                groupConnectionsIntelligently(matchedConnections).forEach { group ->
+                                    if (group.showsHeader) {
+                                        item(key = "smart-hdr-${smart.id}-${group.badge}") {
+                                            SidebarProtocolGroupHeaderRow(
+                                                badge = group.badge,
+                                                count = group.connections.size,
+                                                indentLevel = 1
+                                            )
+                                        }
+                                    }
+                                    items(group.connections, key = { "smart-${smart.id}-${it.id}" }) { conn ->
+                                        ConnectionTreeRow(
+                                            connection = conn,
+                                            indentLevel = 1,
+                                            isSelected = conn.id == uiState.selectedConnectionId,
+                                            strings = strings,
+                                            activeSessionCount = activeSessionCountByConnectionId[conn.id] ?: 0,
+                                            onSelect = { onSelectConnection(conn.id) },
+                                            onEdit = { onEditConnection(conn) },
+                                            onConnectWithOptions = { onConnectWithOptions(conn) },
+                                            onToggleFavorite = { onToggleFavorite(conn.id) },
+                                            onDuplicate = { onDuplicateConnection(conn) },
+                                            onDelete = { onDeleteConnection(conn.id) },
+                                            onDisconnect = { onDisconnectConnection(conn.id) },
+                                            onOpenMoveDialog = { onOpenMoveConnectionDialog(conn) },
+                                            onLaunch = { placement -> onLaunchConnection(conn, placement) },
+                                            onLaunchSplitDown = { onLaunchConnectionInSplitDown(conn) }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        if (activeDynamicFolders.isNotEmpty()) {
+                            item(key = "header-dynamic-folders") {
+                                Spacer(modifier = Modifier.height(6.dp))
+                                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 6.dp, vertical = 3.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(
+                                        text = strings.vaultSectionDynamicFolders,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.secondary
+                                    )
+                                    IconButton(onClick = onNewDynamicFolder, modifier = Modifier.size(22.dp)) {
+                                        Icon(
+                                            imageVector = Icons.Outlined.Add,
+                                            contentDescription = strings.actionNewDynamicFolder,
+                                            modifier = Modifier.size(14.dp),
+                                            tint = MaterialTheme.colorScheme.secondary
+                                        )
+                                    }
+                                }
+                            }
+                            activeDynamicFolders.forEach { dyn ->
+                                val hydrated = uiState.hydratedDynamicConnections[dyn.id].orEmpty().filter(::matchesFilter)
+                                val isExpanded = uiState.selectedDynamicFolderId == dyn.id
+                                item(key = "dyn-${dyn.id}") {
+                                    DynamicFolderTreeRow(
+                                        dynamicFolder = dyn,
+                                        isExpanded = isExpanded,
+                                        strings = strings,
+                                        onToggle = { onToggleDynamicFolder(dyn) },
+                                        onEdit = { onEditDynamicFolder(dyn) },
+                                        onDuplicate = { onDuplicateDynamicFolder(dyn) },
+                                        onReload = { onReloadDynamicFolder(dyn) },
+                                        onNewDynamicFolder = onNewDynamicFolder,
+                                        onDelete = { onDeleteDynamicFolder(dyn.id) }
+                                    )
+                                }
+                                if (isExpanded) {
+                                    groupConnectionsIntelligently(hydrated).forEach { group ->
+                                        if (group.showsHeader) {
+                                            item(key = "dyn-hdr-${dyn.id}-${group.badge}") {
+                                                SidebarProtocolGroupHeaderRow(
+                                                    badge = group.badge,
+                                                    count = group.connections.size,
+                                                    indentLevel = 1
+                                                )
+                                            }
+                                        }
+                                        items(group.connections, key = { "dyn-${dyn.id}-${it.id}" }) { conn ->
+                                            ConnectionTreeRow(
+                                                connection = conn,
+                                                indentLevel = 1,
+                                                isSelected = conn.id == uiState.selectedConnectionId,
+                                                strings = strings,
+                                                activeSessionCount = activeSessionCountByConnectionId[conn.id] ?: 0,
+                                                onSelect = { onSelectConnection(conn.id) },
+                                                onEdit = { onEditConnection(conn) },
+                                                onConnectWithOptions = { onConnectWithOptions(conn) },
+                                                onToggleFavorite = { onToggleFavorite(conn.id) },
+                                                onDuplicate = { onDuplicateConnection(conn) },
+                                                onDelete = { onDeleteConnection(conn.id) },
+                                                onDisconnect = { onDisconnectConnection(conn.id) },
+                                                onLaunch = { placement -> onLaunchConnection(conn, placement) },
+                                                onLaunchSplitDown = { onLaunchConnectionInSplitDown(conn) }
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
+
+            // Pinned System Folder "Credentials" — ALWAYS at the bottom of the left sidebar hierarchy,
+            // strictly holding VaultCredential items only (never connections or subfolders).
+            SystemCredentialsSidebarFooter(
+                credentials = activeCredentials,
+                totalCredentialCount = totalActiveCredentialCount,
+                isExpanded = isSystemCredentialsExpanded,
+                dragDropState = dragDropState,
+                strings = strings,
+                onToggleExpand = { isSystemCredentialsExpanded = !isSystemCredentialsExpanded },
+                onNewCredential = onNewCredential,
+                onEditCredential = onEditCredential,
+                onDuplicateCredential = onDuplicateCredential,
+                onDeleteCredential = onDeleteCredential,
+                onGenerateSshKeyPair = onGenerateSshKeyPair,
+                onReorderCredentialRelativeTo = onReorderCredentialRelativeTo
+            )
         }
 
-        // Floating Drag Ghost Preview Card while dragging a connection or folder
+        // Floating Drag Ghost Preview Card while dragging a connection, folder, or credential
         val activeDraggedConn = dragDropState.draggingConnection
         val activeDraggedFolder = dragDropState.draggingFolder
-        if (activeDraggedConn != null || activeDraggedFolder != null) {
+        val activeDraggedCred = dragDropState.draggingCredential
+        if (activeDraggedConn != null || activeDraggedFolder != null || activeDraggedCred != null) {
+            val isRejectedCredDrop =
+                dragDropState.hoveredDropTargetKey == VaultHierarchySanitizer.SYSTEM_CREDENTIALS_FOLDER_ID
             val targetLabel = when {
+                isRejectedCredDrop -> strings.systemCredentialsFolderTitle
+                dragDropState.hoveredCredentialTargetId != null -> {
+                    val targetCred = activeCredentials.firstOrNull {
+                        it.id == dragDropState.hoveredCredentialTargetId
+                    }
+                    targetCred?.let {
+                        if (dragDropState.hoveredCredentialPlaceAfter) "After ${it.name}" else "Before ${it.name}"
+                    }
+                }
                 dragDropState.hoveredConnectionTargetId != null -> {
                     val targetConn = sortedActiveConnections.firstOrNull {
                         it.id == dragDropState.hoveredConnectionTargetId
@@ -2838,7 +3189,14 @@ private fun VaultHierarchySidebarTree(
                 }
                 dragDropState.hoveredDropTargetKey == ROOT_DROP_TARGET_KEY -> strings.moveToRootFolder
                 dragDropState.hoveredDropTargetKey != null -> {
-                    activeFolders.firstOrNull { it.id == dragDropState.hoveredDropTargetKey }?.name
+                    val targetFolder = activeFolders.firstOrNull { it.id == dragDropState.hoveredDropTargetKey }
+                    targetFolder?.let { tf ->
+                        when (dragDropState.hoveredFolderDropPlacement) {
+                            FolderDropPlacement.BEFORE -> "Before ${tf.name}"
+                            FolderDropPlacement.AFTER -> "After ${tf.name}"
+                            FolderDropPlacement.INSIDE -> tf.name
+                        }
+                    }
                 }
                 else -> null
             }
@@ -2852,41 +3210,69 @@ private fun VaultHierarchySidebarTree(
             Surface(
                 modifier = Modifier
                     .offset { IntOffset(localX, localY) }
-                    .widthIn(max = 240.dp)
+                    .widthIn(max = 250.dp)
                     .shadow(8.dp, RoundedCornerShape(10.dp)),
                 shape = RoundedCornerShape(10.dp),
-                color = MaterialTheme.colorScheme.surfaceContainerHighest,
-                border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
+                color = if (isRejectedCredDrop) {
+                    MaterialTheme.colorScheme.errorContainer
+                } else {
+                    MaterialTheme.colorScheme.surfaceContainerHighest
+                },
+                border = BorderStroke(
+                    1.5.dp,
+                    if (isRejectedCredDrop) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+                )
             ) {
                 Row(
                     modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    if (activeDraggedConn != null) {
-                        val uiProto = NexusWorkspaceViewModel.mapProtocolToUiKind(activeDraggedConn.protocol)
-                        Icon(
-                            imageVector = protocolIcon(uiProto),
-                            contentDescription = null,
-                            tint = protocolAccentColor(uiProto),
-                            modifier = Modifier.size(16.dp)
-                        )
-                    } else {
-                        Icon(
-                            imageVector = Icons.Filled.FilledFolderIcon,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(16.dp)
-                        )
+                    when {
+                        activeDraggedConn != null -> {
+                            val uiProto = NexusWorkspaceViewModel.mapProtocolToUiKind(activeDraggedConn.protocol)
+                            Icon(
+                                imageVector = protocolIcon(uiProto),
+                                contentDescription = null,
+                                tint = protocolAccentColor(uiProto),
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                        activeDraggedCred != null -> {
+                            Icon(
+                                imageVector = Icons.Outlined.Key,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.tertiary,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                        else -> {
+                            Icon(
+                                imageVector = Icons.Filled.FilledFolderIcon,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
                     }
                     Column {
                         Text(
-                            text = activeDraggedConn?.name ?: activeDraggedFolder?.name.orEmpty(),
+                            text = activeDraggedConn?.name
+                                ?: activeDraggedFolder?.name
+                                ?: activeDraggedCred?.name.orEmpty(),
                             style = MaterialTheme.typography.labelLarge,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
-                        if (targetLabel != null) {
+                        if (isRejectedCredDrop) {
+                            Text(
+                                text = strings.credentialsSystemFolderOnlyHint,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onErrorContainer,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        } else if (targetLabel != null) {
                             Text(
                                 text = String.format(strings.dragDropMoveHintFormat, targetLabel),
                                 style = MaterialTheme.typography.labelSmall,
@@ -2900,9 +3286,11 @@ private fun VaultHierarchySidebarTree(
             }
         }
 
+        val bgDensity = LocalDensity.current
         DropdownMenu(
             expanded = sidebarBgMenuOpen,
-            onDismissRequest = { sidebarBgMenuOpen = false }
+            onDismissRequest = { sidebarBgMenuOpen = false },
+            offset = with(bgDensity) { DpOffset(sidebarBgMenuOffsetPx.x.toDp(), 0.dp) }
         ) {
             DropdownMenuItem(
                 text = { Text(strings.actionNewConnection) },
@@ -2929,11 +3317,19 @@ private fun VaultHierarchySidebarTree(
                 }
             )
             DropdownMenuItem(
-                text = { Text(strings.vaultSectionDynamicFolders) },
+                text = { Text(strings.actionNewDynamicFolder) },
                 leadingIcon = { Icon(Icons.Outlined.DynamicFeed, contentDescription = null) },
                 onClick = {
                     sidebarBgMenuOpen = false
                     onNewDynamicFolder()
+                }
+            )
+            DropdownMenuItem(
+                text = { Text(strings.studioActionAddCredential) },
+                leadingIcon = { Icon(Icons.Outlined.Key, contentDescription = null) },
+                onClick = {
+                    sidebarBgMenuOpen = false
+                    onNewCredential()
                 }
             )
             HorizontalDivider()
@@ -2958,19 +3354,431 @@ private fun VaultHierarchySidebarTree(
 }
 
 @Composable
+private fun SystemCredentialsSidebarFooter(
+    credentials: List<VaultCredential>,
+    totalCredentialCount: Int,
+    isExpanded: Boolean,
+    dragDropState: SidebarTreeDragDropState,
+    strings: WorkspaceLocalizedStrings,
+    onToggleExpand: () -> Unit,
+    onNewCredential: () -> Unit,
+    onEditCredential: (VaultCredential) -> Unit,
+    onDuplicateCredential: (VaultCredential) -> Unit,
+    onDeleteCredential: (String) -> Unit,
+    onGenerateSshKeyPair: () -> Unit,
+    onReorderCredentialRelativeTo: (String, String, Boolean) -> Unit
+) {
+    var headerMenuOpen by remember { mutableStateOf(false) }
+    var headerMenuOffsetPx by remember { mutableStateOf(Offset.Zero) }
+    val hover = rememberDesktopHoverState()
+    val isHovered = hover.value.isHovered
+    val isRejectedHover =
+        (dragDropState.draggingConnection != null || dragDropState.draggingFolder != null) &&
+            dragDropState.hoveredDropTargetKey == VaultHierarchySanitizer.SYSTEM_CREDENTIALS_FOLDER_ID
+
+    DisposableEffect(Unit) {
+        onDispose {
+            dragDropState.unregisterDropTarget(VaultHierarchySanitizer.SYSTEM_CREDENTIALS_FOLDER_ID)
+        }
+    }
+
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .onGloballyPositioned { coords ->
+                dragDropState.registerDropTarget(
+                    VaultHierarchySanitizer.SYSTEM_CREDENTIALS_FOLDER_ID,
+                    coords.boundsInRoot()
+                )
+            },
+        color = if (isRejectedHover) {
+            MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.55f)
+        } else {
+            MaterialTheme.colorScheme.surfaceContainerLow
+        }
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            HorizontalDivider(
+                thickness = 1.dp,
+                color = if (isRejectedHover) {
+                    MaterialTheme.colorScheme.error
+                } else {
+                    MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
+                }
+            )
+            Box(modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp)) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .defaultMinSize(minHeight = 32.dp)
+                        .nexusHoverTracker(hover, PointerIcon.Hand)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(
+                            when {
+                                isRejectedHover -> MaterialTheme.colorScheme.errorContainer
+                                isHovered || headerMenuOpen -> MaterialTheme.colorScheme.surfaceContainerHigh
+                                else -> Color.Transparent
+                            }
+                        )
+                        .nexusInteractiveRow(
+                            rowKey = VaultHierarchySanitizer.SYSTEM_CREDENTIALS_FOLDER_ID,
+                            onClick = onToggleExpand,
+                            onSecondaryClick = { pos ->
+                                headerMenuOffsetPx = pos
+                                headerMenuOpen = true
+                            }
+                        )
+                        .padding(horizontal = 6.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (isExpanded && credentials.isNotEmpty()) {
+                                Icons.Outlined.KeyboardArrowDown
+                            } else {
+                                Icons.Outlined.ChevronRight
+                            },
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Icon(
+                            imageVector = Icons.Outlined.Key,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                            tint = if (isRejectedHover) {
+                                MaterialTheme.colorScheme.error
+                            } else {
+                                MaterialTheme.colorScheme.tertiary
+                            }
+                        )
+                        Text(
+                            text = strings.systemCredentialsFolderTitle,
+                            style = MaterialTheme.typography.labelLarge,
+                            color = if (isRejectedHover) {
+                                MaterialTheme.colorScheme.onErrorContainer
+                            } else {
+                                MaterialTheme.colorScheme.onSurface
+                            },
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(2.dp)
+                    ) {
+                        Surface(
+                            shape = RoundedCornerShape(99.dp),
+                            color = MaterialTheme.colorScheme.surfaceContainerHighest
+                        ) {
+                            Text(
+                                text = totalCredentialCount.toString(),
+                                style = NexusTheme.monospace.keycapShortcut,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp)
+                            )
+                        }
+                        IconButton(
+                            onClick = onNewCredential,
+                            modifier = Modifier.size(22.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.Add,
+                                contentDescription = strings.studioActionAddCredential,
+                                modifier = Modifier.size(15.dp),
+                                tint = MaterialTheme.colorScheme.tertiary
+                            )
+                        }
+                    }
+                }
+
+                val density = LocalDensity.current
+                DropdownMenu(
+                    expanded = headerMenuOpen,
+                    onDismissRequest = { headerMenuOpen = false },
+                    offset = with(density) { DpOffset(headerMenuOffsetPx.x.toDp(), 0.dp) }
+                ) {
+                    DropdownMenuItem(
+                        text = { Text(strings.studioActionAddCredential) },
+                        leadingIcon = { Icon(Icons.Outlined.Add, contentDescription = null) },
+                        onClick = {
+                            headerMenuOpen = false
+                            onNewCredential()
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text(strings.inspectorGenerateSshKey) },
+                        leadingIcon = { Icon(Icons.Outlined.VpnKey, contentDescription = null) },
+                        onClick = {
+                            headerMenuOpen = false
+                            onGenerateSshKeyPair()
+                        }
+                    )
+                    if (credentials.isNotEmpty()) {
+                        HorizontalDivider()
+                        DropdownMenuItem(
+                            text = { Text(if (isExpanded) "Collapse" else "Expand") },
+                            leadingIcon = {
+                                Icon(
+                                    if (isExpanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                                    contentDescription = null
+                                )
+                            },
+                            onClick = {
+                                headerMenuOpen = false
+                                onToggleExpand()
+                            }
+                        )
+                    }
+                }
+            }
+
+            if (isExpanded && credentials.isNotEmpty()) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 176.dp)
+                        .verticalScroll(rememberScrollState())
+                        .padding(start = 14.dp, end = 6.dp, bottom = 6.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    credentials.forEach { cred ->
+                        CredentialTreeRow(
+                            credential = cred,
+                            dragDropState = dragDropState,
+                            strings = strings,
+                            onEdit = { onEditCredential(cred) },
+                            onDuplicate = { onDuplicateCredential(cred) },
+                            onDelete = { onDeleteCredential(cred.id) },
+                            onReorderRelativeTo = onReorderCredentialRelativeTo
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CredentialTreeRow(
+    credential: VaultCredential,
+    dragDropState: SidebarTreeDragDropState,
+    strings: WorkspaceLocalizedStrings,
+    onEdit: () -> Unit,
+    onDuplicate: () -> Unit,
+    onDelete: () -> Unit,
+    onReorderRelativeTo: (String, String, Boolean) -> Unit
+) {
+    val clipboard = LocalClipboardManager.current
+    var menuOpen by remember { mutableStateOf(false) }
+    var menuOffsetPx by remember { mutableStateOf(Offset.Zero) }
+    val hover = rememberDesktopHoverState()
+    val handleHover = rememberDesktopHoverState()
+    val isHovered = hover.value.isHovered
+    val isBeingDragged = dragDropState.draggingCredential?.id == credential.id
+    val isReorderTarget = dragDropState.hoveredCredentialTargetId == credential.id
+    val reorderPlaceAfter = dragDropState.hoveredCredentialPlaceAfter
+    var handleOriginInRoot by remember { mutableStateOf(Offset.Zero) }
+
+    DisposableEffect(credential.id) {
+        onDispose {
+            dragDropState.unregisterCredentialTarget(credential.id)
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .onGloballyPositioned { coords ->
+                dragDropState.registerCredentialTarget(credential.id, coords.boundsInRoot())
+            }
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .defaultMinSize(minHeight = 28.dp)
+                .nexusHoverTracker(hover, PointerIcon.Hand)
+                .clip(RoundedCornerShape(7.dp))
+                .background(
+                    when {
+                        isBeingDragged -> MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.38f)
+                        isHovered || menuOpen -> MaterialTheme.colorScheme.surfaceContainerHigh
+                        else -> Color.Transparent
+                    }
+                )
+                .nexusInteractiveRow(
+                    rowKey = "cred-${credential.id}",
+                    onClick = onEdit,
+                    onSecondaryClick = { pos ->
+                        menuOffsetPx = pos
+                        menuOpen = true
+                    }
+                )
+                .padding(horizontal = 6.dp, vertical = 3.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(
+                modifier = Modifier.weight(1f),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(5.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(width = 13.dp, height = 20.dp)
+                        .onGloballyPositioned { coords ->
+                            handleOriginInRoot = coords.positionInRoot()
+                        }
+                        .nexusHoverTracker(handleHover, PointerIcon.Hand)
+                        .pointerInput(credential.id) {
+                            detectDragGestures(
+                                onDragStart = { localOffset ->
+                                    dragDropState.startCredentialDrag(credential, handleOriginInRoot + localOffset)
+                                },
+                                onDrag = { change, dragAmount ->
+                                    change.consume()
+                                    dragDropState.updateDragByDelta(dragAmount)
+                                },
+                                onDragEnd = {
+                                    dragDropState.finishCredentialDrag(onReorderRelativeTo)
+                                },
+                                onDragCancel = {
+                                    dragDropState.cancelDrag()
+                                }
+                            )
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.DragIndicator,
+                        contentDescription = "Drag ${credential.name}",
+                        modifier = Modifier.size(12.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(
+                            alpha = if (isHovered || handleHover.value.isHovered) 0.72f else 0.22f
+                        )
+                    )
+                }
+                Icon(
+                    imageVector = Icons.Outlined.VpnKey,
+                    contentDescription = null,
+                    modifier = Modifier.size(14.dp),
+                    tint = MaterialTheme.colorScheme.tertiary
+                )
+                Text(
+                    text = credential.name,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false)
+                )
+            }
+            if (isHovered || menuOpen) {
+                IconButton(
+                    onClick = { menuOpen = true },
+                    modifier = Modifier.size(20.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.MoreVert,
+                        contentDescription = strings.actionEditCredential,
+                        modifier = Modifier.size(13.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+
+        if (isReorderTarget) {
+            Box(
+                modifier = Modifier
+                    .align(if (reorderPlaceAfter) Alignment.BottomCenter else Alignment.TopCenter)
+                    .fillMaxWidth()
+                    .padding(horizontal = 6.dp)
+                    .height(2.dp)
+                    .clip(RoundedCornerShape(99.dp))
+                    .background(MaterialTheme.colorScheme.tertiary)
+            )
+        }
+
+        val density = LocalDensity.current
+        DropdownMenu(
+            expanded = menuOpen,
+            onDismissRequest = { menuOpen = false },
+            offset = with(density) { DpOffset(menuOffsetPx.x.toDp(), 0.dp) }
+        ) {
+            DropdownMenuItem(
+                text = { Text(strings.actionEditCredential) },
+                leadingIcon = { Icon(Icons.Outlined.Edit, contentDescription = null) },
+                onClick = {
+                    menuOpen = false
+                    onEdit()
+                }
+            )
+            if (credential.username.isNotBlank()) {
+                DropdownMenuItem(
+                    text = { Text("Copy Username") },
+                    leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null) },
+                    onClick = {
+                        menuOpen = false
+                        clipboard.setText(AnnotatedString(credential.username))
+                    }
+                )
+            }
+            if (!credential.secretPassword.isNullOrEmpty()) {
+                DropdownMenuItem(
+                    text = { Text("Copy Password") },
+                    leadingIcon = { Icon(Icons.Outlined.Key, contentDescription = null) },
+                    onClick = {
+                        menuOpen = false
+                        clipboard.setText(AnnotatedString(credential.secretPassword.orEmpty()))
+                    }
+                )
+            }
+            DropdownMenuItem(
+                text = { Text("Duplicate") },
+                leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null) },
+                onClick = {
+                    menuOpen = false
+                    onDuplicate()
+                }
+            )
+            HorizontalDivider()
+            DropdownMenuItem(
+                text = { Text(strings.actionDeleteItem, color = MaterialTheme.colorScheme.error) },
+                leadingIcon = {
+                    Icon(Icons.Outlined.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error)
+                },
+                onClick = {
+                    menuOpen = false
+                    onDelete()
+                }
+            )
+        }
+    }
+}
+
+@Composable
 private fun SmartFolderTreeRow(
     smartFolder: SmartFolder,
     matchedCount: Int,
     isExpanded: Boolean,
     strings: WorkspaceLocalizedStrings,
     onToggle: () -> Unit,
+    onEdit: () -> Unit = {},
+    onDuplicate: () -> Unit = {},
     onConnectAll: () -> Unit,
     onNewSmartFolder: () -> Unit,
     onDelete: () -> Unit
 ) {
     var menuOpen by remember { mutableStateOf(false) }
+    var menuOffsetPx by remember { mutableStateOf(Offset.Zero) }
     val hover = rememberDesktopHoverState()
-    val interactionSource = remember { MutableInteractionSource() }
     val isHovered = hover.value.isHovered
 
     Box {
@@ -2982,15 +3790,18 @@ private fun SmartFolderTreeRow(
                 .background(
                     when {
                         isExpanded -> MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.45f)
-                        isHovered -> MaterialTheme.colorScheme.surfaceContainerHigh
+                        isHovered || menuOpen -> MaterialTheme.colorScheme.surfaceContainerHigh
                         else -> Color.Transparent
                     }
                 )
-                .nexusDesktopPointerButtons(onSecondaryClick = { menuOpen = true })
-                .clickable(
-                    interactionSource = interactionSource,
-                    indication = null,
-                    onClick = onToggle
+                .nexusInteractiveRow(
+                    rowKey = "smart-${smartFolder.id}",
+                    onClick = onToggle,
+                    onDoubleClick = onEdit,
+                    onSecondaryClick = { pos ->
+                        menuOffsetPx = pos
+                        menuOpen = true
+                    }
                 )
                 .padding(horizontal = 8.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -3021,6 +3832,19 @@ private fun SmartFolderTreeRow(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Spacer(modifier = Modifier.width(4.dp))
+                if (isHovered || menuOpen) {
+                    IconButton(
+                        onClick = onEdit,
+                        modifier = Modifier.size(22.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Edit,
+                            contentDescription = strings.actionEditSmartFolder,
+                            modifier = Modifier.size(13.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
                 IconButton(
                     onClick = onDelete,
                     modifier = Modifier.size(22.dp)
@@ -3035,10 +3859,29 @@ private fun SmartFolderTreeRow(
             }
         }
 
+        val density = LocalDensity.current
         DropdownMenu(
             expanded = menuOpen,
-            onDismissRequest = { menuOpen = false }
+            onDismissRequest = { menuOpen = false },
+            offset = with(density) { DpOffset(menuOffsetPx.x.toDp(), 0.dp) }
         ) {
+            DropdownMenuItem(
+                text = { Text(strings.actionEditSmartFolder) },
+                leadingIcon = { Icon(Icons.Outlined.Edit, contentDescription = null) },
+                onClick = {
+                    menuOpen = false
+                    onEdit()
+                }
+            )
+            DropdownMenuItem(
+                text = { Text(strings.actionDuplicateSmartFolder) },
+                leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null) },
+                onClick = {
+                    menuOpen = false
+                    onDuplicate()
+                }
+            )
+            HorizontalDivider()
             DropdownMenuItem(
                 text = { Text(if (isExpanded) "Collapse Smart Folder" else "Expand Smart Folder") },
                 leadingIcon = {
@@ -3091,13 +3934,15 @@ private fun DynamicFolderTreeRow(
     isExpanded: Boolean,
     strings: WorkspaceLocalizedStrings,
     onToggle: () -> Unit,
+    onEdit: () -> Unit = {},
+    onDuplicate: () -> Unit = {},
     onReload: () -> Unit,
     onNewDynamicFolder: () -> Unit,
     onDelete: () -> Unit
 ) {
     var menuOpen by remember { mutableStateOf(false) }
+    var menuOffsetPx by remember { mutableStateOf(Offset.Zero) }
     val hover = rememberDesktopHoverState()
-    val interactionSource = remember { MutableInteractionSource() }
     val isHovered = hover.value.isHovered
 
     Box {
@@ -3109,15 +3954,18 @@ private fun DynamicFolderTreeRow(
                 .background(
                     when {
                         isExpanded -> MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.45f)
-                        isHovered -> MaterialTheme.colorScheme.surfaceContainerHigh
+                        isHovered || menuOpen -> MaterialTheme.colorScheme.surfaceContainerHigh
                         else -> Color.Transparent
                     }
                 )
-                .nexusDesktopPointerButtons(onSecondaryClick = { menuOpen = true })
-                .clickable(
-                    interactionSource = interactionSource,
-                    indication = null,
-                    onClick = onToggle
+                .nexusInteractiveRow(
+                    rowKey = "dyn-${dynamicFolder.id}",
+                    onClick = onToggle,
+                    onDoubleClick = onEdit,
+                    onSecondaryClick = { pos ->
+                        menuOffsetPx = pos
+                        menuOpen = true
+                    }
                 )
                 .padding(horizontal = 8.dp, vertical = 5.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -3142,6 +3990,19 @@ private fun DynamicFolderTreeRow(
                 )
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
+                if (isHovered || menuOpen) {
+                    IconButton(
+                        onClick = onEdit,
+                        modifier = Modifier.size(22.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Edit,
+                            contentDescription = strings.actionEditDynamicFolder,
+                            modifier = Modifier.size(13.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
                 IconButton(
                     onClick = onReload,
                     modifier = Modifier.size(24.dp)
@@ -3167,10 +4028,29 @@ private fun DynamicFolderTreeRow(
             }
         }
 
+        val density = LocalDensity.current
         DropdownMenu(
             expanded = menuOpen,
-            onDismissRequest = { menuOpen = false }
+            onDismissRequest = { menuOpen = false },
+            offset = with(density) { DpOffset(menuOffsetPx.x.toDp(), 0.dp) }
         ) {
+            DropdownMenuItem(
+                text = { Text(strings.actionEditDynamicFolder) },
+                leadingIcon = { Icon(Icons.Outlined.Edit, contentDescription = null) },
+                onClick = {
+                    menuOpen = false
+                    onEdit()
+                }
+            )
+            DropdownMenuItem(
+                text = { Text(strings.actionDuplicateDynamicFolder) },
+                leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null) },
+                onClick = {
+                    menuOpen = false
+                    onDuplicate()
+                }
+            )
+            HorizontalDivider()
             DropdownMenuItem(
                 text = { Text(if (isExpanded) "Collapse Dynamic Folder" else "Expand Dynamic Folder") },
                 leadingIcon = {
@@ -3193,7 +4073,7 @@ private fun DynamicFolderTreeRow(
                 }
             )
             DropdownMenuItem(
-                text = { Text(strings.vaultSectionDynamicFolders) },
+                text = { Text(strings.actionNewDynamicFolder) },
                 leadingIcon = { Icon(Icons.Outlined.Add, contentDescription = null) },
                 onClick = {
                     menuOpen = false
@@ -3219,6 +4099,7 @@ private fun DynamicFolderTreeRow(
 private fun FolderTreeRow(
     folder: VaultFolder,
     depth: Int,
+    isSelectedFolder: Boolean = false,
     isExpanded: Boolean,
     hasExpandableChildren: Boolean,
     explicitFolderCredentialName: String?,
@@ -3227,6 +4108,7 @@ private fun FolderTreeRow(
     activeSessionCountInSubtree: Int,
     dragDropState: SidebarTreeDragDropState,
     strings: WorkspaceLocalizedStrings,
+    onSelectFolder: () -> Unit = {},
     onToggleExpand: () -> Unit,
     onExpandSubtree: () -> Unit = {},
     onCollapseSubtree: () -> Unit = {},
@@ -3243,17 +4125,21 @@ private fun FolderTreeRow(
     onDisconnectAllInFolder: () -> Unit,
     onOpenMoveFolderDialog: () -> Unit = {},
     onMoveFolderToParent: (String?) -> Unit = {},
+    onMoveOrReorderFolder: (String, String, FolderDropPlacement) -> Unit = { _, _, _ -> },
+    onRejectedDropIntoCredentials: () -> Unit = {},
     onMoveUp: () -> Unit = {},
     onMoveDown: () -> Unit = {}
 ) {
     var folderMenuOpen by remember { mutableStateOf(false) }
+    var folderMenuOffsetPx by remember { mutableStateOf(Offset.Zero) }
     val hover = rememberDesktopHoverState()
     val handleHover = rememberDesktopHoverState()
-    val interactionSource = remember { MutableInteractionSource() }
     val isHovered = hover.value.isHovered
     val folderAccent = parseHexColorOrNull(folder.inheritable.displayColorAccentHex)
         ?: MaterialTheme.colorScheme.primary
     val isDropTargetHovered = dragDropState.isDragging && dragDropState.hoveredDropTargetKey == folder.id
+    val dropPlacement = if (isDropTargetHovered) dragDropState.hoveredFolderDropPlacement else FolderDropPlacement.INSIDE
+    val isInsideDropTarget = isDropTargetHovered && dropPlacement == FolderDropPlacement.INSIDE
     val isFolderBeingDragged = dragDropState.draggingFolder?.id == folder.id
     var rowOriginInRoot by remember { mutableStateOf(Offset.Zero) }
     var handleOriginInRoot by remember { mutableStateOf(Offset.Zero) }
@@ -3297,257 +4183,317 @@ private fun FolderTreeRow(
                 }
             }
 
-            Surface(
-                modifier = Modifier
-                    .weight(1f)
-                    .defaultMinSize(minHeight = 32.dp)
-                    .nexusHoverTracker(hover, PointerIcon.Hand)
-                    .clip(RoundedCornerShape(8.dp))
-                    .pointerInput(folder.id, folder.parentFolderId) {
-                        awaitEachGesture {
-                            val down = awaitFirstDown(requireUnconsumed = false)
-                            if (down.type != PointerType.Mouse) return@awaitEachGesture
-                            var dragStarted = false
-                            var accumulated = Offset.Zero
-                            val slop = viewConfiguration.touchSlop
-                            while (true) {
-                                val event = awaitPointerEvent()
-                                if (event.buttons.isSecondaryPressed) {
-                                    if (dragStarted) dragDropState.cancelDrag()
-                                    break
-                                }
-                                val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                                if (!change.pressed) {
-                                    if (dragStarted) {
-                                        change.consume()
-                                        dragDropState.finishFolderDrag { _, targetParentId ->
-                                            onMoveFolderToParent(targetParentId)
-                                        }
-                                    }
-                                    break
-                                }
-                                val delta = change.positionChange()
-                                if (!dragStarted) {
-                                    accumulated += delta
-                                    if (event.buttons.isPrimaryPressed && accumulated.getDistance() > slop) {
-                                        dragStarted = true
-                                        dragDropState.startFolderDrag(folder, rowOriginInRoot + change.position)
-                                        change.consume()
-                                    }
-                                } else {
-                                    change.consume()
-                                    dragDropState.updateDragAtRoot(rowOriginInRoot + change.position)
-                                }
-                            }
-                        }
-                    }
-                    .nexusDesktopPointerButtons(onSecondaryClick = { folderMenuOpen = true })
-                    .clickable(
-                        interactionSource = interactionSource,
-                        indication = null,
-                        onClick = {
-                            if (hasExpandableChildren) {
-                                onToggleExpand()
-                            } else {
-                                onEditFolder()
-                            }
-                        }
-                    ),
-                shape = RoundedCornerShape(8.dp),
-                color = when {
-                    isFolderBeingDragged -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
-                    isDropTargetHovered -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.72f)
-                    isHovered || folderMenuOpen -> lerp(MaterialTheme.colorScheme.surfaceContainerHigh, folderAccent, 0.10f)
-                    else -> Color.Transparent
-                },
-                border = if (isDropTargetHovered) {
-                    BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
-                } else {
-                    null
-                }
-            ) {
-                Row(
+            Box(modifier = Modifier.weight(1f)) {
+                Surface(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 6.dp, vertical = 3.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
+                        .defaultMinSize(minHeight = 32.dp)
+                        .nexusHoverTracker(hover, PointerIcon.Hand)
+                        .clip(RoundedCornerShape(8.dp))
+                        .pointerInput(folder.id, folder.parentFolderId) {
+                            awaitEachGesture {
+                                val down = awaitFirstDown(requireUnconsumed = false)
+                                if (down.type != PointerType.Mouse) return@awaitEachGesture
+                                var dragStarted = false
+                                var accumulated = Offset.Zero
+                                val slop = viewConfiguration.touchSlop
+                                while (true) {
+                                    val event = awaitPointerEvent()
+                                    if (event.buttons.isSecondaryPressed) {
+                                        if (dragStarted) dragDropState.cancelDrag()
+                                        break
+                                    }
+                                    val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                                    if (!change.pressed) {
+                                        if (dragStarted) {
+                                            change.consume()
+                                            dragDropState.finishFolderDrag(
+                                                onMoveFolderToParent = { _, targetParentId ->
+                                                    onMoveFolderToParent(targetParentId)
+                                                },
+                                                onMoveOrReorderFolder = onMoveOrReorderFolder,
+                                                onRejectedDropIntoCredentials = onRejectedDropIntoCredentials
+                                            )
+                                        }
+                                        break
+                                    }
+                                    val delta = change.positionChange()
+                                    if (!dragStarted) {
+                                        accumulated += delta
+                                        if (event.buttons.isPrimaryPressed && accumulated.getDistance() > slop) {
+                                            dragStarted = true
+                                            dragDropState.startFolderDrag(folder, rowOriginInRoot + change.position)
+                                            change.consume()
+                                        }
+                                    } else {
+                                        change.consume()
+                                        dragDropState.updateDragAtRoot(rowOriginInRoot + change.position)
+                                    }
+                                }
+                            }
+                        }
+                        .nexusInteractiveRow(
+                            rowKey = "folder-${folder.id}",
+                            onClick = {
+                                onSelectFolder()
+                                if (hasExpandableChildren) {
+                                    onToggleExpand()
+                                }
+                            },
+                            onDoubleClick = {
+                                onSelectFolder()
+                                if (hasExpandableChildren) {
+                                    onToggleExpand()
+                                }
+                            },
+                            onSecondaryClick = { pos ->
+                                onSelectFolder()
+                                folderMenuOffsetPx = pos
+                                folderMenuOpen = true
+                            }
+                        ),
+                    shape = RoundedCornerShape(8.dp),
+                    color = when {
+                        isFolderBeingDragged -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
+                        isInsideDropTarget -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.72f)
+                        isSelectedFolder -> MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.68f)
+                        isHovered || folderMenuOpen -> lerp(MaterialTheme.colorScheme.surfaceContainerHigh, folderAccent, 0.10f)
+                        else -> Color.Transparent
+                    },
+                    border = if (isInsideDropTarget) {
+                        BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
+                    } else {
+                        null
+                    }
                 ) {
                     Row(
-                        modifier = Modifier.weight(1f),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(width = 14.dp, height = 22.dp)
-                                .onGloballyPositioned { coords ->
-                                    handleOriginInRoot = coords.positionInRoot()
-                                }
-                                .nexusHoverTracker(handleHover, PointerIcon.Hand)
-                                .pointerInput(folder.id, folder.parentFolderId) {
-                                    detectDragGestures(
-                                        onDragStart = { localOffset ->
-                                            dragDropState.startFolderDrag(folder, handleOriginInRoot + localOffset)
-                                        },
-                                        onDrag = { change, dragAmount ->
-                                            change.consume()
-                                            dragDropState.updateDragByDelta(dragAmount)
-                                        },
-                                        onDragEnd = {
-                                            dragDropState.finishFolderDrag { _, targetParentId ->
-                                                onMoveFolderToParent(targetParentId)
-                                            }
-                                        },
-                                        onDragCancel = {
-                                            dragDropState.cancelDrag()
-                                        }
-                                    )
-                                },
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Outlined.DragIndicator,
-                                contentDescription = "Drag folder ${folder.name}",
-                                modifier = Modifier.size(13.dp),
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(
-                                    alpha = if (isHovered || handleHover.value.isHovered) 0.75f else 0.22f
-                                )
-                            )
-                        }
-
-                        if (hasExpandableChildren) {
-                            IconButton(
-                                onClick = onToggleExpand,
-                                modifier = Modifier.size(20.dp)
-                            ) {
-                                Icon(
-                                    imageVector = if (isExpanded) {
-                                        Icons.Outlined.KeyboardArrowDown
-                                    } else {
-                                        Icons.Outlined.ChevronRight
-                                    },
-                                    contentDescription = null,
-                                    modifier = Modifier.size(16.dp),
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        } else {
-                            Spacer(modifier = Modifier.width(20.dp))
-                        }
-
-                        Icon(
-                            imageVector = if (isExpanded && hasExpandableChildren) {
-                                Icons.Filled.FilledFolderOpenIcon
-                            } else {
-                                Icons.Filled.FilledFolderIcon
-                            },
-                            contentDescription = null,
-                            tint = folderAccent,
-                            modifier = Modifier.size(17.dp)
-                        )
-
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = folder.name,
-                            style = MaterialTheme.typography.labelLarge,
-                            color = MaterialTheme.colorScheme.onSurface,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f, fill = false)
-                        )
-                        if (explicitFolderCredentialName != null) {
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Icon(
-                                imageVector = Icons.Outlined.Key,
-                                contentDescription = explicitFolderCredentialName,
-                                modifier = Modifier.size(12.dp),
-                                tint = MaterialTheme.colorScheme.secondary
-                            )
-                        }
-                    }
-
-                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 6.dp, vertical = 3.dp),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(2.dp)
+                        horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        if (activeSessionCountInSubtree > 0) {
-                            Surface(
-                                shape = RoundedCornerShape(99.dp),
-                                color = MaterialTheme.colorScheme.primaryContainer
+                        Row(
+                            modifier = Modifier.weight(1f),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(width = 14.dp, height = 22.dp)
+                                    .onGloballyPositioned { coords ->
+                                        handleOriginInRoot = coords.positionInRoot()
+                                    }
+                                    .nexusHoverTracker(handleHover, PointerIcon.Hand)
+                                    .pointerInput(folder.id, folder.parentFolderId) {
+                                        detectDragGestures(
+                                            onDragStart = { localOffset ->
+                                                dragDropState.startFolderDrag(folder, handleOriginInRoot + localOffset)
+                                            },
+                                            onDrag = { change, dragAmount ->
+                                                change.consume()
+                                                dragDropState.updateDragByDelta(dragAmount)
+                                            },
+                                            onDragEnd = {
+                                                dragDropState.finishFolderDrag(
+                                                    onMoveFolderToParent = { _, targetParentId ->
+                                                        onMoveFolderToParent(targetParentId)
+                                                    },
+                                                    onMoveOrReorderFolder = onMoveOrReorderFolder,
+                                                    onRejectedDropIntoCredentials = onRejectedDropIntoCredentials
+                                                )
+                                            },
+                                            onDragCancel = {
+                                                dragDropState.cancelDrag()
+                                            }
+                                        )
+                                    },
+                                contentAlignment = Alignment.Center
                             ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                                ) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(5.dp)
-                                            .clip(CircleShape)
-                                            .background(MaterialTheme.colorScheme.primary)
+                                Icon(
+                                    imageVector = Icons.Outlined.DragIndicator,
+                                    contentDescription = "Drag folder ${folder.name}",
+                                    modifier = Modifier.size(13.dp),
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(
+                                        alpha = if (isHovered || isSelectedFolder || handleHover.value.isHovered) 0.75f else 0.22f
                                     )
-                                    Text(
-                                        text = activeSessionCountInSubtree.toString(),
-                                        style = NexusTheme.monospace.keycapShortcut,
-                                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                                )
+                            }
+
+                            if (hasExpandableChildren) {
+                                IconButton(
+                                    onClick = onToggleExpand,
+                                    modifier = Modifier.size(20.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = if (isExpanded) {
+                                            Icons.Outlined.KeyboardArrowDown
+                                        } else {
+                                            Icons.Outlined.ChevronRight
+                                        },
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp),
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            } else {
+                                Spacer(modifier = Modifier.width(20.dp))
+                            }
+
+                            Icon(
+                                imageVector = if (isExpanded && hasExpandableChildren) {
+                                    Icons.Filled.FilledFolderOpenIcon
+                                } else {
+                                    Icons.Filled.FilledFolderIcon
+                                },
+                                contentDescription = null,
+                                tint = folderAccent,
+                                modifier = Modifier.size(17.dp)
+                            )
+
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = folder.name,
+                                style = MaterialTheme.typography.labelLarge,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f, fill = false)
+                            )
+                            if (explicitFolderCredentialName != null) {
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Icon(
+                                    imageVector = Icons.Outlined.Key,
+                                    contentDescription = explicitFolderCredentialName,
+                                    modifier = Modifier.size(12.dp),
+                                    tint = MaterialTheme.colorScheme.secondary
+                                )
+                            }
+                        }
+
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
+                            if (activeSessionCountInSubtree > 0) {
+                                Surface(
+                                    shape = RoundedCornerShape(99.dp),
+                                    color = MaterialTheme.colorScheme.primaryContainer
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(5.dp)
+                                                .clip(CircleShape)
+                                                .background(MaterialTheme.colorScheme.primary)
+                                        )
+                                        Text(
+                                            text = activeSessionCountInSubtree.toString(),
+                                            style = NexusTheme.monospace.keycapShortcut,
+                                            color = MaterialTheme.colorScheme.onPrimaryContainer
+                                        )
+                                    }
+                                }
+                                IconButton(
+                                    onClick = onDisconnectAllInFolder,
+                                    modifier = Modifier.size(22.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Outlined.PowerSettingsNew,
+                                        contentDescription = "${strings.actionDisconnectAllFolder}: ${folder.name}",
+                                        modifier = Modifier.size(14.dp),
+                                        tint = MaterialTheme.colorScheme.error
+                                    )
+                                }
+                            } else if (childCount > 0) {
+                                Text(
+                                    text = childCount.toString(),
+                                    style = NexusTheme.monospace.keycapShortcut,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(horizontal = 4.dp)
+                                )
+                            }
+
+                            // Direct `+` icon button to immediately create an RDP connection inside this folder
+                            IconButton(
+                                onClick = onNewRdpInFolder,
+                                modifier = Modifier.size(22.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Outlined.Add,
+                                    contentDescription = "New RDP Connection in ${folder.name}",
+                                    modifier = Modifier.size(15.dp),
+                                    tint = MaterialTheme.colorScheme.primary.copy(alpha = if (isHovered) 1f else 0.72f)
+                                )
+                            }
+
+                            if (isHovered || isSelectedFolder || folderMenuOpen) {
+                                IconButton(
+                                    onClick = {
+                                        onSelectFolder()
+                                        folderMenuOffsetPx = Offset.Zero
+                                        folderMenuOpen = true
+                                    },
+                                    modifier = Modifier.size(22.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Outlined.MoreVert,
+                                        contentDescription = "Folder Actions",
+                                        modifier = Modifier.size(14.dp),
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                 }
                             }
-                            IconButton(
-                                onClick = onDisconnectAllInFolder,
-                                modifier = Modifier.size(22.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Outlined.PowerSettingsNew,
-                                    contentDescription = "${strings.actionDisconnectAllFolder}: ${folder.name}",
-                                    modifier = Modifier.size(14.dp),
-                                    tint = MaterialTheme.colorScheme.error
-                                )
-                            }
-                        } else if (childCount > 0) {
-                            Text(
-                                text = childCount.toString(),
-                                style = NexusTheme.monospace.keycapShortcut,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(horizontal = 4.dp)
-                            )
-                        }
-
-                        // Direct `+` icon button to immediately create an RDP connection inside this folder
-                        IconButton(
-                            onClick = onNewRdpInFolder,
-                            modifier = Modifier.size(22.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Outlined.Add,
-                                contentDescription = "New RDP Connection in ${folder.name}",
-                                modifier = Modifier.size(15.dp),
-                                tint = MaterialTheme.colorScheme.primary.copy(alpha = if (isHovered) 1f else 0.72f)
-                            )
-                        }
-
-                        if (isHovered || folderMenuOpen) {
-                            IconButton(
-                                onClick = { folderMenuOpen = true },
-                                modifier = Modifier.size(22.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Outlined.MoreVert,
-                                    contentDescription = "Folder Actions",
-                                    modifier = Modifier.size(14.dp),
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
                         }
                     }
+                }
+
+                if (isDropTargetHovered && dropPlacement != FolderDropPlacement.INSIDE) {
+                    Box(
+                        modifier = Modifier
+                            .align(
+                                if (dropPlacement == FolderDropPlacement.AFTER) {
+                                    Alignment.BottomCenter
+                                } else {
+                                    Alignment.TopCenter
+                                }
+                            )
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp)
+                            .height(2.dp)
+                            .clip(RoundedCornerShape(99.dp))
+                            .background(MaterialTheme.colorScheme.primary)
+                    )
                 }
             }
         }
 
+        val density = LocalDensity.current
         DropdownMenu(
             expanded = folderMenuOpen,
-            onDismissRequest = { folderMenuOpen = false }
+            onDismissRequest = { folderMenuOpen = false },
+            offset = with(density) { DpOffset(folderMenuOffsetPx.x.toDp(), 0.dp) }
         ) {
+            DropdownMenuItem(
+                text = { Text(strings.actionEditFolderCredentials) },
+                leadingIcon = { Icon(Icons.Outlined.Key, contentDescription = null) },
+                onClick = {
+                    folderMenuOpen = false
+                    onEditFolder()
+                }
+            )
+            DropdownMenuItem(
+                text = { Text(strings.actionRenameFolder) },
+                leadingIcon = { Icon(Icons.Outlined.Edit, contentDescription = null) },
+                onClick = {
+                    folderMenuOpen = false
+                    onRenameFolder()
+                }
+            )
+            HorizontalDivider()
             DropdownMenuItem(
                 text = {
                     Text(
@@ -3636,14 +4582,6 @@ private fun FolderTreeRow(
             )
             HorizontalDivider()
             DropdownMenuItem(
-                text = { Text(strings.actionRenameFolder) },
-                leadingIcon = { Icon(Icons.Outlined.Edit, contentDescription = null) },
-                onClick = {
-                    folderMenuOpen = false
-                    onRenameFolder()
-                }
-            )
-            DropdownMenuItem(
                 text = { Text("Move Folder to…") },
                 leadingIcon = { Icon(Icons.Outlined.DriveFileMove, contentDescription = null) },
                 onClick = {
@@ -3690,14 +4628,6 @@ private fun FolderTreeRow(
                     }
                 )
             }
-            DropdownMenuItem(
-                text = { Text(strings.actionEditFolderCredentials) },
-                leadingIcon = { Icon(Icons.Outlined.Key, contentDescription = null) },
-                onClick = {
-                    folderMenuOpen = false
-                    onEditFolder()
-                }
-            )
             HorizontalDivider()
             DropdownMenuItem(
                 text = { Text(strings.actionDeleteItem, color = MaterialTheme.colorScheme.error) },
@@ -3841,6 +4771,7 @@ private fun ConnectionTreeRow(
     onOpenMoveDialog: () -> Unit = {},
     onMoveToFolder: (String?) -> Unit = {},
     onReorderRelativeTo: (String, Boolean) -> Unit = { _, _ -> },
+    onRejectedDropIntoCredentials: () -> Unit = {},
     onMoveUp: () -> Unit = {},
     onMoveDown: () -> Unit = {},
     activeSessionCount: Int = 0,
@@ -3850,9 +4781,9 @@ private fun ConnectionTreeRow(
 ) {
     val clipboard = LocalClipboardManager.current
     var contextMenuOpen by remember { mutableStateOf(false) }
+    var contextMenuOffsetPx by remember { mutableStateOf(Offset.Zero) }
     val hover = rememberDesktopHoverState()
     val handleHover = rememberDesktopHoverState()
-    val interactionSource = remember { MutableInteractionSource() }
     val isHovered = hover.value.isHovered
     val uiProto = NexusWorkspaceViewModel.mapProtocolToUiKind(connection.protocol)
     val customAccent = parseHexColorOrNull(connection.inheritable.displayColorAccentHex)
@@ -3953,7 +4884,8 @@ private fun ConnectionTreeRow(
                                                 },
                                                 onReorderConnectionRelativeTo = { _, targetConnId, placeAfter ->
                                                     onReorderRelativeTo(targetConnId, placeAfter)
-                                                }
+                                                },
+                                                onRejectedDropIntoCredentials = onRejectedDropIntoCredentials
                                             )
                                         }
                                         break
@@ -3973,14 +4905,22 @@ private fun ConnectionTreeRow(
                                 }
                             }
                         }
-                        .nexusDesktopPointerButtons(onSecondaryClick = { contextMenuOpen = true })
-                        .clickable(
-                            interactionSource = interactionSource,
-                            indication = null
-                        ) {
-                            onSelect()
-                            onLaunch(QuickLaunchPlacement.ACTIVE_PANE_TAB)
-                        }
+                        .nexusInteractiveRow(
+                            rowKey = "conn-${connection.id}",
+                            onClick = {
+                                onSelect()
+                                onLaunch(QuickLaunchPlacement.ACTIVE_PANE_TAB)
+                            },
+                            onSecondaryClick = { pos ->
+                                onSelect()
+                                contextMenuOffsetPx = pos
+                                contextMenuOpen = true
+                            },
+                            onTertiaryMiddleClick = {
+                                onSelect()
+                                onLaunch(QuickLaunchPlacement.SPLIT_RIGHT_PANE)
+                            }
+                        )
                         .padding(horizontal = 6.dp, vertical = 3.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -4008,7 +4948,8 @@ private fun ConnectionTreeRow(
                                                 },
                                                 onReorderConnectionRelativeTo = { _, targetConnId, placeAfter ->
                                                     onReorderRelativeTo(targetConnId, placeAfter)
-                                                }
+                                                },
+                                                onRejectedDropIntoCredentials = onRejectedDropIntoCredentials
                                             )
                                         },
                                         onDragCancel = {
@@ -4084,15 +5025,30 @@ private fun ConnectionTreeRow(
                         )
                     }
 
-                    // Decluttered trailing area: clean single action button only on hover/selection
+                    // Quick inline Edit + MoreVert buttons on hover/selection
                     if (isHovered || isSelected || contextMenuOpen) {
                         IconButton(
-                            onClick = { contextMenuOpen = true },
+                            onClick = onEdit,
+                            modifier = Modifier.size(22.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.Edit,
+                                contentDescription = strings.actionEditConnection,
+                                modifier = Modifier.size(13.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        IconButton(
+                            onClick = {
+                                onSelect()
+                                contextMenuOffsetPx = Offset.Zero
+                                contextMenuOpen = true
+                            },
                             modifier = Modifier.size(22.dp)
                         ) {
                             Icon(
                                 imageVector = Icons.Outlined.MoreVert,
-                                contentDescription = strings.actionEditConnection,
+                                contentDescription = "Connection Actions",
                                 modifier = Modifier.size(14.dp),
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -4114,9 +5070,11 @@ private fun ConnectionTreeRow(
             }
         }
 
+        val density = LocalDensity.current
         DropdownMenu(
             expanded = contextMenuOpen,
-            onDismissRequest = { contextMenuOpen = false }
+            onDismissRequest = { contextMenuOpen = false },
+            offset = with(density) { DpOffset(contextMenuOffsetPx.x.toDp(), 0.dp) }
         ) {
             DropdownMenuItem(
                 text = { Text("Connect") },
@@ -4125,6 +5083,14 @@ private fun ConnectionTreeRow(
                     contextMenuOpen = false
                     onSelect()
                     onLaunch(QuickLaunchPlacement.ACTIVE_PANE_TAB)
+                }
+            )
+            DropdownMenuItem(
+                text = { Text(strings.actionEditConnection) },
+                leadingIcon = { Icon(Icons.Outlined.Edit, contentDescription = null) },
+                onClick = {
+                    contextMenuOpen = false
+                    onEdit()
                 }
             )
             DropdownMenuItem(
@@ -4209,14 +5175,6 @@ private fun ConnectionTreeRow(
                 onClick = {
                     contextMenuOpen = false
                     clipboard.setText(AnnotatedString(connection.host))
-                }
-            )
-            DropdownMenuItem(
-                text = { Text(strings.actionEditConnection) },
-                leadingIcon = { Icon(Icons.Outlined.Edit, contentDescription = null) },
-                onClick = {
-                    contextMenuOpen = false
-                    onEdit()
                 }
             )
             DropdownMenuItem(
@@ -4684,6 +5642,7 @@ fun FullScreenVaultUnlockShield(
     onOpenVaultPicker: () -> Unit,
     biometricUnlockAvailable: Boolean = false,
     onBiometricUnlock: () -> Unit = {},
+    onRequestResetDatabase: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     var passphrase by remember { mutableStateOf("") }
@@ -4813,6 +5772,20 @@ fun FullScreenVaultUnlockShield(
                             Icon(Icons.Outlined.UploadFile, contentDescription = null, modifier = Modifier.size(15.dp))
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(strings.actionImportRtsz)
+                        }
+                    }
+
+                    if (onRequestResetDatabase != null && !hasPreImportBackup) {
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f))
+                        TextButton(
+                            onClick = onRequestResetDatabase,
+                            colors = ButtonDefaults.textButtonColors(
+                                contentColor = MaterialTheme.colorScheme.error
+                            )
+                        ) {
+                            Icon(Icons.Outlined.Delete, contentDescription = null, modifier = Modifier.size(15.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(strings.actionResetDatabase)
                         }
                     }
                 }
@@ -5528,6 +6501,9 @@ private fun RenameFolderDialog(
 ) {
     val folder = targetFolder ?: return
     var folderName by remember(folder.id, folder.name) { mutableStateOf(folder.name) }
+    val trimmedName = folderName.trim()
+    val isReservedRootCredentialsName = folder.parentFolderId == null &&
+        VaultHierarchySanitizer.isReservedCredentialsFolderName(trimmedName)
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -5555,6 +6531,12 @@ private fun RenameFolderDialog(
                     value = folderName,
                     onValueChange = { folderName = it },
                     label = { Text(strings.dialogFieldName) },
+                    isError = isReservedRootCredentialsName,
+                    supportingText = if (isReservedRootCredentialsName) {
+                        { Text(strings.credentialsSystemFolderReservedError) }
+                    } else {
+                        null
+                    },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -5563,12 +6545,11 @@ private fun RenameFolderDialog(
         confirmButton = {
             Button(
                 onClick = {
-                    val trimmed = folderName.trim()
-                    if (trimmed.isNotEmpty()) {
-                        onRename(folder.id, trimmed)
+                    if (trimmedName.isNotEmpty() && !isReservedRootCredentialsName) {
+                        onRename(folder.id, trimmedName)
                     }
                 },
-                enabled = folderName.trim().isNotEmpty()
+                enabled = trimmedName.isNotEmpty() && !isReservedRootCredentialsName
             ) {
                 Text(strings.dialogActionSave)
             }
@@ -5821,7 +6802,7 @@ private fun PlayProtectAutoUpdateDialog(
                                     ).trim()
                                     else -> String.format(
                                         strings.autoUpdateUpToDateFormat,
-                                        uiState.updateCurrentVersion.ifBlank { "1.1.9" }
+                                        uiState.updateCurrentVersion.ifBlank { "1.2.0" }
                                     )
                                 },
                                 style = MaterialTheme.typography.titleSmall,
@@ -5836,7 +6817,7 @@ private fun PlayProtectAutoUpdateDialog(
                                 ""
                             }
                             Text(
-                                text = "Installed: v${uiState.updateCurrentVersion.ifBlank { "1.1.9" }}  →  Latest: ${uiState.updateLatestTag.ifBlank { "current" }}$sizeMb",
+                                text = "Installed: v${uiState.updateCurrentVersion.ifBlank { "1.2.0" }}  →  Latest: ${uiState.updateLatestTag.ifBlank { "current" }}$sizeMb",
                                 style = NexusTheme.monospace.keycapShortcut,
                                 color = MaterialTheme.colorScheme.secondary
                             )
@@ -5953,5 +6934,496 @@ private fun PlayProtectAutoUpdateDialog(
         }
     )
 }
+
+@Composable
+private fun RoyalTsImportPlacementDialog(
+    pendingImport: PendingRoyalTsImportState?,
+    strings: WorkspaceLocalizedStrings,
+    onConfirmPlacement: (RoyalTsImportPlacementMode, String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val state = pendingImport ?: return
+    var selectedMode by remember(state.fileName) {
+        mutableStateOf(RoyalTsImportPlacementMode.CREATE_NEW_FOLDER)
+    }
+    var customFolderName by remember(state.fileName, state.suggestedFolderName) {
+        mutableStateOf(state.suggestedFolderName)
+    }
+    val trimmedFolderName = customFolderName.trim()
+    val isInvalidNewFolderName = selectedMode == RoyalTsImportPlacementMode.CREATE_NEW_FOLDER &&
+        (trimmedFolderName.isEmpty() || VaultHierarchySanitizer.isReservedCredentialsFolderName(trimmedFolderName))
+
+    val options = remember(strings) {
+        listOf(
+            Triple(
+                RoyalTsImportPlacementMode.CREATE_NEW_FOLDER,
+                strings.royalImportModeNewFolder,
+                Icons.Outlined.CreateNewFolder
+            ),
+            Triple(
+                RoyalTsImportPlacementMode.PLACE_AT_ROOT,
+                strings.royalImportModeRoot,
+                Icons.Outlined.Folder
+            ),
+            Triple(
+                RoyalTsImportPlacementMode.REPLACE_EXISTING,
+                strings.royalImportModeReplaceAll,
+                Icons.Outlined.Delete
+            )
+        )
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        shape = RoundedCornerShape(28.dp),
+        icon = {
+            Icon(
+                imageVector = Icons.Outlined.UploadFile,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(28.dp)
+            )
+        },
+        title = {
+            Text(
+                text = strings.dialogRoyalImportTitle,
+                style = MaterialTheme.typography.headlineSmall
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerLow,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = state.fileName,
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = "${state.importedDocument.connections.size} connections • " +
+                                "${state.importedDocument.folders.size} folders • " +
+                                "${state.importedDocument.credentials.size} credentials",
+                            style = NexusTheme.monospace.keycapShortcut,
+                            color = MaterialTheme.colorScheme.secondary
+                        )
+                    }
+                }
+
+                options.forEach { (mode, label, icon) ->
+                    val isSelected = selectedMode == mode
+                    val isDestructive = mode == RoyalTsImportPlacementMode.REPLACE_EXISTING
+                    val containerColor = when {
+                        isSelected && isDestructive -> MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.65f)
+                        isSelected -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f)
+                        else -> MaterialTheme.colorScheme.surfaceContainerLow
+                    }
+                    val borderColor = when {
+                        isSelected && isDestructive -> MaterialTheme.colorScheme.error
+                        isSelected -> MaterialTheme.colorScheme.primary
+                        else -> MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
+                    }
+
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(16.dp))
+                            .clickable { selectedMode = mode },
+                        shape = RoundedCornerShape(16.dp),
+                        color = containerColor,
+                        border = BorderStroke(1.dp, borderColor)
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                RadioButton(
+                                    selected = isSelected,
+                                    onClick = { selectedMode = mode }
+                                )
+                                Icon(
+                                    imageVector = icon,
+                                    contentDescription = null,
+                                    tint = if (isDestructive) {
+                                        MaterialTheme.colorScheme.error
+                                    } else {
+                                        MaterialTheme.colorScheme.primary
+                                    },
+                                    modifier = Modifier.size(19.dp)
+                                )
+                                Text(
+                                    text = label,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = if (isDestructive && isSelected) {
+                                        MaterialTheme.colorScheme.onErrorContainer
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurface
+                                    },
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+
+                            if (mode == RoyalTsImportPlacementMode.CREATE_NEW_FOLDER && isSelected) {
+                                val reservedError = VaultHierarchySanitizer.isReservedCredentialsFolderName(trimmedFolderName)
+                                OutlinedTextField(
+                                    value = customFolderName,
+                                    onValueChange = { customFolderName = it },
+                                    label = { Text(strings.royalImportFolderNameLabel) },
+                                    isError = isInvalidNewFolderName,
+                                    supportingText = if (reservedError) {
+                                        { Text(strings.credentialsSystemFolderReservedError) }
+                                    } else {
+                                        null
+                                    },
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            val isDestructive = selectedMode == RoyalTsImportPlacementMode.REPLACE_EXISTING
+            Button(
+                onClick = { onConfirmPlacement(selectedMode, trimmedFolderName) },
+                enabled = !isInvalidNewFolderName,
+                colors = if (isDestructive) {
+                    ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error,
+                        contentColor = MaterialTheme.colorScheme.onError
+                    )
+                } else {
+                    ButtonDefaults.buttonColors()
+                }
+            ) {
+                Text(strings.actionImportRtsz)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(strings.dialogActionCancel)
+            }
+        }
+    )
+}
+
+@Composable
+private fun ResetDatabaseConfirmationDialog(
+    visible: Boolean,
+    canExportBackup: Boolean,
+    strings: WorkspaceLocalizedStrings,
+    onExportBackupFirst: () -> Unit,
+    onConfirmReset: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    if (!visible) return
+    var confirmedChecked by remember { mutableStateOf(false) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        shape = RoundedCornerShape(28.dp),
+        icon = {
+            Icon(
+                imageVector = Icons.Outlined.WarningAmber,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.error,
+                modifier = Modifier.size(30.dp)
+            )
+        },
+        title = {
+            Text(
+                text = strings.dialogResetDatabaseTitle,
+                style = MaterialTheme.typography.headlineSmall
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.55f),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.5f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = strings.dialogResetDatabaseMessage,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                        modifier = Modifier.padding(12.dp)
+                    )
+                }
+
+                if (canExportBackup) {
+                    OutlinedButton(
+                        onClick = onExportBackupFirst,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Outlined.Download, contentDescription = null, modifier = Modifier.size(17.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(strings.actionExportNxts)
+                    }
+                }
+
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(14.dp))
+                        .clickable { confirmedChecked = !confirmedChecked },
+                    shape = RoundedCornerShape(14.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerLow,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Checkbox(
+                            checked = confirmedChecked,
+                            onCheckedChange = { confirmedChecked = it }
+                        )
+                        Text(
+                            text = strings.resetDatabaseWarningBody,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = onConfirmReset,
+                enabled = confirmedChecked,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.error,
+                    contentColor = MaterialTheme.colorScheme.onError
+                )
+            ) {
+                Icon(Icons.Outlined.Delete, contentDescription = null, modifier = Modifier.size(17.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(strings.actionConfirmResetDatabase)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(strings.dialogActionCancel)
+            }
+        }
+    )
+}
+
+@Composable
+private fun NexusErrorDialog(
+    error: NexusAppError?,
+    strings: WorkspaceLocalizedStrings,
+    onEditRelatedConnection: (() -> Unit)?,
+    onDismiss: () -> Unit
+) {
+    val activeError = error ?: return
+    val clipboard = LocalClipboardManager.current
+    var detailsExpanded by remember(activeError.id) { mutableStateOf(false) }
+
+    val categoryIcon = when (activeError.category) {
+        NexusErrorCategory.AUTHENTICATION_FAILED -> Icons.Outlined.VpnKey
+        NexusErrorCategory.TLS_CERTIFICATE -> Icons.Outlined.Security
+        NexusErrorCategory.CLOUD_SYNC -> Icons.Outlined.CloudSync
+        NexusErrorCategory.VAULT_CRYPTO_OR_CORRUPTION -> Icons.Outlined.Lock
+        NexusErrorCategory.VALIDATION -> Icons.Outlined.WarningAmber
+        else -> Icons.Outlined.ErrorOutline
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        shape = RoundedCornerShape(28.dp),
+        icon = {
+            Icon(
+                imageVector = categoryIcon,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.error,
+                modifier = Modifier.size(28.dp)
+            )
+        },
+        title = {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Text(
+                    text = activeError.title,
+                    style = MaterialTheme.typography.headlineSmall,
+                    textAlign = TextAlign.Center
+                )
+                Surface(
+                    shape = RoundedCornerShape(99.dp),
+                    color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.65f)
+                ) {
+                    Text(
+                        text = activeError.category.name.replace('_', ' '),
+                        style = NexusTheme.monospace.keycapShortcut,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp)
+                    )
+                }
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 420.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    text = activeError.userMessage,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+
+                if (activeError.remediationHint.isNotBlank()) {
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.55f),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(12.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.Top
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.Info,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Text(
+                                text = activeError.remediationHint,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+                }
+
+                if (activeError.technicalDetails.isNotBlank()) {
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable { detailsExpanded = !detailsExpanded },
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.surfaceContainerLow,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                    ) {
+                        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = "Technical Details",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.secondary
+                                )
+                                Icon(
+                                    imageVector = if (detailsExpanded) {
+                                        Icons.Outlined.ExpandLess
+                                    } else {
+                                        Icons.Outlined.ExpandMore
+                                    },
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.secondary,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                            if (detailsExpanded) {
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    text = activeError.technicalDetails,
+                                    style = NexusTheme.monospace.logEntry,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = {
+                            clipboard.setText(AnnotatedString(activeError.formatDiagnosticReport()))
+                        },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(Icons.Outlined.ContentCopy, contentDescription = null, modifier = Modifier.size(15.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = strings.actionCopyDiagnosticReport,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    if (onEditRelatedConnection != null) {
+                        FilledTonalButton(
+                            onClick = onEditRelatedConnection,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(Icons.Outlined.Edit, contentDescription = null, modifier = Modifier.size(15.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = strings.actionEditConnection,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(onClick = onDismiss) {
+                Text(strings.dialogActionCancel)
+            }
+        }
+    )
+}
+
 
 

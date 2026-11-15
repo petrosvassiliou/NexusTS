@@ -128,6 +128,7 @@ fun RdpSessionSurfaceView(
     consoleBadgeLabel: String = "/admin",
     externalZoomFactor: Float = 1.0f,
     onZoomFactorChanged: (Float) -> Unit = {},
+    onEditConnection: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -166,8 +167,11 @@ fun RdpSessionSurfaceView(
     var showKeyboardBar by remember { mutableStateOf(false) }
     var softKeyboardText by remember { mutableStateOf("") }
     var driveSyncFeedback by remember { mutableStateOf<String?>(null) }
+    var showErrorDetails by remember(session) { mutableStateOf(false) }
 
     val isConnecting by session.isConnecting.collectAsState()
+    val isConnected by session.isConnected.collectAsState()
+    val lastError by session.lastError.collectAsState()
     val remoteDesktopDimensions by session.remoteDesktopDimensions.collectAsState()
     val liveResizeBehavior by session.liveResizeBehavior.collectAsState()
     val sharedDriveUncLabel by session.sharedDriveUncLabel.collectAsState()
@@ -197,6 +201,15 @@ fun RdpSessionSurfaceView(
                 context = context,
                 micPermissionGranted = hasMicPermission
             )
+        }
+    }
+
+    LaunchedEffect(session, isConnected) {
+        while (isConnected) {
+            delay(1500L)
+            withContext(Dispatchers.IO) {
+                session.pollSessionHealth()
+            }
         }
     }
 
@@ -379,6 +392,88 @@ fun RdpSessionSurfaceView(
                             style = NexusTheme.monospace.keycapShortcut,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+                    }
+                }
+            }
+        } else if (!isConnected && lastError != null) {
+            val err = lastError!!
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .padding(24.dp),
+                shape = RoundedCornerShape(18.dp),
+                color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.97f),
+                tonalElevation = 8.dp
+            ) {
+                Column(
+                    modifier = Modifier.padding(22.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(
+                        text = err.title,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                    Text(
+                        text = err.userMessage,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    if (err.remediationHint.isNotBlank()) {
+                        Text(
+                            text = err.remediationHint,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    if (showErrorDetails && err.technicalDetails.isNotBlank()) {
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = MaterialTheme.colorScheme.surfaceContainerLowest
+                        ) {
+                            Text(
+                                text = err.technicalDetails,
+                                modifier = Modifier.padding(10.dp),
+                                style = NexusTheme.monospace.keycapShortcut,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        FilledTonalButton(
+                            onClick = {
+                                coroutineScope.launch(Dispatchers.IO) {
+                                    session.reconnect(
+                                        initialWidthPx = latestViewportSize.width,
+                                        initialHeightPx = latestViewportSize.height,
+                                        effectiveScalePercent = activeScalePercent,
+                                        context = context
+                                    )
+                                }
+                            }
+                        ) {
+                            Text("Reconnect")
+                        }
+                        if (onEditConnection != null) {
+                            FilledTonalButton(onClick = onEditConnection) {
+                                Text("Edit Connection…")
+                            }
+                        }
+                        if (err.technicalDetails.isNotBlank()) {
+                            FilledTonalButton(onClick = { showErrorDetails = !showErrorDetails }) {
+                                Text(if (showErrorDetails) "Hide Details" else "Details")
+                            }
+                            FilledTonalButton(
+                                onClick = {
+                                    clipboardManager.setText(AnnotatedString(err.formatDiagnosticReport()))
+                                }
+                            ) {
+                                Text("Copy Diagnostics")
+                            }
+                        }
                     }
                 }
             }

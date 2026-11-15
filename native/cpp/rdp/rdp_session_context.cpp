@@ -14,7 +14,9 @@
 #endif
 
 #if defined(NEXUSTS_HAS_FREERDP3_BINARY) && NEXUSTS_HAS_FREERDP3_BINARY == 1
+#include <cstdio>
 #include <freerdp/freerdp.h>
+#include <freerdp/error.h>
 #include <freerdp/event.h>
 #include <freerdp/gdi/gdi.h>
 #include <freerdp/channels/channels.h>
@@ -36,6 +38,28 @@ constexpr uint32_t align_even_h264_dimension(uint32_t raw, uint32_t min_val, uin
 }
 
 #if defined(NEXUSTS_HAS_FREERDP3_BINARY) && NEXUSTS_HAS_FREERDP3_BINARY == 1
+std::string format_freerdp_last_error(rdpContext* context, const std::string& host, uint16_t port) {
+    if (!context) {
+        return "CONNECT_TRANSPORT_FAILED: FreeRDP context unavailable (" + host + ":" + std::to_string(port) + ")";
+    }
+    const UINT32 err_code = freerdp_get_last_error(context);
+    if (err_code == 0u) {
+        return "";
+    }
+    const char* err_name = freerdp_get_last_error_name(err_code);
+    const char* err_desc = freerdp_get_last_error_string(err_code);
+    char hex_buf[24]{};
+    std::snprintf(hex_buf, sizeof(hex_buf), "0x%08X", static_cast<unsigned int>(err_code));
+    std::string out = (err_name && err_name[0] != '\0') ? std::string(err_name) : "FREERDP_ERROR";
+    out += " (";
+    out += hex_buf;
+    out += ")";
+    if (err_desc && err_desc[0] != '\0') {
+        out += ": ";
+        out += err_desc;
+    }
+    return out;
+}
 struct FreeRdpCallbackState {
     RdpSessionContext* owner{nullptr};
     bool ignore_cert_warnings{false};
@@ -300,6 +324,11 @@ bool RdpSessionContext::connect() {
     }
 
     std::lock_guard<std::mutex> lock(state_mutex_);
+    set_last_error("");
+    if (params_.host.empty()) {
+        set_last_error("DNS_NAME_NOT_FOUND: Hostname is empty.");
+        return false;
+    }
     stop_requested_.store(false, std::memory_order_release);
 
     const uint32_t w = gdi_presenter_->width();
@@ -316,6 +345,7 @@ bool RdpSessionContext::connect() {
 #if defined(NEXUSTS_HAS_FREERDP3_BINARY) && NEXUSTS_HAS_FREERDP3_BINARY == 1
     freerdp* instance = freerdp_new();
     if (!instance) {
+        set_last_error("INTERNAL: freerdp_new() allocation failed.");
         NX_RDP_LOGE("freerdp_new() allocation failed");
         return false;
     }
@@ -325,6 +355,7 @@ bool RdpSessionContext::connect() {
     instance->VerifyCertificateEx = &freerdp_on_verify_certificate_ex;
 
     if (!freerdp_context_new(instance)) {
+        set_last_error("INTERNAL: freerdp_context_new() initialization failed.");
         freerdp_free(instance);
         return false;
     }
@@ -417,7 +448,14 @@ bool RdpSessionContext::connect() {
 
     disp_context_.store(nullptr, std::memory_order_release);
     if (!freerdp_connect(instance)) {
-        NX_RDP_LOGE("FreeRDP 3.x connection failed to %s:%u", params_.host.c_str(), params_.port);
+        std::string captured = format_freerdp_last_error(instance->context, params_.host, params_.port);
+        if (captured.empty()) {
+            captured = "CONNECT_TRANSPORT_FAILED: FreeRDP 3.x connection failed to " +
+                params_.host + ":" + std::to_string(params_.port);
+        }
+        set_last_error(captured);
+        NX_RDP_LOGE("FreeRDP 3.x connection failed to %s:%u (%s)",
+                    params_.host.c_str(), params_.port, captured.c_str());
         disp_context_.store(nullptr, std::memory_order_release);
         unregister_freerdp_callbacks(instance);
         freerdp_context_free(instance);
@@ -449,6 +487,12 @@ bool RdpSessionContext::connect() {
                 break;
             }
         }
+        if (!stop_requested_.load(std::memory_order_acquire) && instance->context) {
+            const std::string drop_err = format_freerdp_last_error(instance->context, params_.host, params_.port);
+            if (!drop_err.empty()) {
+                set_last_error(drop_err);
+            }
+        }
         connected_.store(false, std::memory_order_release);
     });
 #else
@@ -460,6 +504,16 @@ bool RdpSessionContext::connect() {
                 w, h, active_scale_percent_.load(), params_.connect_to_console,
                 params_.enable_h264_avc444, params_.enable_dynamic_resize, params_.redirect_drives);
     return true;
+}
+
+std::string RdpSessionContext::last_error() const {
+    std::lock_guard<std::mutex> lock(error_mutex_);
+    return last_error_;
+}
+
+void RdpSessionContext::set_last_error(std::string message) {
+    std::lock_guard<std::mutex> lock(error_mutex_);
+    last_error_ = std::move(message);
 }
 
 void RdpSessionContext::disconnect() {

@@ -10,6 +10,7 @@ public struct RdpSessionView: View {
     @State private var currentFrameImage: CGImage? = nil
     @State private var lastSeq: UInt64 = 0
     @State private var isConnected: Bool = false
+    @State private var lastNativeError: String = ""
     @State private var scaleToFit: Bool = true
     @State private var showHudBar: Bool = true
     @State private var frameDimensionsText: String = "1920×1080"
@@ -20,8 +21,12 @@ public struct RdpSessionView: View {
         self.tab = tab
     }
 
+    private var latestConnection: VaultConnection {
+        store.activeConnections.first(where: { $0.id == tab.connection.id }) ?? tab.connection
+    }
+
     private var rdpSettings: RdpProtocolSettings {
-        if case .rdp(let s) = tab.connection.settings { return s }
+        if case .rdp(let s) = latestConnection.settings { return s }
         return RdpProtocolSettings()
     }
 
@@ -32,7 +37,7 @@ public struct RdpSessionView: View {
             ZStack(alignment: .top) {
                 Color(red: 0.06, green: 0.07, blue: 0.09)
 
-                if let cgImage = currentFrameImage {
+                if let cgImage = currentFrameImage, isConnected || lastNativeError.isEmpty {
                     Image(decorative: cgImage, scale: 1.0)
                         .resizable()
                         .aspectRatio(contentMode: scaleToFit ? .fit : .fill)
@@ -44,10 +49,80 @@ public struct RdpSessionView: View {
                                 remoteHeight: cgImage.height
                             )
                         }
+                } else if !isConnected && !lastNativeError.isEmpty {
+                    let diag = NexusErrorClassifier.classifyRdpError(
+                        host: latestConnection.host,
+                        port: rdpSettings.port,
+                        rawNativeError: lastNativeError,
+                        connectionId: latestConnection.id
+                    )
+                    VStack(alignment: .leading, spacing: 14) {
+                        HStack(spacing: 12) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .font(.system(size: 28))
+                                .foregroundStyle(Color(nsColor: .systemOrange))
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(diag.title)
+                                    .font(.headline)
+                                    .foregroundStyle(.white)
+                                Text(diag.userMessage)
+                                    .font(.subheadline)
+                                    .foregroundStyle(.white.opacity(0.82))
+                            }
+                        }
+
+                        if !diag.remediationHint.isEmpty {
+                            Text("Suggested Fix: \(diag.remediationHint)")
+                                .font(.callout)
+                                .foregroundStyle(Color(nsColor: .systemYellow).opacity(0.95))
+                        }
+
+                        if !diag.technicalDetails.isEmpty {
+                            Text(diag.technicalDetails)
+                                .font(.system(size: 11.5, design: .monospaced))
+                                .foregroundStyle(.white.opacity(0.72))
+                                .padding(10)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                        .fill(Color.black.opacity(0.35))
+                                )
+                        }
+
+                        HStack(spacing: 10) {
+                            Button("Reconnect") {
+                                lastNativeError = ""
+                                currentFrameImage = nil
+                                _ = store.reconnectRdpSession(for: tab)
+                            }
+                            .buttonStyle(.borderedProminent)
+
+                            Button("Edit RDP Settings…") {
+                                store.editingConnection = latestConnection
+                            }
+
+                            Button(store.strings.copyDiagnostics) {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(diag.formatDiagnosticReport(), forType: .string)
+                            }
+                        }
+                    }
+                    .padding(24)
+                    .frame(maxWidth: 560)
+                    .background(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .fill(Color.white.opacity(0.06))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                    .strokeBorder(Color.white.opacity(0.16), lineWidth: 1)
+                            )
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .padding(28)
                 } else {
                     VStack(spacing: 14) {
                         ProtocolSquircleIcon(protocolType: .RDP, size: 52)
-                        Text("FreeRDP 3.x Native Engine • \(tab.connection.host):\(rdpSettings.port)")
+                        Text("FreeRDP 3.x Native Engine • \(latestConnection.host):\(rdpSettings.port)")
                             .font(.headline)
                             .foregroundStyle(.white)
                         Text(
@@ -60,15 +135,18 @@ public struct RdpSessionView: View {
 
                         HStack(spacing: 10) {
                             Button("Reconnect") {
-                                _ = session.connect()
+                                lastNativeError = ""
+                                currentFrameImage = nil
+                                _ = store.reconnectRdpSession(for: tab)
                             }
                             .buttonStyle(.borderedProminent)
 
                             Button("Edit RDP Settings…") {
-                                store.editingConnection = tab.connection
+                                store.editingConnection = latestConnection
                             }
                         }
                     }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .padding(28)
                 }
 
@@ -76,10 +154,14 @@ public struct RdpSessionView: View {
                 if showHudBar {
                     HStack(spacing: 12) {
                         Circle()
-                            .fill(isConnected ? Color(nsColor: .systemGreen) : Color(nsColor: .systemOrange))
+                            .fill(
+                                isConnected
+                                    ? Color(nsColor: .systemGreen)
+                                    : (lastNativeError.isEmpty ? Color(nsColor: .systemOrange) : Color(nsColor: .systemRed))
+                            )
                             .frame(width: 8, height: 8)
 
-                        Text(tab.connection.name)
+                        Text(latestConnection.name)
                             .font(.caption.weight(.semibold))
 
                         Text(frameDimensionsText)
@@ -118,7 +200,7 @@ public struct RdpSessionView: View {
                             panel.allowsMultipleSelection = false
                             panel.prompt = "Share Folder via RDPDR"
                             if panel.runModal() == .OK, let folderURL = panel.url {
-                                store.setRdpSharedMacFolder(for: tab.connection.id, folderURL: folderURL)
+                                store.setRdpSharedMacFolder(for: latestConnection.id, folderURL: folderURL)
                             }
                         } label: {
                             Label(
@@ -174,6 +256,10 @@ public struct RdpSessionView: View {
             }
             .onReceive(frameTimer) { _ in
                 isConnected = session.isConnected
+                let nativeErr = session.lastErrorMessage()
+                if nativeErr != lastNativeError {
+                    lastNativeError = nativeErr
+                }
                 let seq = session.frameSequence
                 guard seq != lastSeq else { return }
                 lastSeq = seq

@@ -81,7 +81,7 @@ public struct MenuBarQuickAgentView: View {
             Divider()
 
             Button {
-                Task { await store.syncCloudNow() }
+                Task { await store.syncCloudNow(reportErrors: true) }
             } label: {
                 Label("Sync Cloud Vault Now", systemImage: "arrow.triangle.2.circlepath.icloud")
             }
@@ -143,27 +143,47 @@ public struct MacSettingsView: View {
                     Label("Updates", systemImage: "arrow.down.circle")
                 }
         }
-        .frame(width: 540, height: 380)
+        .frame(width: 540, height: 420)
     }
 
     private var generalTab: some View {
         Form {
-            Picker("Workspace Language", selection: $store.appLanguage) {
-                ForEach(NexusAppLanguage.allCases) { lang in
-                    Text(lang.nativeDisplayName).tag(lang)
+            Section("Workspace Preferences") {
+                Picker("Workspace Language", selection: $store.appLanguage) {
+                    ForEach(NexusAppLanguage.allCases) { lang in
+                        Text(lang.nativeDisplayName).tag(lang)
+                    }
+                }
+
+                Toggle("Index Connections in macOS Spotlight Search", isOn: $store.spotlightIndexingEnabled)
+                    .onChange(of: store.spotlightIndexingEnabled) { _, enabled in
+                        MacSpotlightVaultIndexer.reindexConnections(in: store.document, enabled: enabled)
+                    }
+
+                LabeledContent("Local Vault Path") {
+                    Text(WorkspaceStore.localVaultFileURL.path)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
             }
 
-            Toggle("Index Connections in macOS Spotlight Search", isOn: $store.spotlightIndexingEnabled)
-                .onChange(of: store.spotlightIndexingEnabled) { _, enabled in
-                    MacSpotlightVaultIndexer.reindexConnections(in: store.document, enabled: enabled)
+            Section("Database Maintenance") {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(store.strings.resetDatabase)
+                            .font(.callout.weight(.medium))
+                        Text("Wipe all local folders, connections, credentials, and passphrases back to an empty vault.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button(role: .destructive) {
+                        store.isPresentingResetDatabaseSheet = true
+                    } label: {
+                        Text(store.strings.resetDatabase)
+                    }
                 }
-
-            LabeledContent("Local Vault Path") {
-                Text(WorkspaceStore.localVaultFileURL.path)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
             }
         }
         .formStyle(.grouped)
@@ -202,6 +222,14 @@ public struct MacSettingsView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+                }
+            }
+
+            Section("Emergency Recovery") {
+                Button(role: .destructive) {
+                    store.isPresentingResetDatabaseSheet = true
+                } label: {
+                    Label(store.strings.resetDatabase, systemImage: "trash")
                 }
             }
         }

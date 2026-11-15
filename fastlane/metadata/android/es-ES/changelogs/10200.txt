@@ -1,0 +1,7 @@
+• Bóveda inicial limpia sin proyectos ni conexiones de ejemplo
+• Selector de ubicación al importar Royal TS: nueva carpeta, raíz o reemplazar existentes
+• Arrastrar y soltar completo para carpetas y conexiones
+• Carpeta del sistema Credenciales fijada al final de la barra lateral
+• Menús contextuales de clic derecho precisos para carpetas y conexiones + Editar conexión
+• Creación y edición completa de carpetas inteligentes y dinámicas
+• Restablecimiento de base de datos y diagnósticos de error

@@ -169,6 +169,56 @@ public enum PropertyInheritanceResolver {
         )
     }
 
+    public static func validateSmartFolderRegex(_ pattern: String?) -> String? {
+        guard let trimmed = pattern?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty else { return nil }
+        do {
+            _ = try NSRegularExpression(pattern: trimmed, options: [.caseInsensitive])
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
+    public static func validateDynamicFolderJsonPayload(_ rawJson: String) -> String? {
+        let trimmed = rawJson.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "JSON payload must not be empty." }
+        guard trimmed.hasPrefix("{") else { return nil }
+        guard let data = trimmed.data(using: .utf8) else { return "Payload is not valid UTF-8." }
+        do {
+            let obj = try JSONSerialization.jsonObject(with: data, options: [])
+            guard let dict = obj as? [String: Any] else {
+                return "Top-level JSON value must be an object containing an \"Objects\" array."
+            }
+            if let items = dict["Objects"], !(items is [Any]) {
+                return "\"Objects\" must be a JSON array."
+            }
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
+    public static func resolveScopedSubtreeIds(
+        rootFolderId: String,
+        in document: NxtsVaultDocument
+    ) -> Set<String> {
+        let activeFolders = document.folders.filter { !document.tombstonedObjectIds.contains($0.id) }
+        guard activeFolders.contains(where: { $0.id == rootFolderId }) else { return [] }
+        var result: Set<String> = [rootFolderId]
+        var added = true
+        while added {
+            added = false
+            for f in activeFolders where !result.contains(f.id) {
+                if let pid = f.parentFolderId, result.contains(pid) {
+                    result.insert(f.id)
+                    added = true
+                }
+            }
+        }
+        return result
+    }
+
     public static func evaluateSmartFolder(
         _ smartFolder: SmartFolder,
         in document: NxtsVaultDocument
@@ -186,15 +236,31 @@ public enum PropertyInheritanceResolver {
         }()
         if hasInvalidRegex { return [] }
 
+        let scopedFolderIds: Set<String>? = {
+            guard let scopeId = f.scopeFolderId?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !scopeId.isEmpty else { return nil }
+            return resolveScopedSubtreeIds(rootFolderId: scopeId, in: document)
+        }()
+
         return document.connections
             .filter { !document.tombstonedObjectIds.contains($0.id) }
             .filter { conn in
+                if let allowedIds = scopedFolderIds {
+                    guard let pid = conn.parentFolderId, allowedIds.contains(pid) else {
+                        return false
+                    }
+                }
                 if !f.includeProtocols.isEmpty && !f.includeProtocols.contains(conn.protocolType) {
                     return false
                 }
+                let lowerTags = Set(conn.tags.map { $0.lowercased() })
                 if !f.includeTags.isEmpty {
-                    let lowerTags = Set(conn.tags.map { $0.lowercased() })
                     if !f.includeTags.allSatisfy({ lowerTags.contains($0.lowercased()) }) {
+                        return false
+                    }
+                }
+                if !f.excludeTags.isEmpty {
+                    if f.excludeTags.contains(where: { lowerTags.contains($0.lowercased()) }) {
                         return false
                     }
                 }
@@ -219,6 +285,10 @@ public enum PropertyInheritanceResolver {
                     if !matchHost && !matchName { return false }
                 }
                 return true
+            }
+            .sorted {
+                if $0.sortOrder != $1.sortOrder { return $0.sortOrder < $1.sortOrder }
+                return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
             }
     }
 

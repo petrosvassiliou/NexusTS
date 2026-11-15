@@ -8,6 +8,8 @@ public struct NexusMainWindowView: View {
     @Environment(\.openWindow) private var openWindow
 
     @State private var isImportingVaultFile = false
+    @State private var pendingEncryptedImportURL: URL? = nil
+    @State private var importArchivePassword: String = ""
     @State private var exportPayload: ExportedFileDocument? = nil
     @State private var exportFormat: VaultExportFormat = .nxts
     @State private var isExportingVaultFile = false
@@ -73,6 +75,33 @@ public struct NexusMainWindowView: View {
         .sheet(item: $store.connectWithOptionsTarget) { target in
             ConnectWithOptionsSheet(connection: target)
         }
+        .sheet(isPresented: $store.isPresentingNewSmartFolderSheet) {
+            SmartFolderEditorSheet(existing: nil)
+        }
+        .sheet(item: $store.editingSmartFolder) { sf in
+            SmartFolderEditorSheet(existing: sf)
+        }
+        .sheet(isPresented: $store.isPresentingNewDynamicFolderSheet) {
+            DynamicFolderEditorSheet(existing: nil)
+        }
+        .sheet(item: $store.editingDynamicFolder) { df in
+            DynamicFolderEditorSheet(existing: df)
+        }
+        .sheet(isPresented: $store.isPresentingNewCredentialSheet) {
+            CredentialEditorSheet(existing: nil)
+        }
+        .sheet(item: $store.editingCredential) { cred in
+            CredentialEditorSheet(existing: cred)
+        }
+        .sheet(item: $store.pendingRoyalImport) { pending in
+            RoyalTsImportPlacementSheet(pending: pending)
+        }
+        .sheet(isPresented: $store.isPresentingResetDatabaseSheet) {
+            ResetDatabaseConfirmationSheet()
+        }
+        .sheet(item: $store.activeAppError) { appErr in
+            NexusAppErrorSheet(error: appErr)
+        }
         .confirmationDialog(
             "Delete Folder \"\(store.deletingFolderCandidate?.name ?? "")\"?",
             isPresented: Binding(
@@ -105,22 +134,72 @@ public struct NexusMainWindowView: View {
             allowedContentTypes: [.data, .xml, .json, .commaSeparatedText, .zip],
             allowsMultipleSelection: false
         ) { result in
-            if case .success(let urls) = result, let first = urls.first {
+            switch result {
+            case .success(let urls):
+                guard let first = urls.first else { return }
                 do {
                     let summary = try store.importExternalVaultFile(url: first)
-                    bannerAlertMessage = "Imported \(summary.detectedFormat): \(summary.importedConnections) connections, \(summary.importedFolders) folders, \(summary.importedCredentials) credentials."
+                    if !summary.isRoyalTsFormat {
+                        bannerAlertMessage = "Imported \(summary.detectedFormat): \(summary.importedConnections) connections, \(summary.importedFolders) folders, \(summary.importedCredentials) credentials."
+                    }
                 } catch {
-                    bannerAlertMessage = error.localizedDescription
+                    let classified = NexusErrorClassifier.classify(error, operationTitle: "Vault Import Failed")
+                    if classified.category == .vaultCryptoOrCorruption {
+                        pendingEncryptedImportURL = first
+                        importArchivePassword = ""
+                    } else {
+                        store.reportAppError(classified)
+                    }
+                }
+            case .failure(let error):
+                store.reportError(error, operationTitle: "File Picker Error")
+            }
+        }
+        .alert(
+            "Password-Protected Vault / Royal TS Archive",
+            isPresented: Binding(
+                get: { pendingEncryptedImportURL != nil },
+                set: { if !$0 { pendingEncryptedImportURL = nil } }
+            )
+        ) {
+            SecureField("Archive Password / Passphrase", text: $importArchivePassword)
+            Button("Decrypt & Import") {
+                guard let url = pendingEncryptedImportURL else { return }
+                let password = importArchivePassword
+                pendingEncryptedImportURL = nil
+                importArchivePassword = ""
+                do {
+                    let summary = try store.importExternalVaultFile(url: url, passphrase: password)
+                    if !summary.isRoyalTsFormat {
+                        bannerAlertMessage = "Imported \(summary.detectedFormat): \(summary.importedConnections) connections, \(summary.importedFolders) folders, \(summary.importedCredentials) credentials."
+                    }
+                } catch {
+                    store.reportError(error, operationTitle: "Encrypted Archive Import Failed")
                 }
             }
+            Button("Cancel", role: .cancel) {
+                pendingEncryptedImportURL = nil
+                importArchivePassword = ""
+            }
+        } message: {
+            Text("Enter the password used to encrypt \"\(pendingEncryptedImportURL?.lastPathComponent ?? "file")\".")
         }
         .fileExporter(
             isPresented: $isExportingVaultFile,
             document: exportPayload,
             contentType: .data,
             defaultFilename: "\(store.document.name.replacingOccurrences(of: " ", with: "-")).\(exportFormat.rawValue)"
-        ) { _ in
+        ) { result in
             exportPayload = nil
+            if case .failure(let error) = result {
+                store.reportError(error, operationTitle: "Vault Export Failed")
+            }
+        }
+        .onChange(of: store.statusToastMessage) { _, msg in
+            if let msg {
+                bannerAlertMessage = msg
+                store.statusToastMessage = nil
+            }
         }
         .alert("NexusTS Vault", isPresented: Binding(
             get: { bannerAlertMessage != nil },
@@ -249,7 +328,10 @@ public struct NexusMainWindowView: View {
         ToolbarItemGroup(placement: .primaryAction) {
             Menu {
                 Button {
-                    store.newConnectionInitialFolderId = store.selectedFolderId
+                    let targetFolder = store.selectedFolderId == VaultHierarchySanitizer.systemCredentialsFolderId
+                        ? nil
+                        : store.selectedFolderId
+                    store.newConnectionInitialFolderId = targetFolder
                     store.newConnectionInitialProtocol = .SSH
                     store.isPresentingNewConnectionSheet = true
                 } label: {
@@ -257,7 +339,10 @@ public struct NexusMainWindowView: View {
                 }
 
                 Button {
-                    store.newConnectionInitialFolderId = store.selectedFolderId
+                    let targetFolder = store.selectedFolderId == VaultHierarchySanitizer.systemCredentialsFolderId
+                        ? nil
+                        : store.selectedFolderId
+                    store.newConnectionInitialFolderId = targetFolder
                     store.newConnectionInitialProtocol = .RDP
                     store.isPresentingNewConnectionSheet = true
                 } label: {
@@ -265,10 +350,31 @@ public struct NexusMainWindowView: View {
                 }
 
                 Button {
-                    store.newFolderInitialParentId = store.selectedFolderId
+                    let parentFolder = store.selectedFolderId == VaultHierarchySanitizer.systemCredentialsFolderId
+                        ? nil
+                        : store.selectedFolderId
+                    store.newFolderInitialParentId = parentFolder
                     store.isPresentingNewFolderSheet = true
                 } label: {
                     Label(store.strings.newFolder, systemImage: "folder.badge.plus")
+                }
+
+                Button {
+                    store.isPresentingNewSmartFolderSheet = true
+                } label: {
+                    Label(store.strings.newSmartFolder, systemImage: "sparkles.rectangle.stack")
+                }
+
+                Button {
+                    store.isPresentingNewDynamicFolderSheet = true
+                } label: {
+                    Label(store.strings.newDynamicFolder, systemImage: "bolt.badge.clock")
+                }
+
+                Button {
+                    store.isPresentingNewCredentialSheet = true
+                } label: {
+                    Label(store.strings.newCredential, systemImage: "key.fill")
                 }
 
                 Divider()
@@ -284,28 +390,42 @@ public struct NexusMainWindowView: View {
                 Button {
                     isImportingVaultFile = true
                 } label: {
-                    Label("Import Vault (.nxts, .rtsz, .1pux, .kdbx, .csv)…", systemImage: "square.and.arrow.down")
+                    Label("Import Vault (.nxts, .rtsz, .rtsx, .rjson, .1pux, .kdbx, .csv)…", systemImage: "square.and.arrow.down")
                 }
 
                 Menu("Export Vault") {
                     ForEach(VaultExportFormat.allCases) { fmt in
                         Button(fmt.displayTitle) {
-                            if let data = try? VaultDocumentExporter.export(document: store.document, format: fmt) {
+                            do {
+                                let data = try VaultDocumentExporter.export(document: store.document, format: fmt)
                                 exportFormat = fmt
                                 exportPayload = ExportedFileDocument(data: data)
                                 isExportingVaultFile = true
+                            } catch {
+                                store.reportError(error, operationTitle: "Vault Export Failed")
                             }
                         }
                     }
                 }
+
+                Divider()
+
+                Button(role: .destructive) {
+                    store.isPresentingResetDatabaseSheet = true
+                } label: {
+                    Label(store.strings.resetDatabase, systemImage: "trash")
+                }
             } label: {
                 Label("Add", systemImage: "plus")
             } primaryAction: {
-                store.newConnectionInitialFolderId = store.selectedFolderId
+                let targetFolder = store.selectedFolderId == VaultHierarchySanitizer.systemCredentialsFolderId
+                    ? nil
+                    : store.selectedFolderId
+                store.newConnectionInitialFolderId = targetFolder
                 store.newConnectionInitialProtocol = .SSH
                 store.isPresentingNewConnectionSheet = true
             }
-            .help("Create a new connection, folder, or import an enterprise vault (⌘N)")
+            .help("Create a new connection, folder, intelligent folder, credential, or import a Royal TS / enterprise vault (⌘N)")
 
             Button {
                 store.openLocalTerminal()
@@ -341,7 +461,7 @@ public struct NexusMainWindowView: View {
             .help("Broadcast keyboard input to all terminal panes (⇧⌘B)")
 
             Button {
-                Task { await store.syncCloudNow() }
+                Task { await store.syncCloudNow(reportErrors: true) }
             } label: {
                 Label(store.strings.syncNow, systemImage: "arrow.triangle.2.circlepath.icloud")
             }
@@ -586,6 +706,19 @@ struct ZeroKnowledgeLockShieldView: View {
                             .font(.caption)
                             .foregroundStyle(Color(nsColor: .systemRed))
                     }
+
+                    Divider()
+                        .frame(width: 260)
+                        .padding(.top, 4)
+
+                    Button(role: .destructive) {
+                        store.isPresentingResetDatabaseSheet = true
+                    } label: {
+                        Text("\(store.strings.resetDatabase)…")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
                 }
             }
             .padding(36)

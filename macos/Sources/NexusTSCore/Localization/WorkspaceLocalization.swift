@@ -70,6 +70,22 @@ public struct LocalizedWorkspaceStrings: Equatable, Sendable {
     public let startAllRdp: String
     public let deleteFolderAndContents: String
     public let deleteFolderKeepContents: String
+    public let editConnection: String
+    public let newSmartFolder: String
+    public let editSmartFolder: String
+    public let duplicateSmartFolder: String
+    public let newDynamicFolder: String
+    public let editDynamicFolder: String
+    public let duplicateDynamicFolder: String
+    public let newCredential: String
+    public let editCredential: String
+    public let systemCredentialsFolder: String
+    public let resetDatabase: String
+    public let royalImportTitle: String
+    public let royalImportNewFolder: String
+    public let royalImportRoot: String
+    public let royalImportReplaceAll: String
+    public let copyDiagnostics: String
 
     public static func catalog(for language: NexusAppLanguage) -> LocalizedWorkspaceStrings {
         switch language.resolvedCode {
@@ -78,7 +94,7 @@ public struct LocalizedWorkspaceStrings: Equatable, Sendable {
                 connections: "Verbindungen",
                 overview: "Übersicht",
                 templates: "Vorlagen",
-                credentials: "Anmeldedaten",
+                credentials: "Anmeldeinformationen",
                 gateways: "Gateways",
                 automationTasks: "Automatisierung",
                 cloudSync: "Cloud-Sync",
@@ -106,7 +122,23 @@ public struct LocalizedWorkspaceStrings: Equatable, Sendable {
                 renameFolder: "Ordner umbenennen…",
                 startAllRdp: "Alle RDP-Verbindungen starten",
                 deleteFolderAndContents: "Ordner & gesamten Inhalt löschen",
-                deleteFolderKeepContents: "Nur Ordner löschen (Elemente nach oben)"
+                deleteFolderKeepContents: "Nur Ordner löschen (Elemente nach oben)",
+                editConnection: "Verbindung bearbeiten…",
+                newSmartFolder: "Neuer intelligenter Ordner…",
+                editSmartFolder: "Intelligenten Ordner bearbeiten…",
+                duplicateSmartFolder: "Intelligenten Ordner duplizieren",
+                newDynamicFolder: "Neuer dynamischer Ordner…",
+                editDynamicFolder: "Dynamischen Ordner bearbeiten…",
+                duplicateDynamicFolder: "Dynamischen Ordner duplizieren",
+                newCredential: "Neue Anmeldeinformation…",
+                editCredential: "Anmeldeinformation bearbeiten…",
+                systemCredentialsFolder: "Credentials",
+                resetDatabase: "NexusTS-Datenbank zurücksetzen…",
+                royalImportTitle: "Royal TS-Datei importieren",
+                royalImportNewFolder: "Neuen Ordner für importierte Struktur erstellen",
+                royalImportRoot: "An der Wurzel der Hierarchie platzieren",
+                royalImportReplaceAll: "Alle vorhandenen Verbindungen löschen und ersetzen",
+                copyDiagnostics: "Diagnose kopieren"
             )
         case "it":
             return LocalizedWorkspaceStrings(
@@ -119,7 +151,7 @@ public struct LocalizedWorkspaceStrings: Equatable, Sendable {
                 cloudSync: "Sincronizzazione Cloud",
                 favorites: "Preferiti",
                 recentSessions: "Sessioni Recenti",
-                smartFolders: "Cartelle Smart",
+                smartFolders: "Cartelle Intelligenti",
                 dynamicFolders: "Cartelle Dinamiche",
                 vaultHierarchy: "Gerarchia Vault",
                 quickConnectPlaceholder: "Connessione rapida (ssh://, rdp://, vnc:// o cerca host)…",
@@ -141,7 +173,23 @@ public struct LocalizedWorkspaceStrings: Equatable, Sendable {
                 renameFolder: "Rinomina Cartella…",
                 startAllRdp: "Avvia Tutte le Connessioni RDP",
                 deleteFolderAndContents: "Elimina Cartella e Tutto il Contenuto",
-                deleteFolderKeepContents: "Elimina Solo Cartella (Sposta Elementi Sopra)"
+                deleteFolderKeepContents: "Elimina Solo Cartella (Sposta Elementi Sopra)",
+                editConnection: "Modifica Connessione…",
+                newSmartFolder: "Nuova Cartella Intelligente…",
+                editSmartFolder: "Modifica Cartella Intelligente…",
+                duplicateSmartFolder: "Duplica Cartella Intelligente",
+                newDynamicFolder: "Nuova Cartella Dinamica…",
+                editDynamicFolder: "Modifica Cartella Dinamica…",
+                duplicateDynamicFolder: "Duplica Cartella Dinamica",
+                newCredential: "Nuova Credenziale…",
+                editCredential: "Modifica Credenziale…",
+                systemCredentialsFolder: "Credentials",
+                resetDatabase: "Ripristina Database NexusTS…",
+                royalImportTitle: "Importa File Royal TS",
+                royalImportNewFolder: "Crea una nuova cartella",
+                royalImportRoot: "Posiziona alla radice della gerarchia",
+                royalImportReplaceAll: "Elimina tutte le connessioni esistenti e sostituisci",
+                copyDiagnostics: "Copia Diagnostica"
             )
         case "es":
             return LocalizedWorkspaceStrings(
@@ -176,7 +224,23 @@ public struct LocalizedWorkspaceStrings: Equatable, Sendable {
                 renameFolder: "Renombrar Carpeta…",
                 startAllRdp: "Iniciar Todas las Conexiones RDP",
                 deleteFolderAndContents: "Eliminar Carpeta y Todo su Contenido",
-                deleteFolderKeepContents: "Eliminar Solo la Carpeta (Mover Elementos Arriba)"
+                deleteFolderKeepContents: "Eliminar Solo la Carpeta (Mover Elementos Arriba)",
+                editConnection: "Editar Conexión…",
+                newSmartFolder: "Nueva Carpeta Inteligente…",
+                editSmartFolder: "Editar Carpeta Inteligente…",
+                duplicateSmartFolder: "Duplicar Carpeta Inteligente",
+                newDynamicFolder: "Nueva Carpeta Dinámica…",
+                editDynamicFolder: "Editar Carpeta Dinámica…",
+                duplicateDynamicFolder: "Duplicar Carpeta Dinámica",
+                newCredential: "Nueva Credencial…",
+                editCredential: "Editar Credencial…",
+                systemCredentialsFolder: "Credentials",
+                resetDatabase: "Restablecer Base de Datos de NexusTS…",
+                royalImportTitle: "Importar Archivo Royal TS",
+                royalImportNewFolder: "Crear una nueva carpeta",
+                royalImportRoot: "Colocar en la raíz de la jerarquía",
+                royalImportReplaceAll: "Eliminar todas las conexiones existentes y reemplazar",
+                copyDiagnostics: "Copiar Diagnóstico"
             )
         case "el":
             return LocalizedWorkspaceStrings(
@@ -211,7 +275,23 @@ public struct LocalizedWorkspaceStrings: Equatable, Sendable {
                 renameFolder: "Μετονομασία Φακέλου…",
                 startAllRdp: "Εκκίνηση Όλων των Συνδέσεων RDP",
                 deleteFolderAndContents: "Διαγραφή Φακέλου & Περιεχομένων",
-                deleteFolderKeepContents: "Διαγραφή Μόνο Φακέλου (Μετακίνηση Πάνω)"
+                deleteFolderKeepContents: "Διαγραφή Μόνο Φακέλου (Μετακίνηση Πάνω)",
+                editConnection: "Επεξεργασία Σύνδεσης…",
+                newSmartFolder: "Νέος Έξυπνος Φάκελος…",
+                editSmartFolder: "Επεξεργασία Έξυπνου Φακέλου…",
+                duplicateSmartFolder: "Διπλότυπο Έξυπνου Φακέλου",
+                newDynamicFolder: "Νέος Δυναμικός Φάκελος…",
+                editDynamicFolder: "Επεξεργασία Δυναμικού Φακέλου…",
+                duplicateDynamicFolder: "Διπλότυπο Δυναμικού Φακέλου",
+                newCredential: "Νέο Διαπιστευτήριο…",
+                editCredential: "Επεξεργασία Διαπιστευτηρίου…",
+                systemCredentialsFolder: "Credentials",
+                resetDatabase: "Επαναφορά Βάσης Δεδομένων NexusTS…",
+                royalImportTitle: "Εισαγωγή Αρχείου Royal TS",
+                royalImportNewFolder: "Δημιουργία νέου φακέλου",
+                royalImportRoot: "Τοποθέτηση στη ρίζα της ιεραρχίας",
+                royalImportReplaceAll: "Διαγραφή όλων των υπαρχουσών συνδέσεων και αντικατάσταση",
+                copyDiagnostics: "Αντιγραφή Διαγνωστικών"
             )
         case "fr":
             return LocalizedWorkspaceStrings(
@@ -246,7 +326,23 @@ public struct LocalizedWorkspaceStrings: Equatable, Sendable {
                 renameFolder: "Renommer le Dossier…",
                 startAllRdp: "Démarrer Toutes les Connexions RDP",
                 deleteFolderAndContents: "Supprimer le Dossier et Tout son Contenu",
-                deleteFolderKeepContents: "Supprimer Uniquement le Dossier (Remonter les Éléments)"
+                deleteFolderKeepContents: "Supprimer Uniquement le Dossier (Remonter les Éléments)",
+                editConnection: "Modifier la Connexion…",
+                newSmartFolder: "Nouveau Dossier Intelligent…",
+                editSmartFolder: "Modifier le Dossier Intelligent…",
+                duplicateSmartFolder: "Dupliquer le Dossier Intelligent",
+                newDynamicFolder: "Nouveau Dossier Dynamique…",
+                editDynamicFolder: "Modifier le Dossier Dynamique…",
+                duplicateDynamicFolder: "Dupliquer le Dossier Dynamique",
+                newCredential: "Nouvel Identifiant…",
+                editCredential: "Modifier l’Identifiant…",
+                systemCredentialsFolder: "Credentials",
+                resetDatabase: "Réinitialiser la Base NexusTS…",
+                royalImportTitle: "Importer un Fichier Royal TS",
+                royalImportNewFolder: "Créer un nouveau dossier",
+                royalImportRoot: "Placer à la racine de la hiérarchie",
+                royalImportReplaceAll: "Supprimer toutes les connexions existantes et remplacer",
+                copyDiagnostics: "Copier le Diagnostic"
             )
         default:
             return LocalizedWorkspaceStrings(
@@ -259,7 +355,7 @@ public struct LocalizedWorkspaceStrings: Equatable, Sendable {
                 cloudSync: "Cloud Sync",
                 favorites: "Favorites",
                 recentSessions: "Recent Sessions",
-                smartFolders: "Smart Folders",
+                smartFolders: "Intelligent Folders",
                 dynamicFolders: "Dynamic Folders",
                 vaultHierarchy: "Vault Hierarchy",
                 quickConnectPlaceholder: "Quick Connect (ssh://, rdp://, vnc://, /dev/cu.*, or search hosts)…",
@@ -281,7 +377,23 @@ public struct LocalizedWorkspaceStrings: Equatable, Sendable {
                 renameFolder: "Rename Folder…",
                 startAllRdp: "Start All RDP Connections",
                 deleteFolderAndContents: "Delete Folder & All Contents",
-                deleteFolderKeepContents: "Delete Folder Only (Move Items Up)"
+                deleteFolderKeepContents: "Delete Folder Only (Move Items Up)",
+                editConnection: "Edit Connection…",
+                newSmartFolder: "New Intelligent Folder…",
+                editSmartFolder: "Edit Intelligent Folder…",
+                duplicateSmartFolder: "Duplicate Intelligent Folder",
+                newDynamicFolder: "New Dynamic Folder…",
+                editDynamicFolder: "Edit Dynamic Folder…",
+                duplicateDynamicFolder: "Duplicate Dynamic Folder",
+                newCredential: "New Credential…",
+                editCredential: "Edit Credential…",
+                systemCredentialsFolder: "Credentials",
+                resetDatabase: "Reset NexusTS Database…",
+                royalImportTitle: "Import Royal TS Document",
+                royalImportNewFolder: "Create a new folder for imported connections",
+                royalImportRoot: "Place at the root of the hierarchy",
+                royalImportReplaceAll: "Delete all existing connections and replace",
+                copyDiagnostics: "Copy Diagnostics"
             )
         }
     }

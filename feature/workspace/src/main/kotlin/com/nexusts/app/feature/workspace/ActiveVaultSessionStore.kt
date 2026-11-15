@@ -15,6 +15,9 @@ import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
 
+import com.nexusts.app.core.vault.error.NexusAppError
+import com.nexusts.app.core.vault.error.NexusErrorCategory
+
 data class AdHocLaunchOverride(
     val overrideCredentialId: String? = null,
     val adHocUsername: String = "",
@@ -33,6 +36,7 @@ data class SharedVaultSessionSnapshot(
     val pendingImportFileName: String? = null,
     val hasPreImportBackup: Boolean = false,
     val vaultUnlockError: String? = null,
+    val startupRecoveryError: NexusAppError? = null,
     val isStarterUninitialized: Boolean = true,
     val mutationRevision: Long = 0L
 )
@@ -301,10 +305,56 @@ class ActiveVaultSessionStore @Inject constructor() {
         return targetFile
     }
 
+    fun clearStartupRecoveryError() {
+        _snapshot.update { it.copy(startupRecoveryError = null) }
+    }
+
+    /**
+     * Wipes the local encrypted `.nxts` database file, closes all live SSH/RDP sessions, clears
+     * passphrases, reinitializes a clean empty vault document, and atomically persists it.
+     */
+    fun resetLocalVaultDatabase(
+        filesDir: File?,
+        serializer: NxtsVaultSerializer
+    ): NxtsVaultDocument {
+        closeAllLiveSessions()
+        clearActivePassphrase()
+        preImportBackupDocument = null
+        _pendingReDockTabs.value = emptyList()
+
+        filesDir?.let { dir ->
+            runCatching { File(dir, LOCAL_VAULT_FILE_NAME).delete() }
+            runCatching { File(dir, "$LOCAL_VAULT_FILE_NAME.tmp").delete() }
+        }
+
+        val freshDoc = NexusWorkspaceViewModel.createEnterpriseStarterVault()
+        _snapshot.update { current ->
+            current.copy(
+                vaultDocument = freshDoc,
+                isVaultLocked = false,
+                sealedLockedVaultSnapshot = null,
+                pendingImportFileName = null,
+                hasPreImportBackup = false,
+                vaultUnlockError = null,
+                startupRecoveryError = null,
+                isStarterUninitialized = false,
+                mutationRevision = current.mutationRevision + 1L
+            )
+        }
+        if (filesDir != null) {
+            runCatching { persistVaultToDisk(filesDir, serializer) }
+        }
+        return freshDoc
+    }
+
     /**
      * Restores `filesDir/nexusts_local_vault.nxts` on cold start if the store still holds the uninitialized
-     * starter vault. If sealed with a custom passphrase not present in [candidatePassphrases], stages the
-     * encrypted container in locked mode so the user unlocks it on the Full-Screen Vault Lock Shield.
+     * starter vault.
+     * - If the file on disk is truncated or lacks the `"NXTS"` magic envelope, quarantines a timestamped
+     *   backup copy (`nexusts_local_vault.corrupt-<ts>.nxts.bak`) instead of bricking the app or overwriting it,
+     *   and surfaces a structured [NexusAppError].
+     * - If sealed with a custom passphrase not present in [candidatePassphrases], stages the encrypted
+     *   container in locked mode so the user unlocks it on the Full-Screen Vault Lock Shield.
      */
     fun loadPersistedVaultIfNeeded(
         filesDir: File,
@@ -315,8 +365,50 @@ class ActiveVaultSessionStore @Inject constructor() {
         val targetFile = File(filesDir, LOCAL_VAULT_FILE_NAME)
         if (!targetFile.isFile || targetFile.length() <= 0L) return false
 
-        val sealedBytes = runCatching { targetFile.readBytes() }.getOrNull() ?: return false
+        val sealedBytes = runCatching { targetFile.readBytes() }.getOrElse { ioErr ->
+            _snapshot.update {
+                it.copy(
+                    startupRecoveryError = NexusAppError(
+                        category = NexusErrorCategory.VAULT_CRYPTO_OR_CORRUPTION,
+                        title = "Vault Read Error",
+                        userMessage = "Could not read local vault file '${targetFile.name}'.",
+                        remediationHint = "Check available storage space or import a backup .nxts / .rtsz file.",
+                        technicalDetails = "${ioErr::class.java.name}: ${ioErr.message}"
+                    )
+                )
+            }
+            return false
+        }
         if (sealedBytes.isEmpty()) return false
+
+        val hasValidEnvelopeHeader = sealedBytes.size >= 40 &&
+            sealedBytes[0] == 0x4E.toByte() && // 'N'
+            sealedBytes[1] == 0x58.toByte() && // 'X'
+            sealedBytes[2] == 0x54.toByte() && // 'T'
+            sealedBytes[3] == 0x53.toByte()    // 'S'
+
+        if (!hasValidEnvelopeHeader) {
+            val backupFile = File(filesDir, "nexusts_local_vault.corrupt-${System.currentTimeMillis()}.nxts.bak")
+            runCatching { targetFile.copyTo(backupFile, overwrite = true) }
+            runCatching { targetFile.delete() }
+            _snapshot.update { current ->
+                current.copy(
+                    vaultDocument = NexusWorkspaceViewModel.createEnterpriseStarterVault(),
+                    isVaultLocked = false,
+                    sealedLockedVaultSnapshot = null,
+                    isStarterUninitialized = false,
+                    startupRecoveryError = NexusAppError(
+                        category = NexusErrorCategory.VAULT_CRYPTO_OR_CORRUPTION,
+                        title = "Corrupted Local Vault Quarantined",
+                        userMessage = "The local vault file was incomplete or corrupted and has been preserved as '${backupFile.name}'.",
+                        remediationHint = "A clean workspace has been initialized. You can restore from Google Drive Sync or import a backup file.",
+                        technicalDetails = "Invalid NXTS envelope (${sealedBytes.size} bytes); quarantined to ${backupFile.absolutePath}"
+                    ),
+                    mutationRevision = current.mutationRevision + 1L
+                )
+            }
+            return false
+        }
 
         val allCandidates = buildList {
             candidatePassphrases.filter { it.isNotEmpty() }.forEach { add(it.copyOf()) }

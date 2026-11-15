@@ -200,6 +200,35 @@
     <string name="action_delete_folder_keep_contents">Eliminar solo la carpeta (Mover elementos arriba)</string>
     <string name="nav_studios_menu">Estudios</string>
 
+    <!-- v1.2.0 -->
+    <string name="action_edit_smart_folder">Editar carpeta inteligente…</string>
+    <string name="action_duplicate_smart_folder">Duplicar carpeta inteligente</string>
+    <string name="smart_folder_all_folders">Todas las carpetas (Toda la bóveda)</string>
+    <string name="smart_folder_scope_label">Ámbito de carpeta</string>
+    <string name="smart_folder_exclude_tags_label">Excluir etiquetas (separadas por comas)</string>
+    <string name="smart_folder_invalid_regex_error">Expresión regular no válida</string>
+    <string name="smart_folder_preview_count_format">Conexiones coincidentes (%1$d)</string>
+    <string name="action_new_dynamic_folder">Nueva carpeta dinámica</string>
+    <string name="action_edit_dynamic_folder">Editar carpeta dinámica…</string>
+    <string name="action_duplicate_dynamic_folder">Duplicar carpeta dinámica</string>
+    <string name="action_reset_database">Restablecer base de datos NexusTS…</string>
+    <string name="reset_database_title">Restablecer base de datos NexusTS</string>
+    <string name="reset_database_warning_body">Elimina permanentemente todas las conexiones, carpetas, credenciales, plantillas y tareas locales en este dispositivo.</string>
+    <string name="dialog_reset_database_title">¿Restablecer base de datos NexusTS?</string>
+    <string name="dialog_reset_database_message">Esto elimina permanentemente todas las conexiones, carpetas, credenciales, plantillas y tareas locales en este dispositivo. Exporta una copia de seguridad antes si deseas conservarla.</string>
+    <string name="action_confirm_reset_database">Eliminar todo y restablecer</string>
+    <string name="reset_database_success">La base de datos de NexusTS se ha restablecido a una bóveda vacía.</string>
+    <string name="dialog_royal_import_title">Importar documento Royal TS</string>
+    <string name="royal_import_mode_new_folder">Crear una carpeta nueva para los elementos importados</string>
+    <string name="royal_import_mode_root">Colocar la jerarquía importada en la raíz</string>
+    <string name="royal_import_mode_replace_all">Eliminar todas las conexiones existentes y reemplazar</string>
+    <string name="royal_import_folder_name_label">Nombre de la nueva carpeta</string>
+    <string name="system_credentials_folder_title">Credenciales</string>
+    <string name="credentials_system_folder_only_hint">La carpeta del sistema Credenciales solo puede contener credenciales.</string>
+    <string name="credentials_system_folder_reserved_error">\"Credentials\" está reservado para la carpeta del sistema al final de la barra lateral.</string>
+    <string name="action_edit_credential">Editar credencial…</string>
+    <string name="action_copy_diagnostic_report">Copiar diagnóstico</string>
+
     <!-- Language Names -->
     <string name="lang_en">English</string>
     <string name="lang_de">Deutsch</string>
