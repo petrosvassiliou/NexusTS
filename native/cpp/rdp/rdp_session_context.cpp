@@ -1293,7 +1293,7 @@ bool RdpSessionContext::connect() {
     }
     connected_.store(true, std::memory_order_release);
 
-    event_loop_thread_ = std::thread([this, instance]() {
+    event_loop_thread_ = std::thread([this, instance, effective_host, effective_port]() {
         HANDLE handles[64]{};
         auto last_present_tp = std::chrono::steady_clock::now() - std::chrono::milliseconds(16);
         while (!stop_requested_.load(std::memory_order_acquire)) {
@@ -1326,7 +1326,7 @@ bool RdpSessionContext::connect() {
         }
         gdi_presenter_->flush_pending_frame();
         if (!stop_requested_.load(std::memory_order_acquire) && instance->context) {
-            const std::string drop_err = format_freerdp_last_error(instance->context, params_.host, params_.port);
+            const std::string drop_err = format_freerdp_last_error(instance->context, effective_host, effective_port);
             if (!drop_err.empty()) {
                 set_last_error(drop_err);
             }
@@ -1334,6 +1334,7 @@ bool RdpSessionContext::connect() {
         connected_.store(false, std::memory_order_release);
     });
 #else
+    (void)effective_port;
     render_diagnostic_surface_frame(w, h);
     connected_.store(true, std::memory_order_release);
 #endif
