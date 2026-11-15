@@ -318,7 +318,7 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
             XCTAssertFalse(catalog.deleteFolderAndContents.isEmpty)
             XCTAssertFalse(catalog.deleteFolderKeepContents.isEmpty)
             XCTAssertFalse(catalog.royalImportTitle.isEmpty)
-            XCTAssertFalse(catalog.resetDatabaseTitle.isEmpty)
+            XCTAssertFalse(catalog.resetDatabase.isEmpty)
             XCTAssertFalse(catalog.systemCredentialsFolder.isEmpty)
             XCTAssertFalse(catalog.newSmartFolder.isEmpty)
             XCTAssertFalse(catalog.editConnection.isEmpty)
@@ -392,10 +392,10 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
                 VaultCredential(id: "cred-real", parentFolderId: "f-creds-root", name: "Real Admin", username: "admin")
             ]
         )
-        let sanitized = VaultHierarchySanitizer.sanitize(dirtyDoc)
-        XCTAssertEqual(sanitized.folders.map(\.id), ["f-real"])
-        XCTAssertEqual(sanitized.connections.map(\.id), ["c-real"])
-        XCTAssertEqual(sanitized.credentials.map(\.id), ["cred-real"])
+        let sanitized = VaultHierarchySanitizer.sanitizeVaultDocument(dirtyDoc)
+        XCTAssertEqual(sanitized.folders.map { $0.id }, ["f-real"])
+        XCTAssertEqual(sanitized.connections.map { $0.id }, ["c-real"])
+        XCTAssertEqual(sanitized.credentials.map { $0.id }, ["cred-real"])
         XCTAssertNil(sanitized.credentials.first?.parentFolderId)
 
         // 2. Royal TS placement modes (createNewFolder, placeAtRoot, replaceExisting) + built-in Connections unwrap
@@ -410,8 +410,8 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
             ]
         )
         let inNewFolder = RoyalTsImportMerger.applyPlacement(
-            existingDoc: sanitized,
-            rawImportedDoc: importedRoyal,
+            existing: sanitized,
+            importedRaw: importedRoyal,
             mode: .createNewFolder,
             newFolderName: "Zurich Import"
         )
@@ -421,12 +421,12 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
         XCTAssertEqual(inNewFolder.connections.count, 2)
 
         let replaced = RoyalTsImportMerger.applyPlacement(
-            existingDoc: sanitized,
-            rawImportedDoc: importedRoyal,
+            existing: sanitized,
+            importedRaw: importedRoyal,
             mode: .replaceExisting
         )
-        XCTAssertEqual(replaced.folders.map(\.name), ["Zurich Core"])
-        XCTAssertEqual(replaced.connections.map(\.name), ["ZRH-DC01"])
+        XCTAssertEqual(replaced.folders.map { $0.name }, ["Zurich Core"])
+        XCTAssertEqual(replaced.connections.map { $0.name }, ["ZRH-DC01"])
 
         // 3. SmartFolder scopeFolderId, excludeTags, and regex validation
         XCTAssertNil(PropertyInheritanceResolver.validateSmartFolderRegex("^10\\.41\\..*"))
@@ -434,13 +434,13 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
         let smart = SmartFolder(
             name: "Scoped Zurich RDP",
             filter: SmartFolderFilter(
-                includeProtocols: [.RDP],
                 excludeTags: ["retired"],
+                includeProtocols: [.RDP],
                 scopeFolderId: wrapper.id
             )
         )
         let matches = PropertyInheritanceResolver.evaluateSmartFolder(smart, in: inNewFolder)
-        XCTAssertEqual(matches.map(\.name), ["ZRH-DC01"])
+        XCTAssertEqual(matches.map { $0.name }, ["ZRH-DC01"])
 
         // 4. NexusErrorClassifier FreeRDP error diagnostics
         let rdpErr = NexusErrorClassifier.classifyRdpError(
