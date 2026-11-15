@@ -1502,10 +1502,10 @@ class NexusWorkspaceComposeE2ETest {
 
     @Test
     fun compactFlushLeftSidebarFolderContextMenusStartAllRdpRenameDeleteAndV117UpgradeParity() {
-        assertEquals(10300, BuildConfig.VERSION_CODE)
+        assertEquals(10301, BuildConfig.VERSION_CODE)
         assertTrue(
-            "Expected BuildConfig.VERSION_NAME (${BuildConfig.VERSION_NAME}) to start with 0.3.0-beta.1",
-            BuildConfig.VERSION_NAME.startsWith("0.3.0-beta.1")
+            "Expected BuildConfig.VERSION_NAME (${BuildConfig.VERSION_NAME}) to start with 0.3.0-beta.2",
+            BuildConfig.VERSION_NAME.startsWith("0.3.0-beta.2")
         )
 
         val serializer = buildFastSerializer()
