@@ -90,6 +90,7 @@ private struct TerminalLiveWorkspaceBody: View {
                     }
 
                     MacHardwareTerminalKeyResponder(
+                        applicationCursorKeys: controller.applicationCursorKeys,
                         onSendBytes: { bytes in
                             controller.sendBytes(bytes)
                             store.broadcastTerminalInput(bytes, originatingTabId: tab.id)
@@ -154,7 +155,7 @@ private struct TerminalLiveWorkspaceBody: View {
                 .font(.system(size: 11, design: .monospaced))
                 .foregroundStyle(.secondary)
 
-            if !tab.isLocalShell {
+            if !tab.isLocalShell && tab.connection.protocolType == .SSH {
                 Button {
                     isShowingPortForwardsPopover.toggle()
                 } label: {
@@ -313,12 +314,14 @@ private struct TerminalRowLineView: View {
 // MARK: - AppKit NSView Hardware Keyboard Responder for VT100 / xterm-256color Input
 
 private struct MacHardwareTerminalKeyResponder: NSViewRepresentable {
+    let applicationCursorKeys: Bool
     let onSendBytes: (Data) -> Void
     let onPasteString: (String) -> Void
     let onCopyScreenText: () -> Void
 
     func makeNSView(context: Context) -> TerminalKeyCaptureNSView {
         let view = TerminalKeyCaptureNSView()
+        view.applicationCursorKeys = applicationCursorKeys
         view.onSendBytes = onSendBytes
         view.onPasteString = onPasteString
         view.onCopyScreenText = onCopyScreenText
@@ -326,6 +329,7 @@ private struct MacHardwareTerminalKeyResponder: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: TerminalKeyCaptureNSView, context: Context) {
+        nsView.applicationCursorKeys = applicationCursorKeys
         nsView.onSendBytes = onSendBytes
         nsView.onPasteString = onPasteString
         nsView.onCopyScreenText = onCopyScreenText
@@ -333,6 +337,7 @@ private struct MacHardwareTerminalKeyResponder: NSViewRepresentable {
 }
 
 final class TerminalKeyCaptureNSView: NSView {
+    var applicationCursorKeys: Bool = false
     var onSendBytes: ((Data) -> Void)?
     var onPasteString: ((String) -> Void)?
     var onCopyScreenText: (() -> Void)?
@@ -368,6 +373,23 @@ final class TerminalKeyCaptureNSView: NSView {
         return super.performKeyEquivalent(with: event)
     }
 
+    private func xtermModifierParam(for flags: NSEvent.ModifierFlags) -> Int {
+        var mod = 1
+        if flags.contains(.shift) { mod += 1 }
+        if flags.contains(.option) { mod += 2 }
+        if flags.contains(.control) { mod += 4 }
+        return mod
+    }
+
+    private func cursorOrHomeEndSequence(finalChar: Character, flags: NSEvent.ModifierFlags) -> Data {
+        let mod = xtermModifierParam(for: flags)
+        if mod > 1 {
+            return Data("\u{1B}[1;\(mod)\(finalChar)".utf8)
+        }
+        let prefix = applicationCursorKeys ? "\u{1B}O" : "\u{1B}["
+        return Data("\(prefix)\(finalChar)".utf8)
+    }
+
     override func keyDown(with event: NSEvent) {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if flags.contains(.command) {
@@ -375,13 +397,24 @@ final class TerminalKeyCaptureNSView: NSView {
             return
         }
 
-        // Special Function & Navigation Keys
+        // Special Function & Navigation Keys (VT100 / xterm-256color / DECCKM)
         switch event.keyCode {
-        case 36, 76: // Return / Enter
-            onSendBytes?(Data([0x0D]))
+        case 36, 76: // Return / Keypad Enter
+            if flags.contains(.option) {
+                onSendBytes?(Data([0x1B, 0x0D]))
+            } else {
+                onSendBytes?(Data([0x0D]))
+            }
             return
         case 51: // Backspace / Delete
-            onSendBytes?(Data([0x7F]))
+            if flags.contains(.option) {
+                onSendBytes?(Data([0x1B, 0x7F]))
+            } else {
+                onSendBytes?(Data([0x7F]))
+            }
+            return
+        case 114: // Insert / Help
+            onSendBytes?(Data("\u{1B}[2~".utf8))
             return
         case 117: // Forward Delete
             onSendBytes?(Data("\u{1B}[3~".utf8))
@@ -397,22 +430,22 @@ final class TerminalKeyCaptureNSView: NSView {
             onSendBytes?(Data([0x1B]))
             return
         case 126: // Up Arrow
-            onSendBytes?(Data("\u{1B}[A".utf8))
+            onSendBytes?(cursorOrHomeEndSequence(finalChar: "A", flags: flags))
             return
         case 125: // Down Arrow
-            onSendBytes?(Data("\u{1B}[B".utf8))
+            onSendBytes?(cursorOrHomeEndSequence(finalChar: "B", flags: flags))
             return
         case 124: // Right Arrow
-            onSendBytes?(Data("\u{1B}[C".utf8))
+            onSendBytes?(cursorOrHomeEndSequence(finalChar: "C", flags: flags))
             return
         case 123: // Left Arrow
-            onSendBytes?(Data("\u{1B}[D".utf8))
+            onSendBytes?(cursorOrHomeEndSequence(finalChar: "D", flags: flags))
             return
         case 115: // Home
-            onSendBytes?(Data("\u{1B}[H".utf8))
+            onSendBytes?(cursorOrHomeEndSequence(finalChar: "H", flags: flags))
             return
         case 119: // End
-            onSendBytes?(Data("\u{1B}[F".utf8))
+            onSendBytes?(cursorOrHomeEndSequence(finalChar: "F", flags: flags))
             return
         case 116: // Page Up
             onSendBytes?(Data("\u{1B}[5~".utf8))
@@ -420,11 +453,47 @@ final class TerminalKeyCaptureNSView: NSView {
         case 121: // Page Down
             onSendBytes?(Data("\u{1B}[6~".utf8))
             return
+        case 122: // F1
+            onSendBytes?(Data("\u{1B}OP".utf8))
+            return
+        case 120: // F2
+            onSendBytes?(Data("\u{1B}OQ".utf8))
+            return
+        case 99: // F3
+            onSendBytes?(Data("\u{1B}OR".utf8))
+            return
+        case 118: // F4
+            onSendBytes?(Data("\u{1B}OS".utf8))
+            return
+        case 96: // F5
+            onSendBytes?(Data("\u{1B}[15~".utf8))
+            return
+        case 97: // F6
+            onSendBytes?(Data("\u{1B}[17~".utf8))
+            return
+        case 98: // F7
+            onSendBytes?(Data("\u{1B}[18~".utf8))
+            return
+        case 100: // F8
+            onSendBytes?(Data("\u{1B}[19~".utf8))
+            return
+        case 101: // F9
+            onSendBytes?(Data("\u{1B}[20~".utf8))
+            return
+        case 109: // F10
+            onSendBytes?(Data("\u{1B}[21~".utf8))
+            return
+        case 103: // F11
+            onSendBytes?(Data("\u{1B}[23~".utf8))
+            return
+        case 111: // F12
+            onSendBytes?(Data("\u{1B}[24~".utf8))
+            return
         default:
             break
         }
 
-        // Control+A .. Control+Z (0x01..0x1A)
+        // Control+A .. Control+Z (0x01..0x1A) & Ctrl+@/[/\/]/^/_
         if flags.contains(.control),
            let raw = event.charactersIgnoringModifiers?.lowercased(),
            let scalar = raw.unicodeScalars.first {
@@ -432,22 +501,34 @@ final class TerminalKeyCaptureNSView: NSView {
             if v >= 97 && v <= 122 {
                 onSendBytes?(Data([UInt8(v - 96)]))
                 return
+            } else if v == 32 || v == 64 { // Ctrl+Space / Ctrl+@
+                onSendBytes?(Data([0x00]))
+                return
             } else if v == 91 { // Ctrl+[
                 onSendBytes?(Data([0x1B]))
                 return
-            } else if v == 99 { // Ctrl+C
-                onSendBytes?(Data([0x03]))
+            } else if v == 92 { // Ctrl+\
+                onSendBytes?(Data([0x1C]))
+                return
+            } else if v == 93 { // Ctrl+]
+                onSendBytes?(Data([0x1D]))
+                return
+            } else if v == 95 || v == 47 { // Ctrl+_ or Ctrl+/
+                onSendBytes?(Data([0x1F]))
+                return
+            }
+        }
+
+        if flags.contains(.option) {
+            let base = event.charactersIgnoringModifiers ?? event.characters ?? ""
+            if !base.isEmpty {
+                onSendBytes?(Data("\u{1B}\(base)".utf8))
                 return
             }
         }
 
         if let chars = event.characters, !chars.isEmpty {
-            if flags.contains(.option) {
-                // Meta/Alt ESC prefix for emacs/readline navigation on macOS
-                onSendBytes?(Data("\u{1B}\(chars)".utf8))
-            } else {
-                onSendBytes?(Data(chars.utf8))
-            }
+            onSendBytes?(Data(chars.utf8))
         }
     }
 }

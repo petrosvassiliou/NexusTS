@@ -1,0 +1,4 @@
+• v0.8.0: Optimiertes FreeRDP-Dirty-Rect-Rendering & direkte Windows-Terminal-Services-Anbindung
+• Live-Protokolle für SSHv2, Telnet, SFTP/SCP/FTP/FTPS, VNC & Apple ARD mit Sitzungserhalt beim Tab-Wechsel
+• Kubernetes-v4-WebSocket-Exec, Proxmox/Azure/vSphere/Hyper-V-Konsolen, USB-Seriell & Web-Zertifikat-Pinning
+• Übersichtlicheres „Verwalten“-Menü in der oberen Werkzeugleiste

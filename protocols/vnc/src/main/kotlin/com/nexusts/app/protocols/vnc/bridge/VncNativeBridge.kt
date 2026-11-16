@@ -1,8 +1,10 @@
 package com.nexusts.app.protocols.vnc.bridge
 
 import android.graphics.Bitmap
+import android.view.KeyEvent as AndroidKeyEvent
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import com.nexusts.app.core.ui.input.RawHardwareKeyPacket
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -26,9 +28,11 @@ import kotlinx.serialization.json.Json
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.ByteArrayOutputStream
+import java.io.Closeable
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.io.File
+import java.math.BigInteger
 import java.net.ConnectException
 import java.net.DatagramPacket
 import java.net.DatagramSocket
@@ -37,7 +41,10 @@ import java.net.Inet6Address
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
+import java.security.SecureRandom
 import java.util.Locale
 import java.util.zip.Inflater
 import javax.crypto.Cipher
@@ -87,12 +94,13 @@ data class VncSessionState(
     val framebufferWidth: Int = 1280,
     val framebufferHeight: Int = 720,
     val negotiatedProtocol: String = "RFB 3.8",
-    val statusMessage: String = "Idle"
+    val statusMessage: String = "Idle",
+    val viewOnly: Boolean = false
 )
 
 /**
  * JNI Bridge to Rust `nexusts-vnc` and `nexusts-netutils` (`libnexusts_jni.so`),
- * with automatic JVM socket fallback for local execution.
+ * with automatic JVM socket fallback for local execution and host unit tests.
  */
 object VncNativeBridge {
     const val RFB_ENCODING_RAW: Int = 0
@@ -101,6 +109,21 @@ object VncNativeBridge {
     const val RFB_ENCODING_TIGHT: Int = 7
     const val RFB_ENCODING_ZRLE: Int = 16
     const val RFB_ENCODING_DESKTOP_SIZE: Int = -223
+
+    const val XK_SHIFT_L: Int = 0xFFE1
+    const val XK_SHIFT_R: Int = 0xFFE2
+    const val XK_CONTROL_L: Int = 0xFFE3
+    const val XK_CONTROL_R: Int = 0xFFE4
+    const val XK_ALT_L: Int = 0xFFE9
+    const val XK_ALT_R: Int = 0xFFEA
+    const val XK_SUPER_L: Int = 0xFFEB
+    const val XK_SUPER_R: Int = 0xFFEC
+
+    private val SHIFTED_ASCII_CODEPOINTS: Set<Int> = setOf(
+        '~'.code, '!'.code, '@'.code, '#'.code, '$'.code, '%'.code, '^'.code,
+        '&'.code, '*'.code, '('.code, ')'.code, '_'.code, '+'.code, '{'.code,
+        '}'.code, '|'.code, ':'.code, '"'.code, '<'.code, '>'.code, '?'.code
+    )
 
     val isNativeLoaded: Boolean = runCatching {
         System.loadLibrary("nexusts_jni")
@@ -124,6 +147,56 @@ object VncNativeBridge {
     @JvmStatic
     external fun nativeDestroyFramebuffer(handle: Long)
 
+    // --- Live Async RFB 3.3 / 3.7 / 3.8 & Apple ARD Type 30 Session JNI ---
+
+    @JvmStatic
+    external fun nativeVncSessionConnect(
+        host: String,
+        port: Int,
+        username: String,
+        password: String,
+        sharedSession: Boolean,
+        viewOnly: Boolean
+    ): Long
+
+    @JvmStatic
+    external fun nativeVncSessionIsConnected(handle: Long): Boolean
+
+    @JvmStatic
+    external fun nativeVncSessionLastError(handle: Long): String
+
+    @JvmStatic
+    external fun nativeVncSessionDesktopName(handle: Long): String
+
+    @JvmStatic
+    external fun nativeVncSessionFrameSequence(handle: Long): Long
+
+    @JvmStatic
+    external fun nativeVncSessionGetDimensions(handle: Long): IntArray?
+
+    @JvmStatic
+    external fun nativeVncSessionCopyFrameRgba(handle: Long, dstRgba: ByteArray): Int
+
+    @JvmStatic
+    external fun nativeVncSessionGetFrameRgba(handle: Long): ByteArray?
+
+    @JvmStatic
+    external fun nativeVncSessionSendPointer(handle: Long, buttonMask: Int, x: Int, y: Int): Boolean
+
+    @JvmStatic
+    external fun nativeVncSessionSendKey(handle: Long, down: Boolean, keysym: Int): Boolean
+
+    @JvmStatic
+    external fun nativeVncSessionSendClipboard(handle: Long, text: String): Boolean
+
+    @JvmStatic
+    external fun nativeVncSessionPullClipboard(handle: Long): String?
+
+    @JvmStatic
+    external fun nativeVncSessionDisconnect(handle: Long)
+
+    // --- Network Utilities JNI ---
+
     @JvmStatic
     external fun nativeSendWakeOnLan(mac: String, broadcastIp: String, port: Int): Int
 
@@ -139,6 +212,18 @@ object VncNativeBridge {
     external fun nativeProbeTcpPortJson(host: String, port: Int, timeoutMs: Int): String
 
     @JvmStatic
+    external fun nativeScanPortsJson(
+        host: String,
+        startPort: Int,
+        endPort: Int,
+        timeoutMs: Int,
+        concurrency: Int
+    ): String
+
+    @JvmStatic
+    external fun nativeTcpLatencyPingMs(host: String, port: Int, timeoutMs: Int): Long
+
+    @JvmStatic
     external fun nativeTraceRouteJson(host: String, probePort: Int, maxHops: Int, timeoutMs: Int): String
 
     @JvmStatic
@@ -148,6 +233,47 @@ object VncNativeBridge {
 
     private val pingTimeRegex = Regex("time[=<]([0-9.]+)\\s*ms", RegexOption.IGNORE_CASE)
     private val icmpHopRegex = Regex("(?:From|from)\\s+([0-9a-fA-F:.]+)")
+
+    fun requiresShiftModifier(keysym: Int): Boolean =
+        (keysym in 'A'.code..'Z'.code) || (keysym in SHIFTED_ASCII_CODEPOINTS)
+
+    fun mapAndroidKeyCodeToX11Keysym(keyCode: Int, unicodeChar: Int): Int? {
+        return when (keyCode) {
+            AndroidKeyEvent.KEYCODE_ENTER, AndroidKeyEvent.KEYCODE_NUMPAD_ENTER -> 0xFF0D
+            AndroidKeyEvent.KEYCODE_DEL -> 0xFF08
+            AndroidKeyEvent.KEYCODE_FORWARD_DEL -> 0xFFFF
+            AndroidKeyEvent.KEYCODE_TAB -> 0xFF09
+            AndroidKeyEvent.KEYCODE_ESCAPE -> 0xFF1B
+            AndroidKeyEvent.KEYCODE_DPAD_UP -> 0xFF52
+            AndroidKeyEvent.KEYCODE_DPAD_DOWN -> 0xFF54
+            AndroidKeyEvent.KEYCODE_DPAD_LEFT -> 0xFF51
+            AndroidKeyEvent.KEYCODE_DPAD_RIGHT -> 0xFF53
+            AndroidKeyEvent.KEYCODE_MOVE_HOME -> 0xFF50
+            AndroidKeyEvent.KEYCODE_MOVE_END -> 0xFF57
+            AndroidKeyEvent.KEYCODE_PAGE_UP -> 0xFF55
+            AndroidKeyEvent.KEYCODE_PAGE_DOWN -> 0xFF56
+            AndroidKeyEvent.KEYCODE_INSERT -> 0xFF63
+            AndroidKeyEvent.KEYCODE_SHIFT_LEFT -> XK_SHIFT_L
+            AndroidKeyEvent.KEYCODE_SHIFT_RIGHT -> XK_SHIFT_R
+            AndroidKeyEvent.KEYCODE_CTRL_LEFT -> XK_CONTROL_L
+            AndroidKeyEvent.KEYCODE_CTRL_RIGHT -> XK_CONTROL_R
+            AndroidKeyEvent.KEYCODE_ALT_LEFT -> XK_ALT_L
+            AndroidKeyEvent.KEYCODE_ALT_RIGHT -> XK_ALT_R
+            AndroidKeyEvent.KEYCODE_META_LEFT -> XK_SUPER_L
+            AndroidKeyEvent.KEYCODE_META_RIGHT -> XK_SUPER_R
+            in AndroidKeyEvent.KEYCODE_F1..AndroidKeyEvent.KEYCODE_F12 ->
+                0xFFBE + (keyCode - AndroidKeyEvent.KEYCODE_F1)
+            else -> when {
+                unicodeChar in 0x20..0x7E || unicodeChar in 0xA0..0xFF -> unicodeChar
+                unicodeChar > 0xFF -> 0x01000000 or unicodeChar
+                keyCode in AndroidKeyEvent.KEYCODE_A..AndroidKeyEvent.KEYCODE_Z ->
+                    'a'.code + (keyCode - AndroidKeyEvent.KEYCODE_A)
+                keyCode in AndroidKeyEvent.KEYCODE_0..AndroidKeyEvent.KEYCODE_9 ->
+                    '0'.code + (keyCode - AndroidKeyEvent.KEYCODE_0)
+                else -> null
+            }
+        }
+    }
 
     suspend fun wakeOnLan(
         macAddress: String,
@@ -253,6 +379,19 @@ object VncNativeBridge {
             }
 
             val sample = icmpSample ?: run {
+                if (isNativeLoaded) {
+                    val nativeRtt = runCatching {
+                        nativeTcpLatencyPingMs(resolvedIp, port.coerceIn(1, 65535), 1500)
+                    }.getOrDefault(-1L)
+                    if (nativeRtt >= 0L) {
+                        return@run PingSample(
+                            sequence = seq,
+                            targetIp = resolvedIp,
+                            latencyMs = nativeRtt,
+                            reachable = true
+                        )
+                    }
+                }
                 var ok = false
                 val elapsed = measureTimeMillis {
                     ok = try {
@@ -423,54 +562,58 @@ object VncNativeBridge {
         require(trimmedHost.isNotEmpty()) { "Target host is required" }
         val lo = minOf(startPort, endPort).coerceIn(1, 65535)
         val hi = maxOf(startPort, endPort).coerceIn(lo, 65535)
-        val semaphore = Semaphore(concurrency.coerceIn(1, 256))
 
+        if (isNativeLoaded) {
+            return@coroutineScope withContext(Dispatchers.IO) {
+                val raw = runCatching {
+                    nativeScanPortsJson(
+                        trimmedHost,
+                        lo,
+                        hi,
+                        timeoutMs.coerceAtLeast(20),
+                        concurrency.coerceIn(1, 512)
+                    )
+                }.getOrDefault("[]")
+                runCatching {
+                    json.decodeFromString<List<PortProbeResult>>(raw)
+                }.getOrDefault(emptyList()).filter { it.open }.sortedBy { it.port }
+            }
+        }
+
+        val semaphore = Semaphore(concurrency.coerceIn(1, 256))
         (lo..hi).map { port ->
             async(Dispatchers.IO) {
                 semaphore.withPermit {
                     ensureActive()
-                    if (isNativeLoaded) {
-                        val raw = runCatching {
-                            nativeProbeTcpPortJson(trimmedHost, port, timeoutMs)
-                        }.getOrDefault("")
-                        if (raw != "null" && raw.isNotBlank()) {
-                            runCatching {
-                                json.decodeFromString(PortProbeResult.serializer(), raw)
-                            }.getOrNull()
-                        } else {
-                            null
-                        }
-                    } else {
-                        var connected = false
-                        var banner: String? = null
-                        val ms = measureTimeMillis {
-                            connected = runCatching {
-                                Socket().use { sock ->
-                                    sock.connect(InetSocketAddress(trimmedHost, port), timeoutMs)
-                                    sock.soTimeout = 120
-                                    val buf = ByteArray(128)
-                                    val n = runCatching { sock.getInputStream().read(buf) }.getOrDefault(-1)
-                                    if (n > 0) {
-                                        banner = String(buf, 0, n, StandardCharsets.UTF_8)
-                                            .lineSequence()
-                                            .firstOrNull()
-                                            ?.trim()
-                                    }
+                    var connected = false
+                    var banner: String? = null
+                    val ms = measureTimeMillis {
+                        connected = runCatching {
+                            Socket().use { sock ->
+                                sock.connect(InetSocketAddress(trimmedHost, port), timeoutMs)
+                                sock.soTimeout = 120
+                                val buf = ByteArray(128)
+                                val n = runCatching { sock.getInputStream().read(buf) }.getOrDefault(-1)
+                                if (n > 0) {
+                                    banner = String(buf, 0, n, StandardCharsets.UTF_8)
+                                        .lineSequence()
+                                        .firstOrNull()
+                                        ?.trim()
                                 }
-                                true
-                            }.getOrDefault(false)
-                        }
-                        if (connected) {
-                            PortProbeResult(
-                                port = port,
-                                open = true,
-                                connect_latency_ms = ms,
-                                guessed_service = guessService(port),
-                                service_banner = banner
-                            )
-                        } else {
-                            null
-                        }
+                            }
+                            true
+                        }.getOrDefault(false)
+                    }
+                    if (connected) {
+                        PortProbeResult(
+                            port = port,
+                            open = true,
+                            connect_latency_ms = ms,
+                            guessed_service = guessService(port),
+                            service_banner = banner
+                        )
+                    } else {
+                        null
                     }
                 }
             }
@@ -593,12 +736,29 @@ object VncNativeBridge {
 }
 
 /**
- * Asynchronous RFB 3.8 (RealVNC / TightVNC / TigerVNC / UltraVNC / QEMU) client session
- * backed by `VncNativeBridge` (`nexusts-vnc` RGBA8888 framebuffer) with pure-JVM fallback.
+ * Asynchronous RFB 3.3 / 3.7 / 3.8 & Apple Screen Sharing (ARD Type 30 DH-AES) client session
+ * backed by `VncNativeBridge.nativeVncSession*` (`nexusts-vnc`) when native JNI is loaded,
+ * and a stateful pure-JVM RFB + ARD Type 30 fallback for JVM execution and unit tests.
+ *
+ * Reuses a single `ByteArray` + `ByteBuffer` + mutable `Bitmap` across frame updates so
+ * high-refresh desktop sessions never allocate per-frame heap bitmaps.
  */
-class VncRfbSessionClient {
+class VncRfbSessionClient(
+    val initialHost: String = "",
+    val initialPort: Int = 5900,
+    val initialUsername: String = "",
+    val initialPassword: String = "",
+    val initialSharedSession: Boolean = true,
+    val initialViewOnly: Boolean = false,
+    val initialAppleScreenSharing: Boolean = false,
+    private val tunnelLease: Closeable? = null
+) : Closeable {
+
     private var scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var sessionJob: Job? = null
+
+    @Volatile
+    private var nativeSessionHandle: Long = 0L
 
     @Volatile
     private var activeSocket: Socket? = null
@@ -607,25 +767,72 @@ class VncRfbSessionClient {
     private var outputStream: DataOutputStream? = null
     private val writeLock = Any()
 
-    private val _state = MutableStateFlow(VncSessionState())
+    @Volatile
+    private var activeViewOnly: Boolean = initialViewOnly
+
+    @Volatile
+    private var activeTargetKey: String = ""
+
+    @Volatile
+    private var remoteShiftHeld: Boolean = false
+
+    @Volatile
+    private var syntheticShiftActive: Boolean = false
+
+    // Single reusable RGBA frame pipeline (reallocated only when remote dimensions change)
+    private val frameBufferLock = Any()
+    private var reusableWidth: Int = 0
+    private var reusableHeight: Int = 0
+    private var reusableRgbaBytes: ByteArray? = null
+    private var reusableByteBuffer: ByteBuffer? = null
+    private var reusableBitmap: Bitmap? = null
+    private var reusableImageBitmap: ImageBitmap? = null
+
+    private val _state = MutableStateFlow(VncSessionState(viewOnly = initialViewOnly))
     val state: StateFlow<VncSessionState> = _state.asStateFlow()
 
     private val _frameBitmap = MutableStateFlow<ImageBitmap?>(null)
     val frameBitmap: StateFlow<ImageBitmap?> = _frameBitmap.asStateFlow()
 
+    private val _frameRevision = MutableStateFlow(0L)
+    val frameRevision: StateFlow<Long> = _frameRevision.asStateFlow()
+
     private val _remoteClipboard = MutableStateFlow("")
     val remoteClipboard: StateFlow<String> = _remoteClipboard.asStateFlow()
 
+    val isViewOnly: Boolean
+        get() = activeViewOnly
+
+    fun latestRgbaSnapshot(): ByteArray? = synchronized(frameBufferLock) {
+        reusableRgbaBytes?.copyOf()
+    }
+
+    @JvmOverloads
     fun connect(
-        host: String,
-        port: Int,
-        password: String = "",
-        preferZrle: Boolean = true
+        host: String = initialHost,
+        port: Int = initialPort,
+        password: String = initialPassword,
+        preferZrle: Boolean = true,
+        username: String = initialUsername,
+        sharedSession: Boolean = initialSharedSession,
+        viewOnly: Boolean = initialViewOnly,
+        isAppleScreenSharing: Boolean = initialAppleScreenSharing,
+        forceReconnect: Boolean = false
     ) {
-        disconnectInternal()
         val trimmedHost = host.trim()
+        val safePort = port.takeIf { it in 1..65535 } ?: 5900
+        val candidateKey = "$trimmedHost:$safePort:$username:${password.hashCode()}:$sharedSession:$viewOnly:$isAppleScreenSharing:$preferZrle"
+        val cur = _state.value
+        if (!forceReconnect && activeTargetKey == candidateKey && (cur.connected || cur.connecting)) {
+            return
+        }
+
+        disconnectInternal()
+        activeViewOnly = viewOnly
+        activeTargetKey = candidateKey
+
         if (trimmedHost.isEmpty()) {
-            _state.value = VncSessionState(statusMessage = "Missing VNC host")
+            _state.value = VncSessionState(statusMessage = "Missing VNC host", viewOnly = viewOnly)
             return
         }
 
@@ -634,70 +841,237 @@ class VncRfbSessionClient {
                 connected = false,
                 connecting = true,
                 authRequired = false,
-                statusMessage = "Connecting to $trimmedHost:$port…"
+                viewOnly = viewOnly,
+                statusMessage = "Connecting to $trimmedHost:$safePort…"
             )
 
-            var nativeFbHandle = 0L
-            var zrleInflater: Inflater? = null
-            try {
-                val socket = Socket()
-                activeSocket = socket
-                socket.tcpNoDelay = true
-                socket.soTimeout = 15_000
-                socket.connect(InetSocketAddress(trimmedHost, port.coerceIn(1, 65535)), 6_000)
+            if (VncNativeBridge.isNativeLoaded) {
+                runNativeVncSessionLoop(
+                    host = trimmedHost,
+                    port = safePort,
+                    username = username,
+                    password = password,
+                    sharedSession = sharedSession,
+                    viewOnly = viewOnly,
+                    isAppleScreenSharing = isAppleScreenSharing
+                )
+            } else {
+                runJvmFallbackRfbLoop(
+                    host = trimmedHost,
+                    port = safePort,
+                    username = username,
+                    password = password,
+                    preferZrle = preferZrle,
+                    sharedSession = sharedSession,
+                    viewOnly = viewOnly,
+                    isAppleScreenSharing = isAppleScreenSharing
+                )
+            }
+        }
+    }
 
-                val input = DataInputStream(BufferedInputStream(socket.getInputStream(), 64 * 1024))
-                val output = DataOutputStream(BufferedOutputStream(socket.getOutputStream(), 16 * 1024))
-                outputStream = output
+    private suspend fun runNativeVncSessionLoop(
+        host: String,
+        port: Int,
+        username: String,
+        password: String,
+        sharedSession: Boolean,
+        viewOnly: Boolean,
+        isAppleScreenSharing: Boolean
+    ) {
+        var handle = 0L
+        try {
+            handle = VncNativeBridge.nativeVncSessionConnect(
+                host = host,
+                port = port,
+                username = username,
+                password = password,
+                sharedSession = sharedSession,
+                viewOnly = viewOnly
+            )
+            if (handle <= 0L) {
+                val err = runCatching { VncNativeBridge.nativeVncSessionLastError(0L) }
+                    .getOrDefault("Unable to establish VNC session")
+                    .ifBlank { "Unable to establish VNC session to $host:$port" }
+                val lower = err.lowercase(Locale.ROOT)
+                val needsAuth = lower.contains("password") || lower.contains("auth") || lower.contains("credential") || lower.contains("ard")
+                _state.value = _state.value.copy(
+                    connected = false,
+                    connecting = false,
+                    authRequired = needsAuth,
+                    viewOnly = viewOnly,
+                    statusMessage = err
+                )
+                return
+            }
 
-                // 1. RFB ProtocolVersion handshake (12 bytes: "RFB xxx.yyy\n")
-                val versionBytes = ByteArray(12)
-                input.readFully(versionBytes)
-                val serverBanner = String(versionBytes, StandardCharsets.US_ASCII)
-                if (!serverBanner.startsWith("RFB ")) {
-                    error("Invalid RFB banner: ${serverBanner.trim()}")
+            nativeSessionHandle = handle
+            val dims = runCatching { VncNativeBridge.nativeVncSessionGetDimensions(handle) }.getOrNull()
+            var fbWidth = (dims?.getOrNull(0) ?: 1280).coerceIn(1, 8192)
+            var fbHeight = (dims?.getOrNull(1) ?: 720).coerceIn(1, 8192)
+            var desktopName = runCatching { VncNativeBridge.nativeVncSessionDesktopName(handle) }
+                .getOrDefault("")
+                .ifBlank { "$host:$port" }
+
+            _state.value = VncSessionState(
+                connected = true,
+                connecting = false,
+                authRequired = false,
+                desktopName = desktopName,
+                framebufferWidth = fbWidth,
+                framebufferHeight = fbHeight,
+                negotiatedProtocol = if (isAppleScreenSharing) "RFB 3.8 • ARD DH-AES" else "RFB 3.8 • Native",
+                statusMessage = "Connected • $desktopName (${fbWidth}x$fbHeight)",
+                viewOnly = viewOnly
+            )
+
+            var lastFrameSeq = -1L
+            while (coroutineContext.isActive && VncNativeBridge.nativeVncSessionIsConnected(handle)) {
+                val seq = VncNativeBridge.nativeVncSessionFrameSequence(handle)
+                if (seq != lastFrameSeq) {
+                    val liveDims = VncNativeBridge.nativeVncSessionGetDimensions(handle)
+                    if (liveDims != null && liveDims.size >= 2) {
+                        val nextW = liveDims[0].coerceIn(1, 8192)
+                        val nextH = liveDims[1].coerceIn(1, 8192)
+                        if (nextW != fbWidth || nextH != fbHeight) {
+                            fbWidth = nextW
+                            fbHeight = nextH
+                            val latestName = VncNativeBridge.nativeVncSessionDesktopName(handle).ifBlank { desktopName }
+                            desktopName = latestName
+                            _state.value = _state.value.copy(
+                                desktopName = desktopName,
+                                framebufferWidth = fbWidth,
+                                framebufferHeight = fbHeight,
+                                statusMessage = "Connected • $desktopName (${fbWidth}x$fbHeight)"
+                            )
+                        }
+                    }
+
+                    var copied = 0
+                    synchronized(frameBufferLock) {
+                        ensureReusableFrameBuffersLocked(fbWidth, fbHeight)
+                        val dst = reusableRgbaBytes
+                        if (dst != null) {
+                            copied = VncNativeBridge.nativeVncSessionCopyFrameRgba(handle, dst)
+                            if (copied > 0) {
+                                blitReusableBufferLocked()
+                            }
+                        }
+                    }
+                    if (copied > 0) {
+                        lastFrameSeq = seq
+                        _frameRevision.value = seq
+                    }
                 }
-                val minorVer = serverBanner.substring(8, 11).toIntOrNull() ?: 8
-                val negotiatedMinor = when {
-                    minorVer >= 8 -> 8
-                    minorVer == 7 -> 7
-                    else -> 3
+
+                val pulledClip = VncNativeBridge.nativeVncSessionPullClipboard(handle)
+                if (!pulledClip.isNullOrEmpty() && pulledClip != _remoteClipboard.value) {
+                    _remoteClipboard.value = pulledClip
                 }
-                val clientVersion = String.format(Locale.US, "RFB 003.%03d\n", negotiatedMinor)
+
+                delay(16L)
+            }
+
+            if (coroutineContext.isActive) {
+                val disconnectErr = runCatching { VncNativeBridge.nativeVncSessionLastError(handle) }
+                    .getOrDefault("")
+                _state.value = _state.value.copy(
+                    connected = false,
+                    connecting = false,
+                    statusMessage = if (disconnectErr.isNotBlank()) "Disconnected: $disconnectErr" else "Session closed"
+                )
+            }
+        } catch (t: Throwable) {
+            if (coroutineContext.isActive) {
+                _state.value = _state.value.copy(
+                    connected = false,
+                    connecting = false,
+                    statusMessage = "Disconnected: ${t.message ?: t::class.simpleName}"
+                )
+            }
+        } finally {
+            if (handle > 0L) {
+                if (nativeSessionHandle == handle) {
+                    nativeSessionHandle = 0L
+                }
+                runCatching { VncNativeBridge.nativeVncSessionDisconnect(handle) }
+            }
+        }
+    }
+
+    private suspend fun runJvmFallbackRfbLoop(
+        host: String,
+        port: Int,
+        username: String,
+        password: String,
+        preferZrle: Boolean,
+        sharedSession: Boolean,
+        viewOnly: Boolean,
+        isAppleScreenSharing: Boolean
+    ) {
+        var zrleInflater: Inflater? = null
+        try {
+            val socket = Socket()
+            activeSocket = socket
+            socket.tcpNoDelay = true
+            socket.soTimeout = 15_000
+            socket.connect(InetSocketAddress(host, port), 6_000)
+
+            val input = DataInputStream(BufferedInputStream(socket.getInputStream(), 64 * 1024))
+            val output = DataOutputStream(BufferedOutputStream(socket.getOutputStream(), 16 * 1024))
+            outputStream = output
+
+            // 1. RFB ProtocolVersion handshake (12 bytes: "RFB xxx.yyy\n")
+            val versionBytes = ByteArray(12)
+            input.readFully(versionBytes)
+            val serverBanner = String(versionBytes, StandardCharsets.US_ASCII)
+            if (!serverBanner.startsWith("RFB ")) {
+                error("Invalid RFB banner: ${serverBanner.trim()}")
+            }
+            val minorVer = serverBanner.substring(8, 11).toIntOrNull() ?: 8
+            val negotiatedMinor = when {
+                minorVer >= 8 -> 8
+                minorVer == 7 -> 7
+                else -> 3
+            }
+            val clientVersion = String.format(Locale.US, "RFB 003.%03d\n", negotiatedMinor)
+            synchronized(writeLock) {
+                output.write(clientVersion.toByteArray(StandardCharsets.US_ASCII))
+                output.flush()
+            }
+
+            // 2. Security negotiation (None = 1, VNC DES Auth = 2, Apple ARD DH-AES = 30)
+            val chosenSecType: Int = if (negotiatedMinor == 3) {
+                val sec = input.readInt()
+                if (sec == 0) {
+                    error(readRfbReasonString(input))
+                }
+                sec
+            } else {
+                val count = input.readUnsignedByte()
+                if (count == 0) {
+                    error(readRfbReasonString(input))
+                }
+                val types = ByteArray(count)
+                input.readFully(types)
+                val offered = types.map { it.toInt() and 0xFF }
+                val picked = when {
+                    (isAppleScreenSharing || username.isNotBlank()) && 30 in offered -> 30
+                    password.isBlank() && 1 in offered -> 1
+                    2 in offered -> 2
+                    30 in offered -> 30
+                    1 in offered -> 1
+                    else -> error("Unsupported VNC security types: $offered")
+                }
                 synchronized(writeLock) {
-                    output.write(clientVersion.toByteArray(StandardCharsets.US_ASCII))
+                    output.writeByte(picked)
                     output.flush()
                 }
+                picked
+            }
 
-                // 2. Security negotiation (None = 1, VNC DES Auth = 2)
-                val chosenSecType: Int = if (negotiatedMinor == 3) {
-                    val sec = input.readInt()
-                    if (sec == 0) {
-                        error(readRfbReasonString(input))
-                    }
-                    sec
-                } else {
-                    val count = input.readUnsignedByte()
-                    if (count == 0) {
-                        error(readRfbReasonString(input))
-                    }
-                    val types = ByteArray(count)
-                    input.readFully(types)
-                    val offered = types.map { it.toInt() and 0xFF }
-                    val picked = when {
-                        password.isBlank() && 1 in offered -> 1
-                        2 in offered -> 2
-                        1 in offered -> 1
-                        else -> error("Unsupported VNC security types: $offered")
-                    }
-                    synchronized(writeLock) {
-                        output.writeByte(picked)
-                        output.flush()
-                    }
-                    picked
-                }
-
-                if (chosenSecType == 2) {
+            when (chosenSecType) {
+                2 -> {
                     val challenge = ByteArray(16)
                     input.readFully(challenge)
                     if (password.isEmpty()) {
@@ -705,9 +1079,9 @@ class VncRfbSessionClient {
                             connected = false,
                             connecting = false,
                             authRequired = true,
-                            statusMessage = "VNC password required by $trimmedHost:$port"
+                            statusMessage = "VNC password required by $host:$port"
                         )
-                        return@launch
+                        return
                     }
                     val response = encryptVncDesChallenge(challenge, password)
                     synchronized(writeLock) {
@@ -716,272 +1090,332 @@ class VncRfbSessionClient {
                     }
                 }
 
-                if (chosenSecType == 2 || negotiatedMinor >= 8) {
-                    val secResult = input.readInt()
-                    if (secResult != 0) {
-                        val reason = if (negotiatedMinor >= 8) {
-                            runCatching { readRfbReasonString(input) }.getOrDefault("Authentication failed")
-                        } else {
-                            "VNC authentication rejected"
-                        }
+                30 -> {
+                    // Apple Remote Desktop (ARD) Diffie-Hellman + AES-128-ECB Security Type 30
+                    val generator = input.readUnsignedShort()
+                    val keyLength = input.readUnsignedShort().coerceIn(16, 1024)
+                    val primeBytes = ByteArray(keyLength)
+                    val serverPubBytes = ByteArray(keyLength)
+                    input.readFully(primeBytes)
+                    input.readFully(serverPubBytes)
+
+                    if (username.isEmpty() && password.isEmpty()) {
                         _state.value = _state.value.copy(
                             connected = false,
                             connecting = false,
-                            authRequired = chosenSecType == 2,
-                            statusMessage = reason
+                            authRequired = true,
+                            statusMessage = "Apple Screen Sharing username & password required by $host:$port"
                         )
-                        return@launch
+                        return
                     }
-                }
 
-                // 3. ClientInit (shared = 1) & ServerInit
-                synchronized(writeLock) {
-                    output.writeByte(1)
-                    output.flush()
-                }
-
-                var fbWidth = input.readUnsignedShort().coerceIn(1, 8192)
-                var fbHeight = input.readUnsignedShort().coerceIn(1, 8192)
-                val serverPixelFormat = ByteArray(16)
-                input.readFully(serverPixelFormat)
-                val nameLen = input.readInt().coerceIn(0, 4096)
-                val nameBytes = ByteArray(nameLen)
-                input.readFully(nameBytes)
-                val desktopName = String(nameBytes, StandardCharsets.UTF_8).ifBlank { "$trimmedHost:$port" }
-
-                // 4. Request RGBA8888 little-endian pixel format & advertise ZRLE / CopyRect / Raw / DesktopSize
-                val setPixelFormat = byteArrayOf(
-                    0, 0, 0, 0,
-                    32, 24, 0, 1,
-                    0, 255.toByte(), 0, 255.toByte(), 0, 255.toByte(),
-                    0, 8, 16,
-                    0, 0, 0
-                )
-                val encodings = if (preferZrle) {
-                    intArrayOf(
-                        VncNativeBridge.RFB_ENCODING_ZRLE,
-                        VncNativeBridge.RFB_ENCODING_COPYRECT,
-                        VncNativeBridge.RFB_ENCODING_RAW,
-                        VncNativeBridge.RFB_ENCODING_DESKTOP_SIZE
+                    val (cipherCredentials, clientPubBytes) = computeAppleArdDhAesHandshake(
+                        generator = generator,
+                        keyLength = keyLength,
+                        primeBytes = primeBytes,
+                        serverPubBytes = serverPubBytes,
+                        username = username,
+                        password = password
                     )
-                } else {
-                    intArrayOf(
-                        VncNativeBridge.RFB_ENCODING_COPYRECT,
-                        VncNativeBridge.RFB_ENCODING_RAW,
-                        VncNativeBridge.RFB_ENCODING_ZRLE,
-                        VncNativeBridge.RFB_ENCODING_DESKTOP_SIZE
-                    )
-                }
-                synchronized(writeLock) {
-                    output.write(setPixelFormat)
-                    output.writeByte(2) // SetEncodings
-                    output.writeByte(0)
-                    output.writeShort(encodings.size)
-                    for (enc in encodings) {
-                        output.writeInt(enc)
-                    }
-                    writeFramebufferUpdateRequestLocked(output, incremental = false, x = 0, y = 0, w = fbWidth, h = fbHeight)
-                    output.flush()
-                }
-
-                if (VncNativeBridge.isNativeLoaded) {
-                    nativeFbHandle = VncNativeBridge.nativeCreateFramebuffer(fbWidth, fbHeight)
-                }
-                var fallbackArgb = IntArray(fbWidth * fbHeight) { 0xFF101624.toInt() }
-                zrleInflater = Inflater(false)
-                socket.soTimeout = 0 // Blocking read for continuous desktop updates
-
-                _state.value = VncSessionState(
-                    connected = true,
-                    connecting = false,
-                    authRequired = false,
-                    desktopName = desktopName,
-                    framebufferWidth = fbWidth,
-                    framebufferHeight = fbHeight,
-                    negotiatedProtocol = "RFB 3.$negotiatedMinor • ${if (preferZrle) "ZRLE" else "RAW"}",
-                    statusMessage = "Connected • $desktopName (${fbWidth}x$fbHeight)"
-                )
-
-                // 5. Continuous RFB Server-to-Client message loop
-                while (isActive && !socket.isClosed) {
-                    when (val msgType = input.readUnsignedByte()) {
-                        0 -> {
-                            // FramebufferUpdate
-                            input.readUnsignedByte() // padding
-                            val numRects = input.readUnsignedShort()
-                            var latestRgbaFromNative: ByteArray? = null
-
-                            repeat(numRects) {
-                                val rx = input.readUnsignedShort()
-                                val ry = input.readUnsignedShort()
-                                val rw = input.readUnsignedShort()
-                                val rh = input.readUnsignedShort()
-                                val encoding = input.readInt()
-
-                                when (encoding) {
-                                    VncNativeBridge.RFB_ENCODING_RAW -> {
-                                        val byteLen = rw * rh * 4
-                                        val rawBytes = ByteArray(byteLen)
-                                        input.readFully(rawBytes)
-                                        // Force alpha channel to opaque 0xFF on 24-in-32bpp pixels
-                                        var idx = 3
-                                        while (idx < rawBytes.size) {
-                                            rawBytes[idx] = 0xFF.toByte()
-                                            idx += 4
-                                        }
-                                        if (nativeFbHandle != 0L) {
-                                            latestRgbaFromNative = runCatching {
-                                                VncNativeBridge.nativeApplyRfbRect(
-                                                    nativeFbHandle,
-                                                    VncNativeBridge.RFB_ENCODING_RAW,
-                                                    rx, ry, rw, rh,
-                                                    rawBytes
-                                                )
-                                            }.getOrNull() ?: latestRgbaFromNative
-                                        } else {
-                                            blitRgbaRectToArgb(fallbackArgb, fbWidth, fbHeight, rx, ry, rw, rh, rawBytes)
-                                        }
-                                    }
-
-                                    VncNativeBridge.RFB_ENCODING_COPYRECT -> {
-                                        val copyPayload = ByteArray(4)
-                                        input.readFully(copyPayload)
-                                        if (nativeFbHandle != 0L) {
-                                            latestRgbaFromNative = runCatching {
-                                                VncNativeBridge.nativeApplyRfbRect(
-                                                    nativeFbHandle,
-                                                    VncNativeBridge.RFB_ENCODING_COPYRECT,
-                                                    rx, ry, rw, rh,
-                                                    copyPayload
-                                                )
-                                            }.getOrNull() ?: latestRgbaFromNative
-                                        } else {
-                                            val sx = ((copyPayload[0].toInt() and 0xFF) shl 8) or (copyPayload[1].toInt() and 0xFF)
-                                            val sy = ((copyPayload[2].toInt() and 0xFF) shl 8) or (copyPayload[3].toInt() and 0xFF)
-                                            blitCopyRectArgb(fallbackArgb, fbWidth, fbHeight, rx, ry, rw, rh, sx, sy)
-                                        }
-                                    }
-
-                                    VncNativeBridge.RFB_ENCODING_ZRLE -> {
-                                        val zLen = input.readInt().coerceAtLeast(0)
-                                        val zPayload = ByteArray(zLen)
-                                        input.readFully(zPayload)
-                                        val decodedRectRgba = decodeZrleRectToRgba(zrleInflater, rw, rh, zPayload)
-                                        if (decodedRectRgba != null) {
-                                            if (nativeFbHandle != 0L) {
-                                                latestRgbaFromNative = runCatching {
-                                                    VncNativeBridge.nativeApplyRfbRect(
-                                                        nativeFbHandle,
-                                                        VncNativeBridge.RFB_ENCODING_RAW,
-                                                        rx, ry, rw, rh,
-                                                        decodedRectRgba
-                                                    )
-                                                }.getOrNull() ?: latestRgbaFromNative
-                                            } else {
-                                                blitRgbaRectToArgb(fallbackArgb, fbWidth, fbHeight, rx, ry, rw, rh, decodedRectRgba)
-                                            }
-                                        }
-                                    }
-
-                                    VncNativeBridge.RFB_ENCODING_DESKTOP_SIZE -> {
-                                        val nextW = rw.coerceIn(1, 8192)
-                                        val nextH = rh.coerceIn(1, 8192)
-                                        if (nextW != fbWidth || nextH != fbHeight) {
-                                            fbWidth = nextW
-                                            fbHeight = nextH
-                                            if (nativeFbHandle != 0L) {
-                                                VncNativeBridge.nativeDestroyFramebuffer(nativeFbHandle)
-                                                nativeFbHandle = VncNativeBridge.nativeCreateFramebuffer(fbWidth, fbHeight)
-                                            }
-                                            fallbackArgb = IntArray(fbWidth * fbHeight) { 0xFF101624.toInt() }
-                                            _state.value = _state.value.copy(
-                                                framebufferWidth = fbWidth,
-                                                framebufferHeight = fbHeight,
-                                                statusMessage = "Connected • $desktopName (${fbWidth}x$fbHeight)"
-                                            )
-                                        }
-                                    }
-
-                                    else -> Unit
-                                }
-                            }
-
-                            val argbFrame = if (latestRgbaFromNative != null && latestRgbaFromNative!!.size >= fbWidth * fbHeight * 4) {
-                                rgbaBytesToArgbInts(latestRgbaFromNative!!, fbWidth * fbHeight)
-                            } else if (nativeFbHandle == 0L) {
-                                fallbackArgb
-                            } else {
-                                null
-                            }
-
-                            if (argbFrame != null) {
-                                val bmp = Bitmap.createBitmap(argbFrame, fbWidth, fbHeight, Bitmap.Config.ARGB_8888)
-                                _frameBitmap.value = bmp.asImageBitmap()
-                            }
-
-                            synchronized(writeLock) {
-                                writeFramebufferUpdateRequestLocked(
-                                    output,
-                                    incremental = true,
-                                    x = 0,
-                                    y = 0,
-                                    w = fbWidth,
-                                    h = fbHeight
-                                )
-                                output.flush()
-                            }
-                        }
-
-                        1 -> {
-                            // SetColourMapEntries
-                            input.readUnsignedByte()
-                            input.readUnsignedShort()
-                            val numColors = input.readUnsignedShort()
-                            val cmapBytes = ByteArray(numColors * 6)
-                            input.readFully(cmapBytes)
-                        }
-
-                        2 -> {
-                            // Bell (no payload)
-                        }
-
-                        3 -> {
-                            // ServerCutText
-                            val pad = ByteArray(3)
-                            input.readFully(pad)
-                            val cutLen = input.readInt().coerceIn(0, 1_048_576)
-                            val cutBytes = ByteArray(cutLen)
-                            input.readFully(cutBytes)
-                            _remoteClipboard.value = String(cutBytes, StandardCharsets.ISO_8859_1)
-                        }
-
-                        else -> error("Unhandled RFB server message type $msgType")
+                    synchronized(writeLock) {
+                        output.write(cipherCredentials)
+                        output.write(clientPubBytes)
+                        output.flush()
                     }
                 }
-            } catch (t: Throwable) {
-                if (coroutineContext.isActive) {
+            }
+
+            if (chosenSecType == 2 || chosenSecType == 30 || negotiatedMinor >= 8) {
+                val secResult = input.readInt()
+                if (secResult != 0) {
+                    val reason = if (negotiatedMinor >= 8) {
+                        runCatching { readRfbReasonString(input) }.getOrDefault("Authentication failed")
+                    } else {
+                        "VNC authentication rejected"
+                    }
                     _state.value = _state.value.copy(
                         connected = false,
                         connecting = false,
-                        statusMessage = "Disconnected: ${t.message ?: t::class.simpleName}"
+                        authRequired = chosenSecType == 2 || chosenSecType == 30,
+                        statusMessage = reason
                     )
+                    return
                 }
-            } finally {
-                zrleInflater?.end()
-                if (nativeFbHandle != 0L) {
-                    runCatching { VncNativeBridge.nativeDestroyFramebuffer(nativeFbHandle) }
-                }
-                runCatching { activeSocket?.close() }
-                outputStream = null
             }
+
+            // 3. ClientInit (shared = 1 or exclusive = 0) & ServerInit
+            synchronized(writeLock) {
+                output.writeByte(if (sharedSession) 1 else 0)
+                output.flush()
+            }
+
+            var fbWidth = input.readUnsignedShort().coerceIn(1, 8192)
+            var fbHeight = input.readUnsignedShort().coerceIn(1, 8192)
+            val serverPixelFormat = ByteArray(16)
+            input.readFully(serverPixelFormat)
+            val nameLen = input.readInt().coerceIn(0, 4096)
+            val nameBytes = ByteArray(nameLen)
+            input.readFully(nameBytes)
+            val desktopName = String(nameBytes, StandardCharsets.UTF_8).ifBlank { "$host:$port" }
+
+            // 4. Request RGBA8888 little-endian pixel format & advertise ZRLE / CopyRect / Raw / DesktopSize
+            val setPixelFormat = byteArrayOf(
+                0, 0, 0, 0,
+                32, 24, 0, 1,
+                0, 255.toByte(), 0, 255.toByte(), 0, 255.toByte(),
+                0, 8, 16,
+                0, 0, 0
+            )
+            val encodings = if (preferZrle) {
+                intArrayOf(
+                    VncNativeBridge.RFB_ENCODING_ZRLE,
+                    VncNativeBridge.RFB_ENCODING_COPYRECT,
+                    VncNativeBridge.RFB_ENCODING_RAW,
+                    VncNativeBridge.RFB_ENCODING_DESKTOP_SIZE
+                )
+            } else {
+                intArrayOf(
+                    VncNativeBridge.RFB_ENCODING_COPYRECT,
+                    VncNativeBridge.RFB_ENCODING_RAW,
+                    VncNativeBridge.RFB_ENCODING_ZRLE,
+                    VncNativeBridge.RFB_ENCODING_DESKTOP_SIZE
+                )
+            }
+            synchronized(writeLock) {
+                output.write(setPixelFormat)
+                output.writeByte(2) // SetEncodings
+                output.writeByte(0)
+                output.writeShort(encodings.size)
+                for (enc in encodings) {
+                    output.writeInt(enc)
+                }
+                writeFramebufferUpdateRequestLocked(output, incremental = false, x = 0, y = 0, w = fbWidth, h = fbHeight)
+                output.flush()
+            }
+
+            synchronized(frameBufferLock) {
+                ensureReusableFrameBuffersLocked(fbWidth, fbHeight)
+            }
+            zrleInflater = Inflater(false)
+            socket.soTimeout = 0
+
+            val protoBadge = if (chosenSecType == 30) {
+                "RFB 3.$negotiatedMinor • ARD DH-AES"
+            } else {
+                "RFB 3.$negotiatedMinor • ${if (preferZrle) "ZRLE" else "RAW"}"
+            }
+            _state.value = VncSessionState(
+                connected = true,
+                connecting = false,
+                authRequired = false,
+                desktopName = desktopName,
+                framebufferWidth = fbWidth,
+                framebufferHeight = fbHeight,
+                negotiatedProtocol = protoBadge,
+                statusMessage = "Connected • $desktopName (${fbWidth}x$fbHeight)",
+                viewOnly = viewOnly
+            )
+
+            var jvmFrameSeq = 0L
+
+            // 5. Continuous RFB Server-to-Client message loop
+            while (coroutineContext.isActive && !socket.isClosed) {
+                when (val msgType = input.readUnsignedByte()) {
+                    0 -> {
+                        input.readUnsignedByte() // padding
+                        val numRects = input.readUnsignedShort()
+                        var frameMutated = false
+
+                        repeat(numRects) {
+                            val rx = input.readUnsignedShort()
+                            val ry = input.readUnsignedShort()
+                            val rw = input.readUnsignedShort()
+                            val rh = input.readUnsignedShort()
+                            val encoding = input.readInt()
+
+                            when (encoding) {
+                                VncNativeBridge.RFB_ENCODING_RAW -> {
+                                    val byteLen = rw * rh * 4
+                                    val rawBytes = ByteArray(byteLen)
+                                    input.readFully(rawBytes)
+                                    var idx = 3
+                                    while (idx < rawBytes.size) {
+                                        rawBytes[idx] = 0xFF.toByte()
+                                        idx += 4
+                                    }
+                                    synchronized(frameBufferLock) {
+                                        ensureReusableFrameBuffersLocked(fbWidth, fbHeight)
+                                        reusableRgbaBytes?.let { dst ->
+                                            blitRgbaRectToRgbaBuffer(dst, fbWidth, fbHeight, rx, ry, rw, rh, rawBytes)
+                                            frameMutated = true
+                                        }
+                                    }
+                                }
+
+                                VncNativeBridge.RFB_ENCODING_COPYRECT -> {
+                                    val copyPayload = ByteArray(4)
+                                    input.readFully(copyPayload)
+                                    val sx = ((copyPayload[0].toInt() and 0xFF) shl 8) or (copyPayload[1].toInt() and 0xFF)
+                                    val sy = ((copyPayload[2].toInt() and 0xFF) shl 8) or (copyPayload[3].toInt() and 0xFF)
+                                    synchronized(frameBufferLock) {
+                                        ensureReusableFrameBuffersLocked(fbWidth, fbHeight)
+                                        reusableRgbaBytes?.let { dst ->
+                                            blitCopyRectRgbaBuffer(dst, fbWidth, fbHeight, rx, ry, rw, rh, sx, sy)
+                                            frameMutated = true
+                                        }
+                                    }
+                                }
+
+                                VncNativeBridge.RFB_ENCODING_ZRLE -> {
+                                    val zLen = input.readInt().coerceAtLeast(0)
+                                    val zPayload = ByteArray(zLen)
+                                    input.readFully(zPayload)
+                                    val decodedRectRgba = decodeZrleRectToRgba(zrleInflater, rw, rh, zPayload)
+                                    if (decodedRectRgba != null) {
+                                        synchronized(frameBufferLock) {
+                                            ensureReusableFrameBuffersLocked(fbWidth, fbHeight)
+                                            reusableRgbaBytes?.let { dst ->
+                                                blitRgbaRectToRgbaBuffer(dst, fbWidth, fbHeight, rx, ry, rw, rh, decodedRectRgba)
+                                                frameMutated = true
+                                            }
+                                        }
+                                    }
+                                }
+
+                                VncNativeBridge.RFB_ENCODING_DESKTOP_SIZE -> {
+                                    val nextW = rw.coerceIn(1, 8192)
+                                    val nextH = rh.coerceIn(1, 8192)
+                                    if (nextW != fbWidth || nextH != fbHeight) {
+                                        fbWidth = nextW
+                                        fbHeight = nextH
+                                        synchronized(frameBufferLock) {
+                                            ensureReusableFrameBuffersLocked(fbWidth, fbHeight)
+                                        }
+                                        _state.value = _state.value.copy(
+                                            framebufferWidth = fbWidth,
+                                            framebufferHeight = fbHeight,
+                                            statusMessage = "Connected • $desktopName (${fbWidth}x$fbHeight)"
+                                        )
+                                    }
+                                }
+
+                                else -> Unit
+                            }
+                        }
+
+                        if (frameMutated) {
+                            synchronized(frameBufferLock) {
+                                blitReusableBufferLocked()
+                            }
+                            jvmFrameSeq++
+                            _frameRevision.value = jvmFrameSeq
+                        }
+
+                        synchronized(writeLock) {
+                            writeFramebufferUpdateRequestLocked(
+                                output,
+                                incremental = true,
+                                x = 0,
+                                y = 0,
+                                w = fbWidth,
+                                h = fbHeight
+                            )
+                            output.flush()
+                        }
+                    }
+
+                    1 -> {
+                        input.readUnsignedByte()
+                        input.readUnsignedShort()
+                        val numColors = input.readUnsignedShort()
+                        val cmapBytes = ByteArray(numColors * 6)
+                        input.readFully(cmapBytes)
+                    }
+
+                    2 -> Unit
+
+                    3 -> {
+                        val pad = ByteArray(3)
+                        input.readFully(pad)
+                        val cutLen = input.readInt().coerceIn(0, 1_048_576)
+                        val cutBytes = ByteArray(cutLen)
+                        input.readFully(cutBytes)
+                        _remoteClipboard.value = String(cutBytes, StandardCharsets.ISO_8859_1)
+                    }
+
+                    else -> error("Unhandled RFB server message type $msgType")
+                }
+            }
+        } catch (t: Throwable) {
+            if (coroutineContext.isActive) {
+                _state.value = _state.value.copy(
+                    connected = false,
+                    connecting = false,
+                    statusMessage = "Disconnected: ${t.message ?: t::class.simpleName}"
+                )
+            }
+        } finally {
+            zrleInflater?.end()
+            runCatching { activeSocket?.close() }
+            outputStream = null
+        }
+    }
+
+    private fun ensureReusableFrameBuffersLocked(width: Int, height: Int) {
+        val w = width.coerceIn(1, 8192)
+        val h = height.coerceIn(1, 8192)
+        val requiredBytes = w * h * 4
+        if (reusableWidth == w && reusableHeight == h && reusableRgbaBytes?.size == requiredBytes) {
+            return
+        }
+        reusableWidth = w
+        reusableHeight = h
+        val bytes = ByteArray(requiredBytes)
+        // Initialize dark slate opaque background (#101624)
+        var idx = 0
+        while (idx + 3 < bytes.size) {
+            bytes[idx] = 0x10
+            bytes[idx + 1] = 0x16
+            bytes[idx + 2] = 0x24
+            bytes[idx + 3] = 0xFF.toByte()
+            idx += 4
+        }
+        reusableRgbaBytes = bytes
+        reusableByteBuffer = ByteBuffer.wrap(bytes)
+        val bmp = runCatching {
+            Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        }.getOrNull()
+        reusableBitmap = bmp
+        reusableImageBitmap = bmp?.asImageBitmap()
+        _frameBitmap.value = reusableImageBitmap
+    }
+
+    private fun blitReusableBufferLocked() {
+        val buf = reusableByteBuffer ?: return
+        val bmp = reusableBitmap ?: return
+        runCatching {
+            buf.rewind()
+            bmp.copyPixelsFromBuffer(buf)
+        }
+        if (_frameBitmap.value !== reusableImageBitmap) {
+            _frameBitmap.value = reusableImageBitmap
         }
     }
 
     fun sendPointerEvent(buttonMask: Int, x: Int, y: Int) {
         val current = _state.value
-        if (!current.connected) return
+        if (!current.connected || activeViewOnly) return
         val clampedX = x.coerceIn(0, (current.framebufferWidth - 1).coerceAtLeast(0))
         val clampedY = y.coerceIn(0, (current.framebufferHeight - 1).coerceAtLeast(0))
+        val handle = nativeSessionHandle
+        if (handle > 0L && VncNativeBridge.isNativeLoaded) {
+            scope.launch {
+                runCatching {
+                    VncNativeBridge.nativeVncSessionSendPointer(handle, buttonMask and 0xFF, clampedX, clampedY)
+                }
+            }
+            return
+        }
         scope.launch {
             runCatching {
                 synchronized(writeLock) {
@@ -997,72 +1431,40 @@ class VncRfbSessionClient {
     }
 
     fun sendKeyEvent(down: Boolean, keysym: Int) {
-        if (!_state.value.connected) return
-        scope.launch {
-            runCatching {
-                synchronized(writeLock) {
-                    val out = outputStream ?: return@launch
-                    out.writeByte(4)
-                    out.writeByte(if (down) 1 else 0)
-                    out.writeShort(0)
-                    out.writeInt(keysym)
-                    out.flush()
+        if (!_state.value.connected || activeViewOnly) return
+        if (keysym == VncNativeBridge.XK_SHIFT_L || keysym == VncNativeBridge.XK_SHIFT_R) {
+            remoteShiftHeld = down
+        }
+        val needsAutoShift = VncNativeBridge.requiresShiftModifier(keysym)
+        val handle = nativeSessionHandle
+        if (handle > 0L && VncNativeBridge.isNativeLoaded) {
+            scope.launch {
+                runCatching {
+                    if (down && needsAutoShift && !remoteShiftHeld && !syntheticShiftActive) {
+                        syntheticShiftActive = true
+                        VncNativeBridge.nativeVncSessionSendKey(handle, true, VncNativeBridge.XK_SHIFT_L)
+                    }
+                    VncNativeBridge.nativeVncSessionSendKey(handle, down, keysym)
+                    if (!down && syntheticShiftActive) {
+                        syntheticShiftActive = false
+                        VncNativeBridge.nativeVncSessionSendKey(handle, false, VncNativeBridge.XK_SHIFT_L)
+                    }
                 }
             }
+            return
         }
-    }
-
-    fun sendKeyTap(keysym: Int) {
-        if (!_state.value.connected) return
         scope.launch {
             runCatching {
                 synchronized(writeLock) {
                     val out = outputStream ?: return@launch
-                    writeKeyPacketLocked(out, true, keysym)
-                    writeKeyPacketLocked(out, false, keysym)
-                    out.flush()
-                }
-            }
-        }
-    }
-
-    fun sendCtrlAltDel() {
-        if (!_state.value.connected) return
-        scope.launch {
-            runCatching {
-                synchronized(writeLock) {
-                    val out = outputStream ?: return@launch
-                    writeKeyPacketLocked(out, true, 0xFFE3)  // XK_Control_L
-                    writeKeyPacketLocked(out, true, 0xFFE9)  // XK_Alt_L
-                    writeKeyPacketLocked(out, true, 0xFFFF)  // XK_Delete
-                    writeKeyPacketLocked(out, false, 0xFFFF)
-                    writeKeyPacketLocked(out, false, 0xFFE9)
-                    writeKeyPacketLocked(out, false, 0xFFE3)
-                    out.flush()
-                }
-            }
-        }
-    }
-
-    fun sendText(text: String) {
-        if (!_state.value.connected || text.isEmpty()) return
-        scope.launch {
-            runCatching {
-                synchronized(writeLock) {
-                    val out = outputStream ?: return@launch
-                    for (ch in text) {
-                        val keysym = when (ch) {
-                            '\n', '\r' -> 0xFF0D
-                            '\t' -> 0xFF09
-                            '\b' -> 0xFF08
-                            else -> if (ch.code in 0x20..0x7E || ch.code in 0xA0..0xFF) {
-                                ch.code
-                            } else {
-                                0x01000000 or ch.code
-                            }
-                        }
-                        writeKeyPacketLocked(out, true, keysym)
-                        writeKeyPacketLocked(out, false, keysym)
+                    if (down && needsAutoShift && !remoteShiftHeld && !syntheticShiftActive) {
+                        syntheticShiftActive = true
+                        writeKeyPacketLocked(out, true, VncNativeBridge.XK_SHIFT_L)
+                    }
+                    writeKeyPacketLocked(out, down, keysym)
+                    if (!down && syntheticShiftActive) {
+                        syntheticShiftActive = false
+                        writeKeyPacketLocked(out, false, VncNativeBridge.XK_SHIFT_L)
                     }
                     out.flush()
                 }
@@ -1070,8 +1472,179 @@ class VncRfbSessionClient {
         }
     }
 
+    fun sendHardwareKey(packet: RawHardwareKeyPacket): Boolean {
+        if (!_state.value.connected || activeViewOnly) return false
+        val keysym = VncNativeBridge.mapAndroidKeyCodeToX11Keysym(packet.keyCode, packet.unicodeChar)
+            ?: return false
+        val isModifierKey = keysym in 0xFFE1..0xFFEE
+        if (keysym == VncNativeBridge.XK_SHIFT_L || keysym == VncNativeBridge.XK_SHIFT_R) {
+            remoteShiftHeld = packet.isKeyDown
+        }
+        val wrapShift = !isModifierKey && (packet.shiftPressed || VncNativeBridge.requiresShiftModifier(keysym))
+
+        val handle = nativeSessionHandle
+        if (handle > 0L && VncNativeBridge.isNativeLoaded) {
+            scope.launch {
+                runCatching {
+                    if (packet.isKeyDown && wrapShift && !remoteShiftHeld && !syntheticShiftActive) {
+                        syntheticShiftActive = true
+                        VncNativeBridge.nativeVncSessionSendKey(handle, true, VncNativeBridge.XK_SHIFT_L)
+                    }
+                    VncNativeBridge.nativeVncSessionSendKey(handle, packet.isKeyDown, keysym)
+                    if (!packet.isKeyDown && syntheticShiftActive) {
+                        syntheticShiftActive = false
+                        VncNativeBridge.nativeVncSessionSendKey(handle, false, VncNativeBridge.XK_SHIFT_L)
+                    }
+                }
+            }
+            return true
+        }
+
+        scope.launch {
+            runCatching {
+                synchronized(writeLock) {
+                    val out = outputStream ?: return@launch
+                    if (packet.isKeyDown && wrapShift && !remoteShiftHeld && !syntheticShiftActive) {
+                        syntheticShiftActive = true
+                        writeKeyPacketLocked(out, true, VncNativeBridge.XK_SHIFT_L)
+                    }
+                    writeKeyPacketLocked(out, packet.isKeyDown, keysym)
+                    if (!packet.isKeyDown && syntheticShiftActive) {
+                        syntheticShiftActive = false
+                        writeKeyPacketLocked(out, false, VncNativeBridge.XK_SHIFT_L)
+                    }
+                    out.flush()
+                }
+            }
+        }
+        return true
+    }
+
+    fun sendKeyTap(keysym: Int) {
+        if (!_state.value.connected || activeViewOnly) return
+        val needsShift = VncNativeBridge.requiresShiftModifier(keysym) && !remoteShiftHeld
+        val handle = nativeSessionHandle
+        if (handle > 0L && VncNativeBridge.isNativeLoaded) {
+            scope.launch {
+                runCatching {
+                    if (needsShift) VncNativeBridge.nativeVncSessionSendKey(handle, true, VncNativeBridge.XK_SHIFT_L)
+                    VncNativeBridge.nativeVncSessionSendKey(handle, true, keysym)
+                    VncNativeBridge.nativeVncSessionSendKey(handle, false, keysym)
+                    if (needsShift) VncNativeBridge.nativeVncSessionSendKey(handle, false, VncNativeBridge.XK_SHIFT_L)
+                }
+            }
+            return
+        }
+        scope.launch {
+            runCatching {
+                synchronized(writeLock) {
+                    val out = outputStream ?: return@launch
+                    if (needsShift) writeKeyPacketLocked(out, true, VncNativeBridge.XK_SHIFT_L)
+                    writeKeyPacketLocked(out, true, keysym)
+                    writeKeyPacketLocked(out, false, keysym)
+                    if (needsShift) writeKeyPacketLocked(out, false, VncNativeBridge.XK_SHIFT_L)
+                    out.flush()
+                }
+            }
+        }
+    }
+
+    fun sendCtrlAltDel() {
+        if (!_state.value.connected || activeViewOnly) return
+        val handle = nativeSessionHandle
+        if (handle > 0L && VncNativeBridge.isNativeLoaded) {
+            scope.launch {
+                runCatching {
+                    VncNativeBridge.nativeVncSessionSendKey(handle, true, VncNativeBridge.XK_CONTROL_L)
+                    VncNativeBridge.nativeVncSessionSendKey(handle, true, VncNativeBridge.XK_ALT_L)
+                    VncNativeBridge.nativeVncSessionSendKey(handle, true, 0xFFFF)
+                    VncNativeBridge.nativeVncSessionSendKey(handle, false, 0xFFFF)
+                    VncNativeBridge.nativeVncSessionSendKey(handle, false, VncNativeBridge.XK_ALT_L)
+                    VncNativeBridge.nativeVncSessionSendKey(handle, false, VncNativeBridge.XK_CONTROL_L)
+                }
+            }
+            return
+        }
+        scope.launch {
+            runCatching {
+                synchronized(writeLock) {
+                    val out = outputStream ?: return@launch
+                    writeKeyPacketLocked(out, true, VncNativeBridge.XK_CONTROL_L)
+                    writeKeyPacketLocked(out, true, VncNativeBridge.XK_ALT_L)
+                    writeKeyPacketLocked(out, true, 0xFFFF)
+                    writeKeyPacketLocked(out, false, 0xFFFF)
+                    writeKeyPacketLocked(out, false, VncNativeBridge.XK_ALT_L)
+                    writeKeyPacketLocked(out, false, VncNativeBridge.XK_CONTROL_L)
+                    out.flush()
+                }
+            }
+        }
+    }
+
+    fun sendText(text: String) {
+        if (!_state.value.connected || activeViewOnly || text.isEmpty()) return
+        val handle = nativeSessionHandle
+        if (handle > 0L && VncNativeBridge.isNativeLoaded) {
+            scope.launch {
+                runCatching {
+                    for (ch in text) {
+                        val keysym = charToX11Keysym(ch)
+                        val needsShift = VncNativeBridge.requiresShiftModifier(keysym)
+                        if (needsShift) {
+                            VncNativeBridge.nativeVncSessionSendKey(handle, true, VncNativeBridge.XK_SHIFT_L)
+                        }
+                        VncNativeBridge.nativeVncSessionSendKey(handle, true, keysym)
+                        VncNativeBridge.nativeVncSessionSendKey(handle, false, keysym)
+                        if (needsShift) {
+                            VncNativeBridge.nativeVncSessionSendKey(handle, false, VncNativeBridge.XK_SHIFT_L)
+                        }
+                    }
+                }
+            }
+            return
+        }
+        scope.launch {
+            runCatching {
+                synchronized(writeLock) {
+                    val out = outputStream ?: return@launch
+                    for (ch in text) {
+                        val keysym = charToX11Keysym(ch)
+                        val needsShift = VncNativeBridge.requiresShiftModifier(keysym)
+                        if (needsShift) {
+                            writeKeyPacketLocked(out, true, VncNativeBridge.XK_SHIFT_L)
+                        }
+                        writeKeyPacketLocked(out, true, keysym)
+                        writeKeyPacketLocked(out, false, keysym)
+                        if (needsShift) {
+                            writeKeyPacketLocked(out, false, VncNativeBridge.XK_SHIFT_L)
+                        }
+                    }
+                    out.flush()
+                }
+            }
+        }
+    }
+
+    private fun charToX11Keysym(ch: Char): Int = when (ch) {
+        '\n', '\r' -> 0xFF0D
+        '\t' -> 0xFF09
+        '\b' -> 0xFF08
+        else -> if (ch.code in 0x20..0x7E || ch.code in 0xA0..0xFF) {
+            ch.code
+        } else {
+            0x01000000 or ch.code
+        }
+    }
+
     fun sendClientCutText(text: String) {
         if (!_state.value.connected) return
+        val handle = nativeSessionHandle
+        if (handle > 0L && VncNativeBridge.isNativeLoaded) {
+            scope.launch {
+                runCatching { VncNativeBridge.nativeVncSessionSendClipboard(handle, text) }
+            }
+            return
+        }
         scope.launch {
             runCatching {
                 val bytes = text.toByteArray(StandardCharsets.ISO_8859_1)
@@ -1091,13 +1664,22 @@ class VncRfbSessionClient {
     private fun disconnectInternal() {
         sessionJob?.cancel()
         sessionJob = null
+        val prevHandle = nativeSessionHandle
+        nativeSessionHandle = 0L
+        if (prevHandle > 0L && VncNativeBridge.isNativeLoaded) {
+            runCatching { VncNativeBridge.nativeVncSessionDisconnect(prevHandle) }
+        }
         outputStream = null
         runCatching { activeSocket?.close() }
         activeSocket = null
+        remoteShiftHeld = false
+        syntheticShiftActive = false
     }
 
-    fun close() {
+    override fun close() {
+        activeTargetKey = ""
         disconnectInternal()
+        runCatching { tunnelLease?.close() }
         scope.cancel()
         scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     }
@@ -1149,6 +1731,59 @@ class VncRfbSessionClient {
         return cipher.doFinal(challenge16)
     }
 
+    internal fun computeAppleArdDhAesHandshake(
+        generator: Int,
+        keyLength: Int,
+        primeBytes: ByteArray,
+        serverPubBytes: ByteArray,
+        username: String,
+        password: String
+    ): Pair<ByteArray, ByteArray> {
+        val rng = SecureRandom()
+        val p = BigInteger(1, primeBytes)
+        val g = BigInteger.valueOf(generator.toLong())
+        val serverPub = BigInteger(1, serverPubBytes)
+        var secretExp: BigInteger
+        do {
+            secretExp = BigInteger(256, rng)
+        } while (secretExp <= BigInteger.ONE)
+
+        val clientPub = g.modPow(secretExp, p)
+        val sharedSecret = serverPub.modPow(secretExp, p)
+
+        val sharedBytes = toFixedUnsignedBytes(sharedSecret, keyLength)
+        val clientPubFixed = toFixedUnsignedBytes(clientPub, keyLength)
+        val aesKey16 = MessageDigest.getInstance("MD5").digest(sharedBytes)
+
+        val credPlain = ByteArray(128)
+        rng.nextBytes(credPlain)
+        val userUtf8 = username.toByteArray(StandardCharsets.UTF_8)
+        val passUtf8 = password.toByteArray(StandardCharsets.UTF_8)
+        val uLen = minOf(userUtf8.size, 63)
+        val pLen = minOf(passUtf8.size, 63)
+        System.arraycopy(userUtf8, 0, credPlain, 0, uLen)
+        credPlain[uLen] = 0
+        System.arraycopy(passUtf8, 0, credPlain, 64, pLen)
+        credPlain[64 + pLen] = 0
+
+        val cipher = Cipher.getInstance("AES/ECB/NoPadding")
+        cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(aesKey16, "AES"))
+        val encrypted = cipher.doFinal(credPlain)
+        return encrypted to clientPubFixed
+    }
+
+    private fun toFixedUnsignedBytes(value: BigInteger, length: Int): ByteArray {
+        val raw = value.toByteArray()
+        if (raw.size == length) return raw
+        val out = ByteArray(length)
+        if (raw.size > length) {
+            System.arraycopy(raw, raw.size - length, out, 0, length)
+        } else {
+            System.arraycopy(raw, 0, out, length - raw.size, raw.size)
+        }
+        return out
+    }
+
     private fun decodeZrleRectToRgba(inflater: Inflater, w: Int, h: Int, zPayload: ByteArray): ByteArray? {
         if (w <= 0 || h <= 0 || zPayload.isEmpty()) return null
         inflater.setInput(zPayload)
@@ -1172,7 +1807,6 @@ class VncRfbSessionClient {
                 val sub = data[cursor++].toInt() and 0xFF
                 when {
                     sub == 0 -> {
-                        // Raw 3-byte CPIXEL
                         for (row in 0 until th) {
                             for (col in 0 until tw) {
                                 if (cursor + 3 > data.size) return rectRgba
@@ -1183,7 +1817,6 @@ class VncRfbSessionClient {
                     }
 
                     sub == 1 -> {
-                        // Solid tile
                         if (cursor + 3 > data.size) return rectRgba
                         val r = data[cursor]
                         val g = data[cursor + 1]
@@ -1197,7 +1830,6 @@ class VncRfbSessionClient {
                     }
 
                     sub in 2..16 -> {
-                        // Packed palette tile
                         val palSize = sub
                         if (cursor + palSize * 3 > data.size) return rectRgba
                         val palR = ByteArray(palSize)
@@ -1232,7 +1864,6 @@ class VncRfbSessionClient {
                     }
 
                     sub == 128 -> {
-                        // Plain RLE
                         var remaining = tw * th
                         var pxIdx = 0
                         while (remaining > 0 && cursor + 3 <= data.size) {
@@ -1258,7 +1889,6 @@ class VncRfbSessionClient {
                     }
 
                     sub in 130..255 -> {
-                        // Palette RLE
                         val palSize = sub - 128
                         if (cursor + palSize * 3 > data.size) return rectRgba
                         val palR = ByteArray(palSize)
@@ -1313,51 +1943,42 @@ class VncRfbSessionClient {
         }
     }
 
-    private fun rgbaBytesToArgbInts(rgba: ByteArray, pixelCount: Int): IntArray {
-        val out = IntArray(pixelCount)
-        var byteIdx = 0
-        for (i in 0 until pixelCount) {
-            val r = rgba[byteIdx].toInt() and 0xFF
-            val g = rgba[byteIdx + 1].toInt() and 0xFF
-            val b = rgba[byteIdx + 2].toInt() and 0xFF
-            out[i] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
-            byteIdx += 4
-        }
-        return out
-    }
-
-    private fun blitRgbaRectToArgb(
-        dst: IntArray,
+    private fun blitRgbaRectToRgbaBuffer(
+        dst: ByteArray,
         fbW: Int,
         fbH: Int,
         rx: Int,
         ry: Int,
         rw: Int,
         rh: Int,
-        rgba: ByteArray
+        srcRgba: ByteArray
     ) {
         var srcOff = 0
+        val rowBytes = rw * 4
         for (row in 0 until rh) {
             val dy = ry + row
             if (dy !in 0 until fbH) {
-                srcOff += rw * 4
+                srcOff += rowBytes
                 continue
             }
             for (col in 0 until rw) {
                 val dx = rx + col
-                if (dx in 0 until fbW && srcOff + 2 < rgba.size) {
-                    val r = rgba[srcOff].toInt() and 0xFF
-                    val g = rgba[srcOff + 1].toInt() and 0xFF
-                    val b = rgba[srcOff + 2].toInt() and 0xFF
-                    dst[dy * fbW + dx] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
+                if (dx in 0 until fbW && srcOff + 3 < srcRgba.size) {
+                    val dstOff = (dy * fbW + dx) * 4
+                    if (dstOff + 3 < dst.size) {
+                        dst[dstOff] = srcRgba[srcOff]
+                        dst[dstOff + 1] = srcRgba[srcOff + 1]
+                        dst[dstOff + 2] = srcRgba[srcOff + 2]
+                        dst[dstOff + 3] = 0xFF.toByte()
+                    }
                 }
                 srcOff += 4
             }
         }
     }
 
-    private fun blitCopyRectArgb(
-        dst: IntArray,
+    private fun blitCopyRectRgbaBuffer(
+        dst: ByteArray,
         fbW: Int,
         fbH: Int,
         dx: Int,
@@ -1368,12 +1989,16 @@ class VncRfbSessionClient {
         sy: Int
     ) {
         if (w <= 0 || h <= 0) return
-        val scratch = IntArray(w * h)
+        val scratch = ByteArray(w * h * 4)
         for (row in 0 until h) {
             for (col in 0 until w) {
                 val srcX = (sx + col).coerceIn(0, fbW - 1)
                 val srcY = (sy + row).coerceIn(0, fbH - 1)
-                scratch[row * w + col] = dst[srcY * fbW + srcX]
+                val srcOff = (srcY * fbW + srcX) * 4
+                val tmpOff = (row * w + col) * 4
+                if (srcOff + 3 < dst.size) {
+                    System.arraycopy(dst, srcOff, scratch, tmpOff, 4)
+                }
             }
         }
         for (row in 0 until h) {
@@ -1382,7 +2007,11 @@ class VncRfbSessionClient {
             for (col in 0 until w) {
                 val targetX = dx + col
                 if (targetX in 0 until fbW) {
-                    dst[targetY * fbW + targetX] = scratch[row * w + col]
+                    val dstOff = (targetY * fbW + targetX) * 4
+                    val tmpOff = (row * w + col) * 4
+                    if (dstOff + 3 < dst.size) {
+                        System.arraycopy(scratch, tmpOff, dst, dstOff, 4)
+                    }
                 }
             }
         }

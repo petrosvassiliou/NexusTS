@@ -26,24 +26,28 @@ public struct ContainerWorkloadStudioView: View {
         self.tab = tab
     }
 
+    private var latestConnection: VaultConnection {
+        store.activeConnections.first(where: { $0.id == tab.connection.id }) ?? tab.connection
+    }
+
     private var containerSettings: ContainerExecProtocolSettings {
-        if case .containerExec(let s) = tab.connection.settings { return s }
+        if case .containerExec(let s) = latestConnection.settings { return s }
         return ContainerExecProtocolSettings(
-            clusterOrSocketEndpoint: tab.connection.protocolType == .DOCKER_CONTAINER
+            clusterOrSocketEndpoint: latestConnection.protocolType == .DOCKER_CONTAINER
                 ? "unix:///var/run/docker.sock"
                 : "https://kubernetes.default.svc:6443",
-            podOrContainerName: tab.connection.host
+            podOrContainerName: latestConnection.host
         )
     }
 
     public var body: some View {
-        let resolved = PropertyInheritanceResolver.resolve(connection: tab.connection, in: store.document)
-        let bearer = resolved.effectiveCredential?.secretPassword ?? ""
+        let resolved = PropertyInheritanceResolver.resolve(connection: latestConnection, in: store.document)
+        let bearer = tab.adHocPasswordOverride ?? resolved.effectiveCredential?.secretPassword ?? ""
 
         VStack(spacing: 0) {
             HStack(spacing: 12) {
-                ProtocolSquircleIcon(protocolType: tab.connection.protocolType, size: 22)
-                Text("\(tab.connection.name) • \(containerSettings.clusterOrSocketEndpoint)")
+                ProtocolSquircleIcon(protocolType: latestConnection.protocolType, size: 22)
+                Text("\(latestConnection.name) • \(containerSettings.clusterOrSocketEndpoint)")
                     .font(.callout.weight(.semibold))
                     .lineLimit(1)
 
@@ -63,6 +67,7 @@ public struct ContainerWorkloadStudioView: View {
                     Label("Refresh", systemImage: "arrow.clockwise")
                 }
                 .controlSize(.small)
+                .disabled(isLoading)
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 7)
@@ -87,7 +92,7 @@ public struct ContainerWorkloadStudioView: View {
                     TableColumn("Workload") { item in
                         Text(item.name).font(.body.weight(.medium))
                     }
-                    TableColumn(tab.connection.protocolType == .DOCKER_CONTAINER ? "OCI Image" : "Namespace") { item in
+                    TableColumn(latestConnection.protocolType == .DOCKER_CONTAINER ? "OCI Image" : "Namespace") { item in
                         Text(item.namespaceOrImage)
                             .font(.system(.caption, design: .monospaced))
                             .foregroundStyle(.secondary)
@@ -103,9 +108,10 @@ public struct ContainerWorkloadStudioView: View {
                     Label("Interactive Container Shell", systemImage: "terminal.fill")
                         .font(.title3.weight(.semibold))
 
-                    let cliCmd: String = tab.connection.protocolType == .DOCKER_CONTAINER
-                        ? "docker exec -it \(containerSettings.podOrContainerName.isEmpty ? "<container>" : containerSettings.podOrContainerName) \(containerSettings.shellCommand)"
-                        : "kubectl -n \(containerSettings.namespace) exec -it \(containerSettings.podOrContainerName.isEmpty ? "<pod>" : containerSettings.podOrContainerName) -- \(containerSettings.shellCommand)"
+                    let cliCmd = ContainerWorkloadClient.buildSafeExecCommand(
+                        protocolType: latestConnection.protocolType,
+                        settings: containerSettings
+                    )
 
                     Text(cliCmd)
                         .font(.system(.body, design: .monospaced))
@@ -147,7 +153,7 @@ public struct ContainerWorkloadStudioView: View {
 
     private func refreshData(bearer: String) {
         isLoading = true
-        let proto = tab.connection.protocolType
+        let proto = latestConnection.protocolType
         let cfg = containerSettings
         Task {
             do {
@@ -165,7 +171,7 @@ public struct ContainerWorkloadStudioView: View {
     }
 }
 
-// MARK: - 2. Cloud & Hypervisor Inventory Session View (Proxmox, vSphere, AWS EC2 SigV4, Azure)
+// MARK: - 2. Cloud & Hypervisor Inventory Session View (Proxmox, vSphere, Hyper-V WinRM, AWS EC2 SigV4, Azure)
 
 public struct CloudHypervisorSessionView: View {
     @EnvironmentObject private var store: WorkspaceStore
@@ -180,11 +186,15 @@ public struct CloudHypervisorSessionView: View {
         self.tab = tab
     }
 
+    private var latestConnection: VaultConnection {
+        store.activeConnections.first(where: { $0.id == tab.connection.id }) ?? tab.connection
+    }
+
     public var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 10) {
-                ProtocolSquircleIcon(protocolType: tab.connection.protocolType, size: 22)
-                Text("\(tab.connection.protocolType.displayName) • \(tab.connection.name)")
+                ProtocolSquircleIcon(protocolType: latestConnection.protocolType, size: 22)
+                Text("\(latestConnection.protocolType.displayName) • \(latestConnection.name)")
                     .font(.callout.weight(.semibold))
 
                 Spacer()
@@ -194,8 +204,9 @@ public struct CloudHypervisorSessionView: View {
                     Button {
                         let child = VaultConnection(
                             name: vm.name,
-                            host: vm.addressOrNode.isEmpty ? tab.connection.host : vm.addressOrNode,
-                            protocolType: vm.consoleProtocol
+                            host: vm.addressOrNode.isEmpty ? latestConnection.host : vm.addressOrNode,
+                            protocolType: vm.consoleProtocol,
+                            osFamily: vm.consoleProtocol == .RDP ? "Windows" : "Linux"
                         )
                         store.openConnection(child, inSplit: .horizontal)
                     } label: {
@@ -211,6 +222,7 @@ public struct CloudHypervisorSessionView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
+                .disabled(isLoading)
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 7)
@@ -220,7 +232,7 @@ public struct CloudHypervisorSessionView: View {
 
             if inventory.isEmpty && !isLoading {
                 ContentUnavailableView {
-                    Label("\(tab.connection.protocolType.displayName) Inventory", systemImage: tab.connection.protocolType.sfSymbolName)
+                    Label("\(latestConnection.protocolType.displayName) Inventory", systemImage: latestConnection.protocolType.sfSymbolName)
                 } description: {
                     Text(statusMessage)
                 } actions: {
@@ -257,10 +269,17 @@ public struct CloudHypervisorSessionView: View {
 
     private func loadInventory() {
         isLoading = true
-        statusMessage = "Querying \(tab.connection.protocolType.displayName)…"
-        let resolved = PropertyInheritanceResolver.resolve(connection: tab.connection, in: store.document)
-        let conn = tab.connection
-        let cred = resolved.effectiveCredential
+        let conn = latestConnection
+        statusMessage = "Querying \(conn.protocolType.displayName)…"
+        let resolved = PropertyInheritanceResolver.resolve(connection: conn, in: store.document)
+        var cred = resolved.effectiveCredential
+        if tab.adHocUsernameOverride != nil || tab.adHocPasswordOverride != nil || tab.adHocDomainOverride != nil {
+            var copy = cred ?? VaultCredential(name: "Ad-Hoc")
+            if let u = tab.adHocUsernameOverride, !u.isEmpty { copy.username = u }
+            if let p = tab.adHocPasswordOverride, !p.isEmpty { copy.secretPassword = p }
+            if let d = tab.adHocDomainOverride, !d.isEmpty { copy.domain = d }
+            cred = copy
+        }
         Task {
             do {
                 let items = try await CloudHypervisorClient.fetchInventory(connection: conn, credential: cred)
@@ -307,6 +326,15 @@ public struct NetworkDiagnosticsSessionView: View {
 
     public init(tab: WorkspaceSessionTab) {
         self.tab = tab
+    }
+
+    private var latestConnection: VaultConnection {
+        store.activeConnections.first(where: { $0.id == tab.connection.id }) ?? tab.connection
+    }
+
+    private var netSettings: NetUtilityProtocolSettings {
+        if case .netUtility(let cfg) = latestConnection.settings { return cfg }
+        return NetUtilityProtocolSettings()
     }
 
     public var body: some View {
@@ -363,7 +391,7 @@ public struct NetworkDiagnosticsSessionView: View {
                         runSelectedDiagnostic()
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(isRunning || targetHost.isEmpty)
+                    .disabled(isRunning || targetHost.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
 
                 Spacer()
@@ -436,15 +464,14 @@ public struct NetworkDiagnosticsSessionView: View {
             }
         }
         .onAppear {
-            if !tab.connection.host.isEmpty {
-                targetHost = tab.connection.host
+            if !latestConnection.host.isEmpty {
+                targetHost = latestConnection.host
             }
-            if case .netUtility(let cfg) = tab.connection.settings {
-                portRangeStart = cfg.portScanRangeStart
-                portRangeEnd = cfg.portScanRangeEnd
-                if !cfg.wolMacAddress.isEmpty { macAddressInput = cfg.wolMacAddress }
-            }
-            switch tab.connection.protocolType {
+            let cfg = netSettings
+            portRangeStart = cfg.portScanRangeStart
+            portRangeEnd = cfg.portScanRangeEnd
+            if !cfg.wolMacAddress.isEmpty { macAddressInput = cfg.wolMacAddress }
+            switch latestConnection.protocolType {
             case .UTILITY_PING: selectedTool = .ping
             case .UTILITY_TRACEROUTE: selectedTool = .traceroute
             case .UTILITY_WAKE_ON_LAN: selectedTool = .wol
@@ -454,9 +481,19 @@ public struct NetworkDiagnosticsSessionView: View {
     }
 
     private func dispatchWakeOnLan() {
+        let cfg = netSettings
+        let broadcastAddr = cfg.wolBroadcastAddress.trimmingCharacters(in: .whitespacesAndNewlines)
         do {
-            let sent = try NativeNetworkDiagnostics.sendWakeOnLan(macAddress: macAddressInput)
-            outputLines.insert("✓ Broadcast \(sent)-byte IEEE 802.3 Magic Packet to \(macAddressInput)", at: 0)
+            let sent = try NativeNetworkDiagnostics.sendWakeOnLan(
+                macAddress: macAddressInput,
+                broadcastIp: broadcastAddr.isEmpty ? "255.255.255.255" : broadcastAddr,
+                udpPort: UInt16(clamping: cfg.wolUdpPort > 0 ? cfg.wolUdpPort : 9),
+                secureOnHex: cfg.wolSecureOnHex
+            )
+            outputLines.insert(
+                "✓ Broadcast \(sent)-byte IEEE 802.3 Magic Packet to \(macAddressInput) via \(broadcastAddr.isEmpty ? "255.255.255.255" : broadcastAddr):\(cfg.wolUdpPort)",
+                at: 0
+            )
         } catch {
             outputLines.insert("✖ \(error.localizedDescription)", at: 0)
         }
@@ -465,6 +502,7 @@ public struct NetworkDiagnosticsSessionView: View {
     private func runSelectedDiagnostic() {
         let host = targetHost.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !host.isEmpty else { return }
+        let cfg = netSettings
         isRunning = true
 
         switch selectedTool {
@@ -478,8 +516,14 @@ public struct NetworkDiagnosticsSessionView: View {
             }
 
         case .traceroute:
+            let maxHops = UInt8(clamping: max(1, min(64, cfg.tracerouteMaxHops)))
             Task.detached {
-                let hops = NativeNetworkDiagnostics.traceRoute(host: host, probePort: 443, maxHops: 20, timeoutMs: 400)
+                let hops = NativeNetworkDiagnostics.traceRoute(
+                    host: host,
+                    probePort: 443,
+                    maxHops: maxHops,
+                    timeoutMs: 400
+                )
                 await MainActor.run {
                     self.traceHops = hops
                     self.isRunning = false
@@ -487,15 +531,28 @@ public struct NetworkDiagnosticsSessionView: View {
             }
 
         case .ping:
+            let count = max(1, min(50, cfg.pingCount))
+            let intervalNs = UInt64(max(50, min(10_000, cfg.pingIntervalMs))) * 1_000_000
             Task.detached {
                 var results: [String] = []
-                for seq in 1...5 {
-                    if let hit = NativeNetworkDiagnostics.probeTcpPort(host: host, port: 443, timeoutMs: 750)
-                        ?? NativeNetworkDiagnostics.probeTcpPort(host: host, port: 22, timeoutMs: 750),
-                       hit.open {
-                        results.append("seq=\(seq)  host=\(host):\(hit.port)  rtt=\(hit.connectLatencyMs) ms  status=OPEN")
+                let candidatePorts: [UInt16] = [443, 80, 22, 3389]
+                for seq in 1...count {
+                    var matchedPort: UInt16? = nil
+                    var matchedRtt: Double = -1
+                    for p in candidatePorts {
+                        if let rtt = NativeNetworkDiagnostics.tcpPingMs(host: host, port: p, timeoutMs: 750) {
+                            matchedPort = p
+                            matchedRtt = rtt
+                            break
+                        }
+                    }
+                    if let p = matchedPort {
+                        results.append(String(format: "seq=%d  host=%@:%d  rtt=%.2f ms  status=OPEN", seq, host, p, matchedRtt))
                     } else {
                         results.append("seq=\(seq)  host=\(host)  timeout")
+                    }
+                    if seq < count {
+                        try? await Task.sleep(nanoseconds: intervalNs)
                     }
                 }
                 let finalResults = results
@@ -508,26 +565,40 @@ public struct NetworkDiagnosticsSessionView: View {
         case .portScan:
             let lo = max(1, min(portRangeStart, portRangeEnd))
             let hi = min(65535, max(portRangeStart, portRangeEnd))
+            let concurrency = UInt32(max(1, min(512, cfg.portScanConcurrency)))
             scanHits.removeAll()
-            Task.detached {
-                let commonPorts: [UInt16] = Array(UInt16(lo)...UInt16(min(hi, lo + 256)))
-                var openHits: [PortProbeHit] = []
-                for p in commonPorts {
-                    if let hit = NativeNetworkDiagnostics.probeTcpPort(host: host, port: p, timeoutMs: 120), hit.open {
-                        let banner = NativeNetworkDiagnostics.grabServiceBanner(host: host, port: p, timeoutMs: 220)
-                        let enriched = PortProbeHit(
+            Task.detached(priority: .userInitiated) {
+                let rawHits = NativeNetworkDiagnostics.scanPorts(
+                    host: host,
+                    startPort: UInt16(lo),
+                    endPort: UInt16(hi),
+                    timeoutMs: 250,
+                    concurrency: concurrency
+                )
+                let enrichedHits: [PortProbeHit]
+                if rawHits.count <= 32 {
+                    enrichedHits = rawHits.map { hit in
+                        if let existingBanner = hit.serviceBanner, !existingBanner.isEmpty {
+                            return hit
+                        }
+                        let banner = NativeNetworkDiagnostics.grabServiceBanner(
+                            host: host,
                             port: hit.port,
-                            open: true,
+                            timeoutMs: 220
+                        )
+                        return PortProbeHit(
+                            port: hit.port,
+                            open: hit.open,
                             connectLatencyMs: hit.connectLatencyMs,
                             guessedService: hit.guessedService,
-                            serviceBanner: banner.isEmpty ? hit.serviceBanner : banner
+                            serviceBanner: banner.isEmpty ? nil : banner
                         )
-                        openHits.append(enriched)
                     }
+                } else {
+                    enrichedHits = rawHits
                 }
-                let finalHits = openHits
                 await MainActor.run {
-                    self.scanHits = finalHits
+                    self.scanHits = enrichedHits
                     self.isRunning = false
                 }
             }

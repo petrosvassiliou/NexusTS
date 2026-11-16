@@ -58,6 +58,8 @@ import com.nexusts.app.core.vault.model.VaultTodoItem
 import com.nexusts.app.protocols.rdp.bridge.RdpManagedSession
 import com.nexusts.app.protocols.ssh.bridge.SshNativeBridge
 import com.nexusts.app.protocols.ssh.bridge.SshTerminalSessionController
+import com.nexusts.app.protocols.ssh.ui.TransferCommanderSessionController
+import com.nexusts.app.protocols.vnc.bridge.VncRfbSessionClient
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -65,7 +67,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import java.util.Arrays
 import java.util.UUID
 import javax.inject.Inject
@@ -198,8 +202,19 @@ class NexusWorkspaceViewModel @Inject constructor(
         get() = activeVaultStore.sshControllers
     private val rdpSessions
         get() = activeVaultStore.rdpSessions
+    private val transferControllers
+        get() = activeVaultStore.transferControllers
+    private val vncSessions
+        get() = activeVaultStore.vncSessions
+    private val tabGatewayLeases
+        get() = activeVaultStore.tabGatewayLeases
     private val adHocOverrides
         get() = activeVaultStore.adHocOverrides
+
+    var onePasswordConnectUrl: String? = null
+    var onePasswordConnectToken: String? = null
+    var bitwardenServeUrl: String? = null
+    var kdbxBytesProvider: (suspend (String) -> Pair<ByteArray, CharArray>)? = null
 
     private val _uiState = MutableStateFlow(
         WorkspaceUiState(
@@ -337,7 +352,9 @@ class NexusWorkspaceViewModel @Inject constructor(
         SessionProtocolKind.RDP,
         SessionProtocolKind.WINDOWS_TS,
         SessionProtocolKind.SSH,
-        SessionProtocolKind.TELNET -> true
+        SessionProtocolKind.TELNET,
+        SessionProtocolKind.VNC,
+        SessionProtocolKind.APPLE_SCREEN_SHARING -> true
         else -> false
     }
 
@@ -629,37 +646,144 @@ class NexusWorkspaceViewModel @Inject constructor(
                 password = override.adHocPassword,
                 domain = override.adHocDomain
             )
-            cred != null -> ResolvedSessionSecret(
-                username = cred.username,
-                password = cred.secretPassword,
-                domain = cred.domain,
-                privateKeyPem = cred.privateKeyPem,
-                keyPassphrase = cred.keyPassphrase
-            )
+            cred != null -> resolveVaultCredentialSecret(cred)
             else -> ResolvedSessionSecret(username = "root")
         }
         return conn to secret
     }
 
+    private fun resolveVaultCredentialSecret(cred: VaultCredential): ResolvedSessionSecret {
+        val hasLocalSecret = cred.secretPassword.isNotBlank() || cred.privateKeyPem.isNotBlank()
+        val isExternalSource = cred.externalReferenceUri.isNotBlank() ||
+            (cred.sourceKind != CredentialSourceKind.VAULT_INTERNAL && cred.sourceKind != CredentialSourceKind.SSH_KEY_PAIR)
+        if (!hasLocalSecret && isExternalSource) {
+            val externalResolved = runCatching {
+                runBlocking {
+                    withTimeout(2_000L) {
+                        credentialHub.resolveCredential(
+                            credential = cred,
+                            onePasswordConnectUrl = onePasswordConnectUrl,
+                            onePasswordConnectToken = onePasswordConnectToken,
+                            bitwardenServeUrl = bitwardenServeUrl,
+                            kdbxBytesProvider = kdbxBytesProvider
+                        )
+                    }
+                }
+            }.getOrNull()
+            if (externalResolved != null) {
+                return externalResolved
+            }
+        }
+        val totp = cred.totpSecretBase32.takeIf { it.isNotBlank() }?.let {
+            runCatching { credentialHub.generateCurrentTotpCode(it) }.getOrNull()
+        }
+        return ResolvedSessionSecret(
+            username = cred.username,
+            password = cred.secretPassword,
+            domain = cred.domain,
+            privateKeyPem = cred.privateKeyPem,
+            keyPassphrase = cred.keyPassphrase,
+            totpCode = totp
+        )
+    }
+
     fun getOrCreateSshController(tab: WorkspaceSessionTab): SshTerminalSessionController {
         activeVaultStore.tabConnectionIds[tab.tabId] = tab.connectionId
         return sshControllers.getOrPut(tab.tabId) {
+            val isLocalShell = tab.connectionId.startsWith("local-shell-")
             val (conn, secret) = resolveConnectionAndSecret(tab.connectionId, tab.tabId)
             val override = adHocOverrides[tab.tabId]
             val sshSettings = conn?.settings as? ProtocolSpecificSettings.Ssh
             val doc = _uiState.value.vaultDocument
-            val bastion = sshSettings?.bastionJumpConnectionId?.let { id ->
-                doc.connections.firstOrNull { it.id == id }?.host
+            val isTelnet = !isLocalShell && (
+                tab.protocol == SessionProtocolKind.TELNET ||
+                    conn?.protocol == VaultProtocolType.TELNET ||
+                    override?.adHocProtocolType == VaultProtocolType.TELNET
+                )
+            val rawHost = override?.adHocHost ?: conn?.host ?: tab.subtitleHost
+            val effectivePort = resolveEffectiveTelnetOrSshPort(conn, tab.protocol, override)
+
+            val bastionConn = sshSettings?.bastionJumpConnectionId?.let { id ->
+                doc.connections.firstOrNull { it.id == id && it.id !in doc.tombstonedObjectIds }
             }
-            val defaultPort = if (tab.protocol == SessionProtocolKind.TELNET) 23 else 22
+            val effectiveGateway = if (!isLocalShell && bastionConn == null && conn != null) {
+                inheritanceResolver.resolveEffectiveProfile(doc, conn).effectiveGateway
+            } else {
+                null
+            }
+
+            var targetHost = rawHost
+            var targetPort = effectivePort
+            var bastionHost: String? = null
+            var bastionPort = 22
+            var bastionUser = ""
+            var bastionPassword = ""
+            var bastionKeyPem = ""
+            var tunnelLease: ActiveTunnelLease? = null
+
+            if (bastionConn != null) {
+                val (_, bastionSecret) = resolveConnectionAndSecret(bastionConn.id)
+                bastionHost = bastionConn.host
+                bastionPort = (bastionConn.settings as? ProtocolSpecificSettings.Ssh)?.port?.takeIf { it > 0 } ?: 22
+                bastionUser = bastionSecret.username.ifBlank { "root" }
+                bastionPassword = bastionSecret.password
+                bastionKeyPem = bastionSecret.privateKeyPem
+            } else if (effectiveGateway != null && effectiveGateway.kind == GatewayTransportKind.SSH_TUNNEL_BASTION) {
+                val gwCred = doc.credentials.firstOrNull { it.id == effectiveGateway.credentialId }
+                val gwSecret = gwCred?.let { resolveVaultCredentialSecret(it) }
+                if (SshNativeBridge.isNativeLoaded && rawHost.isNotBlank()) {
+                    val lease = runCatching {
+                        runBlocking {
+                            gatewayTunnelManager.openLoopbackTunnelLease(
+                                gateway = effectiveGateway,
+                                credential = gwCred,
+                                targetHost = rawHost,
+                                targetPort = effectivePort
+                            )
+                        }
+                    }.getOrNull()
+                    if (lease != null) {
+                        tabGatewayLeases[tab.tabId] = lease
+                        targetHost = lease.localBindHost
+                        targetPort = lease.localBindPort
+                        tunnelLease = lease
+                    } else {
+                        bastionHost = effectiveGateway.host
+                        bastionPort = effectiveGateway.port.takeIf { it > 0 } ?: 22
+                        bastionUser = gwSecret?.username?.ifBlank { "root" } ?: "root"
+                        bastionPassword = gwSecret?.password.orEmpty()
+                        bastionKeyPem = gwSecret?.privateKeyPem.orEmpty()
+                    }
+                } else {
+                    bastionHost = effectiveGateway.host
+                    bastionPort = effectiveGateway.port.takeIf { it > 0 } ?: 22
+                    bastionUser = gwSecret?.username?.ifBlank { "root" } ?: "root"
+                    bastionPassword = gwSecret?.password.orEmpty()
+                    bastionKeyPem = gwSecret?.privateKeyPem.orEmpty()
+                }
+            }
+
             SshTerminalSessionController(
                 title = tab.title,
-                host = override?.adHocHost ?: conn?.host ?: tab.subtitleHost,
-                port = override?.adHocPort ?: sshSettings?.port ?: defaultPort,
+                host = targetHost,
+                port = targetPort,
                 username = secret.username.ifBlank { "root" },
                 portForwards = sshSettings?.portForwards.orEmpty(),
                 enableX11Forwarding = sshSettings?.enableX11Forwarding ?: false,
-                bastionHost = bastion
+                bastionHost = bastionHost,
+                isLocalShell = isLocalShell,
+                isTelnet = isTelnet,
+                password = secret.password,
+                privateKeyPem = secret.privateKeyPem,
+                privateKeyPassphrase = secret.keyPassphrase,
+                startupCommand = sshSettings?.startupCommand.orEmpty(),
+                terminalType = sshSettings?.terminalType?.ifBlank { "xterm-256color" } ?: "xterm-256color",
+                scrollbackLines = sshSettings?.scrollbackLines ?: 10_000,
+                bastionPort = bastionPort,
+                bastionUsername = bastionUser,
+                bastionPassword = bastionPassword,
+                bastionPrivateKeyPem = bastionKeyPem,
+                tunnelLease = tunnelLease
             )
         }
     }
@@ -670,11 +794,14 @@ class NexusWorkspaceViewModel @Inject constructor(
             val (conn, secret) = resolveConnectionAndSecret(tab.connectionId, tab.tabId)
             val override = adHocOverrides[tab.tabId]
             val effectiveHost = override?.adHocHost ?: conn?.host ?: tab.subtitleHost
+            val fallbackProto = conn?.protocol
+                ?: override?.adHocProtocolType?.takeIf { it == VaultProtocolType.WINDOWS_TERMINAL_SERVICES }
+                ?: VaultProtocolType.RDP
             val fallbackConn = (conn?.copy(host = effectiveHost)) ?: VaultConnection(
                 id = tab.connectionId,
                 name = tab.title,
                 host = effectiveHost,
-                protocol = VaultProtocolType.RDP,
+                protocol = fallbackProto,
                 settings = ProtocolSpecificSettings.Rdp()
             )
             val baseSettings = (fallbackConn.settings as? ProtocolSpecificSettings.Rdp)
@@ -689,6 +816,73 @@ class NexusWorkspaceViewModel @Inject constructor(
                 settings = settings,
                 secret = secret
             )
+        }
+    }
+
+    fun getOrCreateTransferController(tab: WorkspaceSessionTab): TransferCommanderSessionController {
+        activeVaultStore.tabConnectionIds[tab.tabId] = tab.connectionId
+        return transferControllers.getOrPut(tab.tabId) {
+            val (conn, secret) = resolveConnectionAndSecret(tab.connectionId, tab.tabId)
+            val override = adHocOverrides[tab.tabId]
+            val doc = _uiState.value.vaultDocument
+            val proto = conn?.protocol ?: override?.adHocProtocolType ?: when (tab.protocol) {
+                SessionProtocolKind.SCP -> VaultProtocolType.SCP
+                SessionProtocolKind.FTP -> VaultProtocolType.FTP
+                SessionProtocolKind.FTPS -> VaultProtocolType.FTPS
+                else -> VaultProtocolType.SFTP
+            }
+            val ftSettings = conn?.settings as? ProtocolSpecificSettings.FileTransfer
+            val defaultPort = when (proto) {
+                VaultProtocolType.FTP -> 21
+                VaultProtocolType.FTPS -> if (ftSettings?.ftpsImplicitTls == true) 990 else 21
+                else -> 22
+            }
+            val rawHost = override?.adHocHost ?: conn?.host ?: tab.subtitleHost
+            val effectivePort = override?.adHocPort ?: ftSettings?.port?.takeIf { it > 0 } ?: defaultPort
+
+            val effectiveGateway = if (conn != null) {
+                inheritanceResolver.resolveEffectiveProfile(doc, conn).effectiveGateway
+            } else {
+                null
+            }
+            var bastionHost = ""
+            var bastionPort = 22
+            var bastionUser = ""
+            var bastionPassword = ""
+            var bastionKeyPem = ""
+            if (effectiveGateway != null && effectiveGateway.kind == GatewayTransportKind.SSH_TUNNEL_BASTION) {
+                val gwCred = doc.credentials.firstOrNull { it.id == effectiveGateway.credentialId }
+                val gwSecret = gwCred?.let { resolveVaultCredentialSecret(it) }
+                bastionHost = effectiveGateway.host
+                bastionPort = effectiveGateway.port.takeIf { it > 0 } ?: 22
+                bastionUser = gwSecret?.username?.ifBlank { "root" } ?: "root"
+                bastionPassword = gwSecret?.password.orEmpty()
+                bastionKeyPem = gwSecret?.privateKeyPem.orEmpty()
+            }
+
+            TransferCommanderSessionController(
+                protocolType = proto,
+                host = rawHost,
+                port = effectivePort,
+                secret = secret,
+                initialLocalPathHint = ftSettings?.initialLocalDirectory?.ifBlank { "/home/googlebook/Downloads" }
+                    ?: "/home/googlebook/Downloads",
+                initialRemotePathHint = ftSettings?.initialRemoteDirectory.orEmpty(),
+                ftpsImplicitTls = ftSettings?.ftpsImplicitTls ?: (proto == VaultProtocolType.FTPS && effectivePort == 990),
+                allowInsecureTls = true,
+                bastionHost = bastionHost,
+                bastionPort = bastionPort,
+                bastionUsername = bastionUser,
+                bastionPassword = bastionPassword,
+                bastionPrivateKeyPem = bastionKeyPem
+            )
+        }
+    }
+
+    fun getOrCreateVncSession(tab: WorkspaceSessionTab): VncRfbSessionClient {
+        activeVaultStore.tabConnectionIds[tab.tabId] = tab.connectionId
+        return vncSessions.getOrPut(tab.tabId) {
+            VncRfbSessionClient()
         }
     }
 
@@ -1387,6 +1581,11 @@ class NexusWorkspaceViewModel @Inject constructor(
     fun reconnectSessionTab(tab: WorkspaceSessionTab) {
         sshControllers.remove(tab.tabId)?.close()
         rdpSessions.remove(tab.tabId)?.close()
+        transferControllers.remove(tab.tabId)?.close()
+        vncSessions.remove(tab.tabId)?.close()
+        tabGatewayLeases.remove(tab.tabId)?.let { lease ->
+            gatewayTunnelManager.closeTunnelLease(lease.leaseId)
+        }
         tilingController.updateTab(tab.tabId) { it.copy(status = SessionLifecycleStatus.RECONNECTING) }
         tilingController.updateTab(tab.tabId) { it.copy(status = SessionLifecycleStatus.CONNECTED) }
         appendLog("[Session] Reconnected '${tab.title}' (${tab.subtitleHost})")
@@ -2074,33 +2273,41 @@ class NexusWorkspaceViewModel @Inject constructor(
         }
 
         val resolvedHost = candidate.parsedHost?.takeIf { it.isNotBlank() } ?: candidate.subtitle
+        val resolvedVaultProto = candidate.parsedProtocolSubtype?.let { sub ->
+            VaultProtocolType.entries.firstOrNull { it.name.equals(sub, ignoreCase = true) }
+        } ?: defaultVaultProtocolForUiKind(candidate.protocol)
+        val effectiveUiKind = mapProtocolToUiKind(resolvedVaultProto)
+
         val adHocTab = WorkspaceSessionTab(
             connectionId = candidate.id,
             title = candidate.title,
             subtitleHost = resolvedHost,
-            protocol = candidate.protocol,
+            protocol = effectiveUiKind,
             status = SessionLifecycleStatus.CONNECTED,
             broadcastEnabled = state.broadcastModeEnabled
         )
-        if (candidate.parsedHost != null ||
+        if (candidate.isAdHocUri ||
+            candidate.parsedHost != null ||
             candidate.parsedPort != null ||
             !candidate.parsedUsername.isNullOrBlank() ||
-            !candidate.parsedDomain.isNullOrBlank()
+            !candidate.parsedDomain.isNullOrBlank() ||
+            candidate.parsedProtocolSubtype != null
         ) {
             adHocOverrides[adHocTab.tabId] = AdHocLaunchOverride(
                 adHocUsername = candidate.parsedUsername.orEmpty(),
                 adHocDomain = candidate.parsedDomain.orEmpty(),
-                adHocHost = candidate.parsedHost,
-                adHocPort = candidate.parsedPort
+                adHocHost = candidate.parsedHost ?: resolvedHost,
+                adHocPort = candidate.parsedPort,
+                adHocProtocolType = resolvedVaultProto
             )
         }
         _uiState.update {
             it.copy(
                 activeRailId = "connections",
-                remoteKeyCaptureEnabled = (placement != QuickLaunchPlacement.DETACHED_NEW_WINDOW && isInteractiveRemoteKeyProtocol(candidate.protocol)) || it.remoteKeyCaptureEnabled
+                remoteKeyCaptureEnabled = (placement != QuickLaunchPlacement.DETACHED_NEW_WINDOW && isInteractiveRemoteKeyProtocol(effectiveUiKind)) || it.remoteKeyCaptureEnabled
             )
         }
-        appendLog("[QuickConnect] Launched ad-hoc ${candidate.protocol.name} -> $resolvedHost")
+        appendLog("[QuickConnect] Launched ad-hoc ${resolvedVaultProto.name} -> $resolvedHost")
         when (placement) {
             QuickLaunchPlacement.ACTIVE_PANE_TAB -> tilingController.openTab(adHocTab)
             QuickLaunchPlacement.SPLIT_RIGHT_PANE -> tilingController.splitPane(
@@ -3066,18 +3273,23 @@ class NexusWorkspaceViewModel @Inject constructor(
             SessionProtocolKind.RDP, SessionProtocolKind.WINDOWS_TS ->
                 rdpSessions[activeTab.tabId]?.sendHardwareKey(packet) ?: false
 
+            SessionProtocolKind.VNC, SessionProtocolKind.APPLE_SCREEN_SHARING ->
+                vncSessions[activeTab.tabId]?.sendHardwareKey(packet) ?: false
+
             SessionProtocolKind.SSH, SessionProtocolKind.TELNET -> {
+                val sshController = sshControllers[activeTab.tabId]
                 val ansiBytes = SshNativeBridge.translateHardwareKeyToAnsi(
                     keyCode = packet.keyCode,
                     unicodeChar = packet.unicodeChar,
                     ctrlPressed = packet.ctrlPressed,
-                    altPressed = packet.altPressed
+                    altPressed = packet.altPressed,
+                    applicationCursorKeys = sshController?.isApplicationCursorKeys() == true
                 ) ?: return false
                 if (packet.isKeyDown) {
                     if (activeTab.broadcastEnabled) {
                         automationEngine.emitBroadcastBytes(ansiBytes, originTabId = null)
                     } else {
-                        sshControllers[activeTab.tabId]?.sendUserBytes(ansiBytes)
+                        sshController?.sendUserBytes(ansiBytes)
                     }
                 }
                 true
@@ -3924,7 +4136,8 @@ class NexusWorkspaceViewModel @Inject constructor(
 
     companion object {
         fun mapProtocolToUiKind(proto: VaultProtocolType): SessionProtocolKind = when (proto) {
-            VaultProtocolType.RDP -> SessionProtocolKind.RDP
+            VaultProtocolType.RDP,
+            VaultProtocolType.WINDOWS_TERMINAL_SERVICES -> SessionProtocolKind.RDP
             VaultProtocolType.SSH -> SessionProtocolKind.SSH
             VaultProtocolType.TELNET -> SessionProtocolKind.TELNET
             VaultProtocolType.SERIAL -> SessionProtocolKind.SERIAL
@@ -3942,11 +4155,60 @@ class NexusWorkspaceViewModel @Inject constructor(
             VaultProtocolType.HYPER_V -> SessionProtocolKind.HYPER_V
             VaultProtocolType.AWS_EC2 -> SessionProtocolKind.AWS_EC2
             VaultProtocolType.AZURE_VM -> SessionProtocolKind.AZURE_VM
-            VaultProtocolType.WINDOWS_TERMINAL_SERVICES -> SessionProtocolKind.WINDOWS_TS
             VaultProtocolType.UTILITY_PING,
             VaultProtocolType.UTILITY_TRACEROUTE,
             VaultProtocolType.UTILITY_PORT_SCANNER,
             VaultProtocolType.UTILITY_WAKE_ON_LAN -> SessionProtocolKind.NET_UTILITY
+        }
+
+        fun defaultVaultProtocolForUiKind(kind: SessionProtocolKind): VaultProtocolType = when (kind) {
+            SessionProtocolKind.RDP -> VaultProtocolType.RDP
+            SessionProtocolKind.WINDOWS_TS -> VaultProtocolType.WINDOWS_TERMINAL_SERVICES
+            SessionProtocolKind.SSH -> VaultProtocolType.SSH
+            SessionProtocolKind.TELNET -> VaultProtocolType.TELNET
+            SessionProtocolKind.SERIAL -> VaultProtocolType.SERIAL
+            SessionProtocolKind.KUBERNETES_POD -> VaultProtocolType.KUBERNETES_POD
+            SessionProtocolKind.DOCKER_CONTAINER -> VaultProtocolType.DOCKER_CONTAINER
+            SessionProtocolKind.SFTP -> VaultProtocolType.SFTP
+            SessionProtocolKind.FTP -> VaultProtocolType.FTP
+            SessionProtocolKind.FTPS -> VaultProtocolType.FTPS
+            SessionProtocolKind.SCP -> VaultProtocolType.SCP
+            SessionProtocolKind.VNC -> VaultProtocolType.VNC
+            SessionProtocolKind.APPLE_SCREEN_SHARING -> VaultProtocolType.APPLE_SCREEN_SHARING
+            SessionProtocolKind.WEB_PAGE -> VaultProtocolType.WEB_PAGE
+            SessionProtocolKind.VMWARE_VSPHERE -> VaultProtocolType.VMWARE_VSPHERE
+            SessionProtocolKind.PROXMOX_VE -> VaultProtocolType.PROXMOX_VE
+            SessionProtocolKind.HYPER_V -> VaultProtocolType.HYPER_V
+            SessionProtocolKind.AWS_EC2 -> VaultProtocolType.AWS_EC2
+            SessionProtocolKind.AZURE_VM -> VaultProtocolType.AZURE_VM
+            SessionProtocolKind.NET_UTILITY -> VaultProtocolType.UTILITY_PING
+        }
+
+        /**
+         * Resolves the effective TCP port for an SSH or Telnet session, ensuring `VaultProtocolType.TELNET`
+         * defaults to port `23` even when constructed with a default `ProtocolSpecificSettings.Ssh()` (`port = 22`),
+         * while preserving any explicit custom port (such as `2323` or an ad-hoc override).
+         */
+        fun resolveEffectiveTelnetOrSshPort(
+            conn: VaultConnection?,
+            tabProtocol: SessionProtocolKind,
+            adHocOverride: AdHocLaunchOverride? = null
+        ): Int {
+            adHocOverride?.adHocPort?.takeIf { it > 0 }?.let { return it }
+            val isTelnet = tabProtocol == SessionProtocolKind.TELNET ||
+                conn?.protocol == VaultProtocolType.TELNET ||
+                adHocOverride?.adHocProtocolType == VaultProtocolType.TELNET
+            val sshSettings = conn?.settings as? ProtocolSpecificSettings.Ssh
+            return if (isTelnet) {
+                val configured = sshSettings?.port ?: 23
+                if (configured <= 0 || (conn?.protocol == VaultProtocolType.TELNET && configured == 22)) {
+                    23
+                } else {
+                    configured
+                }
+            } else {
+                sshSettings?.port?.takeIf { it > 0 } ?: 22
+            }
         }
 
         const val DEFAULT_VAULT_DOCUMENT_ID = "nxts-default-vault"
@@ -4006,3 +4268,6 @@ class NexusWorkspaceViewModel @Inject constructor(
         }
     }
 }
+
+fun VaultProtocolType.toProtocolKind(): SessionProtocolKind =
+    NexusWorkspaceViewModel.mapProtocolToUiKind(this)

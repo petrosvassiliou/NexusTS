@@ -27,8 +27,6 @@ import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
-import com.nexusts.app.core.ui.components.NexusActionChip
-import com.nexusts.app.core.ui.components.NexusChoiceChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -49,6 +47,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
+import com.nexusts.app.core.ui.components.NexusActionChip
+import com.nexusts.app.core.ui.components.NexusChoiceChip
 import com.nexusts.app.core.ui.theme.NexusTheme
 import com.nexusts.app.core.vault.credentials.ResolvedSessionSecret
 import com.nexusts.app.core.vault.model.ProtocolSpecificSettings
@@ -67,12 +67,20 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
+import okhttp3.WebSocket
+import okhttp3.WebSocketListener
+import okio.ByteString
+import okio.ByteString.Companion.toByteString
 import java.io.ByteArrayOutputStream
+import java.io.Closeable
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import java.security.SecureRandom
 import java.security.cert.X509Certificate
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 import javax.net.ssl.SSLContext
 import javax.net.ssl.TrustManager
 import javax.net.ssl.X509TrustManager
@@ -85,10 +93,10 @@ data class DiscoveredContainerWorkload(
 )
 
 @SuppressLint("CustomX509TrustManager", "TrustAllX509TrustManager")
-private fun buildWorkloadHttpClient(verifyTls: Boolean): OkHttpClient {
+internal fun buildWorkloadHttpClient(verifyTls: Boolean): OkHttpClient {
     val builder = OkHttpClient.Builder()
         .connectTimeout(6, TimeUnit.SECONDS)
-        .readTimeout(12, TimeUnit.SECONDS)
+        .readTimeout(15, TimeUnit.SECONDS)
     if (!verifyTls) {
         val permissiveTrustManager = object : X509TrustManager {
             override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) = Unit
@@ -104,7 +112,7 @@ private fun buildWorkloadHttpClient(verifyTls: Boolean): OkHttpClient {
     return builder.build()
 }
 
-private fun resolveWorkloadBaseEndpoint(
+internal fun resolveWorkloadBaseEndpoint(
     endpointHost: String,
     clusterOrSocketEndpoint: String
 ): String {
@@ -113,11 +121,290 @@ private fun resolveWorkloadBaseEndpoint(
         return ""
     }
     val withScheme = when {
-        raw.startsWith("http://", ignoreCase = true) || raw.startsWith("https://", ignoreCase = true) -> raw
+        raw.startsWith("http://", ignoreCase = true) ||
+            raw.startsWith("https://", ignoreCase = true) ||
+            raw.startsWith("ws://", ignoreCase = true) ||
+            raw.startsWith("wss://", ignoreCase = true) -> raw
         raw.endsWith(":2375") -> "http://$raw"
         else -> "https://$raw"
     }
     return withScheme.trimEnd('/')
+}
+
+/**
+ * Kubernetes `v4.channel.k8s.io` WebSocket Exec Client supporting:
+ * - Channel `0x00`: stdin
+ * - Channel `0x01`: stdout
+ * - Channel `0x02`: stderr
+ * - Channel `0x03`: error / exit status JSON
+ * - Channel `0x04`: PTY terminal resize (`{"Width":cols,"Height":rows}`)
+ * - Multi-container pod targeting (`&container=<subContainerName>`)
+ * - Self-signed cluster CA support (`verifyTls == false`)
+ */
+class KubernetesExecClient(
+    private val verifyTls: Boolean = true,
+    private val httpClientOverride: OkHttpClient? = null
+) {
+    private val httpClient: OkHttpClient = httpClientOverride ?: buildWorkloadHttpClient(verifyTls)
+
+    data class ExecResult(
+        val stdout: String,
+        val stderr: String,
+        val statusJson: String,
+        val negotiatedSubprotocol: String
+    )
+
+    class ExecSession internal constructor(
+        private val webSocket: WebSocket,
+        private val openLatch: CountDownLatch,
+        private val closeLatch: CountDownLatch,
+        private val failureRef: AtomicReference<Throwable?>,
+        private val subprotocolRef: AtomicReference<String>
+    ) : Closeable {
+
+        val negotiatedSubprotocol: String
+            get() = subprotocolRef.get()
+
+        val failure: Throwable?
+            get() = failureRef.get()
+
+        fun awaitOpen(timeoutMs: Long = 5_000L): Boolean {
+            val ok = openLatch.await(timeoutMs, TimeUnit.MILLISECONDS)
+            val err = failureRef.get()
+            if (err != null) throw err
+            return ok
+        }
+
+        fun awaitClose(timeoutMs: Long = 5_000L): Boolean {
+            return closeLatch.await(timeoutMs, TimeUnit.MILLISECONDS)
+        }
+
+        fun sendStdin(bytes: ByteArray): Boolean {
+            val frame = ByteArray(1 + bytes.size)
+            frame[0] = CHANNEL_STDIN
+            System.arraycopy(bytes, 0, frame, 1, bytes.size)
+            return webSocket.send(frame.toByteString(0, frame.size))
+        }
+
+        fun sendStdin(text: String): Boolean =
+            sendStdin(text.toByteArray(StandardCharsets.UTF_8))
+
+        fun sendResize(cols: Int, rows: Int): Boolean {
+            val jsonBytes = """{"Width":${cols.coerceAtLeast(1)},"Height":${rows.coerceAtLeast(1)}}"""
+                .toByteArray(StandardCharsets.UTF_8)
+            val frame = ByteArray(1 + jsonBytes.size)
+            frame[0] = CHANNEL_RESIZE
+            System.arraycopy(jsonBytes, 0, frame, 1, jsonBytes.size)
+            return webSocket.send(frame.toByteString(0, frame.size))
+        }
+
+        override fun close() {
+            runCatching { webSocket.close(1000, "Session closed") }
+        }
+    }
+
+    fun buildExecHttpUrl(
+        clusterEndpoint: String,
+        namespace: String,
+        podName: String,
+        command: List<String>,
+        container: String = "",
+        stdin: Boolean = true,
+        stdout: Boolean = true,
+        stderr: Boolean = true,
+        tty: Boolean = false
+    ): String {
+        val trimmed = clusterEndpoint.trim().trimEnd('/')
+        val httpBase = when {
+            trimmed.startsWith("wss://", ignoreCase = true) -> "https://" + trimmed.substring(6)
+            trimmed.startsWith("ws://", ignoreCase = true) -> "http://" + trimmed.substring(5)
+            trimmed.startsWith("https://", ignoreCase = true) ||
+                trimmed.startsWith("http://", ignoreCase = true) -> trimmed
+            else -> "https://$trimmed"
+        }
+        val encNs = urlEncode(namespace.ifBlank { "default" })
+        val encPod = urlEncode(podName)
+        val sb = StringBuilder()
+        sb.append(httpBase)
+        sb.append("/api/v1/namespaces/").append(encNs).append("/pods/").append(encPod).append("/exec")
+        sb.append("?stdin=").append(stdin)
+        sb.append("&stdout=").append(stdout)
+        sb.append("&stderr=").append(stderr)
+        sb.append("&tty=").append(tty)
+        if (container.isNotBlank()) {
+            sb.append("&container=").append(urlEncode(container.trim()))
+        }
+        for (arg in command) {
+            sb.append("&command=").append(urlEncode(arg))
+        }
+        return sb.toString()
+    }
+
+    fun openSession(
+        clusterEndpoint: String,
+        namespace: String,
+        podName: String,
+        command: List<String>,
+        bearerToken: String = "",
+        container: String = "",
+        stdin: Boolean = true,
+        stdout: Boolean = true,
+        stderr: Boolean = true,
+        tty: Boolean = false,
+        onStdout: (String) -> Unit = {},
+        onStderr: (String) -> Unit = {},
+        onStatus: (String) -> Unit = {},
+        onClosed: () -> Unit = {}
+    ): ExecSession {
+        val url = buildExecHttpUrl(
+            clusterEndpoint = clusterEndpoint,
+            namespace = namespace,
+            podName = podName,
+            command = command,
+            container = container,
+            stdin = stdin,
+            stdout = stdout,
+            stderr = stderr,
+            tty = tty
+        )
+        val reqBuilder = Request.Builder()
+            .url(url)
+            .header("Sec-WebSocket-Protocol", SUBPROTOCOL_V4)
+            .header("X-Stream-Protocol-Version", SUBPROTOCOL_V4)
+        if (bearerToken.isNotBlank()) {
+            reqBuilder.header("Authorization", "Bearer $bearerToken")
+        }
+
+        val openLatch = CountDownLatch(1)
+        val closeLatch = CountDownLatch(1)
+        val failureRef = AtomicReference<Throwable?>(null)
+        val subprotocolRef = AtomicReference("")
+
+        val ws = httpClient.newWebSocket(
+            reqBuilder.build(),
+            object : WebSocketListener() {
+                override fun onOpen(webSocket: WebSocket, response: Response) {
+                    subprotocolRef.set(response.header("Sec-WebSocket-Protocol").orEmpty())
+                    openLatch.countDown()
+                }
+
+                override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
+                    if (bytes.size == 0) return
+                    val ch = bytes[0]
+                    val payloadText = if (bytes.size > 1) {
+                        bytes.substring(1).string(StandardCharsets.UTF_8)
+                    } else {
+                        ""
+                    }
+                    when (ch) {
+                        CHANNEL_STDOUT -> if (payloadText.isNotEmpty()) onStdout(payloadText)
+                        CHANNEL_STDERR -> if (payloadText.isNotEmpty()) onStderr(payloadText)
+                        CHANNEL_ERROR_STATUS -> if (payloadText.isNotEmpty()) onStatus(payloadText)
+                    }
+                }
+
+                override fun onMessage(webSocket: WebSocket, text: String) {
+                    if (text.isNotEmpty()) onStdout(text)
+                }
+
+                override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                    webSocket.close(code, reason)
+                }
+
+                override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                    openLatch.countDown()
+                    closeLatch.countDown()
+                    onClosed()
+                }
+
+                override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                    val detailed = if (response != null) {
+                        IllegalStateException("K8s exec WebSocket HTTP ${response.code}: ${t.message}", t)
+                    } else {
+                        t
+                    }
+                    failureRef.compareAndSet(null, detailed)
+                    openLatch.countDown()
+                    closeLatch.countDown()
+                    onClosed()
+                }
+            }
+        )
+
+        return ExecSession(
+            webSocket = ws,
+            openLatch = openLatch,
+            closeLatch = closeLatch,
+            failureRef = failureRef,
+            subprotocolRef = subprotocolRef
+        )
+    }
+
+    suspend fun executeCommand(
+        clusterEndpoint: String,
+        namespace: String,
+        podName: String,
+        command: List<String>,
+        bearerToken: String = "",
+        container: String = "",
+        stdinPayload: String? = null,
+        initialCols: Int = 120,
+        initialRows: Int = 36,
+        timeoutMs: Long = 10_000L
+    ): ExecResult = withContext(Dispatchers.IO) {
+        val stdoutBuf = StringBuilder()
+        val stderrBuf = StringBuilder()
+        val statusBuf = StringBuilder()
+        val lock = Any()
+
+        val session = openSession(
+            clusterEndpoint = clusterEndpoint,
+            namespace = namespace,
+            podName = podName,
+            command = command,
+            bearerToken = bearerToken,
+            container = container,
+            stdin = stdinPayload != null,
+            stdout = true,
+            stderr = true,
+            tty = false,
+            onStdout = { chunk -> synchronized(lock) { stdoutBuf.append(chunk) } },
+            onStderr = { chunk -> synchronized(lock) { stderrBuf.append(chunk) } },
+            onStatus = { chunk -> synchronized(lock) { statusBuf.append(chunk) } }
+        )
+
+        session.use { active ->
+            if (!active.awaitOpen(timeoutMs)) {
+                error("Timed out opening Kubernetes v4.channel.k8s.io exec WebSocket")
+            }
+            active.sendResize(initialCols, initialRows)
+            if (stdinPayload != null) {
+                active.sendStdin(stdinPayload)
+            }
+            active.awaitClose(timeoutMs)
+            active.failure?.let { throw it }
+            synchronized(lock) {
+                ExecResult(
+                    stdout = stdoutBuf.toString(),
+                    stderr = stderrBuf.toString(),
+                    statusJson = statusBuf.toString(),
+                    negotiatedSubprotocol = active.negotiatedSubprotocol
+                )
+            }
+        }
+    }
+
+    companion object {
+        const val SUBPROTOCOL_V4: String = "v4.channel.k8s.io"
+        const val CHANNEL_STDIN: Byte = 0x00
+        const val CHANNEL_STDOUT: Byte = 0x01
+        const val CHANNEL_STDERR: Byte = 0x02
+        const val CHANNEL_ERROR_STATUS: Byte = 0x03
+        const val CHANNEL_RESIZE: Byte = 0x04
+
+        private fun urlEncode(value: String): String =
+            URLEncoder.encode(value, StandardCharsets.UTF_8.name())
+    }
 }
 
 /**
@@ -156,7 +443,8 @@ internal fun stripDockerMultiplexedHeaders(raw: ByteArray): String {
 
 /**
  * Enterprise Kubernetes Pod (`KUBERNETES_POD`) & Docker Container (`DOCKER_CONTAINER`)
- * Interactive Exec Shell, Live Log Streamer, & Workload Port-Forward Studio (`v1.1`).
+ * Interactive Exec Shell (`v4.channel.k8s.io` WebSocket + Docker Exec REST), Live Log Streamer,
+ * & Workload Inventory Studio.
  */
 @Composable
 fun KubernetesAndContainerTerminalView(
@@ -169,6 +457,9 @@ fun KubernetesAndContainerTerminalView(
     val clipboard = LocalClipboardManager.current
     val scope = rememberCoroutineScope()
     val httpClient = remember(settings.verifyTls) { buildWorkloadHttpClient(settings.verifyTls) }
+    val k8sExecClient = remember(settings.verifyTls, httpClient) {
+        KubernetesExecClient(verifyTls = settings.verifyTls, httpClientOverride = httpClient)
+    }
     val lenientJson = remember { Json { ignoreUnknownKeys = true; isLenient = true } }
 
     var activePaneTab by remember(settings.followLogsOnOpen) {
@@ -177,9 +468,7 @@ fun KubernetesAndContainerTerminalView(
     var activeTarget by remember(settings, endpointHost) {
         mutableStateOf(
             settings.podOrContainerName.ifBlank {
-                endpointHost.substringAfterLast('/').ifBlank {
-                    if (isKubernetes) "api-gateway-7d8f9c-xk2p" else "nginx-ingress-proxy"
-                }
+                endpointHost.substringAfterLast('/').takeIf { !it.contains(':') }.orEmpty()
             }
         )
     }
@@ -189,85 +478,39 @@ fun KubernetesAndContainerTerminalView(
     var apiStatusBanner by remember { mutableStateOf("") }
     var apiStatusIsError by remember { mutableStateOf(false) }
 
-    val execLines = remember(activeTarget, isKubernetes) {
+    val execLines = remember(activeTarget, isKubernetes, settings.subContainerName) {
+        val targetDisplay = activeTarget.ifBlank { "<select workload>" }
+        val containerSuffix = settings.subContainerName.takeIf { it.isNotBlank() }?.let { " (container=$it)" }.orEmpty()
         mutableStateListOf(
             if (isKubernetes) {
-                "[kubectl] Attached to pod '$namespace/$activeTarget' (shell=${settings.shellCommand}, context=${settings.contextName})"
+                "[kubectl] Ready for pod '$namespace/$targetDisplay'$containerSuffix (shell=${settings.shellCommand}, protocol=v4.channel.k8s.io)"
             } else {
-                "[docker] Attached to container '$activeTarget' on $endpointHost (shell=${settings.shellCommand})"
-            },
-            "uid=0(root) gid=0(root) groups=0(root)",
-            "$activeTarget:/app#"
+                "[docker] Ready for container '$targetDisplay' on ${endpointHost.ifBlank { settings.clusterOrSocketEndpoint }} (shell=${settings.shellCommand})"
+            }
         )
     }
 
     val logLines = remember(activeTarget, isKubernetes) {
-        mutableStateListOf(
-            "2026-11-13T12:00:01Z INFO  [$activeTarget] Readiness probe succeeded on :8080/healthz (1.4ms)",
-            "2026-11-13T12:00:04Z INFO  [$activeTarget] TLS 1.3 mTLS session established with envoy-sidecar",
-            "2026-11-13T12:00:09Z WARN  [$activeTarget] High connection pool utilization (78%) — autoscaler notified"
-        )
+        mutableStateListOf<String>()
     }
 
     val workloads = remember(isKubernetes, namespace) {
-        mutableStateListOf(
-            DiscoveredContainerWorkload(
-                id = "wk-1",
-                name = activeTarget,
-                namespaceOrImage = if (isKubernetes) namespace else "ghcr.io/nexusts/gateway:1.1",
-                statusBadge = "Running (1/1)"
-            ),
-            DiscoveredContainerWorkload(
-                id = "wk-2",
-                name = if (isKubernetes) "coredns-6f6b679f8f-m4z9" else "redis-cluster-01",
-                namespaceOrImage = if (isKubernetes) "kube-system" else "redis:7.4-alpine",
-                statusBadge = "Running (1/1)"
-            ),
-            DiscoveredContainerWorkload(
-                id = "wk-3",
-                name = if (isKubernetes) "vault-agent-injector-0" else "prometheus-node-exporter",
-                namespaceOrImage = if (isKubernetes) namespace else "prom/node-exporter:v1.8",
-                statusBadge = "Running (2/2)"
-            )
-        )
+        mutableStateListOf<DiscoveredContainerWorkload>()
     }
 
     val fetchLiveClusterTelemetry: () -> Unit = {
         scope.launch {
             val baseEndpoint = resolveWorkloadBaseEndpoint(endpointHost, settings.clusterOrSocketEndpoint)
             if (baseEndpoint.isBlank()) {
-                apiStatusBanner = "Local/offline mode active (no HTTP cluster/daemon endpoint configured)"
-                apiStatusIsError = false
+                apiStatusBanner = "No HTTP/HTTPS cluster or Docker daemon TCP endpoint configured."
+                apiStatusIsError = true
                 return@launch
             }
 
             val result = withContext(Dispatchers.IO) {
                 runCatching {
-                    val tailCount = settings.logTailLines.coerceAtLeast(1)
-                    val logsUrl = if (isKubernetes) {
-                        "$baseEndpoint/api/v1/namespaces/$namespace/pods/$activeTarget/log?tailLines=$tailCount"
-                    } else {
-                        "$baseEndpoint/containers/$activeTarget/logs?stdout=1&stderr=1&tail=$tailCount"
-                    }
-                    val reqBuilder = Request.Builder().url(logsUrl).get()
-                    if (secret.password.isNotBlank()) {
-                        reqBuilder.header("Authorization", "Bearer ${secret.password}")
-                    }
-                    val fetchedLogs: List<String> = httpClient.newCall(reqBuilder.build()).execute().use { resp ->
-                        if (!resp.isSuccessful) {
-                            error("${if (isKubernetes) "K8s" else "Docker"} logs HTTP ${resp.code}")
-                        }
-                        val rawBytes = resp.body?.bytes() ?: ByteArray(0)
-                        val text = if (isKubernetes) {
-                            String(rawBytes, StandardCharsets.UTF_8)
-                        } else {
-                            stripDockerMultiplexedHeaders(rawBytes)
-                        }
-                        text.lines().filter { it.isNotBlank() }.takeLast(tailCount)
-                    }
-
                     val listUrl = if (isKubernetes) {
-                        "$baseEndpoint/api/v1/namespaces/$namespace/pods"
+                        "$baseEndpoint/api/v1/namespaces/${URLEncoder.encode(namespace, "UTF-8")}/pods"
                     } else {
                         "$baseEndpoint/containers/json?all=true"
                     }
@@ -286,7 +529,7 @@ fun KubernetesAndContainerTerminalView(
                                 val meta = item.jsonObject["metadata"]?.jsonObject
                                 val status = item.jsonObject["status"]?.jsonObject
                                 val podName = meta?.get("name")?.jsonPrimitive?.contentOrNull.orEmpty()
-                                val phase = status?.get("phase")?.jsonPrimitive?.contentOrNull ?: "Running"
+                                val phase = status?.get("phase")?.jsonPrimitive?.contentOrNull ?: "Unknown"
                                 if (podName.isNotBlank()) {
                                     parsedList += DiscoveredContainerWorkload(podName, podName, namespace, phase)
                                 }
@@ -302,7 +545,7 @@ fun KubernetesAndContainerTerminalView(
                                     ?.removePrefix("/")
                                     ?: cid
                                 val image = cObj["Image"]?.jsonPrimitive?.contentOrNull.orEmpty()
-                                val state = cObj["State"]?.jsonPrimitive?.contentOrNull ?: "running"
+                                val state = cObj["State"]?.jsonPrimitive?.contentOrNull ?: "unknown"
                                 if (cName.isNotBlank()) {
                                     parsedList += DiscoveredContainerWorkload(cid.ifBlank { cName }, cName, image, state)
                                 }
@@ -310,23 +553,55 @@ fun KubernetesAndContainerTerminalView(
                         }
                     }
 
-                    fetchedLogs to parsedList
+                    val targetName = activeTarget.ifBlank { parsedList.firstOrNull()?.name.orEmpty() }
+                    val fetchedLogs: List<String> = if (targetName.isNotBlank()) {
+                        val tailCount = settings.logTailLines.coerceAtLeast(1)
+                        val containerQuery = if (isKubernetes && settings.subContainerName.isNotBlank()) {
+                            "&container=${URLEncoder.encode(settings.subContainerName.trim(), "UTF-8")}"
+                        } else {
+                            ""
+                        }
+                        val logsUrl = if (isKubernetes) {
+                            "$baseEndpoint/api/v1/namespaces/${URLEncoder.encode(namespace, "UTF-8")}/pods/${URLEncoder.encode(targetName, "UTF-8")}/log?tailLines=$tailCount$containerQuery"
+                        } else {
+                            "$baseEndpoint/containers/${URLEncoder.encode(targetName, "UTF-8")}/logs?stdout=1&stderr=1&tail=$tailCount"
+                        }
+                        val reqBuilder = Request.Builder().url(logsUrl).get()
+                        if (secret.password.isNotBlank()) {
+                            reqBuilder.header("Authorization", "Bearer ${secret.password}")
+                        }
+                        httpClient.newCall(reqBuilder.build()).execute().use { resp ->
+                            if (!resp.isSuccessful) {
+                                error("${if (isKubernetes) "K8s" else "Docker"} logs HTTP ${resp.code}")
+                            }
+                            val rawBytes = resp.body?.bytes() ?: ByteArray(0)
+                            val text = if (isKubernetes) {
+                                String(rawBytes, StandardCharsets.UTF_8)
+                            } else {
+                                stripDockerMultiplexedHeaders(rawBytes)
+                            }
+                            text.lines().filter { it.isNotBlank() }.takeLast(tailCount)
+                        }
+                    } else {
+                        emptyList()
+                    }
+
+                    Triple(targetName, fetchedLogs, parsedList)
                 }
             }
 
-            result.onSuccess { (fetchedLogs, parsedWorkloads) ->
-                if (fetchedLogs.isNotEmpty()) {
-                    logLines.clear()
-                    logLines.addAll(fetchedLogs)
+            result.onSuccess { (resolvedTarget, fetchedLogs, parsedWorkloads) ->
+                if (activeTarget.isBlank() && resolvedTarget.isNotBlank()) {
+                    activeTarget = resolvedTarget
                 }
-                if (parsedWorkloads.isNotEmpty()) {
-                    workloads.clear()
-                    workloads.addAll(parsedWorkloads)
-                }
-                apiStatusBanner = "Synced live telemetry from $baseEndpoint"
+                logLines.clear()
+                logLines.addAll(fetchedLogs)
+                workloads.clear()
+                workloads.addAll(parsedWorkloads)
+                apiStatusBanner = "Synced ${parsedWorkloads.size} workload(s) from $baseEndpoint"
                 apiStatusIsError = false
             }.onFailure { err ->
-                apiStatusBanner = "Sync failed (${err.message ?: "endpoint unreachable"}) — showing cached telemetry"
+                apiStatusBanner = "Telemetry sync failed: ${err.message ?: "endpoint unreachable"}"
                 apiStatusIsError = true
             }
         }
@@ -337,103 +612,97 @@ fun KubernetesAndContainerTerminalView(
         if (cmd.isNotEmpty()) {
             if (cmd == "clear") {
                 execLines.clear()
-                execLines += "$activeTarget:/app#"
             } else {
-                execLines += "$activeTarget# $cmd"
-                scope.launch {
-                    val baseEndpoint = resolveWorkloadBaseEndpoint(endpointHost, settings.clusterOrSocketEndpoint)
-                    val shellBin = settings.shellCommand.ifBlank { "/bin/sh" }
-                    val remoteResult = withContext(Dispatchers.IO) {
-                        runCatching {
-                            if (baseEndpoint.isBlank()) error("No remote endpoint configured")
-                            val jsonMedia = "application/json; charset=utf-8".toMediaType()
-                            if (isKubernetes) {
-                                val encShell = URLEncoder.encode(shellBin, "UTF-8")
-                                val encCmd = URLEncoder.encode(cmd, "UTF-8")
-                                val execUrl = "$baseEndpoint/api/v1/namespaces/$namespace/pods/$activeTarget/exec" +
-                                    "?command=$encShell&command=-c&command=$encCmd&stdout=true&stderr=true"
-                                val req = Request.Builder()
-                                    .url(execUrl)
-                                    .post("".toRequestBody(null))
-                                    .apply {
-                                        if (secret.password.isNotBlank()) {
-                                            header("Authorization", "Bearer ${secret.password}")
+                val targetName = activeTarget.trim()
+                if (targetName.isEmpty()) {
+                    execLines += "[exec error] No target pod/container selected. Sync API or enter a workload name."
+                } else {
+                    execLines += "$targetName# $cmd"
+                    scope.launch {
+                        val baseEndpoint = resolveWorkloadBaseEndpoint(endpointHost, settings.clusterOrSocketEndpoint)
+                        val shellBin = settings.shellCommand.ifBlank { "/bin/sh" }
+                        val remoteResult = withContext(Dispatchers.IO) {
+                            runCatching {
+                                if (baseEndpoint.isBlank()) error("No remote cluster/daemon endpoint configured")
+                                if (isKubernetes) {
+                                    val execRes = k8sExecClient.executeCommand(
+                                        clusterEndpoint = baseEndpoint,
+                                        namespace = namespace,
+                                        podName = targetName,
+                                        command = listOf(shellBin, "-c", cmd),
+                                        bearerToken = secret.password,
+                                        container = settings.subContainerName
+                                    )
+                                    buildString {
+                                        if (execRes.stdout.isNotBlank()) append(execRes.stdout.trimEnd())
+                                        if (execRes.stderr.isNotBlank()) {
+                                            if (isNotEmpty()) append('\n')
+                                            append(execRes.stderr.trimEnd())
                                         }
-                                        header("X-Stream-Protocol-Version", "v4.channel.k8s.io")
                                     }
-                                    .build()
-                                httpClient.newCall(req).execute().use { resp ->
-                                    if (!resp.isSuccessful) error("K8s exec HTTP ${resp.code}")
-                                    val bytes = resp.body?.bytes() ?: ByteArray(0)
-                                    String(bytes, StandardCharsets.UTF_8).trimEnd()
-                                }
-                            } else {
-                                val createPayload = buildJsonObject {
-                                    put("AttachStdout", JsonPrimitive(true))
-                                    put("AttachStderr", JsonPrimitive(true))
-                                    put("Tty", JsonPrimitive(false))
-                                    put(
-                                        "Cmd",
-                                        JsonArray(
-                                            listOf(
-                                                JsonPrimitive(shellBin),
-                                                JsonPrimitive("-c"),
-                                                JsonPrimitive(cmd)
+                                } else {
+                                    val jsonMedia = "application/json; charset=utf-8".toMediaType()
+                                    val createPayload = buildJsonObject {
+                                        put("AttachStdout", JsonPrimitive(true))
+                                        put("AttachStderr", JsonPrimitive(true))
+                                        put("Tty", JsonPrimitive(false))
+                                        put(
+                                            "Cmd",
+                                            JsonArray(
+                                                listOf(
+                                                    JsonPrimitive(shellBin),
+                                                    JsonPrimitive("-c"),
+                                                    JsonPrimitive(cmd)
+                                                )
                                             )
                                         )
-                                    )
-                                }.toString()
-                                val createReq = Request.Builder()
-                                    .url("$baseEndpoint/containers/$activeTarget/exec")
-                                    .post(createPayload.toRequestBody(jsonMedia))
-                                    .apply {
-                                        if (secret.password.isNotBlank()) {
-                                            header("Authorization", "Bearer ${secret.password}")
+                                    }.toString()
+                                    val createReq = Request.Builder()
+                                        .url("$baseEndpoint/containers/${URLEncoder.encode(targetName, "UTF-8")}/exec")
+                                        .post(createPayload.toRequestBody(jsonMedia))
+                                        .apply {
+                                            if (secret.password.isNotBlank()) {
+                                                header("Authorization", "Bearer ${secret.password}")
+                                            }
                                         }
+                                        .build()
+                                    val execId = httpClient.newCall(createReq).execute().use { resp ->
+                                        if (!resp.isSuccessful) error("Docker exec create HTTP ${resp.code}")
+                                        val obj = lenientJson.parseToJsonElement(resp.body?.string().orEmpty()).jsonObject
+                                        obj["Id"]?.jsonPrimitive?.contentOrNull
+                                            ?: error("Missing Docker Exec Id")
                                     }
-                                    .build()
-                                val execId = httpClient.newCall(createReq).execute().use { resp ->
-                                    if (!resp.isSuccessful) error("Docker exec create HTTP ${resp.code}")
-                                    val obj = lenientJson.parseToJsonElement(resp.body?.string().orEmpty()).jsonObject
-                                    obj["Id"]?.jsonPrimitive?.contentOrNull
-                                        ?: error("Missing Docker Exec Id")
-                                }
-                                val startReq = Request.Builder()
-                                    .url("$baseEndpoint/exec/$execId/start")
-                                    .post("""{"Detach":false,"Tty":false}""".toRequestBody(jsonMedia))
-                                    .apply {
-                                        if (secret.password.isNotBlank()) {
-                                            header("Authorization", "Bearer ${secret.password}")
+                                    val startReq = Request.Builder()
+                                        .url("$baseEndpoint/exec/$execId/start")
+                                        .post("""{"Detach":false,"Tty":false}""".toRequestBody(jsonMedia))
+                                        .apply {
+                                            if (secret.password.isNotBlank()) {
+                                                header("Authorization", "Bearer ${secret.password}")
+                                            }
                                         }
+                                        .build()
+                                    httpClient.newCall(startReq).execute().use { resp ->
+                                        if (!resp.isSuccessful) error("Docker exec start HTTP ${resp.code}")
+                                        val outBytes = resp.body?.bytes() ?: ByteArray(0)
+                                        stripDockerMultiplexedHeaders(outBytes).trimEnd()
                                     }
-                                    .build()
-                                httpClient.newCall(startReq).execute().use { resp ->
-                                    if (!resp.isSuccessful) error("Docker exec start HTTP ${resp.code}")
-                                    val outBytes = resp.body?.bytes() ?: ByteArray(0)
-                                    stripDockerMultiplexedHeaders(outBytes).trimEnd()
                                 }
                             }
                         }
-                    }
 
-                    remoteResult.onSuccess { liveOut ->
-                        if (liveOut.isNotBlank()) {
-                            execLines.addAll(liveOut.lines())
-                        } else {
-                            execLines += "[exec $shellBin] Completed (exit_code=0)"
+                        remoteResult.onSuccess { liveOut ->
+                            if (liveOut.isNotBlank()) {
+                                execLines.addAll(liveOut.lines())
+                            } else {
+                                execLines += "[exec $shellBin] Completed (exit_code=0)"
+                            }
+                            apiStatusIsError = false
+                        }.onFailure { err ->
+                            val msg = err.message ?: "endpoint unreachable"
+                            apiStatusBanner = "Exec error: $msg"
+                            apiStatusIsError = true
+                            execLines += "[exec error] $msg"
                         }
-                        apiStatusIsError = false
-                    }.onFailure { err ->
-                        apiStatusBanner = "Exec offline fallback (${err.message ?: "unreachable"})"
-                        apiStatusIsError = true
-                        val fallbackOutput = buildOfflineContainerExecFallback(
-                            cmd = cmd,
-                            activeTarget = activeTarget,
-                            namespace = namespace,
-                            shellCommand = shellBin,
-                            isKubernetes = isKubernetes
-                        )
-                        execLines.addAll(fallbackOutput.lines())
                     }
                 }
             }
@@ -471,8 +740,9 @@ fun KubernetesAndContainerTerminalView(
                         tint = NexusTheme.extendedColors.cloudAccent,
                         modifier = Modifier.size(18.dp)
                     )
+                    val targetBadge = activeTarget.ifBlank { "unselected" }
                     Text(
-                        text = if (isKubernetes) "K8S: $namespace/$activeTarget" else "DOCKER: $activeTarget",
+                        text = if (isKubernetes) "K8S: $namespace/$targetBadge" else "DOCKER: $targetBadge",
                         style = NexusTheme.monospace.keycapShortcut,
                         color = MaterialTheme.colorScheme.onSurface
                     )
@@ -544,7 +814,7 @@ fun KubernetesAndContainerTerminalView(
                             Text(
                                 text = line,
                                 style = NexusTheme.monospace.logEntry,
-                                color = Color(0xFFE2E6F3)
+                                color = if (line.startsWith("[exec error]")) Color(0xFFFF6E6E) else Color(0xFFE2E6F3)
                             )
                         }
                     }
@@ -573,8 +843,9 @@ fun KubernetesAndContainerTerminalView(
                             value = execInput,
                             onValueChange = { execInput = it },
                             placeholder = {
+                                val tgt = activeTarget.ifBlank { "<pod>" }
                                 Text(
-                                    if (isKubernetes) "kubectl exec -it $activeTarget -- ${settings.shellCommand}…" else "docker exec -it $activeTarget ${settings.shellCommand}…",
+                                    if (isKubernetes) "kubectl exec -it $tgt -- ${settings.shellCommand}…" else "docker exec -it $tgt ${settings.shellCommand}…",
                                     style = MaterialTheme.typography.bodySmall
                                 )
                             },
@@ -626,63 +897,89 @@ fun KubernetesAndContainerTerminalView(
                         .weight(1f)
                         .fillMaxWidth()
                 ) {
-                    LazyColumn(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(14.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        items(filteredLogs) { line ->
-                            val color = when {
-                                line.contains("ERROR") -> Color(0xFFFF6E6E)
-                                line.contains("WARN") -> Color(0xFFFFB86B)
-                                else -> Color(0xFFA5F3FC)
+                    if (filteredLogs.isEmpty()) {
+                        Text(
+                            text = if (apiStatusIsError) apiStatusBanner else "No log lines received yet. Click 'Sync API' to stream live logs.",
+                            style = NexusTheme.monospace.logEntry,
+                            color = Color(0xFF94A3B8),
+                            modifier = Modifier.padding(14.dp)
+                        )
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(14.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            items(filteredLogs) { line ->
+                                val color = when {
+                                    line.contains("ERROR") -> Color(0xFFFF6E6E)
+                                    line.contains("WARN") -> Color(0xFFFFB86B)
+                                    else -> Color(0xFFA5F3FC)
+                                }
+                                Text(text = line, style = NexusTheme.monospace.logEntry, color = color)
                             }
-                            Text(text = line, style = NexusTheme.monospace.logEntry, color = color)
                         }
                     }
                 }
             }
 
             else -> {
-                // Discovered Pods / Containers & Port-Forwards
-                LazyColumn(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth()
-                        .padding(14.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    items(workloads, key = { it.id }) { item ->
-                        Surface(
-                            shape = RoundedCornerShape(14.dp),
-                            color = MaterialTheme.colorScheme.surfaceContainer,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 14.dp, vertical = 10.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
+                // Discovered Pods / Containers
+                if (workloads.isEmpty()) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceContainer,
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp)
+                    ) {
+                        Text(
+                            text = if (apiStatusIsError) apiStatusBanner else "No active workloads discovered. Click 'Sync API' to query the cluster/daemon.",
+                            style = NexusTheme.monospace.keycapShortcut,
+                            color = if (apiStatusIsError) Color(0xFFFFB86B) else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(16.dp)
+                        )
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                            .padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(workloads, key = { it.id }) { item ->
+                            Surface(
+                                shape = RoundedCornerShape(14.dp),
+                                color = MaterialTheme.colorScheme.surfaceContainer,
+                                modifier = Modifier.fillMaxWidth()
                             ) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(item.name, style = MaterialTheme.typography.titleSmall)
-                                    Text(
-                                        text = "${item.namespaceOrImage} • ${item.statusBadge}",
-                                        style = NexusTheme.monospace.keycapShortcut,
-                                        color = NexusTheme.extendedColors.statusConnected
-                                    )
-                                }
-                                FilledTonalButton(
-                                    onClick = {
-                                        activeTarget = item.name
-                                        activePaneTab = 0
-                                    }
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
                                 ) {
-                                    Icon(Icons.Outlined.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text("Attach Shell")
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(item.name, style = MaterialTheme.typography.titleSmall)
+                                        Text(
+                                            text = "${item.namespaceOrImage} • ${item.statusBadge}",
+                                            style = NexusTheme.monospace.keycapShortcut,
+                                            color = NexusTheme.extendedColors.statusConnected
+                                        )
+                                    }
+                                    FilledTonalButton(
+                                        onClick = {
+                                            activeTarget = item.name
+                                            activePaneTab = 0
+                                        }
+                                    ) {
+                                        Icon(Icons.Outlined.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("Attach Shell")
+                                    }
                                 }
                             }
                         }
@@ -692,34 +989,3 @@ fun KubernetesAndContainerTerminalView(
         }
     }
 }
-
-private fun buildOfflineContainerExecFallback(
-    cmd: String,
-    activeTarget: String,
-    namespace: String,
-    shellCommand: String,
-    isKubernetes: Boolean
-): String {
-    return when {
-        cmd == "ps aux" || cmd.startsWith("ps ") ->
-            "PID   USER     TIME  COMMAND\n  1   root     0:04  $shellCommand\n 24   nonroot  1:18  /usr/local/bin/service-worker --port=8080"
-        cmd == "df -h" || cmd.startsWith("df") ->
-            "Filesystem      Size  Used Avail Use% Mounted on\noverlay         120G   34G   86G  29% /"
-        cmd == "netstat -tlpn" || cmd.startsWith("netstat") || cmd.startsWith("ss ") ->
-            "Proto Local Address     State    PID/Program\ntcp   0.0.0.0:8080      LISTEN   24/service-worker"
-        cmd.startsWith("env") || cmd == "printenv" ->
-            if (isKubernetes) {
-                "KUBERNETES_PORT=tcp://10.96.0.1:443\nNAMESPACE=$namespace\nPOD_NAME=$activeTarget"
-            } else {
-                "HOSTNAME=$activeTarget\nPATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-            }
-        cmd == "whoami" -> "root"
-        cmd == "id" -> "uid=0(root) gid=0(root) groups=0(root)"
-        cmd == "pwd" -> "/app"
-        cmd.startsWith("uname") -> "Linux $activeTarget 6.6.44-cloud-arm64 #1 SMP PREEMPT_DYNAMIC aarch64 GNU/Linux"
-        cmd == "ls" || cmd.startsWith("ls ") -> "bin  config.yaml  entrypoint.sh  logs  service-worker"
-        cmd.startsWith("echo ") -> cmd.removePrefix("echo ").trim('"', '\'')
-        else -> "[offline exec $shellCommand] '$cmd' simulated on $activeTarget (exit_code=0)"
-    }
-}
-

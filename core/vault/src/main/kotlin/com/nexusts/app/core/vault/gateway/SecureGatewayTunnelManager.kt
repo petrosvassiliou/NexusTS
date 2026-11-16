@@ -15,6 +15,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -29,6 +30,7 @@ import okhttp3.WebSocketListener
 import okio.ByteString
 import okio.ByteString.Companion.toByteString
 import java.io.BufferedInputStream
+import java.io.Closeable
 import java.io.DataInputStream
 import java.io.IOException
 import java.net.InetSocketAddress
@@ -41,6 +43,7 @@ import java.util.Base64
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
 import javax.net.ssl.SSLContext
@@ -65,8 +68,92 @@ data class ActiveTunnelLease(
     val localBindPort: Int,
     val remoteTargetHost: String,
     val remoteTargetPort: Int,
-    val createdAtEpochMs: Long = System.currentTimeMillis()
-)
+    val createdAtEpochMs: Long = System.currentTimeMillis(),
+    private val closeAction: (() -> Unit)? = null
+) : Closeable {
+    private val closed = AtomicBoolean(false)
+
+    override fun close() {
+        if (closed.compareAndSet(false, true)) {
+            closeAction?.invoke()
+        }
+    }
+}
+
+typealias TunnelLease = ActiveTunnelLease
+
+/**
+ * Pluggable native `russh` bastion driver interface so `:core:vault` can establish live SSH
+ * local port forwards via `SshNativeBridge` without a circular Gradle module dependency.
+ */
+interface BastionNativeTunnelDriver {
+    val isAvailable: Boolean
+    fun connectWithoutPty(connectSpecJson: String): Long
+    fun startLocalForward(handle: Long, bindAddr: String, bindPort: Int, targetHost: String, targetPort: Int): Boolean
+    fun lastError(handle: Long): String
+    fun disconnect(handle: Long)
+}
+
+internal object ReflectiveSshBastionTunnelDriver : BastionNativeTunnelDriver {
+    private val bridgeClass: Class<*>? = runCatching {
+        Class.forName("com.nexusts.app.protocols.ssh.bridge.SshNativeBridge")
+    }.getOrNull()
+
+    override val isAvailable: Boolean
+        get() = runCatching {
+            val cls = bridgeClass ?: return false
+            val getter = cls.getMethod("isNativeLoaded")
+            getter.invoke(null) as? Boolean ?: false
+        }.getOrElse {
+            runCatching {
+                val cls = bridgeClass ?: return@runCatching false
+                val field = cls.getDeclaredField("isNativeLoaded").apply { isAccessible = true }
+                field.getBoolean(cls.getField("INSTANCE").get(null))
+            }.getOrDefault(false)
+        }
+
+    override fun connectWithoutPty(connectSpecJson: String): Long {
+        val cls = bridgeClass ?: return 0L
+        val method = cls.getMethod(
+            "nativeSshConnectJson",
+            String::class.java,
+            String::class.java,
+            Boolean::class.javaPrimitiveType
+        )
+        return (method.invoke(null, connectSpecJson, "", false) as? Long) ?: 0L
+    }
+
+    override fun startLocalForward(
+        handle: Long,
+        bindAddr: String,
+        bindPort: Int,
+        targetHost: String,
+        targetPort: Int
+    ): Boolean {
+        val cls = bridgeClass ?: return false
+        val method = cls.getMethod(
+            "nativeSshStartLocalForward",
+            Long::class.javaPrimitiveType,
+            String::class.java,
+            Int::class.javaPrimitiveType,
+            String::class.java,
+            Int::class.javaPrimitiveType
+        )
+        return (method.invoke(null, handle, bindAddr, bindPort, targetHost, targetPort) as? Boolean) ?: false
+    }
+
+    override fun lastError(handle: Long): String {
+        val cls = bridgeClass ?: return ""
+        val method = cls.getMethod("nativeSshLastError", Long::class.javaPrimitiveType)
+        return (method.invoke(null, handle) as? String).orEmpty()
+    }
+
+    override fun disconnect(handle: Long) {
+        val cls = bridgeClass ?: return
+        val method = cls.getMethod("nativeSshDisconnect", Long::class.javaPrimitiveType)
+        method.invoke(null, handle)
+    }
+}
 
 /**
  * Enterprise Secure Gateway & Proxy Tunnel Engine (Royal Server / Secure Gateway equivalent).
@@ -76,19 +163,23 @@ data class ActiveTunnelLease(
  * 1. **SOCKS5 Proxy** (RFC 1928 + RFC 1929 Username/Password sub-negotiation)
  * 2. **HTTP `CONNECT` Proxy** (RFC 9110 `CONNECT` + `Proxy-Authorization: Basic`)
  * 3. **NexusTS Secure Gateway** (Royal Server equivalent HTTPS tunnel lease + WSS binary stream bridge)
- * 4. **SSH Bastion Jump Host** (coordinates SSH `direct-tcpip` jump specifications and health probes)
+ * 4. **SSH Bastion Jump Host** (real `russh` `direct-tcpip` local port-forward when `libnexusts_jni.so` is loaded)
  */
 @Singleton
 class SecureGatewayTunnelManager @Inject constructor() {
+
+    @Volatile
+    var bastionNativeDriver: BastionNativeTunnelDriver = ReflectiveSshBastionTunnelDriver
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val json = Json { ignoreUnknownKeys = true }
 
     private data class RunningRelay(
         val lease: ActiveTunnelLease,
-        val serverSocket: ServerSocket,
-        val acceptJob: Job,
-        val webSocket: WebSocket? = null
+        val serverSocket: ServerSocket? = null,
+        val acceptJob: Job? = null,
+        val webSocket: WebSocket? = null,
+        val nativeSshHandle: Long = 0L
     )
 
     private val activeRelays = ConcurrentHashMap<String, RunningRelay>()
@@ -112,11 +203,65 @@ class SecureGatewayTunnelManager @Inject constructor() {
         targetHost: String,
         targetPort: Int
     ): ActiveTunnelLease = withContext(Dispatchers.IO) {
+        val leaseId = UUID.randomUUID().toString()
+
+        if (gateway.kind == GatewayTransportKind.SSH_TUNNEL_BASTION && bastionNativeDriver.isAvailable) {
+            val specJson = buildSshConnectSpecJson(gateway, credential)
+            val sshHandle = bastionNativeDriver.connectWithoutPty(specJson)
+            if (sshHandle <= 0L) {
+                val errMsg = bastionNativeDriver.lastError(0L).ifBlank {
+                    "SSH bastion handshake failed for ${gateway.host}:${gateway.port}"
+                }
+                throw IOException(errMsg)
+            }
+
+            var forwardedPort = 0
+            var bound = false
+            for (attempt in 0 until 4) {
+                val candidatePort = allocateEphemeralLoopbackPort()
+                if (bastionNativeDriver.startLocalForward(
+                        sshHandle,
+                        "127.0.0.1",
+                        candidatePort,
+                        targetHost,
+                        targetPort
+                    )
+                ) {
+                    forwardedPort = candidatePort
+                    bound = true
+                    break
+                }
+            }
+            if (!bound) {
+                val errMsg = bastionNativeDriver.lastError(sshHandle).ifBlank {
+                    "Failed to bind local SSH bastion forward to $targetHost:$targetPort"
+                }
+                bastionNativeDriver.disconnect(sshHandle)
+                throw IOException(errMsg)
+            }
+
+            val lease = ActiveTunnelLease(
+                leaseId = leaseId,
+                gatewayId = gateway.id,
+                gatewayKind = gateway.kind,
+                localBindHost = "127.0.0.1",
+                localBindPort = forwardedPort,
+                remoteTargetHost = targetHost,
+                remoteTargetPort = targetPort,
+                closeAction = { closeTunnelLease(leaseId) }
+            )
+            activeRelays[leaseId] = RunningRelay(
+                lease = lease,
+                nativeSshHandle = sshHandle
+            )
+            publishLeases()
+            return@withContext lease
+        }
+
         val serverSocket = ServerSocket()
         serverSocket.reuseAddress = true
         serverSocket.bind(InetSocketAddress("127.0.0.1", 0))
         val boundPort = serverSocket.localPort
-        val leaseId = UUID.randomUUID().toString()
 
         val lease = ActiveTunnelLease(
             leaseId = leaseId,
@@ -125,7 +270,8 @@ class SecureGatewayTunnelManager @Inject constructor() {
             localBindHost = "127.0.0.1",
             localBindPort = boundPort,
             remoteTargetHost = targetHost,
-            remoteTargetPort = targetPort
+            remoteTargetPort = targetPort,
+            closeAction = { closeTunnelLease(leaseId) }
         )
 
         val acceptJob = scope.launch {
@@ -142,14 +288,72 @@ class SecureGatewayTunnelManager @Inject constructor() {
             }
         }
 
-        activeRelays[leaseId] = RunningRelay(lease, serverSocket, acceptJob)
+        activeRelays[leaseId] = RunningRelay(
+            lease = lease,
+            serverSocket = serverSocket,
+            acceptJob = acceptJob
+        )
         publishLeases()
         lease
     }
 
+    private fun allocateEphemeralLoopbackPort(): Int {
+        ServerSocket().use { probe ->
+            probe.reuseAddress = true
+            probe.bind(InetSocketAddress("127.0.0.1", 0))
+            return probe.localPort
+        }
+    }
+
+    internal fun buildSshConnectSpecJson(
+        gateway: SecureGatewayConfig,
+        credential: VaultCredential?
+    ): String {
+        val pem = credential?.privateKeyPem.orEmpty().trim()
+        val authObj = if (pem.isNotEmpty()) {
+            buildJsonObject {
+                put(
+                    "PrivateKeyPem",
+                    buildJsonObject {
+                        put("pem", pem)
+                        val kp = credential?.keyPassphrase.orEmpty()
+                        if (kp.isNotEmpty()) put("passphrase", kp) else put("passphrase", JsonNull)
+                    }
+                )
+            }
+        } else {
+            buildJsonObject {
+                put(
+                    "Password",
+                    buildJsonObject {
+                        put("password", credential?.secretPassword.orEmpty())
+                    }
+                )
+            }
+        }
+        return buildJsonObject {
+            put("host", gateway.host.trim())
+            put("port", gateway.port.coerceIn(1, 65535))
+            put("username", credential?.username?.takeIf { it.isNotBlank() } ?: "root")
+            put("auth", authObj)
+            val fp = credential?.keyFingerprintSha256?.takeIf { it.isNotBlank() && gateway.verifyTlsCertificate }
+            if (fp != null) {
+                put("expected_host_fingerprint_sha256", fp)
+            } else {
+                put("expected_host_fingerprint_sha256", JsonNull)
+            }
+            put("term_env", "xterm-256color")
+            put("initial_cols", 80)
+            put("initial_rows", 24)
+            put("enable_x11", false)
+            put("keepalive_secs", 20)
+            put("startup_command", JsonNull)
+        }.toString()
+    }
+
     /**
      * Dials an outbound TCP [Socket] to `[targetHost]:[targetPort]` directly through a SOCKS5
-     * or HTTP `CONNECT` proxy.
+     * or HTTP `CONNECT` proxy, or through a loopback gateway lease (closing the lease when the socket closes).
      */
     suspend fun dialProxiedSocket(
         gateway: SecureGatewayConfig,
@@ -166,9 +370,22 @@ class SecureGatewayTunnelManager @Inject constructor() {
             GatewayTransportKind.NEXUSTS_SECURE_GATEWAY,
             GatewayTransportKind.SSH_TUNNEL_BASTION -> {
                 val lease = openLoopbackTunnelLease(gateway, credential, targetHost, targetPort)
-                Socket().apply {
-                    tcpNoDelay = true
-                    connect(InetSocketAddress(lease.localBindHost, lease.localBindPort), connectTimeoutMs)
+                object : Socket() {
+                    override fun close() {
+                        try {
+                            super.close()
+                        } finally {
+                            lease.close()
+                        }
+                    }
+                }.apply {
+                    try {
+                        tcpNoDelay = true
+                        connect(InetSocketAddress(lease.localBindHost, lease.localBindPort), connectTimeoutMs)
+                    } catch (t: Throwable) {
+                        lease.close()
+                        throw t
+                    }
                 }
             }
         }
@@ -244,9 +461,12 @@ class SecureGatewayTunnelManager @Inject constructor() {
 
     fun closeTunnelLease(leaseId: String) {
         activeRelays.remove(leaseId)?.let { relay ->
+            if (relay.nativeSshHandle > 0L) {
+                runCatching { bastionNativeDriver.disconnect(relay.nativeSshHandle) }
+            }
             runCatching { relay.webSocket?.close(1000, "NexusTS session closed") }
-            runCatching { relay.serverSocket.close() }
-            relay.acceptJob.cancel()
+            runCatching { relay.serverSocket?.close() }
+            relay.acceptJob?.cancel()
             publishLeases()
         }
     }
@@ -288,7 +508,7 @@ class SecureGatewayTunnelManager @Inject constructor() {
             }
 
             GatewayTransportKind.SSH_TUNNEL_BASTION -> {
-                // Direct TCP socket fallback if native russh bastion channel isn't pre-bound
+                // Direct TCP socket fallback when native russh library is not loaded on JVM host
                 val upstream = runCatching {
                     Socket().apply {
                         tcpNoDelay = true

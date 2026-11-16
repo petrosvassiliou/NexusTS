@@ -1,10 +1,10 @@
-//! Async SSHv2 (`russh`) Transport, Bastion Jump-Host Chaining, Port/X11 Forwarding,
-//! and Telnet RFC 854 / RFC 1073 (`IAC` Negotiation) Wire State Machine.
+//! Async SSHv2 (`russh`) Transport, Bastion Jump-Host Chaining, Port/SOCKS5/X11 Forwarding,
+//! Keyboard-Interactive PAM Fallback, and Telnet RFC 854 / RFC 1073 (`IAC` Negotiation) Helpers.
 
 use async_trait::async_trait;
 use base64::engine::general_purpose::{STANDARD as BASE64_STD, STANDARD_NO_PAD as BASE64_NO_PAD};
 use base64::Engine;
-use russh::client::{self, Handle, Msg};
+use russh::client::{self, Handle, KeyboardInteractiveAuthResponse, Msg};
 use russh::{Channel, ChannelId, Disconnect};
 use russh_keys::key::PrivateKeyWithHashAlg;
 use russh_keys::{HashAlg, PublicKey, PublicKeyBase64};
@@ -13,8 +13,10 @@ use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
+use tokio::task::{AbortHandle, JoinSet};
 
 #[derive(Debug, Error)]
 pub enum TransportError {
@@ -48,6 +50,8 @@ pub struct SshConnectSpec {
     pub initial_rows: u32,
     pub enable_x11: bool,
     pub keepalive_secs: u64,
+    #[serde(default)]
+    pub startup_command: Option<String>,
 }
 
 pub struct NexusSshHandler {
@@ -133,16 +137,57 @@ impl client::Handler for NexusSshHandler {
     }
 }
 
+async fn authenticate_keyboard_interactive_with_password(
+    handle: &mut Handle<NexusSshHandler>,
+    username: &str,
+    password: &str,
+) -> Result<bool, TransportError> {
+    let fut = async {
+        let mut step = handle
+            .authenticate_keyboard_interactive_start(username, None::<String>)
+            .await?;
+
+        for _ in 0..8 {
+            match step {
+                KeyboardInteractiveAuthResponse::Success => return Ok(true),
+                KeyboardInteractiveAuthResponse::Failure => return Ok(false),
+                KeyboardInteractiveAuthResponse::InfoRequest { prompts, .. } => {
+                    let responses: Vec<String> = prompts
+                        .iter()
+                        .map(|p| {
+                            if p.prompt.is_empty() {
+                                String::new()
+                            } else {
+                                password.to_string()
+                            }
+                        })
+                        .collect();
+                    step = handle
+                        .authenticate_keyboard_interactive_respond(responses)
+                        .await?;
+                }
+            }
+        }
+
+        Ok::<bool, TransportError>(false)
+    };
+
+    match tokio::time::timeout(Duration::from_secs(15), fut).await {
+        Ok(res) => res,
+        Err(_) => Ok(false),
+    }
+}
+
 pub struct ActiveSshClientSession {
     handle: Arc<Handle<NexusSshHandler>>,
     pty_channel_id: Option<ChannelId>,
 }
 
 impl ActiveSshClientSession {
-    async fn authenticate_session(
+    async fn open_raw_handle(
         spec: &SshConnectSpec,
         bastion: Option<&ActiveSshClientSession>,
-    ) -> Result<Arc<Handle<NexusSshHandler>>, TransportError> {
+    ) -> Result<Handle<NexusSshHandler>, TransportError> {
         let mut config = client::Config::default();
         if spec.keepalive_secs > 0 {
             config.keepalive_interval = Some(Duration::from_secs(spec.keepalive_secs));
@@ -153,21 +198,51 @@ impl ActiveSshClientSession {
             x11_events_tx: None,
         };
 
-        let mut handle = if let Some(jump_host) = bastion {
+        let effective_port = if spec.port == 0 { 22 } else { spec.port };
+
+        let handle = if let Some(jump_host) = bastion {
             let tunnel_channel = jump_host
                 .handle
-                .channel_open_direct_tcpip(&spec.host, u32::from(spec.port), "127.0.0.1", 0)
+                .channel_open_direct_tcpip(&spec.host, u32::from(effective_port), "127.0.0.1", 0)
                 .await?;
             client::connect_stream(config, tunnel_channel.into_stream(), handler).await?
         } else {
-            client::connect(config, (spec.host.as_str(), spec.port), handler).await?
+            client::connect(config, (spec.host.as_str(), effective_port), handler).await?
         };
+        Ok(handle)
+    }
+
+    async fn authenticate_session(
+        spec: &SshConnectSpec,
+        bastion: Option<&ActiveSshClientSession>,
+    ) -> Result<Arc<Handle<NexusSshHandler>>, TransportError> {
+        let mut handle = Self::open_raw_handle(spec, bastion).await?;
 
         let authenticated = match &spec.auth {
             SshAuthMethod::Password { password } => {
-                handle
+                if handle
                     .authenticate_password(&spec.username, password)
                     .await?
+                {
+                    true
+                } else {
+                    // Fallback to RFC 4256 keyboard-interactive for PAM / BSD / Linux OpenSSH servers.
+                    // Note: russh 0.49 only initializes `CurrentRequest::KeyboardInteractive` when
+                    // keyboard-interactive is the first auth request on a `Handle`, so we open a fresh
+                    // transport handle for the PAM challenge-response exchange.
+                    let _ = handle
+                        .disconnect(Disconnect::ByApplication, "Fallback to kbd-int", "en")
+                        .await;
+                    let mut kbd_handle = Self::open_raw_handle(spec, bastion).await?;
+                    let ok = authenticate_keyboard_interactive_with_password(
+                        &mut kbd_handle,
+                        &spec.username,
+                        password,
+                    )
+                    .await?;
+                    handle = kbd_handle;
+                    ok
+                }
             }
             SshAuthMethod::PrivateKeyPem { pem, passphrase } => {
                 let key_pair = russh_keys::decode_secret_key(pem, passphrase.as_deref())?;
@@ -190,7 +265,7 @@ impl ActiveSshClientSession {
         Ok(Arc::new(handle))
     }
 
-    /// Connects and authenticates without opening an interactive shell PTY (ideal for SFTP-only or Bastion sessions).
+    /// Connects and authenticates without opening an interactive shell PTY (ideal for SFTP/SCP-only or Bastion sessions).
     pub async fn connect_without_shell(
         spec: SshConnectSpec,
         bastion: Option<&ActiveSshClientSession>,
@@ -214,8 +289,8 @@ impl ActiveSshClientSession {
             .request_pty(
                 false,
                 &spec.term_env,
-                spec.initial_cols,
-                spec.initial_rows,
+                spec.initial_cols.max(10),
+                spec.initial_rows.max(4),
                 0,
                 0,
                 &[],
@@ -229,6 +304,16 @@ impl ActiveSshClientSession {
         }
 
         channel.request_shell(false).await?;
+
+        if let Some(cmd) = spec
+            .startup_command
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            let line = format!("{cmd}\n");
+            channel.data(line.as_bytes()).await?;
+        }
 
         Ok((
             Self {
@@ -256,7 +341,51 @@ impl ActiveSshClientSession {
         Ok(())
     }
 
-    /// Binds a local port `-L bind_addr:bind_port:target_host:target_port` and forwards every socket over `direct-tcpip`.
+    /// Binds a local port `-L bind_addr:bind_port:target_host:target_port`, forwards sockets over `direct-tcpip`,
+    /// and returns an [`AbortHandle`] that stops the listener and releases the bound port on disconnect.
+    pub async fn start_local_port_forward(
+        handle: Arc<Handle<NexusSshHandler>>,
+        bind_addr: String,
+        bind_port: u16,
+        target_host: String,
+        target_port: u16,
+    ) -> Result<AbortHandle, TransportError> {
+        let listener = TcpListener::bind((bind_addr.as_str(), bind_port)).await?;
+        let join = tokio::spawn(async move {
+            let mut sub_tasks = JoinSet::new();
+            loop {
+                tokio::select! {
+                    accept_res = listener.accept() => {
+                        match accept_res {
+                            Ok((mut local_sock, peer)) => {
+                                let h = Arc::clone(&handle);
+                                let th = target_host.clone();
+                                sub_tasks.spawn(async move {
+                                    if let Ok(channel) = h
+                                        .channel_open_direct_tcpip(
+                                            &th,
+                                            u32::from(target_port),
+                                            &peer.ip().to_string(),
+                                            u32::from(peer.port()),
+                                        )
+                                        .await
+                                    {
+                                        let mut ssh_stream = channel.into_stream();
+                                        let _ = tokio::io::copy_bidirectional(&mut local_sock, &mut ssh_stream).await;
+                                    }
+                                });
+                            }
+                            Err(_) => break,
+                        }
+                    }
+                    Some(_) = sub_tasks.join_next(), if !sub_tasks.is_empty() => {}
+                }
+            }
+        });
+        Ok(join.abort_handle())
+    }
+
+    /// Backwards-compatible wrapper around [`Self::start_local_port_forward`].
     pub async fn spawn_local_port_forward(
         handle: Arc<Handle<NexusSshHandler>>,
         bind_addr: String,
@@ -264,28 +393,118 @@ impl ActiveSshClientSession {
         target_host: String,
         target_port: u16,
     ) -> Result<(), TransportError> {
+        let _ = Self::start_local_port_forward(
+            handle,
+            bind_addr,
+            bind_port,
+            target_host,
+            target_port,
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Binds a dynamic RFC 1928 SOCKS5 proxy `-D bind_addr:bind_port`, tunnels `CONNECT` streams over
+    /// `direct-tcpip`, and returns an [`AbortHandle`] that stops the listener and releases the bound port on disconnect.
+    pub async fn start_dynamic_socks5_proxy(
+        handle: Arc<Handle<NexusSshHandler>>,
+        bind_addr: String,
+        bind_port: u16,
+    ) -> Result<AbortHandle, TransportError> {
         let listener = TcpListener::bind((bind_addr.as_str(), bind_port)).await?;
-        tokio::spawn(async move {
-            while let Ok((mut local_sock, peer)) = listener.accept().await {
-                let h = Arc::clone(&handle);
-                let th = target_host.clone();
-                tokio::spawn(async move {
-                    if let Ok(channel) = h
-                        .channel_open_direct_tcpip(
-                            &th,
-                            u32::from(target_port),
-                            &peer.ip().to_string(),
-                            u32::from(peer.port()),
-                        )
-                        .await
-                    {
-                        let mut ssh_stream = channel.into_stream();
-                        let _ = tokio::io::copy_bidirectional(&mut local_sock, &mut ssh_stream).await;
+        let join = tokio::spawn(async move {
+            let mut sub_tasks = JoinSet::new();
+            loop {
+                tokio::select! {
+                    accept_res = listener.accept() => {
+                        match accept_res {
+                            Ok((mut client_sock, peer)) => {
+                                let h = Arc::clone(&handle);
+                                sub_tasks.spawn(async move {
+                                    // RFC 1928 SOCKS5 greeting
+                                    let mut hdr = [0u8; 2];
+                                    if client_sock.read_exact(&mut hdr).await.is_err() || hdr[0] != 0x05 {
+                                        return;
+                                    }
+                                    let mut methods = vec![0u8; hdr[1] as usize];
+                                    if client_sock.read_exact(&mut methods).await.is_err() {
+                                        return;
+                                    }
+                                    if client_sock.write_all(&[0x05, 0x00]).await.is_err() {
+                                        return;
+                                    }
+                                    // Request header [VER=5, CMD=1, RSV=0, ATYP]
+                                    let mut req = [0u8; 4];
+                                    if client_sock.read_exact(&mut req).await.is_err() || req[1] != 0x01 {
+                                        return;
+                                    }
+                                    let dest_host = match req[3] {
+                                        0x01 => {
+                                            let mut ip = [0u8; 4];
+                                            if client_sock.read_exact(&mut ip).await.is_err() {
+                                                return;
+                                            }
+                                            std::net::Ipv4Addr::from(ip).to_string()
+                                        }
+                                        0x03 => {
+                                            let mut len_b = [0u8; 1];
+                                            if client_sock.read_exact(&mut len_b).await.is_err() {
+                                                return;
+                                            }
+                                            let mut dom = vec![0u8; len_b[0] as usize];
+                                            if client_sock.read_exact(&mut dom).await.is_err() {
+                                                return;
+                                            }
+                                            String::from_utf8_lossy(&dom).to_string()
+                                        }
+                                        0x04 => {
+                                            let mut ip6 = [0u8; 16];
+                                            if client_sock.read_exact(&mut ip6).await.is_err() {
+                                                return;
+                                            }
+                                            std::net::Ipv6Addr::from(ip6).to_string()
+                                        }
+                                        _ => return,
+                                    };
+                                    let mut port_b = [0u8; 2];
+                                    if client_sock.read_exact(&mut port_b).await.is_err() {
+                                        return;
+                                    }
+                                    let dest_port = u16::from_be_bytes(port_b);
+
+                                    if let Ok(ch) = h
+                                        .channel_open_direct_tcpip(
+                                            &dest_host,
+                                            u32::from(dest_port),
+                                            &peer.ip().to_string(),
+                                            u32::from(peer.port()),
+                                        )
+                                        .await
+                                    {
+                                        let reply = [0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0];
+                                        if client_sock.write_all(&reply).await.is_ok() {
+                                            let mut ssh_stream = ch.into_stream();
+                                            let _ = tokio::io::copy_bidirectional(
+                                                &mut client_sock,
+                                                &mut ssh_stream,
+                                            )
+                                            .await;
+                                        }
+                                    } else {
+                                        let _ = client_sock
+                                            .write_all(&[0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+                                            .await;
+                                    }
+                                });
+                            }
+                            Err(_) => break,
+                        }
                     }
-                });
+                    Some(_) = sub_tasks.join_next(), if !sub_tasks.is_empty() => {}
+                }
             }
         });
-        Ok(())
+        Ok(join.abort_handle())
     }
 
     /// Opens an SFTP v3 subsystem channel on the existing SSH multiplex connection.
@@ -325,88 +544,22 @@ impl TelnetNegotiator {
 
     /// Processes incoming Telnet wire bytes and returns `(clean_terminal_bytes, outbound_iac_replies)`.
     pub fn process_incoming(&self, wire: &[u8]) -> (Vec<u8>, Vec<u8>) {
-        const IAC: u8 = 255;
-        const DONT: u8 = 254;
-        const DO: u8 = 253;
-        const WONT: u8 = 252;
-        const WILL: u8 = 251;
-        const SB: u8 = 250;
-        const SE: u8 = 240;
-        const OPT_TTYPE: u8 = 24;
-        const OPT_NAWS: u8 = 31;
-
-        let mut clean = Vec::with_capacity(wire.len());
-        let mut replies = Vec::new();
-        let mut i = 0;
-
-        while i < wire.len() {
-            if wire[i] != IAC {
-                clean.push(wire[i]);
-                i += 1;
-                continue;
-            }
-            if i + 1 >= wire.len() {
-                break;
-            }
-            let cmd = wire[i + 1];
-            match cmd {
-                IAC => {
-                    clean.push(IAC);
-                    i += 2;
-                }
-                DO if i + 2 < wire.len() => {
-                    let opt = wire[i + 2];
-                    if opt == OPT_NAWS {
-                        replies.extend_from_slice(&[IAC, WILL, OPT_NAWS]);
-                        replies.extend_from_slice(&crate::build_telnet_naws_packet(
-                            self.cols, self.rows,
-                        ));
-                    } else if opt == OPT_TTYPE {
-                        replies.extend_from_slice(&[IAC, WILL, OPT_TTYPE]);
-                    } else {
-                        replies.extend_from_slice(&[IAC, WONT, opt]);
-                    }
-                    i += 3;
-                }
-                WILL if i + 2 < wire.len() => {
-                    let opt = wire[i + 2];
-                    // Accept ECHO (1) and SUPPRESS-GO-AHEAD (3)
-                    if opt == 1 || opt == 3 {
-                        replies.extend_from_slice(&[IAC, DO, opt]);
-                    } else {
-                        replies.extend_from_slice(&[IAC, DONT, opt]);
-                    }
-                    i += 3;
-                }
-                WONT | DONT if i + 2 < wire.len() => {
-                    i += 3;
-                }
-                SB => {
-                    let mut end = i + 2;
-                    while end + 1 < wire.len() && !(wire[end] == IAC && wire[end + 1] == SE) {
-                        end += 1;
-                    }
-                    if i + 3 < end && wire[i + 2] == OPT_TTYPE && wire[i + 3] == 1 {
-                        // IAC SB TTYPE IS <term_type> IAC SE
-                        replies.extend_from_slice(&[IAC, SB, OPT_TTYPE, 0]);
-                        replies.extend_from_slice(self.term_type.as_bytes());
-                        replies.extend_from_slice(&[IAC, SE]);
-                    }
-                    i = (end + 2).min(wire.len());
-                }
-                _ => {
-                    i += 2;
-                }
-            }
-        }
-
-        (clean, replies)
+        let mut parser =
+            crate::telnet_transport::StatefulTelnetParser::new(self.cols, self.rows, &self.term_type);
+        parser.feed(wire)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use russh::server::{self, Auth, Msg as ServerMsg, Response, Session as ServerSession};
+    use russh::{ChannelMsg, CryptoVec, MethodSet, Pty};
+    use russh_keys::ssh_key::rand_core::OsRng;
+    use russh_keys::ssh_key::{Algorithm, LineEnding, PrivateKey};
+    use std::borrow::Cow;
+    use std::sync::Mutex;
+    use tokio::net::TcpStream;
 
     #[test]
     fn openssh_sha256_fingerprint_matches_decoded_key_and_hex_fallback() {
@@ -425,5 +578,422 @@ mod tests {
             expected_openssh
         );
         assert!(verify_server_public_key_pin(&key_b64, "SHA256:wrongpin").is_err());
+    }
+
+    #[derive(Clone)]
+    struct LoopbackSshServerState {
+        require_kbd_interactive: bool,
+        expected_user: String,
+        expected_password: String,
+        allowed_pubkey: Option<PublicKey>,
+        recorded_resizes: Arc<Mutex<Vec<(u32, u32)>>>,
+    }
+
+    struct LoopbackSshHandler {
+        state: LoopbackSshServerState,
+        kbd_prompted: bool,
+        shell_channels: std::collections::HashSet<ChannelId>,
+    }
+
+    #[async_trait]
+    impl server::Handler for LoopbackSshHandler {
+        type Error = russh::Error;
+
+        async fn auth_password(&mut self, user: &str, password: &str) -> Result<Auth, Self::Error> {
+            if self.state.require_kbd_interactive {
+                return Ok(Auth::Reject {
+                    proceed_with_methods: Some(MethodSet::KEYBOARD_INTERACTIVE),
+                });
+            }
+            if user == self.state.expected_user && password == self.state.expected_password {
+                Ok(Auth::Accept)
+            } else {
+                Ok(Auth::Reject {
+                    proceed_with_methods: None,
+                })
+            }
+        }
+
+        async fn auth_keyboard_interactive(
+            &mut self,
+            user: &str,
+            _submethods: &str,
+            response: Option<Response<'async_trait>>,
+        ) -> Result<Auth, Self::Error> {
+            if user != self.state.expected_user {
+                return Ok(Auth::Reject {
+                    proceed_with_methods: None,
+                });
+            }
+            if !self.kbd_prompted {
+                self.kbd_prompted = true;
+                let prompts: &'static [(Cow<'static, str>, bool)] =
+                    &[(Cow::Borrowed("PAM Password: "), false)];
+                return Ok(Auth::Partial {
+                    name: Cow::Borrowed("PAM Authentication"),
+                    instructions: Cow::Borrowed("Enter system password"),
+                    prompts: Cow::Borrowed(prompts),
+                });
+            }
+            if let Some(mut resp) = response {
+                if let Some(ans) = resp.next() {
+                    if ans.as_ref() == self.state.expected_password.as_bytes() {
+                        return Ok(Auth::Accept);
+                    }
+                }
+            }
+            Ok(Auth::Reject {
+                proceed_with_methods: None,
+            })
+        }
+
+        async fn auth_publickey(
+            &mut self,
+            user: &str,
+            public_key: &PublicKey,
+        ) -> Result<Auth, Self::Error> {
+            if user == self.state.expected_user {
+                if let Some(allowed) = &self.state.allowed_pubkey {
+                    if allowed.public_key_base64() == public_key.public_key_base64() {
+                        return Ok(Auth::Accept);
+                    }
+                }
+            }
+            Ok(Auth::Reject {
+                proceed_with_methods: None,
+            })
+        }
+
+        async fn channel_open_session(
+            &mut self,
+            _channel: Channel<ServerMsg>,
+            _session: &mut ServerSession,
+        ) -> Result<bool, Self::Error> {
+            Ok(true)
+        }
+
+        async fn pty_request(
+            &mut self,
+            channel: ChannelId,
+            _term: &str,
+            col_width: u32,
+            row_height: u32,
+            _pix_width: u32,
+            _pix_height: u32,
+            _modes: &[(Pty, u32)],
+            session: &mut ServerSession,
+        ) -> Result<(), Self::Error> {
+            self.state
+                .recorded_resizes
+                .lock()
+                .unwrap()
+                .push((col_width, row_height));
+            let _ = session.channel_success(channel);
+            Ok(())
+        }
+
+        async fn shell_request(
+            &mut self,
+            channel: ChannelId,
+            session: &mut ServerSession,
+        ) -> Result<(), Self::Error> {
+            self.shell_channels.insert(channel);
+            let _ = session.channel_success(channel);
+            let _ = session.data(channel, CryptoVec::from_slice(b"READY>"));
+            Ok(())
+        }
+
+        async fn window_change_request(
+            &mut self,
+            channel: ChannelId,
+            col_width: u32,
+            row_height: u32,
+            _pix_width: u32,
+            _pix_height: u32,
+            session: &mut ServerSession,
+        ) -> Result<(), Self::Error> {
+            self.state
+                .recorded_resizes
+                .lock()
+                .unwrap()
+                .push((col_width, row_height));
+            let _ = session.data(
+                channel,
+                CryptoVec::from_slice(format!("RESIZED:{col_width}x{row_height}\n").as_bytes()),
+            );
+            Ok(())
+        }
+
+        async fn data(
+            &mut self,
+            channel: ChannelId,
+            data: &[u8],
+            session: &mut ServerSession,
+        ) -> Result<(), Self::Error> {
+            if self.shell_channels.contains(&channel) {
+                let mut reply = b"ECHO:".to_vec();
+                reply.extend_from_slice(data);
+                let _ = session.data(channel, CryptoVec::from_slice(&reply));
+            }
+            Ok(())
+        }
+
+        async fn channel_open_direct_tcpip(
+            &mut self,
+            channel: Channel<ServerMsg>,
+            host_to_connect: &str,
+            port_to_connect: u32,
+            _originator_address: &str,
+            _originator_port: u32,
+            _session: &mut ServerSession,
+        ) -> Result<bool, Self::Error> {
+            let target = format!("{host_to_connect}:{port_to_connect}");
+            match TcpStream::connect(&target).await {
+                Ok(mut backend) => {
+                    tokio::spawn(async move {
+                        let mut ch_stream = channel.into_stream();
+                        let _ = tokio::io::copy_bidirectional(&mut ch_stream, &mut backend).await;
+                    });
+                    Ok(true)
+                }
+                Err(_) => Ok(false),
+            }
+        }
+    }
+
+    async fn spawn_loopback_ssh_server(state: LoopbackSshServerState) -> (u16, AbortHandle) {
+        let host_key = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
+        let mut cfg = server::Config {
+            auth_rejection_time: Duration::from_millis(1),
+            auth_rejection_time_initial: Some(Duration::from_millis(1)),
+            ..Default::default()
+        };
+        cfg.keys.push(host_key);
+        let cfg = Arc::new(cfg);
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let join = tokio::spawn(async move {
+            while let Ok((socket, _)) = listener.accept().await {
+                let st = state.clone();
+                let c = Arc::clone(&cfg);
+                tokio::spawn(async move {
+                    let handler = LoopbackSshHandler {
+                        state: st,
+                        kbd_prompted: false,
+                        shell_channels: std::collections::HashSet::new(),
+                    };
+                    if let Ok(session) = server::run_stream(c, socket, handler).await {
+                        let _ = session.await;
+                    }
+                });
+            }
+        });
+
+        (port, join.abort_handle())
+    }
+
+    #[tokio::test]
+    async fn loopback_ssh_password_kbdint_ed25519_pty_resize_forwards_and_port_release() {
+        // 1. Spawn a local TCP echo backend to tunnel to via -L and -D
+        let backend_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let backend_port = backend_listener.local_addr().unwrap().port();
+        let backend_task = tokio::spawn(async move {
+            while let Ok((mut s, _)) = backend_listener.accept().await {
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 256];
+                    if let Ok(n) = s.read(&mut buf).await {
+                        let mut out = b"TUNNELED:".to_vec();
+                        out.extend_from_slice(&buf[..n]);
+                        let _ = s.write_all(&out).await;
+                        let _ = s.shutdown().await;
+                    }
+                });
+            }
+        });
+
+        // Generate an Ed25519 client keypair
+        let client_priv = PrivateKey::random(&mut OsRng, Algorithm::Ed25519).unwrap();
+        let client_pub: PublicKey = client_priv.public_key().clone();
+        let client_pem = client_priv.to_openssh(LineEnding::LF).unwrap().to_string();
+
+        let resizes = Arc::new(Mutex::new(Vec::new()));
+        let (ssh_port, ssh_srv_abort) = spawn_loopback_ssh_server(LoopbackSshServerState {
+            require_kbd_interactive: false,
+            expected_user: "ops".into(),
+            expected_password: "s3cret-password".into(),
+            allowed_pubkey: Some(client_pub.clone()),
+            recorded_resizes: Arc::clone(&resizes),
+        })
+        .await;
+
+        // A) Password Auth + Shell Echo + PTY Resize + -L + -D + Port Release
+        let spec_pw = SshConnectSpec {
+            host: "127.0.0.1".into(),
+            port: ssh_port,
+            username: "ops".into(),
+            auth: SshAuthMethod::Password {
+                password: "s3cret-password".into(),
+            },
+            expected_host_fingerprint_sha256: None,
+            term_env: "xterm-256color".into(),
+            initial_cols: 100,
+            initial_rows: 30,
+            enable_x11: false,
+            keepalive_secs: 0,
+            startup_command: None,
+        };
+        let (sess_pw, mut ch_pw) = ActiveSshClientSession::connect(spec_pw, None).await.unwrap();
+        ch_pw.data(&b"ping-shell"[..]).await.unwrap();
+        ActiveSshClientSession::notify_pty_resize(&ch_pw, 160, 48)
+            .await
+            .unwrap();
+
+        let mut shell_out = Vec::new();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        while tokio::time::Instant::now() < deadline {
+            if let Ok(Some(ChannelMsg::Data { data })) =
+                tokio::time::timeout(Duration::from_millis(100), ch_pw.wait()).await
+            {
+                shell_out.extend_from_slice(&data);
+                let s = String::from_utf8_lossy(&shell_out);
+                if s.contains("READY>") && s.contains("ECHO:ping-shell") && s.contains("RESIZED:160x48") {
+                    break;
+                }
+            }
+        }
+        let shell_text = String::from_utf8_lossy(&shell_out);
+        assert!(shell_text.contains("READY>"));
+        assert!(shell_text.contains("ECHO:ping-shell"));
+        assert!(shell_text.contains("RESIZED:160x48"));
+
+        // Reserve two free ports for -L and -D
+        let tmp_l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let fwd_l_port = tmp_l.local_addr().unwrap().port();
+        drop(tmp_l);
+
+        let tmp_d = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let fwd_d_port = tmp_d.local_addr().unwrap().port();
+        drop(tmp_d);
+
+        let abort_l = ActiveSshClientSession::start_local_port_forward(
+            sess_pw.shared_handle(),
+            "127.0.0.1".into(),
+            fwd_l_port,
+            "127.0.0.1".into(),
+            backend_port,
+        )
+        .await
+        .unwrap();
+
+        let abort_d = ActiveSshClientSession::start_dynamic_socks5_proxy(
+            sess_pw.shared_handle(),
+            "127.0.0.1".into(),
+            fwd_d_port,
+        )
+        .await
+        .unwrap();
+
+        // Test -L local port forward
+        {
+            let mut l_sock = TcpStream::connect(("127.0.0.1", fwd_l_port)).await.unwrap();
+            l_sock.write_all(b"via-local-L").await.unwrap();
+            let mut resp = [0u8; 64];
+            let n = l_sock.read(&mut resp).await.unwrap();
+            assert_eq!(&resp[..n], b"TUNNELED:via-local-L");
+        }
+
+        // Test -D SOCKS5 proxy (RFC 1928 domain-type CONNECT to 127.0.0.1:backend_port)
+        {
+            let mut d_sock = TcpStream::connect(("127.0.0.1", fwd_d_port)).await.unwrap();
+            d_sock.write_all(&[0x05, 0x01, 0x00]).await.unwrap();
+            let mut greet = [0u8; 2];
+            d_sock.read_exact(&mut greet).await.unwrap();
+            assert_eq!(greet, [0x05, 0x00]);
+
+            let host_bytes = b"127.0.0.1";
+            let mut req = vec![0x05, 0x01, 0x00, 0x03, host_bytes.len() as u8];
+            req.extend_from_slice(host_bytes);
+            req.extend_from_slice(&backend_port.to_be_bytes());
+            d_sock.write_all(&req).await.unwrap();
+
+            let mut reply = [0u8; 10];
+            d_sock.read_exact(&mut reply).await.unwrap();
+            assert_eq!(reply[0], 0x05);
+            assert_eq!(reply[1], 0x00);
+
+            d_sock.write_all(b"via-socks5-D").await.unwrap();
+            let mut resp = [0u8; 64];
+            let n = d_sock.read(&mut resp).await.unwrap();
+            assert_eq!(&resp[..n], b"TUNNELED:via-socks5-D");
+        }
+
+        // Abort forwarders and disconnect, then verify ports are immediately released (no EADDRINUSE!)
+        abort_l.abort();
+        abort_d.abort();
+        let _ = sess_pw.disconnect().await;
+        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(15)).await;
+
+        let rebind_l = TcpListener::bind(("127.0.0.1", fwd_l_port)).await;
+        assert!(rebind_l.is_ok(), "Local forward port leaked after abort: {rebind_l:?}");
+        drop(rebind_l);
+
+        let rebind_d = TcpListener::bind(("127.0.0.1", fwd_d_port)).await;
+        assert!(rebind_d.is_ok(), "SOCKS5 port leaked after abort: {rebind_d:?}");
+        drop(rebind_d);
+
+        // B) Ed25519 PrivateKeyPem Auth
+        let spec_key = SshConnectSpec {
+            host: "127.0.0.1".into(),
+            port: ssh_port,
+            username: "ops".into(),
+            auth: SshAuthMethod::PrivateKeyPem {
+                pem: client_pem,
+                passphrase: None,
+            },
+            expected_host_fingerprint_sha256: None,
+            term_env: "xterm-256color".into(),
+            initial_cols: 80,
+            initial_rows: 24,
+            enable_x11: false,
+            keepalive_secs: 0,
+            startup_command: None,
+        };
+        let (sess_key, _ch_key) = ActiveSshClientSession::connect(spec_key, None).await.unwrap();
+        let _ = sess_key.disconnect().await;
+
+        // C) Keyboard-Interactive Fallback Auth (server rejects password auth, requires PAM kbd-int)
+        let (kbd_port, kbd_srv_abort) = spawn_loopback_ssh_server(LoopbackSshServerState {
+            require_kbd_interactive: true,
+            expected_user: "pamuser".into(),
+            expected_password: "pam-password-42".into(),
+            allowed_pubkey: None,
+            recorded_resizes: Arc::new(Mutex::new(Vec::new())),
+        })
+        .await;
+
+        let spec_kbd = SshConnectSpec {
+            host: "127.0.0.1".into(),
+            port: kbd_port,
+            username: "pamuser".into(),
+            auth: SshAuthMethod::Password {
+                password: "pam-password-42".into(),
+            },
+            expected_host_fingerprint_sha256: None,
+            term_env: "xterm-256color".into(),
+            initial_cols: 80,
+            initial_rows: 24,
+            enable_x11: false,
+            keepalive_secs: 0,
+            startup_command: None,
+        };
+        let (sess_kbd, _ch_kbd) = ActiveSshClientSession::connect(spec_kbd, None).await.unwrap();
+        let _ = sess_kbd.disconnect().await;
+
+        ssh_srv_abort.abort();
+        kbd_srv_abort.abort();
+        backend_task.abort();
     }
 }

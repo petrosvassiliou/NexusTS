@@ -902,21 +902,27 @@ dependencies = [
 name = "nexusts-jni"
 version = "1.0.0"
 dependencies = [
+ "dashmap",
  "jni",
  "nexusts-crypto",
  "nexusts-netutils",
  "nexusts-terminal",
  "nexusts-transfer",
  "nexusts-vnc",
+ "russh",
+ "serde",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]
 name = "nexusts-netutils"
 version = "1.0.0"
 dependencies = [
+ "libc",
  "serde",
  "serde_json",
+ "socket2",
  "thiserror 2.0.21",
  "tokio",
 ]
@@ -928,6 +934,7 @@ dependencies = [
  "async-trait",
  "base64",
  "bytes",
+ "rand",
  "russh",
  "russh-keys",
  "serde",
@@ -942,8 +949,12 @@ dependencies = [
 name = "nexusts-transfer"
 version = "1.0.0"
 dependencies = [
+ "async-trait",
  "bytes",
+ "nexusts-terminal",
+ "rand",
  "russh",
+ "russh-keys",
  "russh-sftp",
  "serde",
  "serde_json",
@@ -955,10 +966,18 @@ dependencies = [
 name = "nexusts-vnc"
 version = "1.0.0"
 dependencies = [
+ "aes",
  "bytes",
+ "cipher",
+ "des",
  "flate2",
+ "md5",
+ "num-bigint",
+ "num-traits",
+ "rand",
  "serde",
  "thiserror 2.0.21",
+ "tokio",
 ]
 
 [[package]]

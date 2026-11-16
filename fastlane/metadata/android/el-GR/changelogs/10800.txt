@@ -1,0 +1,4 @@
+• v0.8.0: Βελτιστοποιημένη απόδοση FreeRDP & άμεση δρομολόγηση Windows Terminal Services
+• Πλήρης υποστήριξη SSHv2, Telnet, SFTP/SCP/FTP/FTPS, VNC & Apple ARD με διατήρηση συνεδρίας μεταξύ καρτελών
+• Kubernetes v4 WebSocket exec, κονσόλες Proxmox/Azure/vSphere/Hyper-V, USB Serial & καρφίτσωμα πιστοποιητικών Web
+• Ενοποιημένο μενού «Διαχείριση» στην επάνω γραμμή εργαλείων

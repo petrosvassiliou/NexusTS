@@ -91,8 +91,11 @@ class DetachedSessionActivity : AppCompatActivity() {
             var keyCaptureEnabled by remember(parsedTab.protocol) {
                 mutableStateOf(
                     parsedTab.protocol == SessionProtocolKind.RDP ||
+                        parsedTab.protocol == SessionProtocolKind.WINDOWS_TS ||
                         parsedTab.protocol == SessionProtocolKind.SSH ||
-                        parsedTab.protocol == SessionProtocolKind.TELNET
+                        parsedTab.protocol == SessionProtocolKind.TELNET ||
+                        parsedTab.protocol == SessionProtocolKind.VNC ||
+                        parsedTab.protocol == SessionProtocolKind.APPLE_SCREEN_SHARING
                 )
             }
 
@@ -257,15 +260,20 @@ class DetachedSessionActivity : AppCompatActivity() {
             SessionProtocolKind.RDP, SessionProtocolKind.WINDOWS_TS ->
                 viewModel.sessionStore.rdpSessions[tab.tabId]?.sendHardwareKey(packet) ?: false
 
+            SessionProtocolKind.VNC, SessionProtocolKind.APPLE_SCREEN_SHARING ->
+                viewModel.sessionStore.vncSessions[tab.tabId]?.sendHardwareKey(packet) ?: false
+
             SessionProtocolKind.SSH, SessionProtocolKind.TELNET -> {
+                val sshController = viewModel.sessionStore.sshControllers[tab.tabId]
                 val ansi = SshNativeBridge.translateHardwareKeyToAnsi(
                     keyCode = packet.keyCode,
                     unicodeChar = packet.unicodeChar,
                     ctrlPressed = packet.ctrlPressed,
-                    altPressed = packet.altPressed
+                    altPressed = packet.altPressed,
+                    applicationCursorKeys = sshController?.isApplicationCursorKeys() == true
                 ) ?: return false
                 if (packet.isKeyDown) {
-                    viewModel.sessionStore.sshControllers[tab.tabId]?.sendUserBytes(ansi)
+                    sshController?.sendUserBytes(ansi)
                 }
                 true
             }

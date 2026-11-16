@@ -2,9 +2,15 @@ package com.nexusts.app.feature.workspace
 
 import com.nexusts.app.core.ui.workspace.WorkspaceSessionTab
 import com.nexusts.app.core.vault.crypto.NxtsVaultSerializer
+import com.nexusts.app.core.vault.error.NexusAppError
+import com.nexusts.app.core.vault.error.NexusErrorCategory
+import com.nexusts.app.core.vault.gateway.ActiveTunnelLease
 import com.nexusts.app.core.vault.model.NxtsVaultDocument
+import com.nexusts.app.core.vault.model.VaultProtocolType
 import com.nexusts.app.protocols.rdp.bridge.RdpManagedSession
 import com.nexusts.app.protocols.ssh.bridge.SshTerminalSessionController
+import com.nexusts.app.protocols.ssh.ui.TransferCommanderSessionController
+import com.nexusts.app.protocols.vnc.bridge.VncRfbSessionClient
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -15,9 +21,6 @@ import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
 
-import com.nexusts.app.core.vault.error.NexusAppError
-import com.nexusts.app.core.vault.error.NexusErrorCategory
-
 data class AdHocLaunchOverride(
     val overrideCredentialId: String? = null,
     val adHocUsername: String = "",
@@ -26,7 +29,8 @@ data class AdHocLaunchOverride(
     val forceRdpConsoleAdmin: Boolean? = null,
     val appliedTemplateId: String? = null,
     val adHocHost: String? = null,
-    val adHocPort: Int? = null
+    val adHocPort: Int? = null,
+    val adHocProtocolType: VaultProtocolType? = null
 )
 
 data class SharedVaultSessionSnapshot(
@@ -44,8 +48,8 @@ data class SharedVaultSessionSnapshot(
 /**
  * Process-wide reactive Vault & Live Session store shared between [com.nexusts.app.MainActivity]
  * and all freeform multi-monitor [com.nexusts.app.DetachedSessionActivity] windows on Googlebook OS
- * so folder credentials, RDP/SSH sessions, re-docking, encrypted disk persistence, and Zero-Knowledge
- * vault lock state remain 100% synchronized in real time.
+ * so folder credentials, RDP/SSH/SFTP/FTPS/VNC sessions, re-docking, encrypted disk persistence,
+ * and Zero-Knowledge vault lock state remain 100% synchronized in real time.
  */
 @Singleton
 class ActiveVaultSessionStore @Inject constructor() {
@@ -55,6 +59,9 @@ class ActiveVaultSessionStore @Inject constructor() {
 
     val sshControllers = ConcurrentHashMap<String, SshTerminalSessionController>()
     val rdpSessions = ConcurrentHashMap<String, RdpManagedSession>()
+    val transferControllers = ConcurrentHashMap<String, TransferCommanderSessionController>()
+    val vncSessions = ConcurrentHashMap<String, VncRfbSessionClient>()
+    val tabGatewayLeases = ConcurrentHashMap<String, ActiveTunnelLease>()
     val adHocOverrides = ConcurrentHashMap<String, AdHocLaunchOverride>()
     val tabConnectionIds = ConcurrentHashMap<String, String>()
 
@@ -218,6 +225,9 @@ class ActiveVaultSessionStore @Inject constructor() {
         adHocOverrides.remove(tabId)
         sshControllers.remove(tabId)?.let { runCatching { it.close() } }
         rdpSessions.remove(tabId)?.let { runCatching { it.close() } }
+        transferControllers.remove(tabId)?.let { runCatching { it.close() } }
+        vncSessions.remove(tabId)?.let { runCatching { it.close() } }
+        tabGatewayLeases.remove(tabId)?.let { runCatching { it.close() } }
     }
 
     fun evictSessionsForConnectionIds(
@@ -240,7 +250,10 @@ class ActiveVaultSessionStore @Inject constructor() {
             adHocOverrides.remove(tabId)
             val closedSsh = sshControllers.remove(tabId)?.also { runCatching { it.close() } } != null
             val closedRdp = rdpSessions.remove(tabId)?.also { runCatching { it.close() } } != null
-            if (closedSsh || closedRdp) {
+            val closedTransfer = transferControllers.remove(tabId)?.also { runCatching { it.close() } } != null
+            val closedVnc = vncSessions.remove(tabId)?.also { runCatching { it.close() } } != null
+            tabGatewayLeases.remove(tabId)?.let { runCatching { it.close() } }
+            if (closedSsh || closedRdp || closedTransfer || closedVnc) {
                 closedStoreSessions++
             }
         }
@@ -258,6 +271,12 @@ class ActiveVaultSessionStore @Inject constructor() {
         sshControllers.clear()
         rdpSessions.values.forEach { runCatching { it.close() } }
         rdpSessions.clear()
+        transferControllers.values.forEach { runCatching { it.close() } }
+        transferControllers.clear()
+        vncSessions.values.forEach { runCatching { it.close() } }
+        vncSessions.clear()
+        tabGatewayLeases.values.forEach { runCatching { it.close() } }
+        tabGatewayLeases.clear()
     }
 
     fun enqueueReDockTab(tab: WorkspaceSessionTab) {

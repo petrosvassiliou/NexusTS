@@ -5,7 +5,15 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+tokio.workspace = true
 flate2.workspace = true
+aes.workspace = true
+cipher.workspace = true
+des.workspace = true
+md5.workspace = true
+num-bigint.workspace = true
+num-traits.workspace = true
+rand.workspace = true
 serde.workspace = true
 bytes.workspace = true
 thiserror.workspace = true

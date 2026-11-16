@@ -336,17 +336,39 @@ public struct ParsedQuickConnectTarget: Equatable, Sendable {
     public let host: String
     public let port: Int
     public let username: String?
+    public let password: String?
     public let domain: String?
     public let protocolType: VaultProtocolType
     public let settings: ProtocolSpecificSettings
 
+    public init(
+        displayName: String,
+        host: String,
+        port: Int,
+        username: String?,
+        password: String? = nil,
+        domain: String?,
+        protocolType: VaultProtocolType,
+        settings: ProtocolSpecificSettings
+    ) {
+        self.displayName = displayName
+        self.host = host
+        self.port = port
+        self.username = username
+        self.password = password
+        self.domain = domain
+        self.protocolType = protocolType
+        self.settings = settings
+    }
+
     public func toAdHocVaultConnection() -> VaultConnection {
-        VaultConnection(
+        let isWin = (protocolType == .RDP || protocolType == .WINDOWS_TERMINAL_SERVICES)
+        return VaultConnection(
             id: "adhoc-\(UUID().uuidString.lowercased())",
             name: displayName,
             host: host,
             protocolType: protocolType,
-            osFamily: protocolType == .RDP ? "Windows" : (protocolType == .APPLE_SCREEN_SHARING ? "macOS" : "Linux"),
+            osFamily: isWin ? "Windows" : (protocolType == .APPLE_SCREEN_SHARING ? "macOS" : "Linux"),
             tags: ["quick-connect"],
             settings: settings
         )
@@ -420,19 +442,24 @@ public enum QuickConnectParser {
 
         // Web URLs
         if lower.hasPrefix("http://") || lower.hasPrefix("https://") {
-            let host = URL(string: input)?.host ?? input
+            let comps = URLComponents(string: input)
+            let host = comps?.host ?? input
+            let resolvedPort = comps?.port ?? (lower.hasPrefix("http://") ? 80 : 443)
+            let urlUser = (comps?.user?.isEmpty == false) ? comps?.user : nil
+            let urlPass = (comps?.password?.isEmpty == false) ? comps?.password : nil
             return ParsedQuickConnectTarget(
                 displayName: host,
                 host: host,
-                port: lower.hasPrefix("http://") ? 80 : 443,
-                username: nil,
+                port: resolvedPort,
+                username: urlUser,
+                password: urlPass,
                 domain: nil,
                 protocolType: .WEB_PAGE,
                 settings: .webPage(WebPageProtocolSettings(url: input))
             )
         }
 
-        // Scheme-prefixed or bare [domain\]user@host[:port]
+        // Scheme-prefixed or bare [domain\]user[:password]@host[:port]
         var scheme = ""
         var remainder = input
         if let range = input.range(of: "://") {
@@ -441,16 +468,24 @@ public enum QuickConnectParser {
         }
 
         var username: String? = nil
+        var password: String? = nil
         var domain: String? = nil
         var hostPort = remainder
         if let atIdx = remainder.lastIndex(of: "@") {
             let userPart = String(remainder[..<atIdx])
             hostPort = String(remainder[remainder.index(after: atIdx)...])
+            var rawUser = userPart
             if let slashIdx = userPart.firstIndex(of: "\\") {
                 domain = String(userPart[..<slashIdx])
-                username = String(userPart[userPart.index(after: slashIdx)...])
+                rawUser = String(userPart[userPart.index(after: slashIdx)...])
+            }
+            if let colonIdx = rawUser.firstIndex(of: ":") {
+                let u = String(rawUser[..<colonIdx])
+                let p = String(rawUser[rawUser.index(after: colonIdx)...])
+                username = u.isEmpty ? nil : u
+                password = p.isEmpty ? nil : p
             } else {
-                username = userPart
+                username = rawUser.isEmpty ? nil : rawUser
             }
         }
 
@@ -471,17 +506,18 @@ public enum QuickConnectParser {
 
         let proto: VaultProtocolType = {
             switch scheme {
-            case "rdp": return .RDP
+            case "rdp", "wts", "mstsc": return .RDP
             case "ssh": return .SSH
             case "telnet": return .TELNET
             case "sftp": return .SFTP
             case "ftp": return .FTP
-            case "ftps": return .FTPS
+            case "ftps", "ftpes": return .FTPS
             case "scp": return .SCP
             case "vnc": return .VNC
             case "ard", "screensharing": return .APPLE_SCREEN_SHARING
             case "vsphere": return .VMWARE_VSPHERE
             case "pve", "proxmox": return .PROXMOX_VE
+            case "hyperv": return .HYPER_V
             case "ping": return .UTILITY_PING
             case "trace", "traceroute": return .UTILITY_TRACEROUTE
             case "scan": return .UTILITY_PORT_SCANNER
@@ -500,13 +536,18 @@ public enum QuickConnectParser {
             }
         }()
 
-        let port = explicitPort ?? proto.defaultPort
+        let port = explicitPort ?? (scheme == "ftpes" ? 21 : proto.defaultPort)
         var settings = proto.defaultSettings(host: proto == .WEB_PAGE ? "https://\(host):\(port)" : host)
         switch settings {
         case .ssh(var s): s.port = port; settings = .ssh(s)
         case .rdp(var s): s.port = port; settings = .rdp(s)
         case .vnc(var s): s.port = port; settings = .vnc(s)
-        case .fileTransfer(var s): s.port = port; settings = .fileTransfer(s)
+        case .fileTransfer(var s):
+            s.port = port
+            if proto == .FTPS && (scheme == "ftpes" || port == 21) {
+                s.ftpsImplicitTls = false
+            }
+            settings = .fileTransfer(s)
         default: break
         }
 
@@ -516,6 +557,7 @@ public enum QuickConnectParser {
             host: host,
             port: port,
             username: username,
+            password: password,
             domain: domain,
             protocolType: proto,
             settings: settings

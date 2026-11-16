@@ -411,6 +411,20 @@ Java_com_nexusts_app_protocols_rdp_bridge_FreeRdpNativeBridge_nativeIsConnected(
     return JNI_FALSE;
 }
 
+JNIEXPORT jlong JNICALL
+Java_com_nexusts_app_protocols_rdp_bridge_FreeRdpNativeBridge_nativeGetDesktopDimensions(
+    JNIEnv* /*env*/,
+    jclass /*clazz*/,
+    jlong handle
+) {
+    if (const auto session = lookup_session_shared(handle)) {
+        const uint64_t w = session->presenter().width();
+        const uint64_t h = session->presenter().height();
+        return static_cast<jlong>((w << 32u) | (h & 0xFFFFFFFFull));
+    }
+    return 0;
+}
+
 JNIEXPORT void JNICALL
 Java_com_nexusts_app_protocols_rdp_bridge_FreeRdpNativeBridge_nativeDestroySession(
     JNIEnv* /*env*/,

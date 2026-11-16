@@ -1,5 +1,6 @@
 package com.nexusts.app.protocols.vnc.cloud
 
+import android.annotation.SuppressLint
 import com.nexusts.app.core.vault.credentials.ResolvedSessionSecret
 import com.nexusts.app.core.vault.model.ProtocolSpecificSettings
 import com.nexusts.app.core.vault.model.VaultProtocolType
@@ -16,8 +17,11 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
+import java.security.SecureRandom
+import java.security.cert.X509Certificate
 import java.text.SimpleDateFormat
 import java.util.Base64
 import java.util.Date
@@ -27,6 +31,9 @@ import java.util.UUID
 import java.util.concurrent.TimeUnit
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
+import javax.net.ssl.SSLContext
+import javax.net.ssl.TrustManager
+import javax.net.ssl.X509TrustManager
 
 @Serializable
 enum class VmPowerAction {
@@ -47,97 +54,130 @@ data class CloudManagedResource(
     val isTerminalServicesSession: Boolean = false
 )
 
-/**
- * Production REST / SOAP / SigV4 Client Hub for Enterprise Cloud & Virtualization Hypervisors:
- * - **Proxmox VE** (`/api2/json/cluster/resources` + `/status/{start|stop|reboot}`)
- * - **VMware vSphere / ESXi** (`/api/session` + `/api/vcenter/vm` + `/power?action=...`)
- * - **AWS EC2** (`DescribeInstances` / `StartInstances` / `StopInstances` / `RebootInstances` signed via **AWS SigV4 `AWS4-HMAC-SHA256`**)
- * - **Microsoft Azure ARM** (`Microsoft.Compute/virtualMachines?api-version=2024-03-01&$expand=instanceView`)
- * - **Microsoft Hyper-V** (WinRM HTTPS `5986` `Msvm_ComputerSystem` CIM enumeration & `RequestStateChange`)
- * - **Windows Terminal Services / RDS** (WinRM `Win32_TerminalServicesSession` active session listing & `Win32_Process/Create` logoff/disconnect)
- */
-object CloudVirtualizationHubClient {
-
-    private val json = Json { ignoreUnknownKeys = true }
-
-    private val httpClient: OkHttpClient = OkHttpClient.Builder()
+@SuppressLint("CustomX509TrustManager", "TrustAllX509TrustManager")
+internal fun buildCloudHttpClient(allowSelfSignedTls: Boolean): OkHttpClient {
+    val builder = OkHttpClient.Builder()
         .connectTimeout(6, TimeUnit.SECONDS)
-        .readTimeout(10, TimeUnit.SECONDS)
-        .build()
+        .readTimeout(12, TimeUnit.SECONDS)
+    if (allowSelfSignedTls) {
+        val trustAll = object : X509TrustManager {
+            override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) = Unit
+            override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) = Unit
+            override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
+        }
+        val sslContext = SSLContext.getInstance("TLS").apply {
+            init(null, arrayOf<TrustManager>(trustAll), SecureRandom())
+        }
+        builder.sslSocketFactory(sslContext.socketFactory, trustAll)
+        builder.hostnameVerifier { _, _ -> true }
+    }
+    return builder.build()
+}
 
-    suspend fun listInventory(
-        protocol: VaultProtocolType,
-        endpointHost: String,
+/**
+ * Dedicated Proxmox VE REST API v2 Client supporting both:
+ * 1. Username/Password Ticket + CSRF handshake (`POST /api2/json/access/ticket` -> `Cookie: PVEAuthCookie=...` + `CSRFPreventionToken`)
+ * 2. Pre-created API Tokens (`Authorization: PVEAPIToken=user@realm!tokenid=secret`)
+ *
+ * Defaults to `allowSelfSignedTls = true` because Proxmox VE `:8006` ships with a node-generated self-signed CA.
+ */
+class ProxmoxVeApiClient(
+    val allowSelfSignedTls: Boolean = true,
+    private val httpClientOverride: OkHttpClient? = null
+) {
+    private val json = Json { ignoreUnknownKeys = true }
+    private val client: OkHttpClient = httpClientOverride ?: buildCloudHttpClient(allowSelfSignedTls)
+
+    data class ProxmoxTicketSession(
+        val ticket: String,
+        val csrfPreventionToken: String,
+        val username: String
+    )
+
+    private sealed interface ProxmoxAuth {
+        data class ApiToken(val headerValue: String) : ProxmoxAuth
+        data class TicketCookie(val session: ProxmoxTicketSession) : ProxmoxAuth
+    }
+
+    fun authenticateTicket(
+        baseUrl: String,
+        username: String,
+        password: String,
+        realm: String = "pam"
+    ): ProxmoxTicketSession {
+        val base = CloudVirtualizationHubClient.normalizeProxmoxBaseUrl("", baseUrl)
+        val qualifiedUser = if ('@' in username) {
+            username.trim()
+        } else {
+            "${username.trim()}@${realm.trim().ifBlank { "pam" }}"
+        }
+        val form = "username=${urlEncode(qualifiedUser)}&password=${urlEncode(password)}"
+        val req = Request.Builder()
+            .url("$base/api2/json/access/ticket")
+            .post(form.toRequestBody("application/x-www-form-urlencoded; charset=utf-8".toMediaType()))
+            .build()
+
+        client.newCall(req).execute().use { resp ->
+            if (!resp.isSuccessful) error("Proxmox ticket login HTTP ${resp.code}")
+            val dataObj = json.parseToJsonElement(resp.body?.string().orEmpty())
+                .jsonObject["data"]?.jsonObject
+                ?: error("Missing 'data' object in Proxmox /access/ticket response")
+            val ticket = dataObj["ticket"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+                ?: error("Missing 'ticket' in Proxmox /access/ticket response")
+            val csrf = dataObj["CSRFPreventionToken"]?.jsonPrimitive?.contentOrNull.orEmpty()
+            val resolvedUser = dataObj["username"]?.jsonPrimitive?.contentOrNull ?: qualifiedUser
+            return ProxmoxTicketSession(
+                ticket = ticket,
+                csrfPreventionToken = csrf,
+                username = resolvedUser
+            )
+        }
+    }
+
+    private fun resolveAuth(
+        base: String,
         settings: ProtocolSpecificSettings.CloudVirtualization,
         secret: ResolvedSessionSecret
-    ): Result<List<CloudManagedResource>> = withContext(Dispatchers.IO) {
-        runCatching {
-            when (protocol) {
-                VaultProtocolType.PROXMOX_VE -> fetchProxmoxInventory(endpointHost, settings, secret)
-                VaultProtocolType.VMWARE_VSPHERE -> fetchVsphereInventory(endpointHost, settings, secret)
-                VaultProtocolType.AWS_EC2 -> fetchAwsEc2Inventory(settings, secret)
-                VaultProtocolType.AZURE_VM -> fetchAzureVmInventory(settings, secret)
-                VaultProtocolType.HYPER_V -> fetchHyperVInventory(endpointHost, settings, secret)
-                VaultProtocolType.WINDOWS_TERMINAL_SERVICES -> fetchWindowsTerminalServicesSessions(endpointHost, settings, secret)
-                else -> emptyList()
-            }
+    ): ProxmoxAuth {
+        return when {
+            secret.password.startsWith("PVEAPIToken=", ignoreCase = true) ->
+                ProxmoxAuth.ApiToken(secret.password.trim())
+            secret.username.contains('!') ->
+                ProxmoxAuth.ApiToken("PVEAPIToken=${secret.username.trim()}=${secret.password}")
+            else ->
+                ProxmoxAuth.TicketCookie(
+                    authenticateTicket(
+                        baseUrl = base,
+                        username = secret.username,
+                        password = secret.password,
+                        realm = settings.realmOrDomain
+                    )
+                )
         }
     }
 
-    suspend fun executePowerOrSessionAction(
-        protocol: VaultProtocolType,
-        endpointHost: String,
-        settings: ProtocolSpecificSettings.CloudVirtualization,
-        secret: ResolvedSessionSecret,
-        resource: CloudManagedResource,
-        action: VmPowerAction
-    ): Result<String> = withContext(Dispatchers.IO) {
-        runCatching {
-            when (protocol) {
-                VaultProtocolType.PROXMOX_VE -> controlProxmoxVm(endpointHost, settings, secret, resource, action)
-                VaultProtocolType.VMWARE_VSPHERE -> controlVsphereVm(endpointHost, settings, secret, resource, action)
-                VaultProtocolType.AWS_EC2 -> controlAwsEc2Instance(settings, secret, resource, action)
-                VaultProtocolType.AZURE_VM -> controlAzureVm(settings, secret, resource, action)
-                VaultProtocolType.HYPER_V -> controlHyperVVm(endpointHost, settings, secret, resource, action)
-                VaultProtocolType.WINDOWS_TERMINAL_SERVICES -> disconnectOrLogoffRdsSession(endpointHost, settings, secret, resource, action)
-                else -> "Unsupported provider ${protocol.name}"
-            }
-        }
-    }
-
-    // =========================================================================
-    // 1. Proxmox VE REST API v2
-    // =========================================================================
-
-    internal fun normalizeProxmoxBaseUrl(host: String, apiEndpointUrl: String): String {
-        val raw = apiEndpointUrl.trim().ifBlank { "https://${host.trim()}:8006" }
-        val withScheme = if (raw.startsWith("http://", ignoreCase = true) || raw.startsWith("https://", ignoreCase = true)) {
-            raw
-        } else {
-            "https://$raw"
-        }
-        return withScheme
-            .trimEnd('/')
-            .removeSuffix("/api2/json")
-            .trimEnd('/')
-    }
-
-    private fun fetchProxmoxInventory(
+    fun fetchInventory(
         host: String,
         settings: ProtocolSpecificSettings.CloudVirtualization,
         secret: ResolvedSessionSecret
     ): List<CloudManagedResource> {
-        val base = normalizeProxmoxBaseUrl(host, settings.apiEndpointUrl)
-        val req = Request.Builder()
+        val base = CloudVirtualizationHubClient.normalizeProxmoxBaseUrl(host, settings.apiEndpointUrl)
+        val auth = resolveAuth(base, settings, secret)
+        val reqBuilder = Request.Builder()
             .url("$base/api2/json/cluster/resources?type=vm")
-            .header("Authorization", buildProxmoxAuthHeader(secret))
             .get()
-            .build()
+        when (auth) {
+            is ProxmoxAuth.ApiToken -> reqBuilder.header("Authorization", auth.headerValue)
+            is ProxmoxAuth.TicketCookie -> reqBuilder.header("Cookie", "PVEAuthCookie=${auth.session.ticket}")
+        }
 
-        httpClient.newCall(req).execute().use { resp ->
+        client.newCall(reqBuilder.build()).execute().use { resp ->
             if (!resp.isSuccessful) error("Proxmox VE HTTP ${resp.code}")
             val root = json.parseToJsonElement(resp.body?.string().orEmpty()).jsonObject
             val arr = root["data"]?.jsonArray ?: return emptyList()
+            val effectiveHost = host.ifBlank {
+                base.removePrefix("https://").removePrefix("http://").substringBefore(':')
+            }
             return arr.map { elem ->
                 val obj = elem.jsonObject
                 val vmid = obj["vmid"]?.jsonPrimitive?.content ?: obj["id"]?.jsonPrimitive?.content.orEmpty()
@@ -155,45 +195,141 @@ object CloudVirtualizationHubClient {
                     nodeOrZone = node,
                     powerState = status,
                     cpuRamSummary = "$maxCpu vCPU • $ramGb GB ($vmType)",
-                    addressOrSessionHost = host,
+                    addressOrSessionHost = effectiveHost,
                     preferredConsoleProtocol = if (vmType == "lxc") VaultProtocolType.SSH else VaultProtocolType.VNC
                 )
             }
         }
     }
 
-    private fun controlProxmoxVm(
+    fun controlVm(
         host: String,
         settings: ProtocolSpecificSettings.CloudVirtualization,
         secret: ResolvedSessionSecret,
         resource: CloudManagedResource,
         action: VmPowerAction
     ): String {
-        val base = normalizeProxmoxBaseUrl(host, settings.apiEndpointUrl)
+        val base = CloudVirtualizationHubClient.normalizeProxmoxBaseUrl(host, settings.apiEndpointUrl)
+        val auth = resolveAuth(base, settings, secret)
         val verb = when (action) {
             VmPowerAction.START -> "start"
             VmPowerAction.STOP -> "stop"
             VmPowerAction.REBOOT -> "reboot"
         }
         val vmPath = if ('/' in resource.id) resource.id else "qemu/${resource.id.removePrefix("vm-")}"
-        val req = Request.Builder()
+        val reqBuilder = Request.Builder()
             .url("$base/api2/json/nodes/${resource.nodeOrZone}/$vmPath/status/$verb")
-            .header("Authorization", buildProxmoxAuthHeader(secret))
             .post("".toRequestBody("application/x-www-form-urlencoded".toMediaType()))
-            .build()
+        when (auth) {
+            is ProxmoxAuth.ApiToken -> reqBuilder.header("Authorization", auth.headerValue)
+            is ProxmoxAuth.TicketCookie -> {
+                reqBuilder.header("Cookie", "PVEAuthCookie=${auth.session.ticket}")
+                if (auth.session.csrfPreventionToken.isNotBlank()) {
+                    reqBuilder.header("CSRFPreventionToken", auth.session.csrfPreventionToken)
+                }
+            }
+        }
 
-        httpClient.newCall(req).execute().use { resp ->
+        client.newCall(reqBuilder.build()).execute().use { resp ->
             if (!resp.isSuccessful) error("Proxmox power action HTTP ${resp.code}")
-            return "PVE UPID queued ($verb on ${resource.name})"
+            val rawBody = resp.body?.string().orEmpty()
+            val upid = runCatching {
+                json.parseToJsonElement(rawBody).jsonObject["data"]?.jsonPrimitive?.contentOrNull
+            }.getOrNull()?.takeIf { it.isNotBlank() }
+            return upid ?: "PVE UPID queued ($verb on ${resource.name})"
         }
     }
 
-    private fun buildProxmoxAuthHeader(secret: ResolvedSessionSecret): String {
-        return if (secret.password.startsWith("PVEAPIToken=")) {
-            secret.password
-        } else {
-            "PVEAPIToken=${secret.username}=${secret.password}"
+    private fun urlEncode(raw: String): String =
+        URLEncoder.encode(raw, StandardCharsets.UTF_8.name())
+}
+
+/**
+ * Production REST / SOAP / SigV4 Client Hub for Enterprise Cloud & Virtualization Hypervisors:
+ * - **Proxmox VE** (`/api2/json/access/ticket` + `/api2/json/cluster/resources` + `/status/{start|stop|reboot}`)
+ * - **VMware vSphere / ESXi** (`/api/session` + `/api/vcenter/vm` + `/power?action=...`)
+ * - **AWS EC2** (`DescribeInstances` / `StartInstances` / `StopInstances` / `RebootInstances` signed via **AWS SigV4 `AWS4-HMAC-SHA256`**)
+ * - **Microsoft Azure ARM** (`client_credentials` OAuth2 token exchange + `Microsoft.Compute/virtualMachines?api-version=2024-03-01&$expand=instanceView`)
+ * - **Microsoft Hyper-V** (WinRM HTTPS `5986` `Msvm_ComputerSystem` CIM enumeration & `RequestStateChange`)
+ * - **Windows Terminal Services / RDS** (WinRM `Win32_TerminalServicesSession` active session listing & `Win32_Process/Create` logoff/disconnect)
+ */
+object CloudVirtualizationHubClient {
+
+    private val json = Json { ignoreUnknownKeys = true }
+
+    private val strictHttpClient: OkHttpClient = buildCloudHttpClient(allowSelfSignedTls = false)
+    private val selfSignedHttpClient: OkHttpClient = buildCloudHttpClient(allowSelfSignedTls = true)
+
+    private fun clientFor(allowSelfSignedTls: Boolean): OkHttpClient =
+        if (allowSelfSignedTls) selfSignedHttpClient else strictHttpClient
+
+    suspend fun listInventory(
+        protocol: VaultProtocolType,
+        endpointHost: String,
+        settings: ProtocolSpecificSettings.CloudVirtualization,
+        secret: ResolvedSessionSecret,
+        allowSelfSignedTls: Boolean = true
+    ): Result<List<CloudManagedResource>> = withContext(Dispatchers.IO) {
+        runCatching {
+            when (protocol) {
+                VaultProtocolType.PROXMOX_VE ->
+                    ProxmoxVeApiClient(allowSelfSignedTls = allowSelfSignedTls)
+                        .fetchInventory(endpointHost, settings, secret)
+                VaultProtocolType.VMWARE_VSPHERE ->
+                    fetchVsphereInventory(endpointHost, settings, secret, allowSelfSignedTls)
+                VaultProtocolType.AWS_EC2 ->
+                    fetchAwsEc2Inventory(settings, secret)
+                VaultProtocolType.AZURE_VM ->
+                    fetchAzureVmInventory(settings, secret)
+                VaultProtocolType.HYPER_V ->
+                    fetchHyperVInventory(endpointHost, settings, secret, allowSelfSignedTls)
+                VaultProtocolType.WINDOWS_TERMINAL_SERVICES ->
+                    fetchWindowsTerminalServicesSessions(endpointHost, settings, secret, allowSelfSignedTls)
+                else -> emptyList()
+            }
         }
+    }
+
+    suspend fun executePowerOrSessionAction(
+        protocol: VaultProtocolType,
+        endpointHost: String,
+        settings: ProtocolSpecificSettings.CloudVirtualization,
+        secret: ResolvedSessionSecret,
+        resource: CloudManagedResource,
+        action: VmPowerAction,
+        allowSelfSignedTls: Boolean = true
+    ): Result<String> = withContext(Dispatchers.IO) {
+        runCatching {
+            when (protocol) {
+                VaultProtocolType.PROXMOX_VE ->
+                    ProxmoxVeApiClient(allowSelfSignedTls = allowSelfSignedTls)
+                        .controlVm(endpointHost, settings, secret, resource, action)
+                VaultProtocolType.VMWARE_VSPHERE ->
+                    controlVsphereVm(endpointHost, settings, secret, resource, action, allowSelfSignedTls)
+                VaultProtocolType.AWS_EC2 ->
+                    controlAwsEc2Instance(settings, secret, resource, action)
+                VaultProtocolType.AZURE_VM ->
+                    controlAzureVm(settings, secret, resource, action)
+                VaultProtocolType.HYPER_V ->
+                    controlHyperVVm(endpointHost, settings, secret, resource, action, allowSelfSignedTls)
+                VaultProtocolType.WINDOWS_TERMINAL_SERVICES ->
+                    disconnectOrLogoffRdsSession(endpointHost, settings, secret, resource, action, allowSelfSignedTls)
+                else -> "Unsupported provider ${protocol.name}"
+            }
+        }
+    }
+
+    internal fun normalizeProxmoxBaseUrl(host: String, apiEndpointUrl: String): String {
+        val raw = apiEndpointUrl.trim().ifBlank { "https://${host.trim()}:8006" }
+        val withScheme = if (raw.startsWith("http://", ignoreCase = true) || raw.startsWith("https://", ignoreCase = true)) {
+            raw
+        } else {
+            "https://$raw"
+        }
+        return withScheme
+            .trimEnd('/')
+            .removeSuffix("/api2/json")
+            .trimEnd('/')
     }
 
     // =========================================================================
@@ -210,7 +346,11 @@ object CloudVirtualizationHubClient {
         return withScheme.trimEnd('/')
     }
 
-    private fun acquireVsphereSessionToken(base: String, secret: ResolvedSessionSecret): String {
+    private fun acquireVsphereSessionToken(
+        base: String,
+        secret: ResolvedSessionSecret,
+        http: OkHttpClient
+    ): String {
         val basic = Base64.getEncoder()
             .encodeToString("${secret.username}:${secret.password}".toByteArray(StandardCharsets.UTF_8))
         val sessionReq = Request.Builder()
@@ -219,7 +359,7 @@ object CloudVirtualizationHubClient {
             .post("".toRequestBody(null))
             .build()
 
-        httpClient.newCall(sessionReq).execute().use { resp ->
+        http.newCall(sessionReq).execute().use { resp ->
             if (!resp.isSuccessful) error("vSphere /api/session HTTP ${resp.code}")
             return resp.body?.string().orEmpty().trim().trim('"')
         }
@@ -228,17 +368,19 @@ object CloudVirtualizationHubClient {
     private fun fetchVsphereInventory(
         host: String,
         settings: ProtocolSpecificSettings.CloudVirtualization,
-        secret: ResolvedSessionSecret
+        secret: ResolvedSessionSecret,
+        allowSelfSignedTls: Boolean
     ): List<CloudManagedResource> {
+        val http = clientFor(allowSelfSignedTls)
         val base = normalizeHttpsEndpoint(host, settings.apiEndpointUrl)
-        val token = acquireVsphereSessionToken(base, secret)
+        val token = acquireVsphereSessionToken(base, secret, http)
         val req = Request.Builder()
             .url("$base/api/vcenter/vm")
             .header("vmware-api-session-id", token)
             .get()
             .build()
 
-        httpClient.newCall(req).execute().use { resp ->
+        http.newCall(req).execute().use { resp ->
             if (!resp.isSuccessful) error("vSphere /api/vcenter/vm HTTP ${resp.code}")
             val arr = json.parseToJsonElement(resp.body?.string().orEmpty()).jsonArray
             return arr.map { elem ->
@@ -266,10 +408,12 @@ object CloudVirtualizationHubClient {
         settings: ProtocolSpecificSettings.CloudVirtualization,
         secret: ResolvedSessionSecret,
         resource: CloudManagedResource,
-        action: VmPowerAction
+        action: VmPowerAction,
+        allowSelfSignedTls: Boolean
     ): String {
+        val http = clientFor(allowSelfSignedTls)
         val base = normalizeHttpsEndpoint(host, settings.apiEndpointUrl)
-        val token = acquireVsphereSessionToken(base, secret)
+        val token = acquireVsphereSessionToken(base, secret, http)
         val act = when (action) {
             VmPowerAction.START -> "start"
             VmPowerAction.STOP -> "stop"
@@ -281,7 +425,7 @@ object CloudVirtualizationHubClient {
             .post("".toRequestBody(null))
             .build()
 
-        httpClient.newCall(req).execute().use { resp ->
+        http.newCall(req).execute().use { resp ->
             if (!resp.isSuccessful) error("vSphere power HTTP ${resp.code}")
             return "vCenter VM ${resource.id} -> $act"
         }
@@ -377,17 +521,12 @@ object CloudVirtualizationHubClient {
             .post(formQuery.toRequestBody(contentType.toMediaType()))
             .build()
 
-        httpClient.newCall(req).execute().use { resp ->
+        strictHttpClient.newCall(req).execute().use { resp ->
             if (!resp.isSuccessful) error("AWS EC2 HTTP ${resp.code}")
             return resp.body?.string().orEmpty()
         }
     }
 
-    /**
-     * Depth-balanced EC2 `DescribeInstancesResponse` XML parser that extracts top-level `<item>` blocks
-     * inside `<instancesSet>` without truncating on nested `<groupSet><item>`, `<networkInterfaceSet><item>`,
-     * or `<tagSet><item>` elements.
-     */
     internal fun parseEc2DescribeInstancesXml(xml: String, region: String): List<CloudManagedResource> {
         val instancesSetRegex = Regex("<instancesSet>(.*?)</instancesSet>", setOf(RegexOption.DOT_MATCHES_ALL))
         val idRegex = Regex("<instanceId>(i-[a-zA-Z0-9]+)</instanceId>")
@@ -479,8 +618,55 @@ object CloudVirtualizationHubClient {
     }
 
     // =========================================================================
-    // 4. Microsoft Azure Compute ARM REST API (`2024-03-01` + `$expand=instanceView`)
+    // 4. Microsoft Azure Compute ARM REST API (`2024-03-01` + OAuth2 `client_credentials`)
     // =========================================================================
+
+    internal fun exchangeAzureAdClientCredentialsToken(
+        tenantId: String,
+        clientId: String,
+        clientSecret: String,
+        authorityBaseUrl: String = "https://login.microsoftonline.com",
+        http: OkHttpClient = strictHttpClient
+    ): String {
+        val cleanTenant = tenantId.trim()
+        require(cleanTenant.isNotEmpty()) { "Azure AD Tenant ID is required for client_credentials token exchange" }
+        val tokenUrl = "${authorityBaseUrl.trimEnd('/')}/$cleanTenant/oauth2/v2.0/token"
+        val form = buildString {
+            append("grant_type=client_credentials")
+            append("&client_id=").append(URLEncoder.encode(clientId.trim(), StandardCharsets.UTF_8.name()))
+            append("&client_secret=").append(URLEncoder.encode(clientSecret, StandardCharsets.UTF_8.name()))
+            append("&scope=").append(URLEncoder.encode("https://management.azure.com/.default", StandardCharsets.UTF_8.name()))
+        }
+        val req = Request.Builder()
+            .url(tokenUrl)
+            .post(form.toRequestBody("application/x-www-form-urlencoded; charset=utf-8".toMediaType()))
+            .build()
+
+        http.newCall(req).execute().use { resp ->
+            if (!resp.isSuccessful) error("Azure AD OAuth2 token HTTP ${resp.code}")
+            val obj = json.parseToJsonElement(resp.body?.string().orEmpty()).jsonObject
+            return obj["access_token"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+                ?: error("Missing access_token in Azure AD OAuth2 response")
+        }
+    }
+
+    private fun resolveAzureBearerToken(
+        settings: ProtocolSpecificSettings.CloudVirtualization,
+        secret: ResolvedSessionSecret
+    ): String {
+        val tenantCandidate = secret.domain.ifBlank {
+            settings.realmOrDomain.takeIf { it.isNotBlank() && !it.equals("pam", ignoreCase = true) }.orEmpty()
+        }
+        return if (secret.username.isNotBlank() && tenantCandidate.isNotBlank()) {
+            exchangeAzureAdClientCredentialsToken(
+                tenantId = tenantCandidate,
+                clientId = secret.username,
+                clientSecret = secret.password
+            )
+        } else {
+            secret.password
+        }
+    }
 
     private fun fetchAzureVmInventory(
         settings: ProtocolSpecificSettings.CloudVirtualization,
@@ -488,14 +674,19 @@ object CloudVirtualizationHubClient {
     ): List<CloudManagedResource> {
         val subId = settings.subscriptionOrAccountId.trim()
         require(subId.isNotBlank()) { "Azure Subscription ID required" }
-        val url = "https://management.azure.com/subscriptions/$subId/providers/Microsoft.Compute/virtualMachines?api-version=2024-03-01&\$expand=instanceView"
+        val bearer = resolveAzureBearerToken(settings, secret)
+        val armBase = settings.apiEndpointUrl.trim()
+            .takeIf { it.startsWith("http://", true) || it.startsWith("https://", true) }
+            ?.trimEnd('/')
+            ?: "https://management.azure.com"
+        val url = "$armBase/subscriptions/$subId/providers/Microsoft.Compute/virtualMachines?api-version=2024-03-01&\$expand=instanceView"
         val req = Request.Builder()
             .url(url)
-            .header("Authorization", "Bearer ${secret.password}")
+            .header("Authorization", "Bearer $bearer")
             .get()
             .build()
 
-        httpClient.newCall(req).execute().use { resp ->
+        strictHttpClient.newCall(req).execute().use { resp ->
             if (!resp.isSuccessful) error("Azure ARM HTTP ${resp.code}")
             val root = json.parseToJsonElement(resp.body?.string().orEmpty()).jsonObject
             val arr = root["value"]?.jsonArray ?: return emptyList()
@@ -555,6 +746,7 @@ object CloudVirtualizationHubClient {
             VmPowerAction.STOP -> "powerOff"
             VmPowerAction.REBOOT -> "restart"
         }
+        val bearer = resolveAzureBearerToken(settings, secret)
         val resourcePath = if (resource.id.startsWith("/")) {
             resource.id
         } else {
@@ -562,14 +754,18 @@ object CloudVirtualizationHubClient {
             val rg = settings.regionOrCluster.ifBlank { "default" }
             "/subscriptions/$subId/resourceGroups/$rg/providers/Microsoft.Compute/virtualMachines/${resource.id}"
         }
-        val url = "https://management.azure.com$resourcePath/$armAction?api-version=2024-03-01"
+        val armBase = settings.apiEndpointUrl.trim()
+            .takeIf { it.startsWith("http://", true) || it.startsWith("https://", true) }
+            ?.trimEnd('/')
+            ?: "https://management.azure.com"
+        val url = "$armBase$resourcePath/$armAction?api-version=2024-03-01"
         val req = Request.Builder()
             .url(url)
-            .header("Authorization", "Bearer ${secret.password}")
+            .header("Authorization", "Bearer $bearer")
             .post("".toRequestBody(null))
             .build()
 
-        httpClient.newCall(req).execute().use { resp ->
+        strictHttpClient.newCall(req).execute().use { resp ->
             if (!resp.isSuccessful) error("Azure VM $armAction HTTP ${resp.code}")
             return "Azure ARM $armAction accepted (${resource.name})"
         }
@@ -593,8 +789,10 @@ object CloudVirtualizationHubClient {
     private fun fetchHyperVInventory(
         host: String,
         settings: ProtocolSpecificSettings.CloudVirtualization,
-        secret: ResolvedSessionSecret
+        secret: ResolvedSessionSecret,
+        allowSelfSignedTls: Boolean
     ): List<CloudManagedResource> {
+        val http = clientFor(allowSelfSignedTls)
         val url = normalizeWinRmUrl(host, settings.apiEndpointUrl)
         val resourceUri = "http://schemas.microsoft.com/wbem/wsman/1/wmi/root/virtualization/v2/Msvm_ComputerSystem"
         val soap = buildWinRmEnumerateSoap(toUrl = url, resourceUri = resourceUri)
@@ -607,7 +805,7 @@ object CloudVirtualizationHubClient {
             .post(soap.toRequestBody("application/soap+xml;charset=UTF-8".toMediaType()))
             .build()
 
-        httpClient.newCall(req).execute().use { resp ->
+        http.newCall(req).execute().use { resp ->
             if (!resp.isSuccessful) error("Hyper-V WinRM HTTP ${resp.code}")
             val body = resp.body?.string().orEmpty()
             val systemBlockRegex = Regex("<(?:\\w+:)?Msvm_ComputerSystem[^>]*>(.*?)</(?:\\w+:)?Msvm_ComputerSystem>", setOf(RegexOption.DOT_MATCHES_ALL))
@@ -666,12 +864,14 @@ object CloudVirtualizationHubClient {
         settings: ProtocolSpecificSettings.CloudVirtualization,
         secret: ResolvedSessionSecret,
         resource: CloudManagedResource,
-        action: VmPowerAction
+        action: VmPowerAction,
+        allowSelfSignedTls: Boolean
     ): String {
+        val http = clientFor(allowSelfSignedTls)
         val stateCode = when (action) {
-            VmPowerAction.START -> 2 // Enabled
-            VmPowerAction.STOP -> 3  // Disabled
-            VmPowerAction.REBOOT -> 10 // Reboot
+            VmPowerAction.START -> 2
+            VmPowerAction.STOP -> 3
+            VmPowerAction.REBOOT -> 10
         }
         val url = normalizeWinRmUrl(host, settings.apiEndpointUrl)
         val resourceUri = "http://schemas.microsoft.com/wbem/wsman/1/wmi/root/virtualization/v2/Msvm_ComputerSystem"
@@ -710,7 +910,7 @@ object CloudVirtualizationHubClient {
             .post(invokeXml.toRequestBody("application/soap+xml;charset=UTF-8".toMediaType()))
             .build()
 
-        httpClient.newCall(req).execute().use { resp ->
+        http.newCall(req).execute().use { resp ->
             if (!resp.isSuccessful) error("Hyper-V state change HTTP ${resp.code}")
             return "Hyper-V RequestedState=$stateCode -> ${resource.name}"
         }
@@ -719,8 +919,10 @@ object CloudVirtualizationHubClient {
     private fun fetchWindowsTerminalServicesSessions(
         host: String,
         settings: ProtocolSpecificSettings.CloudVirtualization,
-        secret: ResolvedSessionSecret
+        secret: ResolvedSessionSecret,
+        allowSelfSignedTls: Boolean
     ): List<CloudManagedResource> {
+        val http = clientFor(allowSelfSignedTls)
         val url = normalizeWinRmUrl(host, settings.apiEndpointUrl)
         val resourceUri = "http://schemas.microsoft.com/wbem/wsman/1/wmi/root/cimv2/TerminalServices/Win32_TerminalServicesSession"
         val soap = buildWinRmEnumerateSoap(toUrl = url, resourceUri = resourceUri)
@@ -733,7 +935,7 @@ object CloudVirtualizationHubClient {
             .post(soap.toRequestBody("application/soap+xml;charset=UTF-8".toMediaType()))
             .build()
 
-        httpClient.newCall(req).execute().use { resp ->
+        http.newCall(req).execute().use { resp ->
             if (!resp.isSuccessful) error("Windows TS WinRM HTTP ${resp.code}")
             val body = resp.body?.string().orEmpty()
             val sidRegex = Regex("<(?:\\w+:)?SessionId>(\\d+)</(?:\\w+:)?SessionId>")
@@ -761,8 +963,10 @@ object CloudVirtualizationHubClient {
         settings: ProtocolSpecificSettings.CloudVirtualization,
         secret: ResolvedSessionSecret,
         resource: CloudManagedResource,
-        action: VmPowerAction
+        action: VmPowerAction,
+        allowSelfSignedTls: Boolean
     ): String {
+        val http = clientFor(allowSelfSignedTls)
         val url = normalizeWinRmUrl(host, settings.apiEndpointUrl)
         val basic = Base64.getEncoder()
             .encodeToString("${secret.username}:${secret.password}".toByteArray(StandardCharsets.UTF_8))
@@ -800,7 +1004,7 @@ object CloudVirtualizationHubClient {
             .post(soap.toRequestBody("application/soap+xml;charset=UTF-8".toMediaType()))
             .build()
 
-        httpClient.newCall(req).execute().use { resp ->
+        http.newCall(req).execute().use { resp ->
             if (!resp.isSuccessful) error("RDS session control HTTP ${resp.code}")
             return "RDS executed '$cmd' on $host"
         }
@@ -860,4 +1064,3 @@ object CloudVirtualizationHubClient {
         return mac.doFinal(data.toByteArray(StandardCharsets.UTF_8))
     }
 }
-

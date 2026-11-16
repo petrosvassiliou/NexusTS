@@ -1,4 +1,5 @@
 import CNexusTSNative
+import CoreGraphics
 import Foundation
 
 public enum NativeBridgeError: LocalizedError, Equatable, Sendable {
@@ -6,8 +7,13 @@ public enum NativeBridgeError: LocalizedError, Equatable, Sendable {
     case authenticationFailed(String)
     case serializationFailed(String)
     case sshTransportError(String)
+    case telnetError(String)
     case sftpError(String)
+    case scpError(String)
+    case ftpError(String)
+    case ftpsError(String)
     case vncDecodeError(String)
+    case vncSessionError(String)
     case networkUtilityError(String)
 
     public var errorDescription: String? {
@@ -20,10 +26,20 @@ public enum NativeBridgeError: LocalizedError, Equatable, Sendable {
             return "Vault serialization failed: \(detail)"
         case .sshTransportError(let detail):
             return "SSH transport error: \(detail)"
+        case .telnetError(let detail):
+            return "Telnet error: \(detail)"
         case .sftpError(let detail):
             return "SFTP operation error: \(detail)"
+        case .scpError(let detail):
+            return "SCP operation error: \(detail)"
+        case .ftpError(let detail):
+            return "FTP operation error: \(detail)"
+        case .ftpsError(let detail):
+            return "FTPS operation error: \(detail)"
         case .vncDecodeError(let detail):
             return "VNC framebuffer decode error: \(detail)"
+        case .vncSessionError(let detail):
+            return "VNC session error: \(detail)"
         case .networkUtilityError(let detail):
             return detail
         }
@@ -231,7 +247,7 @@ public enum NativeSshCryptoBridge {
     }
 }
 
-// MARK: - 3. xterm-256color / 24-Bit TrueColor VT Terminal Buffer
+// MARK: - 3. xterm-256color / 24-Bit TrueColor VT Terminal Buffer & Live Telnet
 
 public struct VtViewportSnapshot: Codable, Equatable, Sendable {
     public let cols: Int
@@ -288,6 +304,13 @@ public final class NativeVtTerminalEngine: @unchecked Sendable {
         if handle > 0 {
             nexusts_ffi_vt_destroy(handle)
         }
+    }
+
+    public var applicationCursorKeys: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard handle > 0 else { return false }
+        return nexusts_vt_application_cursor_keys(handle)
     }
 
     public func resize(cols: Int, rows: Int) {
@@ -352,7 +375,115 @@ public final class NativeVtTerminalEngine: @unchecked Sendable {
     }
 }
 
-// MARK: - 4. Async SSHv2 (russh) + Bastion + Port Forwards + SFTP v3
+public final class NativeTelnetSession: @unchecked Sendable {
+    public private(set) var handle: Int64
+    private let lock = NSLock()
+
+    private init(handle: Int64) {
+        self.handle = handle
+    }
+
+    deinit {
+        disconnect()
+    }
+
+    public static func connect(
+        host: String,
+        port: UInt16 = 23,
+        cols: Int = 110,
+        rows: Int = 32,
+        term: String = "xterm-256color"
+    ) throws -> NativeTelnetSession {
+        var errPtr: UnsafeMutablePointer<CChar>? = nil
+        let sessionId: Int64 = host.withCString { hPtr in
+            term.withCString { tPtr in
+                nexusts_telnet_connect(
+                    hPtr,
+                    port == 0 ? 23 : port,
+                    UInt16(clamping: max(10, cols)),
+                    UInt16(clamping: max(4, rows)),
+                    tPtr,
+                    &errPtr
+                )
+            }
+        }
+        if let errPtr {
+            defer { nexusts_ffi_free_cstr(errPtr) }
+            throw NativeBridgeError.telnetError(String(cString: errPtr))
+        }
+        guard sessionId > 0 else {
+            throw NativeBridgeError.telnetError("Telnet session failed to initialize")
+        }
+        return NativeTelnetSession(handle: sessionId)
+    }
+
+    public var isConnected: Bool {
+        lock.lock()
+        let h = handle
+        lock.unlock()
+        return h > 0 && nexusts_telnet_is_connected(h)
+    }
+
+    @discardableResult
+    public func sendInput(_ data: Data) -> Bool {
+        lock.lock()
+        let h = handle
+        lock.unlock()
+        guard h > 0, !data.isEmpty else { return false }
+        return data.withUnsafeBytes { raw in
+            nexusts_telnet_write(
+                h,
+                raw.baseAddress?.assumingMemoryBound(to: UInt8.self),
+                data.count
+            )
+        }
+    }
+
+    public func drainOutput() -> (bytes: Data, eof: Bool) {
+        lock.lock()
+        let h = handle
+        lock.unlock()
+        guard h > 0 else { return (Data(), true) }
+        var isEof = false
+        let buf = nexusts_telnet_read(h, &isEof)
+        defer { nexusts_ffi_free_buffer(buf) }
+        let out = buf.data != nil && buf.len > 0 ? Data(bytes: buf.data, count: buf.len) : Data()
+        return (out, isEof)
+    }
+
+    public func resize(cols: Int, rows: Int) {
+        lock.lock()
+        let h = handle
+        lock.unlock()
+        guard h > 0 else { return }
+        _ = nexusts_telnet_resize(
+            h,
+            UInt16(clamping: max(10, cols)),
+            UInt16(clamping: max(4, rows))
+        )
+    }
+
+    public func lastErrorMessage() -> String {
+        lock.lock()
+        let h = handle
+        lock.unlock()
+        guard h > 0, let ptr = nexusts_telnet_last_error(h) else { return "" }
+        defer { nexusts_ffi_free_cstr(ptr) }
+        return String(cString: ptr)
+    }
+
+    public func disconnect() {
+        lock.lock()
+        let h = handle
+        handle = 0
+        lock.unlock()
+        if h > 0 {
+            nexusts_telnet_disconnect(h)
+        }
+    }
+}
+
+// MARK: - 4. Async SSHv2 (russh) + Bastion + Port Forwards + SFTP v3 + SCP + FTP
 
 public struct SshFfiConnectPayload: Codable, Sendable {
     public enum Auth: Codable, Sendable {
@@ -480,6 +611,10 @@ public final class NativeSshSession: @unchecked Sendable {
         return NativeSshSession(handle: sessionId)
     }
 
+    public var isConnected: Bool {
+        handle > 0 && nexusts_ffi_ssh_is_connected(handle)
+    }
+
     @discardableResult
     public func sendInput(_ data: Data) -> Bool {
         guard handle > 0 else { return false }
@@ -567,6 +702,18 @@ public final class NativeSshSession: @unchecked Sendable {
     }
 }
 
+public protocol RemoteFileTransferClient: AnyObject, Sendable {
+    func pwd() throws -> String
+    func listDirectory(_ remotePath: String) throws -> [SftpRemoteEntry]
+    func createDirectory(_ remotePath: String) throws
+    func removeEntry(_ remotePath: String, isDirectory: Bool) throws
+    func renameEntry(from oldPath: String, to newPath: String) throws
+    func chmod(_ remotePath: String, modeOctal: UInt32) throws
+    func downloadBytes(_ remotePath: String) throws -> Data
+    func uploadBytes(_ data: Data, to remotePath: String) throws
+    func disconnect()
+}
+
 public struct SftpRemoteEntry: Codable, Equatable, Hashable, Identifiable, Sendable {
     public var id: String { fullPath }
     public let name: String
@@ -621,7 +768,7 @@ public struct SftpRemoteEntry: Codable, Equatable, Hashable, Identifiable, Senda
     }
 }
 
-public final class NativeSftpSession: @unchecked Sendable {
+public final class NativeSftpSession: RemoteFileTransferClient, @unchecked Sendable {
     private var handle: Int64
 
     init(handle: Int64) {
@@ -630,6 +777,18 @@ public final class NativeSftpSession: @unchecked Sendable {
 
     deinit {
         close()
+    }
+
+    public func pwd() throws -> String {
+        var errPtr: UnsafeMutablePointer<CChar>? = nil
+        let ptr = nexusts_sftp_pwd(handle, &errPtr)
+        if let errPtr {
+            defer { nexusts_ffi_free_cstr(errPtr) }
+            throw NativeBridgeError.sftpError(String(cString: errPtr))
+        }
+        guard let ptr else { return "/" }
+        defer { nexusts_ffi_free_cstr(ptr) }
+        return String(cString: ptr)
     }
 
     public func listDirectory(_ remotePath: String) throws -> [SftpRemoteEntry] {
@@ -680,6 +839,18 @@ public final class NativeSftpSession: @unchecked Sendable {
         if !ok { throw NativeBridgeError.sftpError("rename failed") }
     }
 
+    public func chmod(_ remotePath: String, modeOctal: UInt32) throws {
+        var errPtr: UnsafeMutablePointer<CChar>? = nil
+        let ok = remotePath.withCString { pPtr in
+            nexusts_sftp_chmod(handle, pPtr, modeOctal, &errPtr)
+        }
+        if let errPtr {
+            defer { nexusts_ffi_free_cstr(errPtr) }
+            throw NativeBridgeError.sftpError(String(cString: errPtr))
+        }
+        if !ok { throw NativeBridgeError.sftpError("chmod failed for \(remotePath)") }
+    }
+
     public func downloadBytes(_ remotePath: String) throws -> Data {
         let buf = remotePath.withCString { nexusts_ffi_sftp_download(handle, $0) }
         defer { nexusts_ffi_free_buffer(buf) }
@@ -716,9 +887,398 @@ public final class NativeSftpSession: @unchecked Sendable {
             handle = 0
         }
     }
+
+    public func disconnect() {
+        close()
+    }
 }
 
-// MARK: - 5. RFB / VNC / Apple Screen Sharing Framebuffer Engine
+public final class NativeScpClient: RemoteFileTransferClient, @unchecked Sendable {
+    public private(set) var handle: Int64
+    private let lock = NSLock()
+
+    private init(handle: Int64) {
+        self.handle = handle
+    }
+
+    deinit {
+        disconnect()
+    }
+
+    public static func connect(
+        spec: SshFfiConnectPayload,
+        bastion: SshFfiConnectPayload? = nil
+    ) throws -> NativeScpClient {
+        let specJson = String(decoding: try JSONEncoder().encode(spec), as: UTF8.self)
+        let bastionJson = try bastion.map { String(decoding: try JSONEncoder().encode($0), as: UTF8.self) } ?? ""
+        var errPtr: UnsafeMutablePointer<CChar>? = nil
+        let scpId: Int64 = specJson.withCString { sPtr in
+            bastionJson.withCString { bPtr in
+                nexusts_scp_connect_json(
+                    sPtr,
+                    bastion == nil ? nil : bPtr,
+                    &errPtr
+                )
+            }
+        }
+        if let errPtr {
+            defer { nexusts_ffi_free_cstr(errPtr) }
+            throw NativeBridgeError.scpError(String(cString: errPtr))
+        }
+        guard scpId > 0 else {
+            throw NativeBridgeError.scpError("SCP session failed to initialize")
+        }
+        return NativeScpClient(handle: scpId)
+    }
+
+    public func pwd() throws -> String {
+        lock.lock()
+        let h = handle
+        lock.unlock()
+        guard h > 0 else { throw NativeBridgeError.scpError("SCP session closed") }
+        var errPtr: UnsafeMutablePointer<CChar>? = nil
+        let ptr = nexusts_scp_pwd(h, &errPtr)
+        if let errPtr {
+            defer { nexusts_ffi_free_cstr(errPtr) }
+            throw NativeBridgeError.scpError(String(cString: errPtr))
+        }
+        guard let ptr else { return "/" }
+        defer { nexusts_ffi_free_cstr(ptr) }
+        return String(cString: ptr)
+    }
+
+    public func listDirectory(_ remotePath: String) throws -> [SftpRemoteEntry] {
+        lock.lock()
+        let h = handle
+        lock.unlock()
+        guard h > 0 else { throw NativeBridgeError.scpError("SCP session closed") }
+        var errPtr: UnsafeMutablePointer<CChar>? = nil
+        let jsonPtr = remotePath.withCString { pPtr in
+            nexusts_scp_list_dir_json(h, pPtr, &errPtr)
+        }
+        if let errPtr {
+            defer { nexusts_ffi_free_cstr(errPtr) }
+            throw NativeBridgeError.scpError(String(cString: errPtr))
+        }
+        guard let jsonPtr else { return [] }
+        defer { nexusts_ffi_free_cstr(jsonPtr) }
+        return try JSONDecoder().decode([SftpRemoteEntry].self, from: Data(String(cString: jsonPtr).utf8))
+    }
+
+    public func createDirectory(_ remotePath: String) throws {
+        lock.lock()
+        let h = handle
+        lock.unlock()
+        guard h > 0 else { throw NativeBridgeError.scpError("SCP session closed") }
+        var errPtr: UnsafeMutablePointer<CChar>? = nil
+        let ok = remotePath.withCString { nexusts_scp_mkdir(h, $0, &errPtr) }
+        if let errPtr {
+            defer { nexusts_ffi_free_cstr(errPtr) }
+            throw NativeBridgeError.scpError(String(cString: errPtr))
+        }
+        if !ok { throw NativeBridgeError.scpError("mkdir failed for \(remotePath)") }
+    }
+
+    public func removeEntry(_ remotePath: String, isDirectory: Bool = false) throws {
+        lock.lock()
+        let h = handle
+        lock.unlock()
+        guard h > 0 else { throw NativeBridgeError.scpError("SCP session closed") }
+        var errPtr: UnsafeMutablePointer<CChar>? = nil
+        let ok = remotePath.withCString { nexusts_scp_remove(h, $0, &errPtr) }
+        if let errPtr {
+            defer { nexusts_ffi_free_cstr(errPtr) }
+            throw NativeBridgeError.scpError(String(cString: errPtr))
+        }
+        if !ok { throw NativeBridgeError.scpError("rm failed for \(remotePath)") }
+    }
+
+    public func renameEntry(from oldPath: String, to newPath: String) throws {
+        lock.lock()
+        let h = handle
+        lock.unlock()
+        guard h > 0 else { throw NativeBridgeError.scpError("SCP session closed") }
+        var errPtr: UnsafeMutablePointer<CChar>? = nil
+        let ok = oldPath.withCString { oPtr in
+            newPath.withCString { nPtr in
+                nexusts_scp_rename(h, oPtr, nPtr, &errPtr)
+            }
+        }
+        if let errPtr {
+            defer { nexusts_ffi_free_cstr(errPtr) }
+            throw NativeBridgeError.scpError(String(cString: errPtr))
+        }
+        if !ok { throw NativeBridgeError.scpError("rename failed") }
+    }
+
+    public func chmod(_ remotePath: String, modeOctal: UInt32) throws {
+        lock.lock()
+        let h = handle
+        lock.unlock()
+        guard h > 0 else { throw NativeBridgeError.scpError("SCP session closed") }
+        var errPtr: UnsafeMutablePointer<CChar>? = nil
+        let ok = remotePath.withCString { nexusts_scp_chmod(h, $0, modeOctal, &errPtr) }
+        if let errPtr {
+            defer { nexusts_ffi_free_cstr(errPtr) }
+            throw NativeBridgeError.scpError(String(cString: errPtr))
+        }
+        if !ok { throw NativeBridgeError.scpError("chmod failed for \(remotePath)") }
+    }
+
+    public func downloadBytes(_ remotePath: String) throws -> Data {
+        lock.lock()
+        let h = handle
+        lock.unlock()
+        guard h > 0 else { throw NativeBridgeError.scpError("SCP session closed") }
+        let buf = remotePath.withCString { nexusts_scp_download(h, $0) }
+        defer { nexusts_ffi_free_buffer(buf) }
+        if let err = buf.error_msg {
+            throw NativeBridgeError.scpError(String(cString: err))
+        }
+        guard let ptr = buf.data else { return Data() }
+        return Data(bytes: ptr, count: buf.len)
+    }
+
+    public func uploadBytes(_ data: Data, to remotePath: String) throws {
+        try uploadBytes(data, to: remotePath, modeOctal: 0o644)
+    }
+
+    public func uploadBytes(_ data: Data, to remotePath: String, modeOctal: UInt32) throws {
+        lock.lock()
+        let h = handle
+        lock.unlock()
+        guard h > 0 else { throw NativeBridgeError.scpError("SCP session closed") }
+        var errPtr: UnsafeMutablePointer<CChar>? = nil
+        let ok = remotePath.withCString { pPtr in
+            data.withUnsafeBytes { raw in
+                nexusts_scp_upload(
+                    h,
+                    pPtr,
+                    raw.baseAddress?.assumingMemoryBound(to: UInt8.self),
+                    data.count,
+                    modeOctal,
+                    &errPtr
+                )
+            }
+        }
+        if let errPtr {
+            defer { nexusts_ffi_free_cstr(errPtr) }
+            throw NativeBridgeError.scpError(String(cString: errPtr))
+        }
+        if !ok { throw NativeBridgeError.scpError("upload failed for \(remotePath)") }
+    }
+
+    public func disconnect() {
+        lock.lock()
+        let h = handle
+        handle = 0
+        lock.unlock()
+        if h > 0 {
+            nexusts_scp_disconnect(h)
+        }
+    }
+}
+
+public final class NativeFtpClient: RemoteFileTransferClient, @unchecked Sendable {
+    public private(set) var handle: Int64
+    private let lock = NSLock()
+
+    private init(handle: Int64) {
+        self.handle = handle
+    }
+
+    deinit {
+        disconnect()
+    }
+
+    public static func connect(
+        host: String,
+        port: UInt16 = 21,
+        username: String = "anonymous",
+        password: String = ""
+    ) throws -> NativeFtpClient {
+        var errPtr: UnsafeMutablePointer<CChar>? = nil
+        let ftpId: Int64 = host.withCString { hPtr in
+            username.withCString { uPtr in
+                password.withCString { pPtr in
+                    nexusts_ftp_connect(
+                        hPtr,
+                        port == 0 ? 21 : port,
+                        uPtr,
+                        pPtr,
+                        &errPtr
+                    )
+                }
+            }
+        }
+        if let errPtr {
+            defer { nexusts_ffi_free_cstr(errPtr) }
+            throw NativeBridgeError.ftpError(String(cString: errPtr))
+        }
+        guard ftpId > 0 else {
+            throw NativeBridgeError.ftpError("FTP session failed to initialize")
+        }
+        return NativeFtpClient(handle: ftpId)
+    }
+
+    public func pwd() throws -> String {
+        lock.lock()
+        let h = handle
+        lock.unlock()
+        guard h > 0 else { throw NativeBridgeError.ftpError("FTP session closed") }
+        var errPtr: UnsafeMutablePointer<CChar>? = nil
+        let ptr = nexusts_ftp_pwd(h, &errPtr)
+        if let errPtr {
+            defer { nexusts_ffi_free_cstr(errPtr) }
+            throw NativeBridgeError.ftpError(String(cString: errPtr))
+        }
+        guard let ptr else { return "/" }
+        defer { nexusts_ffi_free_cstr(ptr) }
+        return String(cString: ptr)
+    }
+
+    public func cwd(_ remoteDir: String) throws {
+        lock.lock()
+        let h = handle
+        lock.unlock()
+        guard h > 0 else { throw NativeBridgeError.ftpError("FTP session closed") }
+        var errPtr: UnsafeMutablePointer<CChar>? = nil
+        let ok = remoteDir.withCString { nexusts_ftp_cwd(h, $0, &errPtr) }
+        if let errPtr {
+            defer { nexusts_ffi_free_cstr(errPtr) }
+            throw NativeBridgeError.ftpError(String(cString: errPtr))
+        }
+        if !ok { throw NativeBridgeError.ftpError("CWD failed for \(remoteDir)") }
+    }
+
+    public func listDirectory(_ remotePath: String) throws -> [SftpRemoteEntry] {
+        lock.lock()
+        let h = handle
+        lock.unlock()
+        guard h > 0 else { throw NativeBridgeError.ftpError("FTP session closed") }
+        var errPtr: UnsafeMutablePointer<CChar>? = nil
+        let jsonPtr = remotePath.withCString { pPtr in
+            nexusts_ftp_list_dir_json(h, pPtr, &errPtr)
+        }
+        if let errPtr {
+            defer { nexusts_ffi_free_cstr(errPtr) }
+            throw NativeBridgeError.ftpError(String(cString: errPtr))
+        }
+        guard let jsonPtr else { return [] }
+        defer { nexusts_ffi_free_cstr(jsonPtr) }
+        return try JSONDecoder().decode([SftpRemoteEntry].self, from: Data(String(cString: jsonPtr).utf8))
+    }
+
+    public func createDirectory(_ remotePath: String) throws {
+        lock.lock()
+        let h = handle
+        lock.unlock()
+        guard h > 0 else { throw NativeBridgeError.ftpError("FTP session closed") }
+        var errPtr: UnsafeMutablePointer<CChar>? = nil
+        let ok = remotePath.withCString { nexusts_ftp_mkdir(h, $0, &errPtr) }
+        if let errPtr {
+            defer { nexusts_ffi_free_cstr(errPtr) }
+            throw NativeBridgeError.ftpError(String(cString: errPtr))
+        }
+        if !ok { throw NativeBridgeError.ftpError("MKD failed for \(remotePath)") }
+    }
+
+    public func removeEntry(_ remotePath: String, isDirectory: Bool = false) throws {
+        lock.lock()
+        let h = handle
+        lock.unlock()
+        guard h > 0 else { throw NativeBridgeError.ftpError("FTP session closed") }
+        var errPtr: UnsafeMutablePointer<CChar>? = nil
+        let ok = remotePath.withCString { nexusts_ftp_remove(h, $0, &errPtr) }
+        if let errPtr {
+            defer { nexusts_ffi_free_cstr(errPtr) }
+            throw NativeBridgeError.ftpError(String(cString: errPtr))
+        }
+        if !ok { throw NativeBridgeError.ftpError("DELE/RMD failed for \(remotePath)") }
+    }
+
+    public func renameEntry(from oldPath: String, to newPath: String) throws {
+        lock.lock()
+        let h = handle
+        lock.unlock()
+        guard h > 0 else { throw NativeBridgeError.ftpError("FTP session closed") }
+        var errPtr: UnsafeMutablePointer<CChar>? = nil
+        let ok = oldPath.withCString { oPtr in
+            newPath.withCString { nPtr in
+                nexusts_ftp_rename(h, oPtr, nPtr, &errPtr)
+            }
+        }
+        if let errPtr {
+            defer { nexusts_ffi_free_cstr(errPtr) }
+            throw NativeBridgeError.ftpError(String(cString: errPtr))
+        }
+        if !ok { throw NativeBridgeError.ftpError("RNFR/RNTO failed") }
+    }
+
+    public func chmod(_ remotePath: String, modeOctal: UInt32) throws {
+        lock.lock()
+        let h = handle
+        lock.unlock()
+        guard h > 0 else { throw NativeBridgeError.ftpError("FTP session closed") }
+        var errPtr: UnsafeMutablePointer<CChar>? = nil
+        let ok = remotePath.withCString { nexusts_ftp_chmod(h, $0, modeOctal, &errPtr) }
+        if let errPtr {
+            defer { nexusts_ffi_free_cstr(errPtr) }
+            throw NativeBridgeError.ftpError(String(cString: errPtr))
+        }
+        if !ok { throw NativeBridgeError.ftpError("SITE CHMOD failed for \(remotePath)") }
+    }
+
+    public func downloadBytes(_ remotePath: String) throws -> Data {
+        lock.lock()
+        let h = handle
+        lock.unlock()
+        guard h > 0 else { throw NativeBridgeError.ftpError("FTP session closed") }
+        let buf = remotePath.withCString { nexusts_ftp_download(h, $0) }
+        defer { nexusts_ffi_free_buffer(buf) }
+        if let err = buf.error_msg {
+            throw NativeBridgeError.ftpError(String(cString: err))
+        }
+        guard let ptr = buf.data else { return Data() }
+        return Data(bytes: ptr, count: buf.len)
+    }
+
+    public func uploadBytes(_ data: Data, to remotePath: String) throws {
+        lock.lock()
+        let h = handle
+        lock.unlock()
+        guard h > 0 else { throw NativeBridgeError.ftpError("FTP session closed") }
+        var errPtr: UnsafeMutablePointer<CChar>? = nil
+        let ok = remotePath.withCString { pPtr in
+            data.withUnsafeBytes { raw in
+                nexusts_ftp_upload(
+                    h,
+                    pPtr,
+                    raw.baseAddress?.assumingMemoryBound(to: UInt8.self),
+                    data.count,
+                    &errPtr
+                )
+            }
+        }
+        if let errPtr {
+            defer { nexusts_ffi_free_cstr(errPtr) }
+            throw NativeBridgeError.ftpError(String(cString: errPtr))
+        }
+        if !ok { throw NativeBridgeError.ftpError("STOR failed for \(remotePath)") }
+    }
+
+    public func disconnect() {
+        lock.lock()
+        let h = handle
+        handle = 0
+        lock.unlock()
+        if h > 0 {
+            nexusts_ftp_disconnect(h)
+        }
+    }
+}
+
+// MARK: - 5. RFB / VNC / Apple Screen Sharing Framebuffer & Live Session Engine
 
 public final class NativeVncFramebuffer: @unchecked Sendable {
     private let handle: Int64
@@ -784,12 +1344,272 @@ public final class NativeVncFramebuffer: @unchecked Sendable {
         }
         return buffer
     }
+
+    public func copyBgraPixels() -> Data {
+        let count = width * height * 4
+        var buffer = Data(count: count)
+        buffer.withUnsafeMutableBytes { raw in
+            if let base = raw.baseAddress?.assumingMemoryBound(to: UInt8.self) {
+                _ = nexusts_ffi_vnc_copy_bgra(handle, base, count)
+            }
+        }
+        return buffer
+    }
 }
 
-// MARK: - 6. FreeRDP 3.x Native macOS Session Bridge
+public final class NativeLiveVncSession: @unchecked Sendable {
+    public private(set) var handle: Int64
+    private let lock = NSLock()
+    private var persistentContext: CGContext?
+    private var persistentWidth: Int = 0
+    private var persistentHeight: Int = 0
+    private var lastRenderedSequence: UInt64 = 0
+    private var lastRenderedImage: CGImage?
+
+    private init(handle: Int64) {
+        self.handle = handle
+    }
+
+    deinit {
+        disconnect()
+    }
+
+    public static func connect(
+        host: String,
+        port: UInt16 = 5900,
+        username: String = "",
+        password: String = "",
+        sharedSession: Bool = true,
+        viewOnly: Bool = false
+    ) throws -> NativeLiveVncSession {
+        var errPtr: UnsafeMutablePointer<CChar>? = nil
+        let vncId: Int64 = host.withCString { hPtr in
+            username.withCString { uPtr in
+                password.withCString { pPtr in
+                    nexusts_vnc_session_connect(
+                        hPtr,
+                        port == 0 ? 5900 : port,
+                        uPtr,
+                        pPtr,
+                        sharedSession,
+                        viewOnly,
+                        &errPtr
+                    )
+                }
+            }
+        }
+        if let errPtr {
+            defer { nexusts_ffi_free_cstr(errPtr) }
+            throw NativeBridgeError.vncSessionError(String(cString: errPtr))
+        }
+        guard vncId > 0 else {
+            throw NativeBridgeError.vncSessionError("VNC session failed to initialize")
+        }
+        return NativeLiveVncSession(handle: vncId)
+    }
+
+    public var isConnected: Bool {
+        lock.lock()
+        let h = handle
+        lock.unlock()
+        return h > 0 && nexusts_vnc_session_is_connected(h)
+    }
+
+    public func lastErrorMessage() -> String {
+        lock.lock()
+        let h = handle
+        lock.unlock()
+        guard h > 0, let ptr = nexusts_vnc_session_last_error(h) else { return "" }
+        defer { nexusts_ffi_free_cstr(ptr) }
+        return String(cString: ptr)
+    }
+
+    public func desktopName() -> String {
+        lock.lock()
+        let h = handle
+        lock.unlock()
+        guard h > 0, let ptr = nexusts_vnc_session_desktop_name(h) else { return "" }
+        defer { nexusts_ffi_free_cstr(ptr) }
+        return String(cString: ptr)
+    }
+
+    public var frameSequence: UInt64 {
+        lock.lock()
+        let h = handle
+        lock.unlock()
+        return h > 0 ? nexusts_vnc_session_frame_sequence(h) : 0
+    }
+
+    public func dimensions() -> (width: Int, height: Int)? {
+        lock.lock()
+        let h = handle
+        lock.unlock()
+        guard h > 0 else { return nil }
+        var w: UInt32 = 0
+        var ht: UInt32 = 0
+        guard nexusts_vnc_session_get_dimensions(h, &w, &ht), w > 0, ht > 0 else { return nil }
+        return (Int(w), Int(ht))
+    }
+
+    public func copyFrameBgra() -> (bgra: Data, width: Int, height: Int)? {
+        lock.lock()
+        let h = handle
+        lock.unlock()
+        guard h > 0 else { return nil }
+        var w: UInt32 = 0
+        var ht: UInt32 = 0
+        guard nexusts_vnc_session_get_dimensions(h, &w, &ht), w > 0, ht > 0 else { return nil }
+        let byteCount = Int(w) * Int(ht) * 4
+        var data = Data(count: byteCount)
+        let copied = data.withUnsafeMutableBytes { raw -> Int in
+            guard let base = raw.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return 0 }
+            return nexusts_vnc_session_copy_frame_bgra(h, base, byteCount)
+        }
+        guard copied > 0 else { return nil }
+        return (data, Int(w), Int(ht))
+    }
+
+    public func copyFrameRgba() -> (rgba: Data, width: Int, height: Int)? {
+        lock.lock()
+        let h = handle
+        lock.unlock()
+        guard h > 0 else { return nil }
+        var w: UInt32 = 0
+        var ht: UInt32 = 0
+        guard nexusts_vnc_session_get_dimensions(h, &w, &ht), w > 0, ht > 0 else { return nil }
+        let byteCount = Int(w) * Int(ht) * 4
+        var data = Data(count: byteCount)
+        let copied = data.withUnsafeMutableBytes { raw -> Int in
+            guard let base = raw.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return 0 }
+            return nexusts_vnc_session_copy_frame_rgba(h, base, byteCount)
+        }
+        guard copied > 0 else { return nil }
+        return (data, Int(w), Int(ht))
+    }
+
+    public func copyFrameIntoPersistentBuffer(
+        forceFull: Bool = false
+    ) -> (image: CGImage, width: Int, height: Int, sequence: UInt64)? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard handle > 0 else { return nil }
+
+        let seq = nexusts_vnc_session_frame_sequence(handle)
+        if !forceFull && seq == lastRenderedSequence {
+            return nil
+        }
+        if forceFull && seq == lastRenderedSequence,
+           let cached = lastRenderedImage,
+           persistentWidth > 0,
+           persistentHeight > 0 {
+            return (cached, persistentWidth, persistentHeight, seq)
+        }
+
+        var w: UInt32 = 0
+        var ht: UInt32 = 0
+        guard nexusts_vnc_session_get_dimensions(handle, &w, &ht), w > 0, ht > 0 else { return nil }
+        let width = Int(w)
+        let height = Int(ht)
+
+        if persistentContext == nil || persistentWidth != width || persistentHeight != height {
+            persistentContext = CGContext(
+                data: nil,
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bytesPerRow: width * 4,
+                space: NativeRdpSession.deviceRgbColorSpace,
+                bitmapInfo: NativeRdpSession.bgrxBitmapInfo
+            )
+            persistentWidth = width
+            persistentHeight = height
+        }
+
+        guard let ctx = persistentContext,
+              let dstBase = ctx.data?.assumingMemoryBound(to: UInt8.self) else {
+            return nil
+        }
+
+        let copied = nexusts_vnc_session_copy_frame_bgra(handle, dstBase, width * height * 4)
+        guard copied > 0, let image = ctx.makeImage() else { return nil }
+        lastRenderedSequence = seq
+        lastRenderedImage = image
+        return (image, width, height, seq)
+    }
+
+    @discardableResult
+    public func sendPointer(buttonMask: UInt8, x: Int, y: Int) -> Bool {
+        lock.lock()
+        let h = handle
+        lock.unlock()
+        guard h > 0 else { return false }
+        return nexusts_vnc_session_send_pointer(
+            h,
+            buttonMask,
+            UInt16(clamping: max(0, x)),
+            UInt16(clamping: max(0, y))
+        )
+    }
+
+    @discardableResult
+    public func sendKey(down: Bool, keysym: UInt32) -> Bool {
+        lock.lock()
+        let h = handle
+        lock.unlock()
+        guard h > 0 else { return false }
+        return nexusts_vnc_session_send_key(h, down, keysym)
+    }
+
+    @discardableResult
+    public func sendClipboard(_ text: String) -> Bool {
+        lock.lock()
+        let h = handle
+        lock.unlock()
+        guard h > 0 else { return false }
+        return text.withCString { nexusts_vnc_session_send_clipboard(h, $0) }
+    }
+
+    public func pullClipboard() -> String? {
+        lock.lock()
+        let h = handle
+        lock.unlock()
+        guard h > 0, let ptr = nexusts_vnc_session_pull_clipboard(h) else { return nil }
+        defer { nexusts_ffi_free_cstr(ptr) }
+        return String(cString: ptr)
+    }
+
+    public func disconnect() {
+        lock.lock()
+        let h = handle
+        handle = 0
+        persistentContext = nil
+        lastRenderedImage = nil
+        persistentWidth = 0
+        persistentHeight = 0
+        lock.unlock()
+        if h > 0 {
+            nexusts_vnc_session_disconnect(h)
+        }
+    }
+}
+
+// MARK: - 6. FreeRDP 3.x Native macOS Session Bridge & PC XT Set-1 Input Mapper
 
 public final class NativeRdpSession: @unchecked Sendable {
+    public static let deviceRgbColorSpace = CGColorSpaceCreateDeviceRGB()
+    public static let bgrxBitmapInfo: UInt32 =
+        CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.noneSkipFirst.rawValue
+
     private var handle: Int64 = 0
+    private let stateLock = NSLock()
+    private var connectingFlag: Bool = false
+
+    private let frameLock = NSLock()
+    private var persistentContext: CGContext?
+    private var persistentWidth: Int = 0
+    private var persistentHeight: Int = 0
+    private var lastRenderedSequence: UInt64 = 0
+    private var lastRenderedImage: CGImage?
 
     public init(
         host: String,
@@ -878,26 +1698,52 @@ public final class NativeRdpSession: @unchecked Sendable {
         destroy()
     }
 
+    public var isConnecting: Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return connectingFlag
+    }
+
+    public func setConnecting(_ value: Bool) {
+        stateLock.lock()
+        connectingFlag = value
+        stateLock.unlock()
+    }
+
     public func connect() -> Bool {
-        guard handle > 0 else { return false }
-        return nexusts_rdp_connect(handle)
+        stateLock.lock()
+        let h = handle
+        connectingFlag = h > 0
+        stateLock.unlock()
+        guard h > 0 else { return false }
+        defer { setConnecting(false) }
+        return nexusts_rdp_connect(h)
     }
 
     public var isConnected: Bool {
-        handle > 0 && nexusts_rdp_is_connected(handle)
+        stateLock.lock()
+        let h = handle
+        stateLock.unlock()
+        return h > 0 && nexusts_rdp_is_connected(h)
     }
 
     @discardableResult
     public func requestDynamicResize(width: Int, height: Int, scalePercent: Int = 100) -> Bool {
-        guard handle > 0 else { return false }
+        stateLock.lock()
+        let h = handle
+        stateLock.unlock()
+        guard h > 0 else { return false }
         let evenW = UInt32(max(320, width & ~1))
         let evenH = UInt32(max(240, height & ~1))
-        return nexusts_rdp_request_resize(handle, evenW, evenH, UInt32(max(100, scalePercent)))
+        return nexusts_rdp_request_resize(h, evenW, evenH, UInt32(max(100, scalePercent)))
     }
 
     public func sendScancode(_ scancode: UInt16, keyDown: Bool, extended: Bool = false) {
-        guard handle > 0 else { return }
-        nexusts_rdp_send_key_scancode(handle, scancode, keyDown, extended)
+        stateLock.lock()
+        let h = handle
+        stateLock.unlock()
+        guard h > 0 else { return }
+        nexusts_rdp_send_key_scancode(h, scancode, keyDown, extended)
     }
 
     public func sendCtrlAltDel() {
@@ -910,9 +1756,12 @@ public final class NativeRdpSession: @unchecked Sendable {
     }
 
     public func sendPointerEvent(flags: UInt16, x: Int, y: Int) {
-        guard handle > 0 else { return }
+        stateLock.lock()
+        let h = handle
+        stateLock.unlock()
+        guard h > 0 else { return }
         nexusts_rdp_send_pointer_event(
-            handle,
+            h,
             flags,
             UInt16(clamping: max(0, x)),
             UInt16(clamping: max(0, y))
@@ -920,60 +1769,401 @@ public final class NativeRdpSession: @unchecked Sendable {
     }
 
     public func pushLocalClipboard(_ text: String) {
-        guard handle > 0 else { return }
-        text.withCString { nexusts_rdp_set_local_clipboard(handle, $0) }
+        stateLock.lock()
+        let h = handle
+        stateLock.unlock()
+        guard h > 0 else { return }
+        text.withCString { nexusts_rdp_set_local_clipboard(h, $0) }
     }
 
     public func pullRemoteClipboard() -> String {
-        guard handle > 0, let ptr = nexusts_rdp_copy_remote_clipboard(handle) else { return "" }
+        stateLock.lock()
+        let h = handle
+        stateLock.unlock()
+        guard h > 0, let ptr = nexusts_rdp_copy_remote_clipboard(h) else { return "" }
         defer { nexusts_rdp_free_cstr(ptr) }
         return String(cString: ptr)
     }
 
     public func lastErrorMessage() -> String {
-        guard handle > 0, let ptr = nexusts_rdp_copy_last_error(handle) else { return "" }
+        stateLock.lock()
+        let h = handle
+        stateLock.unlock()
+        guard h > 0, let ptr = nexusts_rdp_copy_last_error(h) else { return "" }
         defer { nexusts_rdp_free_cstr(ptr) }
         return String(cString: ptr)
     }
 
     public var frameSequence: UInt64 {
-        handle > 0 ? nexusts_rdp_frame_sequence(handle) : 0
+        stateLock.lock()
+        let h = handle
+        stateLock.unlock()
+        return h > 0 ? nexusts_rdp_frame_sequence(h) : 0
     }
 
     public var remoteClipboardSequence: UInt64 {
-        handle > 0 ? nexusts_rdp_remote_clipboard_sequence(handle) : 0
+        stateLock.lock()
+        let h = handle
+        stateLock.unlock()
+        return h > 0 ? nexusts_rdp_remote_clipboard_sequence(h) : 0
     }
 
+    /// Copies the latest native shadow surface (`BGRX32` layout on macOS `[B, G, R, X]`).
     public func copyLatestFrame() -> (rgba: Data, width: Int, height: Int)? {
-        guard handle > 0 else { return nil }
+        stateLock.lock()
+        let h = handle
+        stateLock.unlock()
+        guard h > 0 else { return nil }
         var w: UInt32 = 0
-        var h: UInt32 = 0
-        let needed = nexusts_rdp_copy_frame_rgba(handle, nil, 0, &w, &h)
-        guard needed > 0, w > 0, h > 0 else { return nil }
+        var ht: UInt32 = 0
+        let needed = nexusts_rdp_copy_frame_rgba(h, nil, 0, &w, &ht)
+        guard needed > 0, w > 0, ht > 0 else { return nil }
         var data = Data(count: needed)
         data.withUnsafeMutableBytes { raw in
             if let base = raw.baseAddress?.assumingMemoryBound(to: UInt8.self) {
-                _ = nexusts_rdp_copy_frame_rgba(handle, base, needed, &w, &h)
+                _ = nexusts_rdp_copy_frame_rgba(h, base, needed, &w, &ht)
             }
         }
-        return (data, Int(w), Int(h))
+        return (data, Int(w), Int(ht))
+    }
+
+    public static func makeBgrxCGImage(bgrx: Data, width: Int, height: Int) -> CGImage? {
+        guard width > 0, height > 0, bgrx.count >= width * height * 4 else { return nil }
+        guard let provider = CGDataProvider(data: bgrx as CFData) else { return nil }
+        return CGImage(
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bitsPerPixel: 32,
+            bytesPerRow: width * 4,
+            space: deviceRgbColorSpace,
+            bitmapInfo: CGBitmapInfo(rawValue: bgrxBitmapInfo),
+            provider: provider,
+            decode: nil,
+            shouldInterpolate: true,
+            intent: .defaultIntent
+        )
+    }
+
+    /// Zero-swizzle incremental dirty-scanline frame presenter backed by a persistent VM-COW `CGContext`.
+    /// Allocates backing memory ONLY when `(width, height)` changes and updates ONLY dirty scanlines in place.
+    public func copyDirtyFrameIntoPersistentBuffer(
+        forceFull: Bool = false
+    ) -> (image: CGImage, width: Int, height: Int, sequence: UInt64)? {
+        stateLock.lock()
+        let h = handle
+        stateLock.unlock()
+        guard h > 0 else { return nil }
+
+        frameLock.lock()
+        defer { frameLock.unlock() }
+
+        let seq = nexusts_rdp_frame_sequence(h)
+        if seq == 0 { return nil }
+        if !forceFull && seq == lastRenderedSequence {
+            return nil
+        }
+        if forceFull && seq == lastRenderedSequence,
+           let cached = lastRenderedImage,
+           persistentWidth > 0,
+           persistentHeight > 0 {
+            return (cached, persistentWidth, persistentHeight, seq)
+        }
+
+        var w: UInt32 = 0
+        var ht: UInt32 = 0
+        var dx: UInt32 = 0
+        var dy: UInt32 = 0
+        var dw: UInt32 = 0
+        var dh: UInt32 = 0
+
+        let needed = nexusts_rdp_copy_dirty_frame(h, nil, 0, &w, &ht, &dx, &dy, &dw, &dh)
+        guard needed > 0, w > 0, ht > 0 else { return nil }
+
+        let targetW = Int(w)
+        let targetH = Int(ht)
+        let capacity = targetW * targetH * 4
+
+        if persistentContext == nil || persistentWidth != targetW || persistentHeight != targetH {
+            guard let ctx = CGContext(
+                data: nil,
+                width: targetW,
+                height: targetH,
+                bitsPerComponent: 8,
+                bytesPerRow: targetW * 4,
+                space: Self.deviceRgbColorSpace,
+                bitmapInfo: Self.bgrxBitmapInfo
+            ), let dstBase = ctx.data?.assumingMemoryBound(to: UInt8.self) else {
+                return nil
+            }
+
+            _ = nexusts_rdp_copy_frame_rgba(h, dstBase, capacity, &w, &ht)
+            _ = nexusts_rdp_copy_dirty_frame(h, dstBase, capacity, &w, &ht, &dx, &dy, &dw, &dh)
+            persistentContext = ctx
+            persistentWidth = Int(w)
+            persistentHeight = Int(ht)
+
+            guard let image = ctx.makeImage() else { return nil }
+            lastRenderedSequence = seq
+            lastRenderedImage = image
+            return (image, persistentWidth, persistentHeight, seq)
+        }
+
+        guard let ctx = persistentContext,
+              let dstBase = ctx.data?.assumingMemoryBound(to: UInt8.self) else {
+            return nil
+        }
+
+        let copied = nexusts_rdp_copy_dirty_frame(h, dstBase, capacity, &w, &ht, &dx, &dy, &dw, &dh)
+        if Int(w) != persistentWidth || Int(ht) != persistentHeight {
+            persistentContext = nil
+            persistentWidth = 0
+            persistentHeight = 0
+            lastRenderedImage = nil
+            return nil
+        }
+
+        if copied > 0 && dw > 0 && dh > 0 {
+            guard let image = ctx.makeImage() else { return nil }
+            lastRenderedSequence = seq
+            lastRenderedImage = image
+            return (image, targetW, targetH, seq)
+        }
+
+        if forceFull {
+            _ = nexusts_rdp_copy_frame_rgba(h, dstBase, capacity, &w, &ht)
+            guard let image = ctx.makeImage() else { return nil }
+            lastRenderedSequence = seq
+            lastRenderedImage = image
+            return (image, targetW, targetH, seq)
+        }
+
+        lastRenderedSequence = seq
+        return nil
     }
 
     public func disconnect() {
-        if handle > 0 {
-            nexusts_rdp_disconnect(handle)
+        stateLock.lock()
+        let h = handle
+        connectingFlag = false
+        stateLock.unlock()
+        if h > 0 {
+            nexusts_rdp_disconnect(h)
         }
     }
 
     public func destroy() {
-        if handle > 0 {
-            nexusts_rdp_destroy_session(handle)
-            handle = 0
+        stateLock.lock()
+        let h = handle
+        handle = 0
+        connectingFlag = false
+        stateLock.unlock()
+
+        frameLock.lock()
+        persistentContext = nil
+        lastRenderedImage = nil
+        persistentWidth = 0
+        persistentHeight = 0
+        lastRenderedSequence = 0
+        frameLock.unlock()
+
+        if h > 0 {
+            nexusts_rdp_destroy_session(h)
         }
     }
 }
 
-// MARK: - 7. Network Diagnostics Bridge (WoL, Port Probe, Traceroute, Banner, FTP MLSD)
+/// Maps macOS Carbon virtual keyCodes (`NSEvent.keyCode`), modifier flags, scroll wheels,
+/// and aspect-fit viewport coordinates to PC XT Set-1 RDP wire inputs.
+public enum MacRdpScancodeMapper {
+    /// Maps a macOS Carbon virtual keyCode (`UInt16`) to `(scancode: UInt16, extended: Bool)`.
+    public static func mapKeyCode(
+        _ keyCode: UInt16,
+        captureRemoteShortcuts: Bool = true
+    ) -> (scancode: UInt16, extended: Bool)? {
+        if let mod = mapModifierKeyCode(keyCode, captureRemoteShortcuts: captureRemoteShortcuts) {
+            return (mod.scancode, mod.extended)
+        }
+        switch keyCode {
+        // Letters (ANSI / ISO virtual keyCodes)
+        case 0x00: return (0x1E, false) // A
+        case 0x01: return (0x1F, false) // S
+        case 0x02: return (0x20, false) // D
+        case 0x03: return (0x21, false) // F
+        case 0x04: return (0x23, false) // H
+        case 0x05: return (0x22, false) // G
+        case 0x06: return (0x2C, false) // Z
+        case 0x07: return (0x2D, false) // X
+        case 0x08: return (0x2E, false) // C
+        case 0x09: return (0x2F, false) // V
+        case 0x0B: return (0x30, false) // B
+        case 0x0C: return (0x10, false) // Q
+        case 0x0D: return (0x11, false) // W
+        case 0x0E: return (0x12, false) // E
+        case 0x0F: return (0x13, false) // R
+        case 0x10: return (0x15, false) // Y
+        case 0x11: return (0x14, false) // T
+        case 0x1F: return (0x18, false) // O
+        case 0x20: return (0x16, false) // U
+        case 0x22: return (0x17, false) // I
+        case 0x23: return (0x19, false) // P
+        case 0x25: return (0x26, false) // L
+        case 0x26: return (0x24, false) // J
+        case 0x28: return (0x25, false) // K
+        case 0x2D: return (0x31, false) // N
+        case 0x2E: return (0x32, false) // M
+
+        // Digits & Symbols
+        case 0x12: return (0x02, false) // 1
+        case 0x13: return (0x03, false) // 2
+        case 0x14: return (0x04, false) // 3
+        case 0x15: return (0x05, false) // 4
+        case 0x16: return (0x07, false) // 6
+        case 0x17: return (0x06, false) // 5
+        case 0x18: return (0x0D, false) // =
+        case 0x19: return (0x0A, false) // 9
+        case 0x1A: return (0x08, false) // 7
+        case 0x1B: return (0x0C, false) // -
+        case 0x1C: return (0x09, false) // 8
+        case 0x1D: return (0x0B, false) // 0
+        case 0x1E: return (0x1B, false) // ]
+        case 0x21: return (0x1A, false) // [
+        case 0x27: return (0x28, false) // '
+        case 0x29: return (0x27, false) // ;
+        case 0x2A: return (0x2B, false) // \
+        case 0x2B: return (0x33, false) // ,
+        case 0x2C: return (0x35, false) // /
+        case 0x2F: return (0x34, false) // .
+        case 0x32: return (0x29, false) // `
+        case 0x0A: return (0x56, false) // ISO §
+
+        // Editing, Control & Navigation
+        case 0x24: return (0x1C, false) // Return
+        case 0x30: return (0x0F, false) // Tab
+        case 0x31: return (0x39, false) // Space
+        case 0x33: return (0x0E, false) // Backspace
+        case 0x35: return (0x01, false) // Escape
+        case 0x75: return (0x53, true)  // Forward Delete
+        case 0x72: return (0x52, true)  // Insert / Help
+        case 0x73: return (0x47, true)  // Home
+        case 0x74: return (0x49, true)  // Page Up
+        case 0x77: return (0x4F, true)  // End
+        case 0x79: return (0x51, true)  // Page Down
+        case 0x7B: return (0x4B, true)  // Left Arrow
+        case 0x7C: return (0x4D, true)  // Right Arrow
+        case 0x7D: return (0x50, true)  // Down Arrow
+        case 0x7E: return (0x48, true)  // Up Arrow
+
+        // Function Keys F1..F12 (+ F13..F15)
+        case 0x7A: return (0x3B, false) // F1
+        case 0x78: return (0x3C, false) // F2
+        case 0x63: return (0x3D, false) // F3
+        case 0x76: return (0x3E, false) // F4
+        case 0x60: return (0x3F, false) // F5
+        case 0x61: return (0x40, false) // F6
+        case 0x62: return (0x41, false) // F7
+        case 0x64: return (0x42, false) // F8
+        case 0x65: return (0x43, false) // F9
+        case 0x6D: return (0x44, false) // F10
+        case 0x67: return (0x57, false) // F11
+        case 0x6F: return (0x58, false) // F12
+        case 0x69: return (0x37, true)  // F13 / PrintScreen
+
+        // Numeric Keypad
+        case 0x4C: return (0x1C, true)  // Keypad Enter
+        case 0x4B: return (0x35, true)  // Keypad /
+        case 0x43: return (0x37, false) // Keypad *
+        case 0x4E: return (0x4A, false) // Keypad -
+        case 0x45: return (0x4E, false) // Keypad +
+        case 0x41: return (0x53, false) // Keypad .
+        case 0x47: return (0x45, false) // Keypad Clear / NumLock
+        case 0x51: return (0x0D, false) // Keypad =
+        case 0x52: return (0x52, false) // Keypad 0
+        case 0x53: return (0x4F, false) // Keypad 1
+        case 0x54: return (0x50, false) // Keypad 2
+        case 0x55: return (0x51, false) // Keypad 3
+        case 0x56: return (0x4B, false) // Keypad 4
+        case 0x57: return (0x4C, false) // Keypad 5
+        case 0x58: return (0x4D, false) // Keypad 6
+        case 0x59: return (0x47, false) // Keypad 7
+        case 0x5B: return (0x48, false) // Keypad 8
+        case 0x5C: return (0x49, false) // Keypad 9
+
+        default:
+            return nil
+        }
+    }
+
+    /// Maps macOS modifier virtual keyCodes (`flagsChanged`) to PC XT Set-1 scancodes.
+    public static func mapModifierKeyCode(
+        _ keyCode: UInt16,
+        captureRemoteShortcuts: Bool = true
+    ) -> (scancode: UInt16, extended: Bool, isCapsLock: Bool)? {
+        switch keyCode {
+        case 0x38: return (0x2A, false, false) // Left Shift
+        case 0x3C: return (0x36, false, false) // Right Shift
+        case 0x3B: return (0x1D, false, false) // Left Control
+        case 0x3E: return (0x1D, true, false)  // Right Control
+        case 0x3A: return (0x38, false, false) // Left Option / Alt
+        case 0x3D: return (0x38, true, false)  // Right Option / AltGr
+        case 0x37: return captureRemoteShortcuts ? (0x5B, true, false) : nil // Left Command -> Left Win
+        case 0x36: return captureRemoteShortcuts ? (0x5C, true, false) : nil // Right Command -> Right Win
+        case 0x39: return (0x3A, false, true)  // Caps Lock (tap)
+        default: return nil
+        }
+    }
+
+    /// Encodes an RDP pointer wheel step (`PTR_FLAGS_WHEEL` `0x0200` or `PTR_FLAGS_HWHEEL` `0x0400`)
+    /// using 9-bit two's-complement rotation units (`0x0100 | ((-mag) & 0xFF)` for negative steps).
+    public static func encodeWheelFlags(delta: Int, horizontal: Bool = false) -> UInt16? {
+        guard delta != 0 else { return nil }
+        let baseFlag: UInt16 = horizontal ? 0x0400 : 0x0200
+        if delta > 0 {
+            let mag = UInt16(min(255, delta))
+            return baseFlag | mag
+        } else {
+            let mag = min(256, -delta)
+            let negBits = UInt16(bitPattern: Int16(-mag)) & 0x00FF
+            return baseFlag | 0x0100 | negBits
+        }
+    }
+
+    /// Maps a local view point into remote desktop coordinates, accounting for letterbox/pillarbox
+    /// aspect-fit (`scaleToFit == true`) or aspect-fill (`scaleToFit == false`) sub-rects.
+    public static func mapViewportPoint(
+        localX: CGFloat,
+        localY: CGFloat,
+        viewWidth: CGFloat,
+        viewHeight: CGFloat,
+        remoteWidth: Int,
+        remoteHeight: Int,
+        scaleToFit: Bool = true,
+        originBottomLeft: Bool = true
+    ) -> (x: Int, y: Int) {
+        let vw = max(1.0, viewWidth)
+        let vh = max(1.0, viewHeight)
+        let rw = CGFloat(max(1, remoteWidth))
+        let rh = CGFloat(max(1, remoteHeight))
+        let topLeftY = originBottomLeft ? (vh - localY) : localY
+
+        let scale = scaleToFit ? min(vw / rw, vh / rh) : max(vw / rw, vh / rh)
+        let contentW = max(1.0, rw * scale)
+        let contentH = max(1.0, rh * scale)
+        let offsetX = (vw - contentW) * 0.5
+        let offsetY = (vh - contentH) * 0.5
+
+        let normX = (localX - offsetX) / contentW
+        let normY = (topLeftY - offsetY) / contentH
+
+        let maxX = max(0, remoteWidth - 1)
+        let maxY = max(0, remoteHeight - 1)
+        let px = min(max(0, Int((normX * rw).rounded(.down))), maxX)
+        let py = min(max(0, Int((normY * rh).rounded(.down))), maxY)
+        return (px, py)
+    }
+}
+
+// MARK: - 7. Network Diagnostics Bridge (WoL, Port Probe, Scanner, Ping, Traceroute, Banner, FTP MLSD)
 
 public struct PortProbeHit: Codable, Equatable, Identifiable, Sendable {
     public var id: UInt16 { port }
@@ -1061,6 +2251,29 @@ public enum NativeNetworkDiagnostics {
         let str = String(cString: jsonPtr)
         if str == "null" || str.isEmpty { return nil }
         return try? JSONDecoder().decode(PortProbeHit.self, from: Data(str.utf8))
+    }
+
+    public static func scanPorts(
+        host: String,
+        startPort: UInt16,
+        endPort: UInt16,
+        timeoutMs: UInt64 = 250,
+        concurrency: UInt32 = 128
+    ) -> [PortProbeHit] {
+        let lo = min(startPort, endPort)
+        let hi = max(startPort, endPort)
+        let jsonPtr = host.withCString { hPtr in
+            nexusts_net_scan_ports_json(hPtr, lo, hi, timeoutMs, max(1, concurrency))
+        }
+        guard let jsonPtr else { return [] }
+        defer { nexusts_ffi_free_cstr(jsonPtr) }
+        return (try? JSONDecoder().decode([PortProbeHit].self, from: Data(String(cString: jsonPtr).utf8))) ?? []
+    }
+
+    public static func tcpPingMs(host: String, port: UInt16, timeoutMs: UInt64 = 1000) -> Int64 {
+        host.withCString { hPtr in
+            nexusts_net_tcp_ping_ms(hPtr, port, timeoutMs)
+        }
     }
 
     public static func traceRoute(

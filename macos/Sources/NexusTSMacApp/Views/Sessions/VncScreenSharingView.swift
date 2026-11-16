@@ -1,54 +1,92 @@
 import AppKit
 import CoreGraphics
-import Network
 import NexusTSCore
+import QuartzCore
 import SwiftUI
 
 public struct VncScreenSharingView: View {
     @EnvironmentObject private var store: WorkspaceStore
     public let tab: WorkspaceSessionTab
 
-    @State private var framebuffer = NativeVncFramebuffer(width: 1280, height: 800)
-    @State private var renderedImage: CGImage? = nil
-    @State private var statusMessage: String = "Ready for RFB 3.8 / Apple Screen Sharing"
-    @State private var isConnecting: Bool = false
-    @State private var serverBanner: String = ""
-
     public init(tab: WorkspaceSessionTab) {
         self.tab = tab
     }
 
-    private var vncSettings: VncProtocolSettings {
-        if case .vnc(let s) = tab.connection.settings { return s }
-        return VncProtocolSettings(appleArdDiffieHellmanAuth: tab.connection.protocolType == .APPLE_SCREEN_SHARING)
+    public var body: some View {
+        VncLiveWorkspaceBody(
+            tab: tab,
+            controller: store.vncController(for: tab)
+        )
+    }
+}
+
+private struct VncLiveWorkspaceBody: View {
+    @EnvironmentObject private var store: WorkspaceStore
+    let tab: WorkspaceSessionTab
+    @ObservedObject var controller: LiveVncController
+
+    @State private var scaleToFit: Bool = true
+    @State private var hasPresentedFrame: Bool = false
+
+    private var latestConnection: VaultConnection {
+        store.activeConnections.first(where: { $0.id == tab.connection.id }) ?? tab.connection
     }
 
-    public var body: some View {
+    private var vncSettings: VncProtocolSettings {
+        if case .vnc(let s) = latestConnection.settings { return s }
+        return VncProtocolSettings(
+            appleArdDiffieHellmanAuth: latestConnection.protocolType == .APPLE_SCREEN_SHARING
+        )
+    }
+
+    var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 10) {
-                ProtocolSquircleIcon(protocolType: tab.connection.protocolType, size: 22)
+                Circle()
+                    .fill(
+                        controller.isConnected
+                            ? Color(nsColor: .systemGreen)
+                            : (controller.isConnecting ? Color(nsColor: .systemOrange) : Color(nsColor: .systemRed))
+                    )
+                    .frame(width: 8, height: 8)
 
-                Text("\(tab.connection.name) (\(tab.connection.host):\(vncSettings.port))")
+                ProtocolSquircleIcon(protocolType: latestConnection.protocolType, size: 22)
+
+                Text("\(latestConnection.name) (\(latestConnection.host):\(vncSettings.port))")
                     .font(.callout.weight(.semibold))
+                    .lineLimit(1)
 
                 if vncSettings.appleArdDiffieHellmanAuth {
                     EnvironmentCapsuleBadge("ARD DH Auth")
                 }
 
-                Text(statusMessage)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                if vncSettings.viewOnly {
+                    EnvironmentCapsuleBadge("View-Only")
+                }
+
+                Text(
+                    controller.desktopName.isEmpty
+                        ? controller.dimensionsText
+                        : "\(controller.desktopName) • \(controller.dimensionsText)"
+                )
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
 
                 Spacer()
 
+                Toggle("Fit", isOn: $scaleToFit)
+                    .toggleStyle(.checkbox)
+                    .font(.caption)
+
                 Button {
-                    probeRfbHandshake()
+                    hasPresentedFrame = false
+                    store.reconnectVncController(for: tab)
                 } label: {
-                    Label("Handshake RFB", systemImage: "bolt.horizontal.circle")
+                    Label(controller.isConnected ? "Reconnect" : "Connect RFB", systemImage: "arrow.clockwise")
                 }
                 .controlSize(.small)
-                .disabled(isConnecting)
+                .disabled(controller.isConnecting)
 
                 Button {
                     launchNativeAppleScreenSharingApp()
@@ -68,29 +106,55 @@ public struct VncScreenSharingView: View {
             ZStack {
                 Color(red: 0.08, green: 0.09, blue: 0.12)
 
-                if let cgImage = renderedImage {
-                    Image(decorative: cgImage, scale: 1.0)
-                        .resizable()
-                        .aspectRatio(contentMode: .fit)
-                        .padding(8)
-                } else {
+                if let liveSession = controller.session {
+                    VncInteractiveSurfaceRepresentable(
+                        session: liveSession,
+                        scaleToFit: scaleToFit,
+                        viewOnly: vncSettings.viewOnly,
+                        captureRemoteShortcuts: store.remoteKeyCaptureEnabled,
+                        onRuntimeUpdate: { connected, hasFrame, dimsText, errorText in
+                            if hasPresentedFrame != hasFrame {
+                                hasPresentedFrame = hasFrame
+                            }
+                            controller.updateRuntimeStatus(
+                                isConnected: connected,
+                                dimensionsText: dimsText,
+                                errorText: errorText
+                            )
+                        }
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .opacity(hasPresentedFrame ? 1.0 : 0.0)
+                }
+
+                if !hasPresentedFrame && !controller.isConnected {
                     VStack(spacing: 14) {
-                        Image(systemName: tab.connection.protocolType.sfSymbolName)
+                        Image(systemName: latestConnection.protocolType.sfSymbolName)
                             .font(.system(size: 44, weight: .medium))
                             .foregroundStyle(Color(nsColor: .systemPurple))
 
                         Text(
-                            tab.connection.protocolType == .APPLE_SCREEN_SHARING
+                            latestConnection.protocolType == .APPLE_SCREEN_SHARING
                                 ? "Apple Remote Desktop (ARD) & Screen Sharing"
-                                : "RFB 3.8 VNC Framebuffer Engine"
+                                : "RFB 3.8 Live VNC Framebuffer Engine"
                         )
                         .font(.title3.weight(.semibold))
                         .foregroundStyle(.white)
 
-                        if !serverBanner.isEmpty {
-                            Text("Remote RFB Banner: \(serverBanner)")
+                        if controller.isConnecting {
+                            HStack(spacing: 8) {
+                                ProgressView()
+                                    .controlSize(.small)
+                                Text("Negotiating RFB 3.8 security & desktop surface…")
+                                    .font(.caption)
+                                    .foregroundStyle(.white.opacity(0.75))
+                            }
+                        } else if let err = controller.lastErrorText, !err.isEmpty {
+                            Text(err)
                                 .font(.system(.caption, design: .monospaced))
-                                .foregroundStyle(Color(nsColor: .systemGreen))
+                                .foregroundStyle(Color(nsColor: .systemOrange))
+                                .multilineTextAlignment(.center)
+                                .frame(maxWidth: 520)
                         } else {
                             Text("Encodings: \(vncSettings.preferredEncodings.joined(separator: " • "))")
                                 .font(.caption)
@@ -99,9 +163,11 @@ public struct VncScreenSharingView: View {
 
                         HStack(spacing: 12) {
                             Button("Connect Embedded RFB") {
-                                probeRfbHandshake()
+                                hasPresentedFrame = false
+                                store.reconnectVncController(for: tab)
                             }
                             .controlSize(.large)
+                            .disabled(controller.isConnecting)
 
                             Button("Launch macOS Screen Sharing.app") {
                                 launchNativeAppleScreenSharingApp()
@@ -114,60 +180,486 @@ public struct VncScreenSharingView: View {
                 }
             }
         }
-        .onAppear {
-            probeRfbHandshake()
-        }
     }
 
     private func launchNativeAppleScreenSharingApp() {
-        let resolved = PropertyInheritanceResolver.resolve(connection: tab.connection, in: store.document)
+        let resolved = PropertyInheritanceResolver.resolve(connection: latestConnection, in: store.document)
         let user = tab.adHocUsernameOverride ?? resolved.effectiveCredential?.username ?? ""
+        let pass = tab.adHocPasswordOverride ?? resolved.effectiveCredential?.secretPassword ?? ""
         var comps = URLComponents()
         comps.scheme = "vnc"
         if !user.isEmpty {
             comps.user = user
+            if !pass.isEmpty {
+                comps.password = pass
+            }
+        } else if !pass.isEmpty {
+            comps.password = pass
         }
-        comps.host = tab.connection.host
-        if vncSettings.port != 5900 {
+        comps.host = latestConnection.host
+        if vncSettings.port > 0 && vncSettings.port != 5900 {
             comps.port = vncSettings.port
         }
         if let url = comps.url {
             NSWorkspace.shared.open(url)
-            store.appendAudit("Screen Sharing", "Opened \(url.absoluteString) via native macOS Screen Sharing.app.")
+            store.appendAudit("Screen Sharing", "Opened \(latestConnection.host):\(vncSettings.port) via native macOS Screen Sharing.app.")
+        }
+    }
+}
+
+private struct VncInteractiveSurfaceRepresentable: NSViewRepresentable {
+    let session: NativeLiveVncSession
+    let scaleToFit: Bool
+    let viewOnly: Bool
+    let captureRemoteShortcuts: Bool
+    let onRuntimeUpdate: (Bool, Bool, String?, String?) -> Void
+
+    func makeNSView(context: Context) -> VncPointerAndKeyNSView {
+        let view = VncPointerAndKeyNSView()
+        view.onRuntimeUpdate = onRuntimeUpdate
+        view.configure(
+            session: session,
+            scaleToFit: scaleToFit,
+            viewOnly: viewOnly,
+            captureRemoteShortcuts: captureRemoteShortcuts
+        )
+        return view
+    }
+
+    func updateNSView(_ nsView: VncPointerAndKeyNSView, context: Context) {
+        nsView.onRuntimeUpdate = onRuntimeUpdate
+        nsView.configure(
+            session: session,
+            scaleToFit: scaleToFit,
+            viewOnly: viewOnly,
+            captureRemoteShortcuts: captureRemoteShortcuts
+        )
+    }
+}
+
+final class VncPointerAndKeyNSView: NSView {
+    var session: NativeLiveVncSession?
+    var scaleToFit: Bool = true
+    var viewOnly: Bool = false
+    var captureRemoteShortcuts: Bool = false
+    var onRuntimeUpdate: ((Bool, Bool, String?, String?) -> Void)?
+
+    private var remoteWidth: Int = 1280
+    private var remoteHeight: Int = 800
+    private var displayTimer: Timer?
+    private var trackingAreaRef: NSTrackingArea?
+    private var tickCounter: UInt64 = 0
+    private var hasPresentedFrame: Bool = false
+
+    private var buttonMask: UInt8 = 0
+    private var activeKeysymsByKeyCode: [UInt16: UInt32] = [:]
+    private var heldModifierKeyCodes: Set<UInt16> = []
+
+    private var lastReportedConnected: Bool?
+    private var lastReportedHasFrame: Bool?
+    private var lastReportedDims: String = ""
+    private var lastReportedError: String = ""
+    private var lastPasteboardChangeCount: Int = NSPasteboard.general.changeCount
+    private var lastSyncedClipboardText: String = ""
+
+    override var acceptsFirstResponder: Bool { true }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        setupLayer()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        setupLayer()
+    }
+
+    deinit {
+        displayTimer?.invalidate()
+    }
+
+    private func setupLayer() {
+        wantsLayer = true
+        layer?.backgroundColor = NSColor(calibratedRed: 0.08, green: 0.09, blue: 0.12, alpha: 1.0).cgColor
+        layer?.magnificationFilter = .trilinear
+        layer?.minificationFilter = .trilinear
+        layer?.contentsGravity = .resizeAspect
+        layer?.actions = [
+            "contents": NSNull(),
+            "bounds": NSNull(),
+            "contentsScale": NSNull(),
+            "contentsGravity": NSNull()
+        ]
+    }
+
+    func configure(
+        session: NativeLiveVncSession,
+        scaleToFit: Bool,
+        viewOnly: Bool,
+        captureRemoteShortcuts: Bool
+    ) {
+        let changed = self.session !== session
+        self.session = session
+        self.viewOnly = viewOnly
+        self.captureRemoteShortcuts = captureRemoteShortcuts
+
+        if self.scaleToFit != scaleToFit {
+            self.scaleToFit = scaleToFit
+            layer?.contentsGravity = scaleToFit ? .resizeAspect : .resizeAspectFill
+        }
+
+        if changed {
+            releaseAllHeldKeys()
+            hasPresentedFrame = false
+            buttonMask = 0
+            layer?.contents = nil
+            lastPasteboardChangeCount = NSPasteboard.general.changeCount
+            pollTick(forceSlow: true)
         }
     }
 
-    private func probeRfbHandshake() {
-        guard !tab.connection.host.isEmpty else { return }
-        isConnecting = true
-        statusMessage = "Probing RFB \(tab.connection.host):\(vncSettings.port)…"
-        let host = tab.connection.host
-        let port = UInt16(clamping: vncSettings.port)
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if let win = window {
+            layer?.contentsScale = win.backingScaleFactor
+            startTimerIfNeeded()
+            pollTick(forceSlow: true)
+        } else {
+            stopTimer()
+        }
+    }
 
-        Task.detached(priority: .userInitiated) {
-            let banner = NativeNetworkDiagnostics.grabServiceBanner(host: host, port: port, timeoutMs: 850)
-            await MainActor.run {
-                isConnecting = false
-                if banner.hasPrefix("RFB") {
-                    serverBanner = banner
-                    statusMessage = "Negotiated \(banner)"
-                    renderPreviewFramebuffer()
-                } else if let hit = NativeNetworkDiagnostics.probeTcpPort(host: host, port: port, timeoutMs: 600), hit.open {
-                    statusMessage = "TCP \(port) reachable (\(hit.connectLatencyMs) ms)"
-                    renderPreviewFramebuffer()
-                } else {
-                    statusMessage = "Host \(host):\(port) unreachable or awaiting Screen Sharing handoff"
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if newWindow == nil {
+            releaseAllHeldKeys()
+            stopTimer()
+        }
+        super.viewWillMove(toWindow: newWindow)
+    }
+
+    override func updateTrackingAreas() {
+        if let existing = trackingAreaRef {
+            removeTrackingArea(existing)
+        }
+        let area = NSTrackingArea(
+            rect: .zero,
+            options: [.activeInKeyWindow, .inVisibleRect, .mouseMoved],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+        trackingAreaRef = area
+        super.updateTrackingAreas()
+    }
+
+    override func resignFirstResponder() -> Bool {
+        releaseAllHeldKeys()
+        return super.resignFirstResponder()
+    }
+
+    private func startTimerIfNeeded() {
+        guard displayTimer == nil else { return }
+        let t = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
+            self?.pollTick(forceSlow: false)
+        }
+        RunLoop.main.add(t, forMode: .common)
+        displayTimer = t
+    }
+
+    private func stopTimer() {
+        displayTimer?.invalidate()
+        displayTimer = nil
+    }
+
+    private func pollTick(forceSlow: Bool) {
+        guard let session else { return }
+        tickCounter &+= 1
+
+        if let updated = session.copyFrameIntoPersistentBuffer(forceFull: !hasPresentedFrame) {
+            layer?.contents = updated.image
+            hasPresentedFrame = true
+            remoteWidth = updated.width
+            remoteHeight = updated.height
+            lastReportedDims = "\(updated.width)×\(updated.height)"
+        }
+
+        let connected = session.isConnected
+        let runSlow = forceSlow || (connected != lastReportedConnected) || (tickCounter % 30 == 0)
+        var errText = lastReportedError
+
+        if runSlow {
+            errText = session.lastErrorMessage()
+            if connected && !viewOnly {
+                syncClipboard(session: session)
+            }
+        }
+
+        if connected != lastReportedConnected
+            || hasPresentedFrame != lastReportedHasFrame
+            || errText != lastReportedError {
+            lastReportedConnected = connected
+            lastReportedHasFrame = hasPresentedFrame
+            lastReportedError = errText
+            onRuntimeUpdate?(
+                connected,
+                hasPresentedFrame,
+                lastReportedDims.isEmpty ? nil : lastReportedDims,
+                errText.isEmpty ? nil : errText
+            )
+        }
+    }
+
+    private func syncClipboard(session: NativeLiveVncSession) {
+        let pbCount = NSPasteboard.general.changeCount
+        if pbCount != lastPasteboardChangeCount {
+            lastPasteboardChangeCount = pbCount
+            if let localStr = NSPasteboard.general.string(forType: .string),
+               !localStr.isEmpty,
+               localStr != lastSyncedClipboardText {
+                lastSyncedClipboardText = localStr
+                _ = session.sendClipboard(localStr)
+            }
+        }
+        if let remoteStr = session.pullClipboard(),
+           !remoteStr.isEmpty,
+           remoteStr != lastSyncedClipboardText {
+            lastSyncedClipboardText = remoteStr
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(remoteStr, forType: .string)
+            lastPasteboardChangeCount = NSPasteboard.general.changeCount
+        }
+    }
+
+    // MARK: - Pointer & Wheel Events (RFB Button Mask)
+
+    private func scaledPoint(for event: NSEvent) -> (Int, Int) {
+        let local = convert(event.locationInWindow, from: nil)
+        return MacRdpScancodeMapper.mapViewportPoint(
+            localX: local.x,
+            localY: local.y,
+            viewWidth: bounds.width,
+            viewHeight: bounds.height,
+            remoteWidth: remoteWidth,
+            remoteHeight: remoteHeight,
+            scaleToFit: scaleToFit,
+            originBottomLeft: true
+        )
+    }
+
+    private func dispatchPointer(for event: NSEvent) {
+        guard !viewOnly, let session else { return }
+        let (x, y) = scaledPoint(for: event)
+        _ = session.sendPointer(buttonMask: buttonMask, x: x, y: y)
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        dispatchPointer(for: event)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        window?.makeFirstResponder(self)
+        buttonMask |= 0x01
+        dispatchPointer(for: event)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        buttonMask &= ~0x01
+        dispatchPointer(for: event)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        dispatchPointer(for: event)
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        window?.makeFirstResponder(self)
+        buttonMask |= 0x04
+        dispatchPointer(for: event)
+    }
+
+    override func rightMouseUp(with event: NSEvent) {
+        buttonMask &= ~0x04
+        dispatchPointer(for: event)
+    }
+
+    override func rightMouseDragged(with event: NSEvent) {
+        dispatchPointer(for: event)
+    }
+
+    override func otherMouseDown(with event: NSEvent) {
+        window?.makeFirstResponder(self)
+        buttonMask |= 0x02
+        dispatchPointer(for: event)
+    }
+
+    override func otherMouseUp(with event: NSEvent) {
+        buttonMask &= ~0x02
+        dispatchPointer(for: event)
+    }
+
+    override func otherMouseDragged(with event: NSEvent) {
+        dispatchPointer(for: event)
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        guard !viewOnly, let session else { return }
+        let (x, y) = scaledPoint(for: event)
+        let dy = event.scrollingDeltaY
+        if abs(dy) > 0.01 {
+            let wheelBit: UInt8 = dy > 0 ? 0x08 : 0x10
+            _ = session.sendPointer(buttonMask: buttonMask | wheelBit, x: x, y: y)
+            _ = session.sendPointer(buttonMask: buttonMask, x: x, y: y)
+        }
+    }
+
+    // MARK: - X11 Keysym Translation
+
+    private static func specialKeysym(for keyCode: UInt16) -> UInt32? {
+        switch keyCode {
+        case 36, 76: return 0xFF0D // Return / Enter
+        case 51:     return 0xFF08 // BackSpace
+        case 117:    return 0xFFFF // Delete
+        case 114:    return 0xFF63 // Insert
+        case 48:     return 0xFF09 // Tab
+        case 53:     return 0xFF1B // Escape
+        case 115:    return 0xFF50 // Home
+        case 123:    return 0xFF51 // Left
+        case 126:    return 0xFF52 // Up
+        case 124:    return 0xFF53 // Right
+        case 125:    return 0xFF54 // Down
+        case 116:    return 0xFF55 // Page_Up
+        case 121:    return 0xFF56 // Page_Down
+        case 119:    return 0xFF57 // End
+        case 122:    return 0xFFBE // F1
+        case 120:    return 0xFFBF // F2
+        case 99:     return 0xFFC0 // F3
+        case 118:    return 0xFFC1 // F4
+        case 96:     return 0xFFC2 // F5
+        case 97:     return 0xFFC3 // F6
+        case 98:     return 0xFFC4 // F7
+        case 100:    return 0xFFC5 // F8
+        case 101:    return 0xFFC6 // F9
+        case 109:    return 0xFFC7 // F10
+        case 103:    return 0xFFC8 // F11
+        case 111:    return 0xFFC9 // F12
+        default:     return nil
+        }
+    }
+
+    private func modifierKeysym(for keyCode: UInt16) -> UInt32? {
+        switch keyCode {
+        case 0x38: return 0xFFE1 // Shift_L
+        case 0x3C: return 0xFFE2 // Shift_R
+        case 0x3B: return 0xFFE3 // Control_L
+        case 0x3E: return 0xFFE4 // Control_R
+        case 0x3A: return 0xFFE9 // Alt_L
+        case 0x3D: return 0xFFEA // Alt_R
+        case 0x37: return captureRemoteShortcuts ? 0xFFEB : nil // Super_L
+        case 0x36: return captureRemoteShortcuts ? 0xFFEC : nil // Super_R
+        case 0x39: return 0xFFE5 // Caps_Lock
+        default:   return nil
+        }
+    }
+
+    private func resolveKeysym(for event: NSEvent) -> UInt32? {
+        if let special = Self.specialKeysym(for: event.keyCode) {
+            return special
+        }
+        let candidate: String? = {
+            if event.modifierFlags.contains(.control) || event.modifierFlags.contains(.option) {
+                return event.charactersIgnoringModifiers
+            }
+            return event.characters ?? event.charactersIgnoringModifiers
+        }()
+        guard let scalar = candidate?.unicodeScalars.first else { return nil }
+        let v = scalar.value
+        if v >= 0x20 && v <= 0xFF {
+            return v
+        } else if v > 0xFF {
+            return 0x0100_0000 | v
+        }
+        return nil
+    }
+
+    override func keyDown(with event: NSEvent) {
+        guard !viewOnly else { return }
+        if !captureRemoteShortcuts && event.modifierFlags.contains(.command) {
+            super.keyDown(with: event)
+            return
+        }
+        guard let keysym = resolveKeysym(for: event) else { return }
+        activeKeysymsByKeyCode[event.keyCode] = keysym
+        _ = session?.sendKey(down: true, keysym: keysym)
+    }
+
+    override func keyUp(with event: NSEvent) {
+        guard !viewOnly else { return }
+        if !captureRemoteShortcuts && event.modifierFlags.contains(.command) {
+            super.keyUp(with: event)
+            return
+        }
+        let keysym = activeKeysymsByKeyCode.removeValue(forKey: event.keyCode) ?? resolveKeysym(for: event)
+        if let keysym {
+            _ = session?.sendKey(down: false, keysym: keysym)
+        }
+    }
+
+    override func flagsChanged(with event: NSEvent) {
+        guard !viewOnly else { return }
+        let code = event.keyCode
+        guard let sym = modifierKeysym(for: code) else {
+            super.flagsChanged(with: event)
+            return
+        }
+        if code == 0x39 {
+            _ = session?.sendKey(down: true, keysym: sym)
+            _ = session?.sendKey(down: false, keysym: sym)
+            return
+        }
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let active: Bool
+        switch code {
+        case 0x38, 0x3C: active = flags.contains(.shift)
+        case 0x3B, 0x3E: active = flags.contains(.control)
+        case 0x3A, 0x3D: active = flags.contains(.option)
+        case 0x37, 0x36: active = flags.contains(.command)
+        default: active = false
+        }
+        if !active || heldModifierKeyCodes.contains(code) {
+            heldModifierKeyCodes.remove(code)
+            _ = session?.sendKey(down: false, keysym: sym)
+        } else {
+            heldModifierKeyCodes.insert(code)
+            _ = session?.sendKey(down: true, keysym: sym)
+        }
+    }
+
+    private func releaseAllHeldKeys() {
+        if let session {
+            for (_, sym) in activeKeysymsByKeyCode {
+                _ = session.sendKey(down: false, keysym: sym)
+            }
+            for code in heldModifierKeyCodes {
+                let sym: UInt32? = {
+                    switch code {
+                    case 0x38: return 0xFFE1
+                    case 0x3C: return 0xFFE2
+                    case 0x3B: return 0xFFE3
+                    case 0x3E: return 0xFFE4
+                    case 0x3A: return 0xFFE9
+                    case 0x3D: return 0xFFEA
+                    case 0x37: return 0xFFEB
+                    case 0x36: return 0xFFEC
+                    default:   return nil
+                    }
+                }()
+                if let sym {
+                    _ = session.sendKey(down: false, keysym: sym)
                 }
             }
         }
-    }
-
-    private func renderPreviewFramebuffer() {
-        let pixels = framebuffer.copyRgbaPixels()
-        renderedImage = RdpSessionView.makeCGImage(
-            rgba: pixels,
-            width: framebuffer.width,
-            height: framebuffer.height
-        )
+        activeKeysymsByKeyCode.removeAll()
+        heldModifierKeyCodes.removeAll()
+        buttonMask = 0
     }
 }

@@ -9,6 +9,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -24,12 +25,15 @@ import kotlinx.serialization.encoding.Encoder
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonDecoder
 import kotlinx.serialization.json.jsonPrimitive
+import java.io.ByteArrayOutputStream
+import java.io.Closeable
 import java.io.File
 import java.io.InputStream
 import java.io.OutputStream
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.nio.charset.StandardCharsets
 import java.util.Date
 
 /**
@@ -70,9 +74,276 @@ data class TerminalSnapshotDto(
         get() = visible_lines
 }
 
+@Serializable
+data class NativeRemoteFileEntryDto(
+    val name: String = "",
+    val full_path: String = "",
+    val is_directory: Boolean = false,
+    val is_symlink: Boolean = false,
+    val size_bytes: Long = 0L,
+    val unix_mode: Int = 0b110_100_100,
+    val modified_epoch_sec: Long = 0L,
+    val owner: String = "0"
+)
+
 /**
- * JNI Bridge to Rust `nexusts-terminal` (`libnexusts_jni.so`), with pure-Kotlin fallback
- * terminal state machine when native library is absent in JVM unit test environments.
+ * Stateful RFC 854 / RFC 1073 (`NAWS`) / RFC 1091 (`TTYPE`) Telnet wire protocol state machine.
+ * Safely reassembles `IAC` commands and `IAC SB ... IAC SE` subnegotiation sequences split across
+ * arbitrary TCP read boundaries without dropping or leaking option bytes into terminal output.
+ */
+class StatefulTelnetProtocolAutomaton(
+    private val terminalType: String = "xterm-256color",
+    initialCols: Int = 120,
+    initialRows: Int = 36
+) {
+    data class ProcessedTelnetChunk(
+        val cleanPayload: ByteArray,
+        val negotiationReply: ByteArray
+    )
+
+    private enum class ParserState {
+        DATA,
+        SAW_IAC,
+        AWAIT_OPTION,
+        IN_SB,
+        IN_SB_IAC
+    }
+
+    @Volatile
+    var cols: Int = initialCols.coerceIn(10, 1000)
+        private set
+
+    @Volatile
+    var rows: Int = initialRows.coerceIn(4, 500)
+        private set
+
+    @Volatile
+    var nawsAgreed: Boolean = false
+        private set
+
+    private var state: ParserState = ParserState.DATA
+    private var pendingCommand: Int = 0
+    private val sbBuffer = ByteArrayOutputStream(64)
+
+    @Synchronized
+    fun feedIncomingBytes(src: ByteArray, length: Int = src.size): ProcessedTelnetChunk {
+        val cleanOut = ByteArrayOutputStream(length.coerceAtLeast(0))
+        val replyOut = ByteArrayOutputStream(32)
+        val limit = length.coerceIn(0, src.size)
+
+        for (i in 0 until limit) {
+            val b = src[i].toInt() and 0xFF
+            when (state) {
+                ParserState.DATA -> {
+                    if (b == IAC) {
+                        state = ParserState.SAW_IAC
+                    } else {
+                        cleanOut.write(b)
+                    }
+                }
+
+                ParserState.SAW_IAC -> {
+                    when (b) {
+                        IAC -> {
+                            cleanOut.write(IAC)
+                            state = ParserState.DATA
+                        }
+                        DO, DONT, WILL, WONT -> {
+                            pendingCommand = b
+                            state = ParserState.AWAIT_OPTION
+                        }
+                        SB -> {
+                            sbBuffer.reset()
+                            state = ParserState.IN_SB
+                        }
+                        else -> {
+                            state = ParserState.DATA
+                        }
+                    }
+                }
+
+                ParserState.AWAIT_OPTION -> {
+                    handleOptionCommand(pendingCommand, b, replyOut)
+                    state = ParserState.DATA
+                }
+
+                ParserState.IN_SB -> {
+                    if (b == IAC) {
+                        state = ParserState.IN_SB_IAC
+                    } else if (sbBuffer.size() < 1024) {
+                        sbBuffer.write(b)
+                    }
+                }
+
+                ParserState.IN_SB_IAC -> {
+                    when (b) {
+                        IAC -> {
+                            if (sbBuffer.size() < 1024) sbBuffer.write(IAC)
+                            state = ParserState.IN_SB
+                        }
+                        SE -> {
+                            handleSubnegotiation(sbBuffer.toByteArray(), replyOut)
+                            sbBuffer.reset()
+                            state = ParserState.DATA
+                        }
+                        else -> {
+                            sbBuffer.reset()
+                            state = ParserState.DATA
+                        }
+                    }
+                }
+            }
+        }
+
+        return ProcessedTelnetChunk(
+            cleanPayload = cleanOut.toByteArray(),
+            negotiationReply = replyOut.toByteArray()
+        )
+    }
+
+    @Synchronized
+    fun updateWindowSize(newCols: Int, newRows: Int): ByteArray? {
+        cols = newCols.coerceIn(10, 1000)
+        rows = newRows.coerceIn(4, 500)
+        return if (nawsAgreed) buildNawsSubnegotiation(cols, rows) else null
+    }
+
+    fun encodeOutgoingBytes(raw: ByteArray): ByteArray {
+        var hasIac = false
+        for (b in raw) {
+            if ((b.toInt() and 0xFF) == IAC) {
+                hasIac = true
+                break
+            }
+        }
+        if (!hasIac) return raw
+        val escaped = ByteArrayOutputStream(raw.size + 8)
+        for (b in raw) {
+            val v = b.toInt() and 0xFF
+            escaped.write(v)
+            if (v == IAC) escaped.write(IAC)
+        }
+        return escaped.toByteArray()
+    }
+
+    private fun handleOptionCommand(cmd: Int, opt: Int, replyOut: ByteArrayOutputStream) {
+        when (cmd) {
+            DO -> when (opt) {
+                OPT_TTYPE -> {
+                    replyOut.write(IAC)
+                    replyOut.write(WILL)
+                    replyOut.write(OPT_TTYPE)
+                }
+                OPT_NAWS -> {
+                    nawsAgreed = true
+                    replyOut.write(IAC)
+                    replyOut.write(WILL)
+                    replyOut.write(OPT_NAWS)
+                    val nawsFrame = buildNawsSubnegotiation(cols, rows)
+                    replyOut.write(nawsFrame, 0, nawsFrame.size)
+                }
+                OPT_SGA -> {
+                    replyOut.write(IAC)
+                    replyOut.write(WILL)
+                    replyOut.write(OPT_SGA)
+                }
+                else -> {
+                    replyOut.write(IAC)
+                    replyOut.write(WONT)
+                    replyOut.write(opt)
+                }
+            }
+
+            DONT -> {
+                if (opt == OPT_NAWS) nawsAgreed = false
+                replyOut.write(IAC)
+                replyOut.write(WONT)
+                replyOut.write(opt)
+            }
+
+            WILL -> {
+                if (opt == OPT_ECHO || opt == OPT_SGA) {
+                    replyOut.write(IAC)
+                    replyOut.write(DO)
+                    replyOut.write(opt)
+                } else {
+                    replyOut.write(IAC)
+                    replyOut.write(DONT)
+                    replyOut.write(opt)
+                }
+            }
+
+            WONT -> {
+                replyOut.write(IAC)
+                replyOut.write(DONT)
+                replyOut.write(opt)
+            }
+        }
+    }
+
+    private fun handleSubnegotiation(payload: ByteArray, replyOut: ByteArrayOutputStream) {
+        if (payload.size >= 2 &&
+            (payload[0].toInt() and 0xFF) == OPT_TTYPE &&
+            (payload[1].toInt() and 0xFF) == TTYPE_SEND
+        ) {
+            val termBytes = terminalType.ifBlank { "xterm-256color" }
+                .toByteArray(StandardCharsets.US_ASCII)
+            replyOut.write(IAC)
+            replyOut.write(SB)
+            replyOut.write(OPT_TTYPE)
+            replyOut.write(TTYPE_IS)
+            for (tb in termBytes) {
+                val v = tb.toInt() and 0xFF
+                replyOut.write(v)
+                if (v == IAC) replyOut.write(IAC)
+            }
+            replyOut.write(IAC)
+            replyOut.write(SE)
+        }
+    }
+
+    companion object {
+        const val IAC = 255
+        const val SE = 240
+        const val SB = 250
+        const val WILL = 251
+        const val WONT = 252
+        const val DO = 253
+        const val DONT = 254
+
+        const val OPT_ECHO = 1
+        const val OPT_SGA = 3
+        const val OPT_TTYPE = 24
+        const val OPT_NAWS = 31
+
+        const val TTYPE_IS = 0
+        const val TTYPE_SEND = 1
+
+        fun buildNawsSubnegotiation(cols: Int, rows: Int): ByteArray {
+            val out = ByteArrayOutputStream(12)
+            out.write(IAC)
+            out.write(SB)
+            out.write(OPT_NAWS)
+            val dataBytes = intArrayOf(
+                (cols ushr 8) and 0xFF,
+                cols and 0xFF,
+                (rows ushr 8) and 0xFF,
+                rows and 0xFF
+            )
+            for (v in dataBytes) {
+                out.write(v)
+                if (v == IAC) out.write(IAC)
+            }
+            out.write(IAC)
+            out.write(SE)
+            return out.toByteArray()
+        }
+    }
+}
+
+/**
+ * JNI Bridge to Rust `nexusts-terminal` & `nexusts-transfer` (`libnexusts_jni.so`), with pure-Kotlin
+ * fallback terminal & Telnet state machines when native library is absent in JVM unit test environments.
  */
 object SshNativeBridge {
     val isNativeLoaded: Boolean = runCatching {
@@ -80,6 +351,7 @@ object SshNativeBridge {
         true
     }.getOrDefault(false)
 
+    // --- VT Terminal Buffer JNI ---
     @JvmStatic
     external fun nativeCreateTerminalBuffer(cols: Int, rows: Int, scrollback: Int): Long
 
@@ -90,19 +362,167 @@ object SshNativeBridge {
     external fun nativeFeedTerminalBytes(handle: Long, data: ByteArray): String
 
     @JvmStatic
+    external fun nativeVtApplicationCursorKeys(handle: Long): Boolean
+
+    @JvmStatic
     external fun nativeDestroyTerminalBuffer(handle: Long)
 
     @JvmStatic
     external fun nativeParseFtpMlsdJson(parentDir: String, mlsdBody: String): String
 
+    // --- Live SSHv2 (`russh`) JNI ---
+    @JvmStatic
+    external fun nativeSshConnect(
+        host: String,
+        port: Int,
+        username: String,
+        password: String,
+        privateKeyPem: String,
+        passphrase: String,
+        expectedFingerprint: String,
+        cols: Int,
+        rows: Int,
+        enableX11: Boolean,
+        startupCommand: String,
+        bastionHost: String,
+        bastionPort: Int,
+        bastionUser: String,
+        bastionPassword: String,
+        bastionKeyPem: String
+    ): Long
+
+    @JvmStatic
+    external fun nativeSshConnectJson(
+        connectSpecJson: String,
+        bastionSpecJson: String,
+        openPty: Boolean
+    ): Long
+
+    @JvmStatic
+    external fun nativeSshStartLocalForward(
+        handle: Long,
+        bindAddr: String,
+        bindPort: Int,
+        targetHost: String,
+        targetPort: Int
+    ): Boolean
+
+    @JvmStatic
+    external fun nativeSshStartDynamicSocks5(
+        handle: Long,
+        bindAddr: String,
+        bindPort: Int
+    ): Boolean
+
+    @JvmStatic
+    external fun nativeSshWrite(handle: Long, data: ByteArray): Boolean
+
+    @JvmStatic
+    external fun nativeSshRead(handle: Long): ByteArray?
+
+    @JvmStatic
+    external fun nativeSshResize(handle: Long, cols: Int, rows: Int): Boolean
+
+    @JvmStatic
+    external fun nativeSshIsConnected(handle: Long): Boolean
+
+    @JvmStatic
+    external fun nativeSshLastError(handle: Long): String
+
+    @JvmStatic
+    external fun nativeSshDisconnect(handle: Long)
+
+    // --- Live Stateful Telnet JNI ---
+    @JvmStatic
+    external fun nativeTelnetConnect(
+        host: String,
+        port: Int,
+        cols: Int,
+        rows: Int,
+        termType: String
+    ): Long
+
+    @JvmStatic
+    external fun nativeTelnetWrite(handle: Long, data: ByteArray): Boolean
+
+    @JvmStatic
+    external fun nativeTelnetRead(handle: Long): ByteArray?
+
+    @JvmStatic
+    external fun nativeTelnetResize(handle: Long, cols: Int, rows: Int): Boolean
+
+    @JvmStatic
+    external fun nativeTelnetIsConnected(handle: Long): Boolean
+
+    @JvmStatic
+    external fun nativeTelnetLastError(handle: Long): String
+
+    @JvmStatic
+    external fun nativeTelnetDisconnect(handle: Long)
+
+    // --- Live Unified File Transfer JNI (SFTP / SCP / FTP) ---
+    @JvmStatic
+    external fun nativeTransferConnect(
+        protocol: String,
+        host: String,
+        port: Int,
+        username: String,
+        password: String,
+        privateKeyPem: String,
+        passphrase: String,
+        bastionHost: String,
+        bastionPort: Int,
+        bastionUser: String,
+        bastionPassword: String,
+        bastionKeyPem: String
+    ): Long
+
+    @JvmStatic
+    external fun nativeTransferLastError(handle: Long): String
+
+    @JvmStatic
+    external fun nativeTransferPwd(handle: Long): String
+
+    @JvmStatic
+    external fun nativeTransferListDirJson(handle: Long, remotePath: String): String
+
+    @JvmStatic
+    external fun nativeTransferReadFile(handle: Long, remotePath: String): ByteArray?
+
+    @JvmStatic
+    external fun nativeTransferWriteFile(
+        handle: Long,
+        remotePath: String,
+        content: ByteArray,
+        modeOctal: Int
+    ): Boolean
+
+    @JvmStatic
+    external fun nativeTransferMkdir(handle: Long, remotePath: String): Boolean
+
+    @JvmStatic
+    external fun nativeTransferRemove(handle: Long, remotePath: String, isDir: Boolean): Boolean
+
+    @JvmStatic
+    external fun nativeTransferRename(handle: Long, oldPath: String, newPath: String): Boolean
+
+    @JvmStatic
+    external fun nativeTransferChmod(handle: Long, remotePath: String, modeOctal: Int): Boolean
+
+    @JvmStatic
+    external fun nativeTransferDisconnect(handle: Long)
+
     /**
-     * Translates Android hardware / virtual `KeyEvent` codes & modifiers into standard xterm ANSI byte sequences.
+     * Translates Android hardware / virtual `KeyEvent` codes & modifiers into standard xterm ANSI byte sequences,
+     * honoring `DECCKM` (`applicationCursorKeys`: `\u001bOA..D` vs `\u001b[A..D`) when active.
      */
+    @JvmOverloads
     fun translateHardwareKeyToAnsi(
         keyCode: Int,
         unicodeChar: Int,
         ctrlPressed: Boolean,
-        altPressed: Boolean
+        altPressed: Boolean,
+        applicationCursorKeys: Boolean = false
     ): ByteArray? {
         // Ignore standalone modifier key presses
         when (keyCode) {
@@ -138,12 +558,18 @@ object SshNativeBridge {
             KeyEvent.KEYCODE_FORWARD_DEL -> "\u001b[3~".toByteArray(Charsets.UTF_8)
             KeyEvent.KEYCODE_TAB -> "\t".toByteArray(Charsets.UTF_8)
             KeyEvent.KEYCODE_ESCAPE -> "\u001b".toByteArray(Charsets.UTF_8)
-            KeyEvent.KEYCODE_DPAD_UP -> "\u001b[A".toByteArray(Charsets.UTF_8)
-            KeyEvent.KEYCODE_DPAD_DOWN -> "\u001b[B".toByteArray(Charsets.UTF_8)
-            KeyEvent.KEYCODE_DPAD_RIGHT -> "\u001b[C".toByteArray(Charsets.UTF_8)
-            KeyEvent.KEYCODE_DPAD_LEFT -> "\u001b[D".toByteArray(Charsets.UTF_8)
-            KeyEvent.KEYCODE_MOVE_HOME -> "\u001b[H".toByteArray(Charsets.UTF_8)
-            KeyEvent.KEYCODE_MOVE_END -> "\u001b[F".toByteArray(Charsets.UTF_8)
+            KeyEvent.KEYCODE_DPAD_UP ->
+                (if (applicationCursorKeys) "\u001bOA" else "\u001b[A").toByteArray(Charsets.UTF_8)
+            KeyEvent.KEYCODE_DPAD_DOWN ->
+                (if (applicationCursorKeys) "\u001bOB" else "\u001b[B").toByteArray(Charsets.UTF_8)
+            KeyEvent.KEYCODE_DPAD_RIGHT ->
+                (if (applicationCursorKeys) "\u001bOC" else "\u001b[C").toByteArray(Charsets.UTF_8)
+            KeyEvent.KEYCODE_DPAD_LEFT ->
+                (if (applicationCursorKeys) "\u001bOD" else "\u001b[D").toByteArray(Charsets.UTF_8)
+            KeyEvent.KEYCODE_MOVE_HOME ->
+                (if (applicationCursorKeys) "\u001bOH" else "\u001b[H").toByteArray(Charsets.UTF_8)
+            KeyEvent.KEYCODE_MOVE_END ->
+                (if (applicationCursorKeys) "\u001bOF" else "\u001b[F").toByteArray(Charsets.UTF_8)
             KeyEvent.KEYCODE_PAGE_UP -> "\u001b[5~".toByteArray(Charsets.UTF_8)
             KeyEvent.KEYCODE_PAGE_DOWN -> "\u001b[6~".toByteArray(Charsets.UTF_8)
             KeyEvent.KEYCODE_INSERT -> "\u001b[2~".toByteArray(Charsets.UTF_8)
@@ -183,21 +609,24 @@ object SshNativeBridge {
     }
 }
 
+@JvmOverloads
 fun translateHardwareKeyToAnsi(
     keyCode: Int,
     unicodeChar: Int,
     ctrlPressed: Boolean,
-    altPressed: Boolean
+    altPressed: Boolean,
+    applicationCursorKeys: Boolean = false
 ): ByteArray? = SshNativeBridge.translateHardwareKeyToAnsi(
     keyCode = keyCode,
     unicodeChar = unicodeChar,
     ctrlPressed = ctrlPressed,
-    altPressed = altPressed
+    altPressed = altPressed,
+    applicationCursorKeys = applicationCursorKeys
 )
 
 /**
- * Manages an interactive SSH / Telnet / Serial terminal session, local/remote/SOCKS5 port forwards,
- * X11 display bridge, and `xterm-256color` viewport state.
+ * Manages an interactive SSHv2 (`russh`), Telnet (RFC 854/NAWS/TTYPE), or Local Shell terminal session,
+ * local/dynamic SOCKS5 port forwards, X11 display bridge, and `xterm-256color` viewport state.
  */
 class SshTerminalSessionController(
     val title: String,
@@ -206,15 +635,41 @@ class SshTerminalSessionController(
     val username: String,
     val portForwards: List<SshPortForwardRule> = emptyList(),
     val enableX11Forwarding: Boolean = false,
-    val bastionHost: String? = null
+    val bastionHost: String? = null,
+    val isLocalShell: Boolean = false,
+    val isTelnet: Boolean = false,
+    val password: String = "",
+    val privateKeyPem: String = "",
+    val privateKeyPassphrase: String = "",
+    val expectedHostFingerprint: String = "",
+    val startupCommand: String = "",
+    val terminalType: String = "xterm-256color",
+    val scrollbackLines: Int = 10_000,
+    val bastionPort: Int = 22,
+    val bastionUsername: String = "",
+    val bastionPassword: String = "",
+    val bastionPrivateKeyPem: String = "",
+    private val tunnelLease: Closeable? = null
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val json = Json { ignoreUnknownKeys = true }
     private var vtHandle: Long = if (SshNativeBridge.isNativeLoaded) {
-        SshNativeBridge.nativeCreateTerminalBuffer(120, 36, 10_000)
+        SshNativeBridge.nativeCreateTerminalBuffer(120, 36, scrollbackLines.coerceAtLeast(500))
     } else {
         0L
     }
+
+    @Volatile
+    private var nativeSshHandle: Long = 0L
+
+    @Volatile
+    private var nativeTelnetHandle: Long = 0L
+
+    @Volatile
+    private var fallbackApplicationCursorKeys: Boolean = false
+
+    @Volatile
+    private var telnetAutomaton: StatefulTelnetProtocolAutomaton? = null
 
     private val fallbackLines = ArrayDeque<String>()
     private val fallbackScrollback = ArrayDeque<String>()
@@ -241,17 +696,23 @@ class SshTerminalSessionController(
 
     private val _viewport = MutableStateFlow(
         TerminalSnapshotDto(
-            title = "$username@$host:$port",
+            title = if (isLocalShell) title else "$username@$host:$port",
             visible_lines = buildInitialBanner()
         )
     )
     val viewport: StateFlow<TerminalSnapshotDto> = _viewport.asStateFlow()
 
     init {
-        val bannerBytes = buildInitialBanner().joinToString("\r\n").encodeToByteArray()
+        val bannerBytes = (buildInitialBanner().joinToString("\r\n") + "\r\n").encodeToByteArray()
         onBytesReceived(bannerBytes)
-        startConfiguredLocalTunnels()
         startSessionTransport()
+    }
+
+    fun isApplicationCursorKeys(): Boolean {
+        if (vtHandle != 0L && SshNativeBridge.isNativeLoaded) {
+            return SshNativeBridge.nativeVtApplicationCursorKeys(vtHandle)
+        }
+        return fallbackApplicationCursorKeys
     }
 
     fun startRecordingCast() {
@@ -278,28 +739,37 @@ class SshTerminalSessionController(
     }
 
     private fun buildInitialBanner(): List<String> = buildList {
-        add("\u001B[1;36mNexusTS Enterprise SSHv2 / Telnet / xterm-256color Engine\u001B[0m")
-        if (!bastionHost.isNullOrBlank()) {
-            add("Bastion Jump Host : $bastionHost -> $host:$port")
-        } else {
-            add("Target Endpoint   : ${username.ifBlank { "operator" }}@$host:$port")
+        when {
+            isLocalShell -> {
+                add("\u001B[1;36mNexusTS Local Shell ($terminalType)\u001B[0m")
+            }
+            isTelnet -> {
+                add("\u001B[1;36mNexusTS Stateful Telnet ($terminalType)\u001B[0m")
+                add("Target Endpoint   : $host:$port")
+            }
+            else -> {
+                add("\u001B[1;36mNexusTS Enterprise SSHv2 / $terminalType Engine\u001B[0m")
+                if (!bastionHost.isNullOrBlank()) {
+                    add("Bastion Jump Host : $bastionHost:$bastionPort -> $host:$port")
+                } else {
+                    add("Target Endpoint   : ${username.ifBlank { "root" }}@$host:$port")
+                }
+                if (enableX11Forwarding) {
+                    add("X11 Forwarding    : ENABLED (DISPLAY=localhost:10.0)")
+                }
+                val enabledTunnels = portForwards.count { it.enabled }
+                if (enabledTunnels > 0) {
+                    add("Configured Tunnels: $enabledTunnels rule(s)")
+                }
+            }
         }
-        if (enableX11Forwarding) {
-            add("X11 Forwarding    : ENABLED (DISPLAY=localhost:10.0)")
-        }
-        val enabledTunnels = portForwards.count { it.enabled }
-        if (enabledTunnels > 0) {
-            add("Configured Tunnels: $enabledTunnels rule(s)")
-        }
-        add("")
     }
 
     private fun startSessionTransport() {
-        val normalizedHost = host.trim().lowercase()
-        val isLocalShellTarget = normalizedHost in setOf("localhost", "127.0.0.1", "::1", "local") && port != 23
-        val isTelnetTarget = port == 23 || title.contains("telnet", ignoreCase = true)
+        val trimmedHost = host.trim()
+        val effectiveIsTelnet = !isLocalShell && (isTelnet || (port == 23 && title.contains("telnet", ignoreCase = true)))
 
-        if (isLocalShellTarget) {
+        if (isLocalShell) {
             transportJob = scope.launch {
                 val startedLocal = runCatching {
                     val shellBinary = listOf("/system/bin/sh", "/bin/sh")
@@ -307,11 +777,11 @@ class SshTerminalSessionController(
                         ?: error("No local shell binary available")
                     val proc = ProcessBuilder(shellBinary)
                         .redirectErrorStream(true)
+                        .apply { environment()["TERM"] = terminalType.ifBlank { "xterm-256color" } }
                         .start()
                     localShellProcess = proc
                     localPipeEchoEnabled = true
-                    val out = proc.outputStream
-                    remoteOutputStream = out
+                    remoteOutputStream = proc.outputStream
                     onBytesReceived("\u001B[1;32m[Connected to local shell: $shellBinary]\u001B[0m\r\n$ ".encodeToByteArray())
                     val buf = ByteArray(4096)
                     val input = proc.inputStream
@@ -330,14 +800,102 @@ class SshTerminalSessionController(
                     onBytesReceived("\r\n${buildPrompt()}".encodeToByteArray())
                 }
             }
-        } else if (isTelnetTarget) {
-            attachTelnetOrRawStream(host, port)
-        } else if (normalizedHost.isNotBlank()) {
-            // Probe remote TCP endpoint on Dispatchers.IO; fall back cleanly to interactive responder if unreachable
+            return
+        }
+
+        if (effectiveIsTelnet) {
+            attachTelnetOrRawStream(trimmedHost, if (port > 0) port else 23)
+            return
+        }
+
+        // Live SSHv2 transport
+        if (SshNativeBridge.isNativeLoaded && trimmedHost.isNotEmpty()) {
+            transportJob = scope.launch {
+                val snap = _viewport.value
+                val handle = SshNativeBridge.nativeSshConnect(
+                    host = trimmedHost,
+                    port = if (port > 0) port else 22,
+                    username = username.ifBlank { "root" },
+                    password = password,
+                    privateKeyPem = privateKeyPem,
+                    passphrase = privateKeyPassphrase,
+                    expectedFingerprint = expectedHostFingerprint,
+                    cols = snap.cols,
+                    rows = snap.rows,
+                    enableX11 = enableX11Forwarding,
+                    startupCommand = startupCommand,
+                    bastionHost = bastionHost.orEmpty(),
+                    bastionPort = if (bastionPort > 0) bastionPort else 22,
+                    bastionUser = bastionUsername,
+                    bastionPassword = bastionPassword,
+                    bastionKeyPem = bastionPrivateKeyPem
+                )
+
+                if (handle <= 0L) {
+                    val errMsg = SshNativeBridge.nativeSshLastError(0L).ifBlank {
+                        "SSHv2 connection failed for $trimmedHost:$port"
+                    }
+                    onBytesReceived("\u001B[1;31m[SSH Error] $errMsg\u001B[0m\r\n".encodeToByteArray())
+                    return@launch
+                }
+
+                nativeSshHandle = handle
+                var startedNativeForwards = 0
+                portForwards.filter { it.enabled }.forEach { rule ->
+                    val ok = when (rule.kind) {
+                        PortForwardKind.LOCAL -> SshNativeBridge.nativeSshStartLocalForward(
+                            handle = handle,
+                            bindAddr = rule.bindAddress.ifBlank { "127.0.0.1" },
+                            bindPort = rule.bindPort,
+                            targetHost = rule.targetHost.ifBlank { "127.0.0.1" },
+                            targetPort = rule.targetPort
+                        )
+                        PortForwardKind.DYNAMIC_SOCKS5 -> SshNativeBridge.nativeSshStartDynamicSocks5(
+                            handle = handle,
+                            bindAddr = rule.bindAddress.ifBlank { "127.0.0.1" },
+                            bindPort = rule.bindPort
+                        )
+                        PortForwardKind.REMOTE -> false
+                    }
+                    if (ok) {
+                        startedNativeForwards++
+                    } else if (rule.kind != PortForwardKind.REMOTE) {
+                        val fwdErr = SshNativeBridge.nativeSshLastError(handle).ifBlank { "bind failed" }
+                        onBytesReceived(
+                            "\u001B[1;33m[Port Forward Warning] ${rule.bindAddress}:${rule.bindPort} ($fwdErr)\u001B[0m\r\n".encodeToByteArray()
+                        )
+                    }
+                }
+                _activeBoundPortForwardsCount.value = startedNativeForwards
+
+                while (isActive && nativeSshHandle == handle) {
+                    val chunk = SshNativeBridge.nativeSshRead(handle) ?: break
+                    if (chunk.isNotEmpty()) {
+                        onBytesReceived(chunk)
+                    } else {
+                        delay(12L)
+                    }
+                }
+
+                if (isActive && nativeSshHandle == handle) {
+                    val tailErr = SshNativeBridge.nativeSshLastError(handle)
+                    if (tailErr.isNotBlank()) {
+                        onBytesReceived("\r\n\u001B[1;31m[SSH Disconnected] $tailErr\u001B[0m\r\n".encodeToByteArray())
+                    } else {
+                        onBytesReceived("\r\n\u001B[90m[SSH session closed]\u001B[0m\r\n".encodeToByteArray())
+                    }
+                }
+            }
+            return
+        }
+
+        // Pure-Kotlin JVM fallback when libnexusts_jni.so is not loaded (e.g. Robolectric / host JVM unit tests)
+        startConfiguredLocalTunnels()
+        if (trimmedHost.isNotEmpty()) {
             transportJob = scope.launch {
                 runCatching {
                     val probe = Socket()
-                    probe.connect(InetSocketAddress(host, port), 3_500)
+                    probe.connect(InetSocketAddress(trimmedHost, if (port > 0) port else 22), 3_500)
                     probe.soTimeout = 1_500
                     val bannerBuf = ByteArray(256)
                     val n = runCatching { probe.getInputStream().read(bannerBuf) }.getOrDefault(0)
@@ -347,20 +905,37 @@ class SshTerminalSessionController(
                         ""
                     }
                     if (banner.isNotEmpty() && !banner.startsWith("SSH-")) {
-                        // Live raw/Telnet TCP service: keep socket attached
+                        val automaton = StatefulTelnetProtocolAutomaton(
+                            terminalType = terminalType,
+                            initialCols = _viewport.value.cols,
+                            initialRows = _viewport.value.rows
+                        )
+                        telnetAutomaton = automaton
                         activeSocket = probe
                         probe.soTimeout = 0
-                        remoteOutputStream = probe.getOutputStream()
-                        onBytesReceived((filterTelnetIac(bannerBuf, n, probe.getOutputStream())).let {
-                            if (it.isNotEmpty()) it else ByteArray(0)
-                        })
+                        val out = probe.getOutputStream()
+                        remoteOutputStream = out
+                        val firstChunk = automaton.feedIncomingBytes(bannerBuf, n)
+                        if (firstChunk.negotiationReply.isNotEmpty()) {
+                            out.write(firstChunk.negotiationReply)
+                            out.flush()
+                        }
+                        if (firstChunk.cleanPayload.isNotEmpty()) {
+                            onBytesReceived(firstChunk.cleanPayload)
+                        }
                         val streamBuf = ByteArray(4096)
                         val input = probe.getInputStream()
                         while (isActive && !probe.isClosed) {
                             val r = input.read(streamBuf)
                             if (r <= 0) break
-                            val clean = filterTelnetIac(streamBuf, r, remoteOutputStream)
-                            if (clean.isNotEmpty()) onBytesReceived(clean)
+                            val step = automaton.feedIncomingBytes(streamBuf, r)
+                            if (step.negotiationReply.isNotEmpty()) {
+                                out.write(step.negotiationReply)
+                                out.flush()
+                            }
+                            if (step.cleanPayload.isNotEmpty()) {
+                                onBytesReceived(step.cleanPayload)
+                            }
                         }
                     } else {
                         probe.close()
@@ -372,7 +947,7 @@ class SshTerminalSessionController(
                 }.onFailure { err ->
                     val reason = err.message?.takeIf { it.isNotBlank() } ?: err::class.java.simpleName
                     onBytesReceived(
-                        "\u001B[1;33m[Transport Notice] Could not reach $host:$port ($reason).\u001B[0m\r\n".encodeToByteArray()
+                        "\u001B[1;33m[Transport Notice] Could not reach $trimmedHost:$port ($reason).\u001B[0m\r\n".encodeToByteArray()
                     )
                     onBytesReceived(buildPrompt().encodeToByteArray())
                 }
@@ -383,7 +958,7 @@ class SshTerminalSessionController(
     }
 
     private fun normalizeLfToCrLf(src: ByteArray, length: Int): ByteArray {
-        val out = java.io.ByteArrayOutputStream(length + 16)
+        val out = ByteArrayOutputStream(length + 16)
         var prev: Byte = 0
         for (i in 0 until length) {
             val b = src[i]
@@ -396,65 +971,34 @@ class SshTerminalSessionController(
         return out.toByteArray()
     }
 
-    /**
-     * Strips RFC 854 Telnet IAC (`0xFF`) command/subnegotiation bytes and replies politely to DO/WILL options.
-     */
-    private fun filterTelnetIac(src: ByteArray, length: Int, replyOut: OutputStream?): ByteArray {
-        val clean = java.io.ByteArrayOutputStream(length)
-        var i = 0
-        while (i < length) {
-            val b = src[i].toInt() and 0xFF
-            if (b == 255 && i + 1 < length) {
-                val cmd = src[i + 1].toInt() and 0xFF
-                when (cmd) {
-                    255 -> {
-                        clean.write(255)
-                        i += 2
-                    }
-                    251, 252, 253, 254 -> {
-                        if (i + 2 < length) {
-                            val opt = src[i + 2].toInt() and 0xFF
-                            val replyCmd = when (cmd) {
-                                253 -> 252 // DO -> WONT
-                                251 -> if (opt == 1 || opt == 3) 253 else 254 // WILL ECHO/SGA -> DO, else DONT
-                                else -> 0
-                            }
-                            if (replyCmd != 0 && replyOut != null) {
-                                runCatching {
-                                    replyOut.write(byteArrayOf(255.toByte(), replyCmd.toByte(), opt.toByte()))
-                                    replyOut.flush()
-                                }
-                            }
-                            i += 3
-                        } else {
-                            break
+    fun resizePty(cols: Int, rows: Int) {
+        val safeCols = cols.coerceAtLeast(10)
+        val safeRows = rows.coerceAtLeast(4)
+        asciicastRecorder.recordResize(safeCols, safeRows)
+
+        val sshH = nativeSshHandle
+        if (sshH != 0L && SshNativeBridge.isNativeLoaded) {
+            SshNativeBridge.nativeSshResize(sshH, safeCols, safeRows)
+        }
+        val telnetH = nativeTelnetHandle
+        if (telnetH != 0L && SshNativeBridge.isNativeLoaded) {
+            SshNativeBridge.nativeTelnetResize(telnetH, safeCols, safeRows)
+        }
+        telnetAutomaton?.updateWindowSize(safeCols, safeRows)?.let { nawsBytes ->
+            remoteOutputStream?.let { out ->
+                scope.launch {
+                    runCatching {
+                        synchronized(out) {
+                            out.write(nawsBytes)
+                            out.flush()
                         }
                     }
-                    250 -> {
-                        // Skip SB ... IAC SE
-                        i += 2
-                        while (i < length) {
-                            if ((src[i].toInt() and 0xFF) == 255 && i + 1 < length && (src[i + 1].toInt() and 0xFF) == 240) {
-                                i += 2
-                                break
-                            }
-                            i++
-                        }
-                    }
-                    else -> i += 2
                 }
-            } else {
-                clean.write(b)
-                i++
             }
         }
-        return clean.toByteArray()
-    }
 
-    fun resizePty(cols: Int, rows: Int) {
-        asciicastRecorder.recordResize(cols, rows)
         if (vtHandle != 0L && SshNativeBridge.isNativeLoaded) {
-            SshNativeBridge.nativeResizeTerminalBuffer(vtHandle, cols, rows)
+            SshNativeBridge.nativeResizeTerminalBuffer(vtHandle, safeCols, safeRows)
             val refreshed = SshNativeBridge.nativeFeedTerminalBytes(vtHandle, ByteArray(0))
             if (refreshed.isNotBlank()) {
                 runCatching {
@@ -462,35 +1006,87 @@ class SshTerminalSessionController(
                 }
             }
         } else {
-            _viewport.value = _viewport.value.copy(cols = cols, rows = rows)
+            _viewport.value = _viewport.value.copy(cols = safeCols, rows = safeRows)
         }
     }
 
     fun attachTelnetOrRawStream(host: String, port: Int) {
         transportJob?.cancel()
         localPipeEchoEnabled = false
+
+        if (SshNativeBridge.isNativeLoaded) {
+            transportJob = scope.launch {
+                val snap = _viewport.value
+                val handle = SshNativeBridge.nativeTelnetConnect(
+                    host = host.trim(),
+                    port = if (port > 0) port else 23,
+                    cols = snap.cols,
+                    rows = snap.rows,
+                    termType = terminalType.ifBlank { "xterm-256color" }
+                )
+                if (handle <= 0L) {
+                    val err = SshNativeBridge.nativeTelnetLastError(0L).ifBlank { "Telnet connect failed" }
+                    onBytesReceived("\r\n\u001B[1;31m[Telnet Error] $err\u001B[0m\r\n".encodeToByteArray())
+                    return@launch
+                }
+                nativeTelnetHandle = handle
+                onBytesReceived("\u001B[1;32m[Connected Telnet $host:$port]\u001B[0m\r\n".encodeToByteArray())
+                while (isActive && nativeTelnetHandle == handle) {
+                    val chunk = SshNativeBridge.nativeTelnetRead(handle) ?: break
+                    if (chunk.isNotEmpty()) {
+                        onBytesReceived(chunk)
+                    } else {
+                        delay(12L)
+                    }
+                }
+                if (isActive && nativeTelnetHandle == handle) {
+                    val tailErr = SshNativeBridge.nativeTelnetLastError(handle)
+                    if (tailErr.isNotBlank()) {
+                        onBytesReceived("\r\n\u001B[1;33m[Telnet Disconnected] $tailErr\u001B[0m\r\n".encodeToByteArray())
+                    }
+                }
+            }
+            return
+        }
+
+        // Pure-Kotlin stateful RFC 854 / NAWS / TTYPE Telnet socket fallback
         transportJob = scope.launch {
             runCatching {
+                val snap = _viewport.value
+                val automaton = StatefulTelnetProtocolAutomaton(
+                    terminalType = terminalType.ifBlank { "xterm-256color" },
+                    initialCols = snap.cols,
+                    initialRows = snap.rows
+                )
+                telnetAutomaton = automaton
                 Socket().use { socket ->
                     activeSocket = socket
-                    socket.connect(InetSocketAddress(host, port), 6_000)
+                    socket.tcpNoDelay = true
+                    socket.connect(InetSocketAddress(host, if (port > 0) port else 23), 6_000)
                     val out = socket.getOutputStream()
                     remoteOutputStream = out
-                    onBytesReceived("\u001B[1;32m[Connected TCP/Telnet $host:$port]\u001B[0m\r\n".encodeToByteArray())
+                    onBytesReceived("\u001B[1;32m[Connected Telnet $host:$port]\u001B[0m\r\n".encodeToByteArray())
                     val input: InputStream = socket.getInputStream()
                     val buffer = ByteArray(4096)
                     while (isActive && !socket.isClosed) {
                         val read = input.read(buffer)
                         if (read <= 0) break
-                        val cleaned = filterTelnetIac(buffer, read, out)
-                        if (cleaned.isNotEmpty()) {
-                            onBytesReceived(cleaned)
+                        val processed = automaton.feedIncomingBytes(buffer, read)
+                        if (processed.negotiationReply.isNotEmpty()) {
+                            synchronized(out) {
+                                out.write(processed.negotiationReply)
+                                out.flush()
+                            }
+                        }
+                        if (processed.cleanPayload.isNotEmpty()) {
+                            onBytesReceived(processed.cleanPayload)
                         }
                     }
                 }
             }.onFailure { err ->
                 remoteOutputStream = null
                 activeSocket = null
+                telnetAutomaton = null
                 onBytesReceived(
                     "\r\n\u001B[1;33m[Endpoint $host:$port unreachable (${err.message ?: "offline"}) — interactive shell active]\u001B[0m\r\n${buildPrompt()}".encodeToByteArray()
                 )
@@ -499,19 +1095,36 @@ class SshTerminalSessionController(
     }
 
     /**
-     * Dispatches user input bytes to the active remote/local transport or offline command responder.
+     * Dispatches user input bytes to the active remote SSH/Telnet session, local shell, or offline responder.
      * Never writes raw user keystrokes into `asciicastRecorder` — only echoed/terminal output via `onBytesReceived` is recorded.
      */
     fun sendUserBytes(bytes: ByteArray) {
         if (bytes.isEmpty()) return
+
+        val sshH = nativeSshHandle
+        if (sshH != 0L && SshNativeBridge.isNativeLoaded) {
+            scope.launch {
+                SshNativeBridge.nativeSshWrite(sshH, bytes)
+            }
+            return
+        }
+
+        val telnetH = nativeTelnetHandle
+        if (telnetH != 0L && SshNativeBridge.isNativeLoaded) {
+            scope.launch {
+                SshNativeBridge.nativeTelnetWrite(telnetH, bytes)
+            }
+            return
+        }
+
         val out = remoteOutputStream
         if (out != null) {
             scope.launch {
                 runCatching {
                     if (localPipeEchoEnabled) {
-                        // Non-PTY local /system/bin/sh pipe expects LF on Enter and local echo of printable input
-                        val pipeOut = java.io.ByteArrayOutputStream(bytes.size + 4)
-                        val echoOut = java.io.ByteArrayOutputStream(bytes.size + 4)
+                        // Clean local /system/bin/sh pipe forwarding without corrupting interactive programs via injected printf
+                        val pipeOut = ByteArrayOutputStream(bytes.size + 4)
+                        val echoOut = ByteArrayOutputStream(bytes.size + 4)
                         for (b in bytes) {
                             when (val code = b.toInt() and 0xFF) {
                                 '\r'.code -> {
@@ -520,6 +1133,7 @@ class SshTerminalSessionController(
                                     echoOut.write('\n'.code)
                                 }
                                 0x7F, 0x08 -> {
+                                    pipeOut.write(code)
                                     echoOut.write('\b'.code)
                                     echoOut.write(' '.code)
                                     echoOut.write('\b'.code)
@@ -538,23 +1152,24 @@ class SshTerminalSessionController(
                         }
                         val toShell = pipeOut.toByteArray()
                         if (toShell.isNotEmpty()) {
-                            out.write(toShell)
-                            out.flush()
-                            if (toShell.contains('\n'.code.toByte())) {
-                                out.write("printf '\\033[1;32m%s\\033[0m:\\033[1;34m%s\\033[0m$ ' \"$(whoami 2>/dev/null || echo sh)\" \"$(pwd 2>/dev/null || echo ~)\"\n".toByteArray())
+                            synchronized(out) {
+                                out.write(toShell)
                                 out.flush()
                             }
                         }
                     } else {
-                        out.write(bytes)
-                        out.flush()
+                        val wireBytes = telnetAutomaton?.encodeOutgoingBytes(bytes) ?: bytes
+                        synchronized(out) {
+                            out.write(wireBytes)
+                            out.flush()
+                        }
                     }
                 }.onFailure {
                     remoteOutputStream = null
                     handleOfflineInteractiveInput(bytes)
                 }
             }
-        } else {
+        } else if (!SshNativeBridge.isNativeLoaded) {
             scope.launch {
                 handleOfflineInteractiveInput(bytes)
             }
@@ -563,8 +1178,7 @@ class SshTerminalSessionController(
 
     private fun handleOfflineInteractiveInput(bytes: ByteArray) {
         val str = bytes.decodeToString(throwOnInvalidSequence = false)
-        if (str == "\u001b[A") {
-            // History Up
+        if (str == "\u001b[A" || str == "\u001bOA") {
             if (commandHistory.isNotEmpty()) {
                 if (historyIndex < 0) historyIndex = commandHistory.lastIndex
                 else if (historyIndex > 0) historyIndex--
@@ -572,8 +1186,7 @@ class SshTerminalSessionController(
             }
             return
         }
-        if (str == "\u001b[B") {
-            // History Down
+        if (str == "\u001b[B" || str == "\u001bOB") {
             if (historyIndex >= 0) {
                 if (historyIndex < commandHistory.lastIndex) {
                     historyIndex++
@@ -586,7 +1199,6 @@ class SshTerminalSessionController(
             return
         }
         if (str.startsWith("\u001b")) {
-            // Ignore other navigation/function escape sequences in offline line editor
             return
         }
 
@@ -630,7 +1242,6 @@ class SshTerminalSessionController(
                     idx++
                 }
                 '\t'.code -> {
-                    // Tab completion for built-in commands
                     val partial = interactiveLineBuffer.toString()
                     val builtins = listOf(
                         "help", "ls", "pwd", "cd", "whoami", "id", "hostname",
@@ -646,7 +1257,6 @@ class SshTerminalSessionController(
                     idx++
                 }
                 else -> {
-                    // Decode UTF-8 sequence starting at idx
                     val seqLen = when {
                         (code and 0x80) == 0 -> 1
                         (code and 0xE0) == 0xC0 -> 2
@@ -751,7 +1361,7 @@ class SshTerminalSessionController(
                 append("USER=$displayUser\r\n")
                 append("HOME=/home/$displayUser\r\n")
                 append("PWD=$interactiveCwd\r\n")
-                append("TERM=xterm-256color\r\n")
+                append("TERM=$terminalType\r\n")
                 append("SHELL=/bin/bash\r\n")
             }
             "echo" -> cmd.removePrefix("echo").trimStart().trim('"', '\'') + "\r\n"
@@ -798,6 +1408,12 @@ class SshTerminalSessionController(
 
         // Pure-Kotlin terminal fallback for local JVM previews/tests
         val raw = bytes.decodeToString(throwOnInvalidSequence = false)
+        if (raw.contains("\u001B[?1h")) {
+            fallbackApplicationCursorKeys = true
+        }
+        if (raw.contains("\u001B[?1l")) {
+            fallbackApplicationCursorKeys = false
+        }
         if (raw.contains("\u001B[2J")) {
             fallbackLines.clear()
         }
@@ -855,7 +1471,7 @@ class SshTerminalSessionController(
     }
 
     /**
-     * Starts Local TCP & Dynamic SOCKS5 listeners on loopback for configured SSH Port Forward rules.
+     * Starts Local TCP & Dynamic SOCKS5 listeners on loopback when native `russh` is unavailable.
      */
     private fun startConfiguredLocalTunnels() {
         portForwards.filter { it.enabled && it.kind != PortForwardKind.REMOTE }.forEach { rule ->
@@ -909,7 +1525,7 @@ class SshTerminalSessionController(
         }
     }
 
-    private fun readExactBytes(input: java.io.InputStream, length: Int): ByteArray {
+    private fun readExactBytes(input: InputStream, length: Int): ByteArray {
         if (length <= 0) return ByteArray(0)
         val buffer = ByteArray(length)
         var offset = 0
@@ -928,7 +1544,6 @@ class SshTerminalSessionController(
         if (ver != 0x05) return
         val nMethods = input.read()
         if (nMethods > 0) readExactBytes(input, nMethods)
-        // Respond NO AUTH REQUIRED (0x05, 0x00)
         output.write(byteArrayOf(0x05, 0x00))
         output.flush()
 
@@ -965,11 +1580,25 @@ class SshTerminalSessionController(
 
     fun close() {
         transportJob?.cancel()
+        val sshH = nativeSshHandle
+        nativeSshHandle = 0L
+        if (sshH != 0L && SshNativeBridge.isNativeLoaded) {
+            runCatching { SshNativeBridge.nativeSshDisconnect(sshH) }
+        }
+
+        val telnetH = nativeTelnetHandle
+        nativeTelnetHandle = 0L
+        if (telnetH != 0L && SshNativeBridge.isNativeLoaded) {
+            runCatching { SshNativeBridge.nativeTelnetDisconnect(telnetH) }
+        }
+
         remoteOutputStream = null
+        telnetAutomaton = null
         runCatching { activeSocket?.close() }
         activeSocket = null
         runCatching { localShellProcess?.destroyForcibly() }
         localShellProcess = null
+        runCatching { tunnelLease?.close() }
         synchronized(activeForwardSockets) {
             activeForwardSockets.forEach { runCatching { it.close() } }
             activeForwardSockets.clear()

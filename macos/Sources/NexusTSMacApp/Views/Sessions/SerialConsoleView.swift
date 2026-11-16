@@ -8,11 +8,13 @@ public struct SerialConsoleView: View {
 
     @State private var discoveredPorts: [DiscoveredSerialPort] = []
     @State private var selectedDevicePath: String = "/dev/cu.usbserial"
+    @State private var isEditingCustomDevicePath: Bool = false
     @State private var baudRate: Int = 115200
     @State private var dataBits: Int = 8
     @State private var stopBits: Int = 1
     @State private var parity: String = "NONE"
     @State private var flowControl: String = "NONE"
+    @State private var lineEnding: String = "CRLF"
     @State private var dtrEnabled: Bool = true
     @State private var rtsEnabled: Bool = true
     @State private var hexDisplayMode: Bool = false
@@ -20,13 +22,28 @@ public struct SerialConsoleView: View {
     @State private var serialSession = MacSerialPortSession()
     @State private var isOpen: Bool = false
     @State private var consoleLines: [String] = []
+    @State private var rxPartialBuffer = Data()
     @State private var outboundLine: String = ""
     @State private var statusBanner: String = "Ready — Select IOKit /dev/cu.* UART Adapter"
 
     private let readTimer = Timer.publish(every: 1.0 / 30.0, on: .main, in: .common).autoconnect()
 
+    private static let timestampFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm:ss.SSS"
+        return f
+    }()
+
     public init(tab: WorkspaceSessionTab) {
         self.tab = tab
+    }
+
+    private var resolvedLineEndingBytes: String {
+        switch lineEnding.uppercased() {
+        case "CR": return "\r"
+        case "LF": return "\n"
+        default:   return "\r\n"
+        }
     }
 
     public var body: some View {
@@ -37,16 +54,40 @@ public struct SerialConsoleView: View {
                     .frame(width: 8, height: 8)
 
                 Picker("Port", selection: $selectedDevicePath) {
-                    if discoveredPorts.isEmpty {
-                        Text(selectedDevicePath).tag(selectedDevicePath)
-                    } else {
-                        ForEach(discoveredPorts) { port in
-                            Text("\(port.calloutPath) (\(port.driverKind))").tag(port.calloutPath)
-                        }
+                    if !discoveredPorts.contains(where: { $0.calloutPath == selectedDevicePath }) && !selectedDevicePath.isEmpty {
+                        Text("\(selectedDevicePath) (Custom)").tag(selectedDevicePath)
+                    }
+                    ForEach(discoveredPorts) { port in
+                        Text("\(port.calloutPath) (\(port.driverKind))").tag(port.calloutPath)
                     }
                 }
-                .frame(maxWidth: 260)
+                .frame(maxWidth: 250)
                 .controlSize(.small)
+
+                Button {
+                    isEditingCustomDevicePath = true
+                } label: {
+                    Image(systemName: "pencil")
+                }
+                .controlSize(.small)
+                .help("Enter Custom /dev/cu.* or /dev/ttys* Device Path")
+                .popover(isPresented: $isEditingCustomDevicePath) {
+                    HStack(spacing: 8) {
+                        TextField("/dev/cu.usbserial", text: $selectedDevicePath)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(size: 12, design: .monospaced))
+                            .frame(width: 220)
+                            .onSubmit {
+                                isEditingCustomDevicePath = false
+                            }
+                        Button("Done") {
+                            isEditingCustomDevicePath = false
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                    }
+                    .padding(10)
+                }
 
                 Button {
                     refreshSerialDevices()
@@ -61,7 +102,15 @@ public struct SerialConsoleView: View {
                         Text("\(rate)").tag(rate)
                     }
                 }
-                .frame(width: 115)
+                .frame(width: 112)
+                .controlSize(.small)
+
+                Picker("EOL", selection: $lineEnding) {
+                    Text("CRLF").tag("CRLF")
+                    Text("LF").tag("LF")
+                    Text("CR").tag("CR")
+                }
+                .frame(width: 92)
                 .controlSize(.small)
 
                 Toggle("DTR", isOn: $dtrEnabled)
@@ -84,7 +133,7 @@ public struct SerialConsoleView: View {
 
                 Button("BREAK") {
                     serialSession.sendBreak()
-                    consoleLines.append("[TX BREAK 250ms]")
+                    consoleLines.append("[\(Self.timestampFormatter.string(from: Date()))] [TX BREAK 250ms]")
                 }
                 .controlSize(.small)
                 .disabled(!isOpen)
@@ -128,12 +177,17 @@ public struct SerialConsoleView: View {
             Divider()
 
             HStack(spacing: 8) {
-                TextField(hexDisplayMode ? "Send hex bytes (e.g. 01 03 00 00)…" : "Send serial command (CRLF)…", text: $outboundLine)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(size: 12, design: .monospaced))
-                    .onSubmit {
-                        transmitInput()
-                    }
+                TextField(
+                    hexDisplayMode
+                        ? "Send hex bytes (e.g. 01 03 00 00)…"
+                        : "Send serial command (\(lineEnding))…",
+                    text: $outboundLine
+                )
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 12, design: .monospaced))
+                .onSubmit {
+                    transmitInput()
+                }
 
                 Button("Send") {
                     transmitInput()
@@ -143,6 +197,7 @@ public struct SerialConsoleView: View {
 
                 Button("Clear") {
                     consoleLines.removeAll()
+                    rxPartialBuffer.removeAll(keepingCapacity: true)
                 }
                 .controlSize(.small)
 
@@ -158,49 +213,94 @@ public struct SerialConsoleView: View {
         }
         .onAppear {
             if case .serialUart(let cfg) = tab.connection.settings {
-                selectedDevicePath = cfg.devicePathHint
+                let hint = cfg.devicePathHint.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !hint.isEmpty {
+                    selectedDevicePath = hint
+                } else if !tab.connection.host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    selectedDevicePath = tab.connection.host
+                }
                 baudRate = cfg.baudRate
                 dataBits = cfg.dataBits
                 stopBits = cfg.stopBits
                 parity = cfg.parity
                 flowControl = cfg.flowControl
+                lineEnding = cfg.lineEnding.uppercased()
                 dtrEnabled = cfg.dtrEnabled
                 rtsEnabled = cfg.rtsEnabled
             }
             refreshSerialDevices()
         }
         .onDisappear {
+            flushPartialRxBuffer()
             serialSession.close()
         }
         .onReceive(readTimer) { _ in
             guard isOpen else { return }
             let incoming = serialSession.drainAvailableBytes()
             guard !incoming.isEmpty else { return }
+            let ts = Self.timestampFormatter.string(from: Date())
             if hexDisplayMode {
                 let hex = incoming.map { String(format: "%02X", $0) }.joined(separator: " ")
-                consoleLines.append("RX  \(hex)")
+                consoleLines.append("[\(ts)] RX  \(hex)")
             } else {
-                let text = String(decoding: incoming, as: UTF8.self)
-                let split = text.replacingOccurrences(of: "\r\n", with: "\n")
-                    .replacingOccurrences(of: "\r", with: "\n")
-                    .components(separatedBy: "\n")
-                for seg in split where !seg.isEmpty {
-                    consoleLines.append(seg)
-                }
+                rxPartialBuffer.append(incoming)
+                drainCompleteLines(timestamp: ts)
             }
+        }
+    }
+
+    private func drainCompleteLines(timestamp: String) {
+        var cursor = 0
+        let bytes = Array(rxPartialBuffer)
+        let total = bytes.count
+        var lineStart = 0
+
+        while cursor < total {
+            let b = bytes[cursor]
+            if b == 0x0D || b == 0x0A {
+                let slice = bytes[lineStart..<cursor]
+                let text = String(decoding: slice, as: UTF8.self)
+                consoleLines.append("[\(timestamp)] \(text)")
+                if b == 0x0D && (cursor + 1) < total && bytes[cursor + 1] == 0x0A {
+                    cursor += 2
+                } else {
+                    cursor += 1
+                }
+                lineStart = cursor
+            } else {
+                cursor += 1
+            }
+        }
+
+        if lineStart > 0 {
+            rxPartialBuffer = Data(bytes[lineStart..<total])
+        }
+    }
+
+    private func flushPartialRxBuffer() {
+        guard !rxPartialBuffer.isEmpty else { return }
+        let ts = Self.timestampFormatter.string(from: Date())
+        let tail = String(decoding: rxPartialBuffer, as: UTF8.self)
+        rxPartialBuffer.removeAll(keepingCapacity: true)
+        if !tail.isEmpty {
+            consoleLines.append("[\(ts)] \(tail)")
         }
     }
 
     private func refreshSerialDevices() {
         let ports = MacSerialPortSession.discoverSerialPorts()
         discoveredPorts = ports
-        if let first = ports.first, !ports.contains(where: { $0.calloutPath == selectedDevicePath }) {
+        let trimmedCurrent = selectedDevicePath.trimmingCharacters(in: .whitespacesAndNewlines)
+        if (trimmedCurrent.isEmpty || trimmedCurrent == "/dev/cu.usbserial"),
+           let first = ports.first,
+           !ports.contains(where: { $0.calloutPath == trimmedCurrent }) {
             selectedDevicePath = first.calloutPath
         }
     }
 
     private func toggleConnection() {
         if isOpen {
+            flushPartialRxBuffer()
             serialSession.close()
             isOpen = false
             statusBanner = "Closed \(selectedDevicePath)"
@@ -212,14 +312,15 @@ public struct SerialConsoleView: View {
             cfg.stopBits = stopBits
             cfg.parity = parity
             cfg.flowControl = flowControl
+            cfg.lineEnding = lineEnding
             cfg.dtrEnabled = dtrEnabled
             cfg.rtsEnabled = rtsEnabled
 
             do {
                 try serialSession.open(settings: cfg)
                 isOpen = true
-                statusBanner = "Connected \(selectedDevicePath) @ \(baudRate) \(dataBits)N\(stopBits)"
-                consoleLines.append("● Opened \(selectedDevicePath) @ \(baudRate) baud")
+                statusBanner = "Connected \(selectedDevicePath) @ \(baudRate) \(dataBits)N\(stopBits) (\(lineEnding))"
+                consoleLines.append("● Opened \(selectedDevicePath) @ \(baudRate) baud (\(lineEnding))")
             } catch {
                 statusBanner = error.localizedDescription
                 consoleLines.append("✖ \(error.localizedDescription)")
@@ -229,15 +330,16 @@ public struct SerialConsoleView: View {
 
     private func transmitInput() {
         guard isOpen, !outboundLine.isEmpty else { return }
+        let ts = Self.timestampFormatter.string(from: Date())
         if hexDisplayMode {
             let clean = outboundLine.split(whereSeparator: \.isWhitespace)
             let bytes = clean.compactMap { UInt8($0, radix: 16) }
             serialSession.write(Data(bytes))
-            consoleLines.append("TX  \(bytes.map { String(format: "%02X", $0) }.joined(separator: " "))")
+            consoleLines.append("[\(ts)] TX  \(bytes.map { String(format: "%02X", $0) }.joined(separator: " "))")
         } else {
-            let payload = Data((outboundLine + "\r\n").utf8)
+            let payload = Data((outboundLine + resolvedLineEndingBytes).utf8)
             serialSession.write(payload)
-            consoleLines.append("› \(outboundLine)")
+            consoleLines.append("[\(ts)] › \(outboundLine)")
         }
         outboundLine = ""
     }

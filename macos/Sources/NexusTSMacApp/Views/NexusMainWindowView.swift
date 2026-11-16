@@ -525,6 +525,7 @@ struct QuickConnectSpotlightOverlay: View {
                                 store.openConnection(
                                     adHoc.toAdHocVaultConnection(),
                                     adHocUsername: adHoc.username,
+                                    adHocPassword: adHoc.password,
                                     adHocDomain: adHoc.domain
                                 )
                                 store.isQuickConnectPresented = false
@@ -595,7 +596,7 @@ struct QuickConnectSpotlightOverlay: View {
                 Divider()
                 HStack(spacing: 14) {
                     Label("↩ Open Tab", systemImage: "return")
-                    Label("URI Schemes: ssh:// rdp:// vnc:// ard:// sftp:// serial:// k8s:// docker://", systemImage: "link")
+                    Label("URI Schemes: ssh:// rdp:// vnc:// ard:// sftp:// ftp:// ftps:// scp:// telnet:// serial:// k8s:// docker://", systemImage: "link")
                     Spacer()
                 }
                 .font(.caption2)
@@ -629,6 +630,7 @@ struct QuickConnectSpotlightOverlay: View {
                 adHoc.toAdHocVaultConnection(),
                 inSplit: split,
                 adHocUsername: adHoc.username,
+                adHocPassword: adHoc.password,
                 adHocDomain: adHoc.domain
             )
             store.isQuickConnectPresented = false

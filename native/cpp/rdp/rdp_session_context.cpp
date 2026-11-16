@@ -40,6 +40,7 @@
 #include <freerdp/input.h>
 #include <freerdp/settings.h>
 #include <winpr/environment.h>
+#include <winpr/handle.h>
 #include <winpr/synch.h>
 #endif
 
@@ -747,13 +748,27 @@ BOOL freerdp_on_post_connect(freerdp* instance) {
     if (!instance || !instance->context) {
         return FALSE;
     }
-    if (!gdi_init(instance, PIXEL_FORMAT_RGBA32)) {
-        NX_RDP_LOGE("FreeRDP gdi_init(PIXEL_FORMAT_RGBA32) failed");
+#ifdef __APPLE__
+    constexpr UINT32 kTargetGdiPixelFormat = PIXEL_FORMAT_BGRX32;
+#else
+    constexpr UINT32 kTargetGdiPixelFormat = PIXEL_FORMAT_RGBX32;
+#endif
+    if (!gdi_init(instance, kTargetGdiPixelFormat)) {
+        NX_RDP_LOGE("FreeRDP gdi_init(0x%08x) failed", kTargetGdiPixelFormat);
         const auto cb = lookup_freerdp_callbacks(instance);
         if (cb.owner) {
-            cb.owner->set_last_error("INTERNAL: FreeRDP gdi_init(PIXEL_FORMAT_RGBA32) failed.");
+            cb.owner->set_last_error("INTERNAL: FreeRDP gdi_init() failed.");
         }
         return FALSE;
+    }
+    if (instance->context->gdi && instance->context->gdi->width > 0 && instance->context->gdi->height > 0) {
+        const auto cb = lookup_freerdp_callbacks(instance);
+        if (cb.owner) {
+            cb.owner->presenter().resize_shadow_framebuffer(
+                static_cast<uint32_t>(instance->context->gdi->width),
+                static_cast<uint32_t>(instance->context->gdi->height)
+            );
+        }
     }
     register_safe_pointer_callbacks(instance->context->graphics);
     if (instance->context->update) {
@@ -923,6 +938,8 @@ RdpSessionContext::RdpSessionContext(RdpConnectParams params)
       gdi_presenter_(std::make_unique<RdpGdiSurfacePresenter>()) {
     const uint32_t w = align_even_h264_dimension(params_.initial_width, 320, 8192);
     const uint32_t h = align_even_h264_dimension(params_.initial_height, 240, 8192);
+    last_requested_width_.store(w, std::memory_order_relaxed);
+    last_requested_height_.store(h, std::memory_order_relaxed);
     gdi_presenter_->resize_shadow_framebuffer(w, h);
     if (params_.redirect_clipboard) {
         channels_.set_local_clipboard_announce_handler([this](const std::string&) {
@@ -936,6 +953,15 @@ RdpSessionContext::RdpSessionContext(RdpConnectParams params)
 
 RdpSessionContext::~RdpSessionContext() {
     disconnect();
+}
+
+void RdpSessionContext::signal_event_loop_wakeup() noexcept {
+#if defined(NEXUSTS_HAS_FREERDP3_BINARY) && NEXUSTS_HAS_FREERDP3_BINARY == 1
+    std::lock_guard<std::mutex> lock(input_mutex_);
+    if (wakeup_event_) {
+        SetEvent(static_cast<HANDLE>(wakeup_event_));
+    }
+#endif
 }
 
 void RdpSessionContext::on_surface_bound() {
@@ -952,6 +978,10 @@ void RdpSessionContext::on_surface_bound() {
 
 void RdpSessionContext::set_disp_context(void* disp_context) noexcept {
     disp_context_.store(disp_context, std::memory_order_release);
+    if (disp_context) {
+        // Flush any resize layout queued before DISP_DVC finished opening
+        signal_event_loop_wakeup();
+    }
 }
 
 void RdpSessionContext::set_cliprdr_context(void* cliprdr_context) {
@@ -964,11 +994,136 @@ void RdpSessionContext::announce_local_clipboard_to_remote() {
         return;
     }
 #if defined(NEXUSTS_HAS_FREERDP3_BINARY) && NEXUSTS_HAS_FREERDP3_BINARY == 1
-    std::lock_guard<std::mutex> lock(cliprdr_mutex_);
-    if (cliprdr_context_) {
-        auto* cliprdr = static_cast<CliprdrClientContext*>(cliprdr_context_);
-        cliprdr_send_client_format_list(cliprdr);
+    std::lock_guard<std::mutex> lock(input_mutex_);
+    pending_clipboard_announce_ = true;
+    if (wakeup_event_) {
+        SetEvent(static_cast<HANDLE>(wakeup_event_));
     }
+#endif
+}
+
+void RdpSessionContext::drain_queued_commands_on_event_thread(void* raw_instance) {
+#if defined(NEXUSTS_HAS_FREERDP3_BINARY) && NEXUSTS_HAS_FREERDP3_BINARY == 1
+    auto* instance = static_cast<freerdp*>(raw_instance);
+    if (!instance || !instance->context) {
+        return;
+    }
+
+    std::vector<QueuedKeyEvent> keys;
+    std::vector<QueuedPointerEvent> pointers;
+    std::vector<RdpMonitorLayout> monitors;
+    bool send_monitors = false;
+    bool send_clipboard = false;
+    void* raw_disp = disp_context_.load(std::memory_order_acquire);
+
+    {
+        std::lock_guard<std::mutex> lock(input_mutex_);
+        if (!pending_keys_.empty()) {
+            keys.swap(pending_keys_);
+        }
+        if (!pending_pointer_events_.empty()) {
+            pointers.swap(pending_pointer_events_);
+        }
+        if (has_pending_monitors_ && raw_disp != nullptr) {
+            monitors = pending_monitors_;
+            has_pending_monitors_ = false;
+            send_monitors = true;
+        }
+        if (pending_clipboard_announce_) {
+            pending_clipboard_announce_ = false;
+            send_clipboard = true;
+        }
+    }
+
+    if (instance->context->input) {
+        for (const auto& ev : pointers) {
+            freerdp_input_send_mouse_event(instance->context->input, ev.flags, ev.x, ev.y);
+        }
+        for (const auto& key : keys) {
+            UINT16 flags = key.key_down ? 0u : KBD_FLAGS_RELEASE;
+            if (key.extended) {
+                flags |= KBD_FLAGS_EXTENDED;
+            }
+            freerdp_input_send_keyboard_event(
+                instance->context->input,
+                flags,
+                static_cast<UINT8>(key.scancode & 0xFFu)
+            );
+        }
+    }
+
+    if (send_monitors && raw_disp) {
+        auto* disp = static_cast<DispClientContext*>(raw_disp);
+        if (disp->SendMonitorLayout && !monitors.empty()) {
+            UINT32 orientation = ORIENTATION_LANDSCAPE;
+            if (instance->context->settings) {
+                orientation = freerdp_settings_get_uint16(
+                    instance->context->settings,
+                    FreeRDP_DesktopOrientation
+                );
+            }
+            std::vector<DISPLAY_CONTROL_MONITOR_LAYOUT> layouts;
+            layouts.reserve(monitors.size());
+            for (const auto& m : monitors) {
+                const uint32_t w = align_even_h264_dimension(
+                    m.width,
+                    DISPLAY_CONTROL_MIN_MONITOR_WIDTH,
+                    DISPLAY_CONTROL_MAX_MONITOR_WIDTH
+                );
+                const uint32_t h = align_even_h264_dimension(
+                    m.height,
+                    DISPLAY_CONTROL_MIN_MONITOR_HEIGHT,
+                    DISPLAY_CONTROL_MAX_MONITOR_HEIGHT
+                );
+                const uint32_t phys_w = std::clamp<uint32_t>(
+                    m.physical_width_mm > 0 ? m.physical_width_mm : ((w * 254u) / 960u),
+                    DISPLAY_CONTROL_MIN_PHYSICAL_MONITOR_WIDTH,
+                    DISPLAY_CONTROL_MAX_PHYSICAL_MONITOR_WIDTH
+                );
+                const uint32_t phys_h = std::clamp<uint32_t>(
+                    m.physical_height_mm > 0 ? m.physical_height_mm : ((h * 254u) / 960u),
+                    DISPLAY_CONTROL_MIN_PHYSICAL_MONITOR_HEIGHT,
+                    DISPLAY_CONTROL_MAX_PHYSICAL_MONITOR_HEIGHT
+                );
+                const uint32_t desk_scale = std::clamp(m.desktop_scale_factor, 100u, 500u);
+                const uint32_t dev_scale = map_device_scale_factor(desk_scale);
+
+                DISPLAY_CONTROL_MONITOR_LAYOUT layout{};
+                layout.Flags = m.is_primary ? DISPLAY_CONTROL_MONITOR_PRIMARY : 0u;
+                layout.Left = m.left;
+                layout.Top = m.top;
+                layout.Width = w;
+                layout.Height = h;
+                layout.PhysicalWidth = phys_w;
+                layout.PhysicalHeight = phys_h;
+                layout.Orientation = orientation;
+                layout.DesktopScaleFactor = desk_scale;
+                layout.DeviceScaleFactor = dev_scale;
+                layouts.push_back(layout);
+            }
+            const UINT rc = disp->SendMonitorLayout(
+                disp,
+                static_cast<UINT32>(layouts.size()),
+                layouts.data()
+            );
+            if (rc != CHANNEL_RC_OK) {
+                NX_RDP_LOGE("DISP_DVC SendMonitorLayout returned error code %u", rc);
+            } else {
+                NX_RDP_LOGI("DISP_DVC monitor layout transmitted: %zu monitor(s), primary=%ux%u @ %u%%",
+                            layouts.size(), layouts[0].Width, layouts[0].Height, layouts[0].DesktopScaleFactor);
+            }
+        }
+    }
+
+    if (send_clipboard) {
+        std::lock_guard<std::mutex> clip_lock(cliprdr_mutex_);
+        if (cliprdr_context_) {
+            auto* cliprdr = static_cast<CliprdrClientContext*>(cliprdr_context_);
+            cliprdr_send_client_format_list(cliprdr);
+        }
+    }
+#else
+    (void)raw_instance;
 #endif
 }
 
@@ -1003,10 +1158,20 @@ void RdpSessionContext::render_diagnostic_surface_frame(uint32_t width, uint32_t
         }
         for (uint32_t x = 0; x < width; ++x) {
             const bool vgrid = (y >= header_h) && ((x % 32u) == 0u);
-            row[x * 4u + 0] = vgrid ? 0x10 : r;
-            row[x * 4u + 1] = vgrid ? 0x17 : g;
-            row[x * 4u + 2] = vgrid ? 0x26 : b;
+            const uint8_t pr = vgrid ? 0x10 : r;
+            const uint8_t pg = vgrid ? 0x17 : g;
+            const uint8_t pb = vgrid ? 0x26 : b;
+#ifdef __APPLE__
+            row[x * 4u + 0] = pb;
+            row[x * 4u + 1] = pg;
+            row[x * 4u + 2] = pr;
             row[x * 4u + 3] = 0xFF;
+#else
+            row[x * 4u + 0] = pr;
+            row[x * 4u + 1] = pg;
+            row[x * 4u + 2] = pb;
+            row[x * 4u + 3] = 0xFF;
+#endif
         }
     }
     gdi_presenter_->present_frame(frame.data(), width, height, width * 4u);
@@ -1026,6 +1191,7 @@ bool RdpSessionContext::connect() {
         }
         if (event_loop_thread_.joinable()) {
             stop_requested_.store(true, std::memory_order_release);
+            signal_event_loop_wakeup();
             stale_worker = std::move(event_loop_thread_);
         }
     }
@@ -1076,10 +1242,10 @@ bool RdpSessionContext::connect() {
     if (params_.enable_h264_avc444) {
         h264_decoder_.initialize(w, h, /*avc444_chroma=*/true);
     }
-#endif
     if (local_audio_out || params_.redirect_mic_in) {
         channels_.start_audio_streams(local_audio_out, params_.redirect_mic_in, 48000);
     }
+#endif
 
 #if defined(NEXUSTS_HAS_FREERDP3_BINARY) && NEXUSTS_HAS_FREERDP3_BINARY == 1
     std::string resolved_home;
@@ -1148,6 +1314,10 @@ bool RdpSessionContext::connect() {
     freerdp_settings_set_bool(settings, FreeRDP_UseCommonStdioCallbacks, FALSE);
     freerdp_settings_set_uint32(settings, FreeRDP_TlsSecLevel, 0u);
     freerdp_settings_set_uint32(settings, FreeRDP_TcpConnectTimeout, 15000u);
+    freerdp_settings_set_bool(settings, FreeRDP_TcpKeepAlive, TRUE);
+    freerdp_settings_set_uint32(settings, FreeRDP_TcpKeepAliveDelay, 15u);
+    freerdp_settings_set_uint32(settings, FreeRDP_TcpKeepAliveInterval, 5u);
+    freerdp_settings_set_uint32(settings, FreeRDP_TcpKeepAliveRetries, 3u);
     if (effective_gateway_host.empty()) {
         // Prevent FreeRDP proxy_prepare() from hijacking direct LAN RDP sockets via OS HTTPS_PROXY env vars
         freerdp_settings_set_uint32(settings, FreeRDP_ProxyType, PROXY_TYPE_IGNORE);
@@ -1159,6 +1329,19 @@ bool RdpSessionContext::connect() {
     freerdp_settings_set_uint32(settings, FreeRDP_DesktopHeight, h);
     freerdp_settings_set_uint32(settings, FreeRDP_ColorDepth, params_.color_depth_bits);
     freerdp_settings_set_bool(settings, FreeRDP_ConsoleSession, params_.connect_to_console);
+
+    // High-throughput FastPath PDU framing, SurfaceFrameMarkers, & RTT auto-tuning
+    freerdp_settings_set_bool(settings, FreeRDP_FastPathInput, TRUE);
+    freerdp_settings_set_bool(settings, FreeRDP_FastPathOutput, TRUE);
+    freerdp_settings_set_bool(settings, FreeRDP_FrameMarkerCommandEnabled, TRUE);
+    freerdp_settings_set_bool(settings, FreeRDP_SurfaceFrameMarkerEnabled, TRUE);
+    freerdp_settings_set_bool(settings, FreeRDP_SurfaceCommandsEnabled, TRUE);
+    freerdp_settings_set_bool(settings, FreeRDP_NetworkAutoDetect, TRUE);
+    freerdp_settings_set_uint32(
+        settings,
+        FreeRDP_ConnectionType,
+        params_.enable_wallpaper ? CONNECTION_TYPE_LAN : CONNECTION_TYPE_BROADBAND_HIGH
+    );
 
     if (params_.hidpi_enabled && params_.desktop_scale_factor > 100) {
         const uint32_t scale = std::clamp(params_.desktop_scale_factor, 100u, 500u);
@@ -1182,6 +1365,8 @@ bool RdpSessionContext::connect() {
 #endif
 
     freerdp_settings_set_bool(settings, FreeRDP_SupportGraphicsPipeline, params_.enable_gfx_pipeline);
+    freerdp_settings_set_bool(settings, FreeRDP_GfxThinClient, FALSE);
+    freerdp_settings_set_bool(settings, FreeRDP_GfxSmallCache, FALSE);
     freerdp_settings_set_bool(settings, FreeRDP_GfxH264, h264_runtime_supported);
     freerdp_settings_set_bool(settings, FreeRDP_GfxAVC444, FALSE);
     freerdp_settings_set_bool(settings, FreeRDP_GfxAVC444v2, FALSE);
@@ -1189,6 +1374,8 @@ bool RdpSessionContext::connect() {
     freerdp_settings_set_bool(settings, FreeRDP_GfxProgressiveV2, params_.enable_gfx_pipeline);
     freerdp_settings_set_bool(settings, FreeRDP_RemoteFxCodec, params_.enable_remotefx);
     freerdp_settings_set_bool(settings, FreeRDP_NSCodec, TRUE);
+    freerdp_settings_set_bool(settings, FreeRDP_BitmapCacheEnabled, TRUE);
+    freerdp_settings_set_uint32(settings, FreeRDP_OffscreenSupportLevel, 1u);
 
     const bool enable_disp_channel =
         params_.enable_dynamic_resize || params_.hidpi_enabled || params_.multi_monitor_spanning;
@@ -1287,24 +1474,48 @@ bool RdpSessionContext::connect() {
         return false;
     }
 
+    HANDLE wakeup_ev = CreateEventA(nullptr, TRUE, FALSE, nullptr);
     {
         std::lock_guard<std::mutex> input_lock(input_mutex_);
         freerdp_instance_ = instance;
+        wakeup_event_ = wakeup_ev;
+        pending_keys_.clear();
+        pending_pointer_events_.clear();
+        pending_clipboard_announce_ = false;
     }
     connected_.store(true, std::memory_order_release);
 
-    event_loop_thread_ = std::thread([this, instance, effective_host, effective_port]() {
+    event_loop_thread_ = std::thread([this, instance, wakeup_ev, effective_host, effective_port]() {
         HANDLE handles[64]{};
-        auto last_present_tp = std::chrono::steady_clock::now() - std::chrono::milliseconds(16);
+        constexpr auto kFrameBudget = std::chrono::milliseconds(8); // ~120 Hz ceiling
+        auto last_present_tp = std::chrono::steady_clock::now() - kFrameBudget;
+
         while (!stop_requested_.load(std::memory_order_acquire)) {
             if (!instance->context || freerdp_shall_disconnect_context(instance->context)) {
                 break;
             }
-            const DWORD count = freerdp_get_event_handles(instance->context, handles, 64);
+
+            drain_queued_commands_on_event_thread(instance);
+
+            DWORD count = freerdp_get_event_handles(instance->context, handles, 63);
             if (count == 0) {
                 break;
             }
-            const DWORD wait_ms = gdi_presenter_->has_pending_dirty() ? 8u : 60u;
+            if (wakeup_ev && count < 64u) {
+                handles[count++] = wakeup_ev;
+            }
+
+            DWORD wait_ms = 60u;
+            if (gdi_presenter_->has_pending_dirty()) {
+                const auto elapsed = std::chrono::steady_clock::now() - last_present_tp;
+                if (elapsed >= kFrameBudget) {
+                    wait_ms = 0u;
+                } else {
+                    const auto rem = std::chrono::duration_cast<std::chrono::milliseconds>(kFrameBudget - elapsed).count();
+                    wait_ms = static_cast<DWORD>(std::max<int64_t>(1, rem));
+                }
+            }
+
             const DWORD wait_status = WaitForMultipleObjects(count, handles, FALSE, wait_ms);
             if (wait_status == WAIT_FAILED) {
                 break;
@@ -1312,12 +1523,18 @@ bool RdpSessionContext::connect() {
             if (stop_requested_.load(std::memory_order_acquire)) {
                 break;
             }
+            if (wakeup_ev) {
+                ResetEvent(wakeup_ev);
+            }
+
+            drain_queued_commands_on_event_thread(instance);
+
             if (!freerdp_check_event_handles(instance->context)) {
                 break;
             }
             if (gdi_presenter_->has_pending_dirty()) {
                 const auto now = std::chrono::steady_clock::now();
-                if (now - last_present_tp >= std::chrono::milliseconds(8)) {
+                if (now - last_present_tp >= kFrameBudget) {
                     if (gdi_presenter_->flush_pending_frame()) {
                         last_present_tp = now;
                     }
@@ -1357,6 +1574,7 @@ void RdpSessionContext::set_last_error(std::string message) {
 
 void RdpSessionContext::disconnect() {
     stop_requested_.store(true, std::memory_order_release);
+    signal_event_loop_wakeup();
 
     std::thread worker_to_join;
     {
@@ -1377,20 +1595,30 @@ void RdpSessionContext::disconnect() {
     const bool was_connected = connected_.exchange(false);
     disp_context_.store(nullptr, std::memory_order_release);
     set_cliprdr_context(nullptr);
-    if (!was_connected && !freerdp_instance_) {
-        return;
-    }
-
-    channels_.stop_audio_streams();
-    h264_decoder_.shutdown();
 
 #if defined(NEXUSTS_HAS_FREERDP3_BINARY) && NEXUSTS_HAS_FREERDP3_BINARY == 1
     freerdp* instance_to_free = nullptr;
+    HANDLE wakeup_to_close = nullptr;
     {
         std::lock_guard<std::mutex> input_lock(input_mutex_);
         instance_to_free = static_cast<freerdp*>(freerdp_instance_);
         freerdp_instance_ = nullptr;
+        wakeup_to_close = static_cast<HANDLE>(wakeup_event_);
+        wakeup_event_ = nullptr;
+        pending_keys_.clear();
+        pending_pointer_events_.clear();
+        pending_monitors_.clear();
+        has_pending_monitors_ = false;
+        pending_clipboard_announce_ = false;
     }
+    if (wakeup_to_close) {
+        CloseHandle(wakeup_to_close);
+    }
+    if (!was_connected && !instance_to_free) {
+        return;
+    }
+    channels_.stop_audio_streams();
+    h264_decoder_.shutdown();
     if (instance_to_free) {
         freerdp_disconnect(instance_to_free);
         unregister_freerdp_callbacks(instance_to_free);
@@ -1398,6 +1626,12 @@ void RdpSessionContext::disconnect() {
         freerdp_context_free(instance_to_free);
         freerdp_free(instance_to_free);
     }
+#else
+    if (!was_connected && !freerdp_instance_) {
+        return;
+    }
+    channels_.stop_audio_streams();
+    h264_decoder_.shutdown();
 #endif
     gdi_presenter_->detach_native_window();
 }
@@ -1411,20 +1645,32 @@ bool RdpSessionContext::request_dynamic_display_resize(
     const uint32_t aligned_h = align_even_h264_dimension(new_height, 240, 8192);
     const uint32_t clamped_scale = std::clamp(desktop_scale_percent, 100u, 500u);
 
+#if defined(NEXUSTS_HAS_FREERDP3_BINARY) && NEXUSTS_HAS_FREERDP3_BINARY == 1
+    const bool disp_ready = disp_context_.load(std::memory_order_acquire) != nullptr;
+    if (disp_ready &&
+        aligned_w == last_requested_width_.load(std::memory_order_relaxed) &&
+        aligned_h == last_requested_height_.load(std::memory_order_relaxed) &&
+        clamped_scale == active_scale_percent_.load(std::memory_order_relaxed)) {
+        return true;
+    }
+    last_requested_width_.store(aligned_w, std::memory_order_relaxed);
+    last_requested_height_.store(aligned_h, std::memory_order_relaxed);
+    active_scale_percent_.store(clamped_scale, std::memory_order_relaxed);
+#else
     if (aligned_w == gdi_presenter_->width() &&
         aligned_h == gdi_presenter_->height() &&
         clamped_scale == active_scale_percent_.load()) {
         return true;
     }
-
     if (aligned_w != gdi_presenter_->width() || aligned_h != gdi_presenter_->height()) {
         gdi_presenter_->resize_shadow_framebuffer(aligned_w, aligned_h);
         h264_decoder_.reconfigure_resolution(aligned_w, aligned_h);
-#if !defined(NEXUSTS_HAS_FREERDP3_BINARY) || NEXUSTS_HAS_FREERDP3_BINARY == 0
         render_diagnostic_surface_frame(aligned_w, aligned_h);
-#endif
     }
-    active_scale_percent_.store(clamped_scale);
+    last_requested_width_.store(aligned_w, std::memory_order_relaxed);
+    last_requested_height_.store(aligned_h, std::memory_order_relaxed);
+    active_scale_percent_.store(clamped_scale, std::memory_order_relaxed);
+#endif
 
     RdpMonitorLayout primary{};
     primary.monitor_id = 0;
@@ -1445,76 +1691,26 @@ bool RdpSessionContext::update_multi_monitor_topology(
     if (monitors.empty()) {
         return false;
     }
-    std::lock_guard<std::mutex> lock(state_mutex_);
-    params_.monitors = monitors;
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        params_.monitors = monitors;
+    }
 
 #if defined(NEXUSTS_HAS_FREERDP3_BINARY) && NEXUSTS_HAS_FREERDP3_BINARY == 1
-    void* raw_disp = disp_context_.load(std::memory_order_acquire);
-    if (freerdp_instance_ && raw_disp) {
-        auto* instance = static_cast<freerdp*>(freerdp_instance_);
-        auto* disp = static_cast<DispClientContext*>(raw_disp);
-        if (disp->SendMonitorLayout) {
-            UINT32 orientation = ORIENTATION_LANDSCAPE;
-            if (instance->context && instance->context->settings) {
-                orientation = freerdp_settings_get_uint16(
-                    instance->context->settings,
-                    FreeRDP_DesktopOrientation
-                );
-            }
-            std::vector<DISPLAY_CONTROL_MONITOR_LAYOUT> layouts;
-            layouts.reserve(monitors.size());
-            for (const auto& m : monitors) {
-                const uint32_t w = align_even_h264_dimension(
-                    m.width,
-                    DISPLAY_CONTROL_MIN_MONITOR_WIDTH,
-                    DISPLAY_CONTROL_MAX_MONITOR_WIDTH
-                );
-                const uint32_t h = align_even_h264_dimension(
-                    m.height,
-                    DISPLAY_CONTROL_MIN_MONITOR_HEIGHT,
-                    DISPLAY_CONTROL_MAX_MONITOR_HEIGHT
-                );
-                const uint32_t phys_w = std::clamp<uint32_t>(
-                    m.physical_width_mm > 0 ? m.physical_width_mm : ((w * 254u) / 960u),
-                    DISPLAY_CONTROL_MIN_PHYSICAL_MONITOR_WIDTH,
-                    DISPLAY_CONTROL_MAX_PHYSICAL_MONITOR_WIDTH
-                );
-                const uint32_t phys_h = std::clamp<uint32_t>(
-                    m.physical_height_mm > 0 ? m.physical_height_mm : ((h * 254u) / 960u),
-                    DISPLAY_CONTROL_MIN_PHYSICAL_MONITOR_HEIGHT,
-                    DISPLAY_CONTROL_MAX_PHYSICAL_MONITOR_HEIGHT
-                );
-                const uint32_t desk_scale = std::clamp(m.desktop_scale_factor, 100u, 500u);
-                const uint32_t dev_scale = map_device_scale_factor(desk_scale);
-
-                DISPLAY_CONTROL_MONITOR_LAYOUT layout{};
-                layout.Flags = m.is_primary ? DISPLAY_CONTROL_MONITOR_PRIMARY : 0u;
-                layout.Left = m.left;
-                layout.Top = m.top;
-                layout.Width = w;
-                layout.Height = h;
-                layout.PhysicalWidth = phys_w;
-                layout.PhysicalHeight = phys_h;
-                layout.Orientation = orientation;
-                layout.DesktopScaleFactor = desk_scale;
-                layout.DeviceScaleFactor = dev_scale;
-                layouts.push_back(layout);
-            }
-            const UINT rc = disp->SendMonitorLayout(
-                disp,
-                static_cast<UINT32>(layouts.size()),
-                layouts.data()
-            );
-            if (rc != CHANNEL_RC_OK) {
-                NX_RDP_LOGE("DISP_DVC SendMonitorLayout returned error code %u", rc);
-                return false;
-            }
+    {
+        std::lock_guard<std::mutex> lock(input_mutex_);
+        pending_monitors_ = monitors;
+        has_pending_monitors_ = true;
+        if (wakeup_event_) {
+            SetEvent(static_cast<HANDLE>(wakeup_event_));
         }
     }
-#endif
+    return disp_context_.load(std::memory_order_acquire) != nullptr;
+#else
     NX_RDP_LOGI("DISP_DVC monitor layout updated: %zu monitor(s), primary=%ux%u @ %u%%",
                 monitors.size(), monitors[0].width, monitors[0].height, monitors[0].desktop_scale_factor);
     return true;
+#endif
 }
 
 void RdpSessionContext::send_keyboard_scancode(
@@ -1528,17 +1724,9 @@ void RdpSessionContext::send_keyboard_scancode(
 #if defined(NEXUSTS_HAS_FREERDP3_BINARY) && NEXUSTS_HAS_FREERDP3_BINARY == 1
     std::lock_guard<std::mutex> lock(input_mutex_);
     if (freerdp_instance_) {
-        auto* instance = static_cast<freerdp*>(freerdp_instance_);
-        if (instance->context && instance->context->input) {
-            UINT16 flags = key_down ? 0 : KBD_FLAGS_RELEASE;
-            if (extended_key) {
-                flags |= KBD_FLAGS_EXTENDED;
-            }
-            freerdp_input_send_keyboard_event(
-                instance->context->input,
-                flags,
-                static_cast<UINT8>(rdp_scancode & 0xFF)
-            );
+        pending_keys_.push_back(QueuedKeyEvent{rdp_scancode, key_down, extended_key});
+        if (wakeup_event_) {
+            SetEvent(static_cast<HANDLE>(wakeup_event_));
         }
     }
 #else
@@ -1557,11 +1745,20 @@ void RdpSessionContext::send_pointer_event(
         return;
     }
 #if defined(NEXUSTS_HAS_FREERDP3_BINARY) && NEXUSTS_HAS_FREERDP3_BINARY == 1
+    constexpr uint16_t kPtrFlagsMoveOnly = 0x0800u; // PTR_FLAGS_MOVE
     std::lock_guard<std::mutex> lock(input_mutex_);
     if (freerdp_instance_) {
-        auto* instance = static_cast<freerdp*>(freerdp_instance_);
-        if (instance->context && instance->context->input) {
-            freerdp_input_send_mouse_event(instance->context->input, pointer_flags, x, y);
+        if (pointer_flags == kPtrFlagsMoveOnly &&
+            !pending_pointer_events_.empty() &&
+            pending_pointer_events_.back().flags == kPtrFlagsMoveOnly) {
+            // Coalesce consecutive intermediate mouse-move events in O(1) while preserving click causality
+            pending_pointer_events_.back().x = x;
+            pending_pointer_events_.back().y = y;
+        } else {
+            pending_pointer_events_.push_back(QueuedPointerEvent{pointer_flags, x, y});
+        }
+        if (wakeup_event_) {
+            SetEvent(static_cast<HANDLE>(wakeup_event_));
         }
     }
 #else

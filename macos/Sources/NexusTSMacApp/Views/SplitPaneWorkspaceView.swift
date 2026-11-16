@@ -340,7 +340,7 @@ public struct SessionCanvasRouterView: View {
             switch tab.connection.protocolType {
             case .SSH, .TELNET:
                 TerminalSessionView(tab: tab)
-            case .RDP:
+            case .RDP, .WINDOWS_TERMINAL_SERVICES:
                 RdpSessionView(tab: tab)
             case .VNC, .APPLE_SCREEN_SHARING:
                 VncScreenSharingView(tab: tab)
@@ -352,7 +352,7 @@ public struct SessionCanvasRouterView: View {
                 IsolatedWebSessionView(tab: tab)
             case .KUBERNETES_POD, .DOCKER_CONTAINER:
                 ContainerWorkloadStudioView(tab: tab)
-            case .VMWARE_VSPHERE, .PROXMOX_VE, .HYPER_V, .AWS_EC2, .AZURE_VM, .WINDOWS_TERMINAL_SERVICES:
+            case .VMWARE_VSPHERE, .PROXMOX_VE, .HYPER_V, .AWS_EC2, .AZURE_VM:
                 CloudHypervisorSessionView(tab: tab)
             case .UTILITY_PING, .UTILITY_TRACEROUTE, .UTILITY_PORT_SCANNER, .UTILITY_WAKE_ON_LAN:
                 NetworkDiagnosticsSessionView(tab: tab)
@@ -366,6 +366,7 @@ public struct SessionCanvasRouterView: View {
 public struct DetachedSessionWindowRootView: View {
     @EnvironmentObject private var store: WorkspaceStore
     @Environment(\.dismiss) private var dismiss
+    @State private var didReDock: Bool = false
     public let tabId: UUID
 
     public init(tabId: UUID) {
@@ -373,27 +374,35 @@ public struct DetachedSessionWindowRootView: View {
     }
 
     public var body: some View {
-        if let tab = store.detachedWindowTabs[tabId] {
-            SessionCanvasRouterView(tab: tab)
-                .navigationTitle(tab.title)
-                .navigationSubtitle("\(tab.connection.protocolType.displayName) • \(tab.connection.host)")
-                .toolbar {
-                    ToolbarItem(placement: .primaryAction) {
-                        Button {
-                            store.reDockDetachedTab(tabId)
-                            dismiss()
-                        } label: {
-                            Label("Re-Dock in Main Window", systemImage: "macwindow.on.rectangle")
+        Group {
+            if let tab = store.detachedWindowTabs[tabId] {
+                SessionCanvasRouterView(tab: tab)
+                    .navigationTitle(tab.title)
+                    .navigationSubtitle("\(tab.connection.protocolType.displayName) • \(tab.connection.host)")
+                    .toolbar {
+                        ToolbarItem(placement: .primaryAction) {
+                            Button {
+                                didReDock = true
+                                store.reDockDetachedTab(tabId)
+                                dismiss()
+                            } label: {
+                                Label("Re-Dock in Main Window", systemImage: "macwindow.on.rectangle")
+                            }
+                            .help("Move live session back into the main workspace split-pane tree without disconnecting")
                         }
-                        .help("Move live session back into the main workspace split-pane tree without disconnecting")
                     }
-                }
-        } else {
-            ContentUnavailableView(
-                "Session Re-Docked or Closed",
-                systemImage: "checkmark.circle",
-                description: Text("This session was returned to the main NexusTS window.")
-            )
+            } else {
+                ContentUnavailableView(
+                    "Session Re-Docked or Closed",
+                    systemImage: "checkmark.circle",
+                    description: Text("This session was returned to the main NexusTS window.")
+                )
+            }
+        }
+        .onDisappear {
+            if !didReDock && store.detachedWindowTabs[tabId] != nil {
+                store.closeTab(tabId, destroyRuntime: true)
+            }
         }
     }
 }

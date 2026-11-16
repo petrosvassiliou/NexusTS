@@ -31,6 +31,7 @@ import androidx.compose.material.icons.outlined.CloudUpload
 import androidx.compose.material.icons.outlined.CreateNewFolder
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Description
+import androidx.compose.material.icons.outlined.DriveFileRenameOutline
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.LockOpen
 import androidx.compose.material.icons.outlined.MoreVert
@@ -53,9 +54,9 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
-import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -73,19 +74,35 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.nexusts.app.core.ui.theme.NexusTheme
+import com.nexusts.app.core.vault.credentials.ResolvedSessionSecret
+import com.nexusts.app.core.vault.model.ProtocolSpecificSettings
+import com.nexusts.app.core.vault.model.VaultConnection
+import com.nexusts.app.core.vault.model.VaultProtocolType
+import com.nexusts.app.protocols.ssh.bridge.NativeRemoteFileEntryDto
+import com.nexusts.app.protocols.ssh.bridge.SshNativeBridge
+import com.nexusts.app.protocols.ssh.sftp.FtpSecurityMode
+import com.nexusts.app.protocols.ssh.sftp.JvmFtpFtpsTransferClient
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.json.Json
+import java.io.Closeable
 import java.io.File
-import java.io.FileInputStream
-import java.io.FileOutputStream
+import java.io.IOException
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
 @Immutable
 data class CommanderFileItem(
@@ -108,6 +125,57 @@ data class CommanderTransferTask(
     val completed: Boolean = false
 )
 
+/**
+ * Parses either an octal permission string (`"755"`, `"0755"`, `"644"`, `"4755"`) OR a 9/10-character
+ * symbolic UNIX permission string (`"rwxr-xr-x"`, `"-rwxr-xr-x"`, `"drwxr-xr-x"`) into its numeric
+ * UNIX permission mode (`0755` == `493`). Returns `null` if [input] is malformed.
+ */
+fun parseChmodPermissionsToOctal(input: String): Int? {
+    val trimmed = input.trim()
+    if (trimmed.isEmpty()) return null
+
+    val strippedOctal = when {
+        trimmed.startsWith("0o", ignoreCase = true) -> trimmed.substring(2)
+        else -> trimmed
+    }
+    if (strippedOctal.length in 1..4 && strippedOctal.all { it in '0'..'7' }) {
+        val parsed = strippedOctal.toIntOrNull(8) ?: return null
+        return parsed.takeIf { it in 0..0b111_111_111_111 }
+    }
+
+    val triplets = when (trimmed.length) {
+        9 -> trimmed
+        10 -> {
+            if (trimmed[0] !in "-dlcbpsD") return null
+            trimmed.substring(1)
+        }
+        else -> return null
+    }
+    return JvmFtpFtpsTransferClient.symbolicTripletsToOctal(triplets)
+}
+
+fun octalModeToRwx(mode: Int, isDir: Boolean): String {
+    fun triplet(shift: Int, specialBit: Int, specialExecChar: Char, specialNoExecChar: Char): String {
+        val bits = (mode ushr shift) and 0b111
+        val r = if ((bits and 0b100) != 0) 'r' else '-'
+        val w = if ((bits and 0b010) != 0) 'w' else '-'
+        val hasSpecial = (mode and specialBit) != 0
+        val hasExec = (bits and 0b001) != 0
+        val x = when {
+            hasSpecial && hasExec -> specialExecChar
+            hasSpecial && !hasExec -> specialNoExecChar
+            hasExec -> 'x'
+            else -> '-'
+        }
+        return "$r$w$x"
+    }
+    val prefix = if (isDir) 'd' else '-'
+    val u = triplet(6, 0b100_000_000_000, 's', 'S')
+    val g = triplet(3, 0b010_000_000_000, 's', 'S')
+    val o = triplet(0, 0b001_000_000_000, 't', 'T')
+    return "$prefix$u$g$o"
+}
+
 private fun filePermissionsToRwx(file: File): String {
     val prefix = if (file.isDirectory) 'd' else '-'
     val r = if (file.canRead()) 'r' else '-'
@@ -116,8 +184,7 @@ private fun filePermissionsToRwx(file: File): String {
     return "$prefix$r$w$x$r-$x$r-$x"
 }
 
-private fun applyOctalToFile(file: File, octalStr: String) {
-    val mode = octalStr.toIntOrNull(8) ?: 0b110_100_100
+private fun applyOctalModeToLocalFile(file: File, mode: Int) {
     val ownerBits = (mode ushr 6) and 0b111
     val otherBits = mode and 0b111
     runCatching {
@@ -150,7 +217,7 @@ private fun listRealDirectoryItems(dir: File, rootBoundary: File): List<Commande
         canonicalDir.path != canonicalRoot.path &&
         (parentFile.path.startsWith(canonicalRoot.path) || parentFile.canRead())
 
-    return if (canNavigateUp && parentFile != null) {
+    return if (parentFile != null && canNavigateUp) {
         val upTarget = if (parentFile.canRead()) parentFile.absolutePath else canonicalRoot.absolutePath
         listOf(
             CommanderFileItem(
@@ -168,63 +235,76 @@ private fun listRealDirectoryItems(dir: File, rootBoundary: File): List<Commande
 }
 
 /**
- * Dual-Pane SFTP / FTP / FTPS / SCP File Transfer Commander View for Googlebook OS & Android Tablets:
- * - Real local filesystem browsing rooted at `context.filesDir` (seeded with `vault-exports/`, `downloads/`, `keys/` on first open)
- * - Native Drag-and-Drop (`dragAndDropSource` / `dragAndDropTarget`) across Local <-> Remote panes
- * - Context menu for Octal `chmod` permissions (`0755`, `0644`, `0600`) and file deletion
- * - New Directory (`mkdir`) creation modal
- * - Live Streaming Background Transfer Queue with Pause / Resume / Cancel job controls
+ * Stateful transfer session controller retained inside `ActiveVaultSessionStore` across split-pane
+ * tab switches and window detaches. Drives live SFTP/SCP/FTP over Rust JNI (`SshNativeBridge.nativeTransfer*`)
+ * and live FTP / Explicit FTPS / Implicit FTPS over `JvmFtpFtpsTransferClient`.
  */
-@Composable
-fun DualPaneTransferCommanderView(
-    protocolBadge: String,
-    remoteHost: String,
-    localTitle: String,
-    remoteTitle: String,
-    transferQueueTitle: String,
-    initialLocalPath: String = "/home/googlebook/Downloads",
-    initialRemotePath: String = "/var/www/production",
-    modifier: Modifier = Modifier
-) {
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
+@Stable
+class TransferCommanderSessionController(
+    val protocolType: VaultProtocolType,
+    val host: String,
+    val port: Int,
+    val secret: ResolvedSessionSecret = ResolvedSessionSecret(),
+    val initialLocalPathHint: String = "/home/googlebook/Downloads",
+    val initialRemotePathHint: String = "",
+    val ftpsImplicitTls: Boolean = false,
+    val allowInsecureTls: Boolean = true,
+    val bastionHost: String = "",
+    val bastionPort: Int = 22,
+    val bastionUsername: String = "",
+    val bastionPassword: String = "",
+    val bastionPrivateKeyPem: String = "",
+    private val tunnelLease: Closeable? = null
+) : Closeable {
 
-    val localRootDir = remember(context) { context.filesDir }
-    val resolvedInitialLocalPath = remember(initialLocalPath, localRootDir) {
-        val candidate = File(initialLocalPath)
-        if (candidate.exists() && candidate.isDirectory && candidate.canRead()) {
-            candidate.absolutePath
-        } else {
-            localRootDir.absolutePath
+    val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val ioMutex = Mutex()
+    private val json = Json { ignoreUnknownKeys = true }
+
+    var localPath by mutableStateOf("")
+    var remotePath by mutableStateOf(
+        initialRemotePathHint.trim().takeIf { it.isNotEmpty() }?.let { "/" + it.trim('/') } ?: "/"
+    )
+    var selectedLocal by mutableStateOf<CommanderFileItem?>(null)
+    var selectedRemote by mutableStateOf<CommanderFileItem?>(null)
+    var remoteStatusBanner by mutableStateOf("")
+
+    val localEntries = mutableStateListOf<CommanderFileItem>()
+    val remoteEntries = mutableStateListOf<CommanderFileItem>()
+    val transferQueue = mutableStateListOf<CommanderTransferTask>()
+    val activeTransferJobs = ConcurrentHashMap<String, Job>()
+
+    private var localInitialized: Boolean = false
+    private var remoteInitialized: Boolean = false
+
+    @Volatile
+    private var nativeHandle: Long = 0L
+
+    @Volatile
+    private var jvmFtpClient: JvmFtpFtpsTransferClient? = null
+
+    private val usesJvmFtpBackend: Boolean
+        get() = protocolType == VaultProtocolType.FTPS ||
+            (protocolType == VaultProtocolType.FTP && !SshNativeBridge.isNativeLoaded)
+
+    private val usesNativeRustBackend: Boolean
+        get() = SshNativeBridge.isNativeLoaded &&
+            protocolType in setOf(VaultProtocolType.SFTP, VaultProtocolType.SCP, VaultProtocolType.FTP)
+
+    fun initializeLocalIfNeeded(localRootDir: File) {
+        if (!localInitialized) {
+            localInitialized = true
+            val candidate = File(initialLocalPathHint)
+            localPath = if (candidate.exists() && candidate.isDirectory && candidate.canRead()) {
+                candidate.absolutePath
+            } else {
+                localRootDir.absolutePath
+            }
         }
     }
 
-    val remoteStagingRoot = remember(context, remoteHost) {
-        val sanitizedHost = remoteHost.replace(Regex("[^A-Za-z0-9._-]"), "_").ifBlank { "remote" }
-        File(context.cacheDir, "nexusts_remote_stage/$sanitizedHost")
-    }
-    val normalizedInitialRemote = remember(initialRemotePath) {
-        "/" + initialRemotePath.trim('/').ifBlank { "var/www/production" }
-    }
-
-    var localPath by remember(resolvedInitialLocalPath) { mutableStateOf(resolvedInitialLocalPath) }
-    var remotePath by remember(normalizedInitialRemote) { mutableStateOf(normalizedInitialRemote) }
-    var selectedLocal by remember { mutableStateOf<CommanderFileItem?>(null) }
-    var selectedRemote by remember { mutableStateOf<CommanderFileItem?>(null) }
-
-    val localEntries = remember { mutableStateListOf<CommanderFileItem>() }
-    val remoteEntries = remember { mutableStateListOf<CommanderFileItem>() }
-    val transferQueue = remember { mutableStateListOf<CommanderTransferTask>() }
-    val activeTransferJobs = remember { mutableStateMapOf<String, Job>() }
-
-    fun mapRemoteVirtualToStageFile(virtualPath: String): File {
-        val rel = virtualPath.trimStart('/')
-        return if (rel.isEmpty()) remoteStagingRoot else File(remoteStagingRoot, rel)
-    }
-
-    suspend fun refreshLocalPane(path: String = localPath) {
+    suspend fun refreshLocalPane(localRootDir: File, path: String = localPath) {
         val items = withContext(Dispatchers.IO) {
-            // Seed starter workspace directories on first open if filesDir is empty
             val existing = localRootDir.listFiles()
             if (existing == null || existing.isEmpty()) {
                 val exportsDir = File(localRootDir, "vault-exports").apply { mkdirs() }
@@ -243,191 +323,584 @@ fun DualPaneTransferCommanderView(
             val dir = File(path).let { if (it.exists() && it.isDirectory && it.canRead()) it else localRootDir }
             listRealDirectoryItems(dir, localRootDir)
         }
-        localEntries.clear()
-        localEntries.addAll(items)
+        withContext(Dispatchers.Main.immediate) {
+            localEntries.clear()
+            localEntries.addAll(items)
+        }
     }
 
-    suspend fun refreshRemotePane(vPath: String = remotePath) {
-        val items = withContext(Dispatchers.IO) {
-            val defaultStageDir = mapRemoteVirtualToStageFile(normalizedInitialRemote)
-            if (!remoteStagingRoot.exists()) {
-                defaultStageDir.mkdirs()
-                File(defaultStageDir, "nginx.conf").writeText(
-                    "worker_processes auto;\nevents { worker_connections 4096; }\nhttp { sendfile on; tcp_nopush on; }\n"
-                )
-                File(defaultStageDir, "docker-compose.prod.yml").writeText(
-                    "services:\n  gateway:\n    image: ghcr.io/nexusts/edge-proxy:stable\n    restart: always\n"
-                )
-                File(defaultStageDir, "systemd-units").apply {
-                    mkdirs()
-                    File(this, "nexusts-node.service").writeText("[Unit]\nDescription=NexusTS Node Daemon\n")
+    private suspend fun ensureRemoteConnectedLocked(): String {
+        if (usesJvmFtpBackend) {
+            val existing = jvmFtpClient
+            if (existing != null && existing.isConnected) {
+                return remotePath
+            }
+            val mode = when {
+                protocolType == VaultProtocolType.FTPS && (ftpsImplicitTls || port == 990) ->
+                    FtpSecurityMode.IMPLICIT_FTPS
+                protocolType == VaultProtocolType.FTPS ->
+                    FtpSecurityMode.EXPLICIT_FTPS
+                else ->
+                    FtpSecurityMode.PLAIN_FTP
+            }
+            val client = JvmFtpFtpsTransferClient(
+                host = host,
+                port = port,
+                username = secret.username.ifBlank { "anonymous" },
+                password = secret.password,
+                securityMode = mode,
+                allowInsecureTls = allowInsecureTls
+            )
+            client.connect()
+            jvmFtpClient = client
+            if (!remoteInitialized) {
+                remoteInitialized = true
+                if (initialRemotePathHint.isBlank()) {
+                    val serverPwd = runCatching { client.pwd() }.getOrDefault("/")
+                    remotePath = serverPwd.ifBlank { "/" }
                 }
             }
-            val targetStage = mapRemoteVirtualToStageFile(vPath).apply { mkdirs() }
-            val fmt = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US)
-            val cleanVPath = "/" + vPath.trim('/')
-            val children = targetStage.listFiles().orEmpty().map { child ->
-                val childVPath = if (cleanVPath == "/") "/${child.name}" else "$cleanVPath/${child.name}"
-                CommanderFileItem(
-                    name = child.name,
-                    fullPath = childVPath,
-                    isDirectory = child.isDirectory,
-                    sizeBytes = if (child.isDirectory) 4096L else child.length(),
-                    permissions = filePermissionsToRwx(child),
-                    modifiedIso = fmt.format(Date(child.lastModified()))
-                )
-            }.sortedWith(
-                compareByDescending<CommanderFileItem> { it.isDirectory }
-                    .thenBy { it.name.lowercase(Locale.ROOT) }
+            return remotePath
+        }
+
+        if (usesNativeRustBackend) {
+            if (nativeHandle > 0L) {
+                return remotePath
+            }
+            val protoName = when (protocolType) {
+                VaultProtocolType.SCP -> "SCP"
+                VaultProtocolType.FTP -> "FTP"
+                else -> "SFTP"
+            }
+            val handle = SshNativeBridge.nativeTransferConnect(
+                protocol = protoName,
+                host = host.trim(),
+                port = port,
+                username = secret.username.ifBlank { if (protoName == "FTP") "anonymous" else "root" },
+                password = secret.password,
+                privateKeyPem = secret.privateKeyPem,
+                passphrase = secret.keyPassphrase,
+                bastionHost = bastionHost,
+                bastionPort = bastionPort,
+                bastionUser = bastionUsername,
+                bastionPassword = bastionPassword,
+                bastionKeyPem = bastionPrivateKeyPem
             )
-            if (cleanVPath != "/") {
-                val parentVPath = cleanVPath.substringBeforeLast('/', "").ifEmpty { "/" }
-                listOf(
-                    CommanderFileItem(
-                        name = "..",
-                        fullPath = parentVPath,
-                        isDirectory = true,
-                        sizeBytes = 0L,
-                        permissions = "drwxr-xr-x",
-                        modifiedIso = fmt.format(Date(targetStage.lastModified()))
+            if (handle <= 0L) {
+                val err = SshNativeBridge.nativeTransferLastError(0L).ifBlank {
+                    "$protoName connection to $host:$port failed"
+                }
+                throw IOException(err)
+            }
+            nativeHandle = handle
+            if (!remoteInitialized) {
+                remoteInitialized = true
+                if (initialRemotePathHint.isBlank()) {
+                    val pwd = SshNativeBridge.nativeTransferPwd(handle)
+                    if (pwd.isNotBlank()) {
+                        remotePath = pwd
+                    }
+                }
+            }
+            return remotePath
+        }
+
+        throw IOException("Native ${protocolType.name} transport library is not loaded on this host JVM")
+    }
+
+    suspend fun refreshRemotePane(targetPath: String = remotePath) {
+        val outcome = withContext(Dispatchers.IO) {
+            ioMutex.withLock {
+                runCatching {
+                    val initialResolved = ensureRemoteConnectedLocked()
+                    val effectiveTarget = if (!remoteInitialized || targetPath.isBlank()) {
+                        initialResolved
+                    } else {
+                        targetPath
+                    }
+                    val normalizedPath = if (effectiveTarget.startsWith("/")) {
+                        effectiveTarget
+                    } else {
+                        "/$effectiveTarget"
+                    }
+                    val children: List<CommanderFileItem> = when {
+                        usesJvmFtpBackend -> {
+                            val client = jvmFtpClient ?: error("FTP/FTPS session disconnected")
+                            client.listDirectory(normalizedPath).map { entry ->
+                                CommanderFileItem(
+                                    name = entry.name,
+                                    fullPath = entry.fullPath,
+                                    isDirectory = entry.isDirectory,
+                                    sizeBytes = if (entry.isDirectory) 4096L else entry.sizeBytes,
+                                    permissions = entry.formatRwxPermissions(),
+                                    modifiedIso = entry.modifiedIso
+                                )
+                            }
+                        }
+                        usesNativeRustBackend -> {
+                            val handle = nativeHandle
+                            val rawJson = SshNativeBridge.nativeTransferListDirJson(handle, normalizedPath)
+                            val err = SshNativeBridge.nativeTransferLastError(handle)
+                            if (rawJson == "[]" && err.isNotBlank()) {
+                                throw IOException(err)
+                            }
+                            val fmt = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US)
+                            val dtos = json.decodeFromString(
+                                ListSerializer(NativeRemoteFileEntryDto.serializer()),
+                                rawJson.ifBlank { "[]" }
+                            )
+                            dtos.map { dto ->
+                                val modIso = if (dto.modified_epoch_sec > 0L) {
+                                    fmt.format(Date(dto.modified_epoch_sec * 1000L))
+                                } else {
+                                    ""
+                                }
+                                CommanderFileItem(
+                                    name = dto.name,
+                                    fullPath = dto.full_path,
+                                    isDirectory = dto.is_directory,
+                                    sizeBytes = if (dto.is_directory) 4096L else dto.size_bytes,
+                                    permissions = octalModeToRwx(dto.unix_mode, dto.is_directory),
+                                    modifiedIso = modIso
+                                )
+                            }
+                        }
+                        else -> emptyList()
+                    }.sortedWith(
+                        compareByDescending<CommanderFileItem> { it.isDirectory }
+                            .thenBy { it.name.lowercase(Locale.ROOT) }
                     )
-                ) + children
-            } else {
-                children
+
+                    val withUp = if (normalizedPath != "/") {
+                        val parent = normalizedPath.trimEnd('/').substringBeforeLast('/', "").ifEmpty { "/" }
+                        listOf(
+                            CommanderFileItem(
+                                name = "..",
+                                fullPath = parent,
+                                isDirectory = true,
+                                sizeBytes = 0L,
+                                permissions = "drwxr-xr-x",
+                                modifiedIso = ""
+                            )
+                        ) + children
+                    } else {
+                        children
+                    }
+                    normalizedPath to withUp
+                }
             }
         }
-        remoteEntries.clear()
-        remoteEntries.addAll(items)
+
+        withContext(Dispatchers.Main.immediate) {
+            outcome.onSuccess { (resolvedPath, items) ->
+                remotePath = resolvedPath
+                remoteStatusBanner = ""
+                remoteEntries.clear()
+                remoteEntries.addAll(items)
+            }.onFailure { err ->
+                remoteStatusBanner = err.message ?: "Remote ${protocolType.name} connection failed"
+                remoteEntries.clear()
+            }
+        }
     }
 
-    LaunchedEffect(localPath) {
-        refreshLocalPane(localPath)
-    }
-
-    LaunchedEffect(remotePath) {
-        refreshRemotePane(remotePath)
-    }
-
-    fun startStreamingCopy(
-        sourceFile: File,
-        destFile: File,
-        displayFileName: String,
-        directionLabel: String,
-        onCompletedRefresh: suspend () -> Unit
-    ) {
+    fun enqueueUpload(localFileItem: CommanderFileItem) {
+        if (localFileItem.isDirectory) return
         val taskId = UUID.randomUUID().toString()
+        val destRemoteDir = remotePath.trimEnd('/').ifEmpty { "/" }
+        val destRemotePath = if (destRemoteDir == "/") {
+            "/${localFileItem.name}"
+        } else {
+            "$destRemoteDir/${localFileItem.name}"
+        }
+
         transferQueue.add(
             0,
             CommanderTransferTask(
                 id = taskId,
-                fileName = displayFileName,
-                directionLabel = directionLabel,
+                fileName = localFileItem.name,
+                directionLabel = "UPLOAD → $host:$port",
                 progressFraction = 0f,
                 speedLabel = "Starting…",
                 completed = false
             )
         )
+
         val job = scope.launch {
-            val result = withContext(Dispatchers.IO) {
-                runCatching {
-                    if (!sourceFile.exists() || !sourceFile.isFile) {
-                        error("Source file '${sourceFile.name}' not found")
-                    }
-                    destFile.parentFile?.mkdirs()
-                    val totalBytes = sourceFile.length().coerceAtLeast(1L)
-                    var copiedBytes = 0L
-                    val startedNs = System.nanoTime()
-                    val buffer = ByteArray(16 * 1024)
-
-                    FileInputStream(sourceFile).use { input ->
-                        FileOutputStream(destFile).use { output ->
-                            while (isActive) {
-                                // Honor Pause toggle on queue item
-                                while (isActive) {
-                                    val snapshotTask = withContext(Dispatchers.Main) {
-                                        transferQueue.firstOrNull { it.id == taskId }
-                                    } ?: return@runCatching 0L
-                                    if (!snapshotTask.paused) break
-                                    delay(80L)
-                                }
-
-                                val read = input.read(buffer)
-                                if (read < 0) break
-                                if (read > 0) {
-                                    output.write(buffer, 0, read)
-                                    copiedBytes += read
-                                    val elapsedSec = ((System.nanoTime() - startedNs) / 1_000_000_000.0).coerceAtLeast(0.001)
-                                    val mbPerSec = (copiedBytes / 1_048_576.0) / elapsedSec
-                                    val progress = (copiedBytes.toFloat() / totalBytes.toFloat()).coerceIn(0f, 1f)
-                                    val label = "${formatHumanBytes(copiedBytes)} • ${String.format(Locale.US, "%.1f MB/s", mbPerSec)}"
-                                    withContext(Dispatchers.Main) {
-                                        val idx = transferQueue.indexOfFirst { it.id == taskId }
-                                        if (idx >= 0) {
-                                            transferQueue[idx] = transferQueue[idx].copy(
-                                                progressFraction = progress,
-                                                speedLabel = label
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                            output.fd.sync()
-                        }
-                    }
-                    destFile.length()
+            val startedNs = System.nanoTime()
+            val result = runCatching {
+                val srcFile = File(localFileItem.fullPath)
+                if (!srcFile.exists() || !srcFile.isFile) {
+                    throw IOException("Local file '${srcFile.name}' not found")
                 }
+                waitWhilePaused(taskId) ?: return@runCatching 0L
+                val bytes = srcFile.readBytes()
+                val modeOctal = parseChmodPermissionsToOctal(localFileItem.permissions) ?: 0b110_100_100
+                updateTaskProgress(taskId, 0.35f, "${formatHumanBytes(bytes.size.toLong())} • Uploading…")
+
+                ioMutex.withLock {
+                    ensureRemoteConnectedLocked()
+                    when {
+                        usesJvmFtpBackend -> {
+                            val ok = jvmFtpClient?.uploadFile(destRemotePath, bytes) ?: false
+                            if (!ok) throw IOException("FTP/FTPS STOR failed for $destRemotePath")
+                        }
+                        usesNativeRustBackend -> {
+                            val ok = SshNativeBridge.nativeTransferWriteFile(
+                                nativeHandle,
+                                destRemotePath,
+                                bytes,
+                                modeOctal
+                            )
+                            if (!ok) {
+                                val err = SshNativeBridge.nativeTransferLastError(nativeHandle)
+                                throw IOException(err.ifBlank { "Upload failed for $destRemotePath" })
+                            }
+                        }
+                        else -> throw IOException("Remote ${protocolType.name} transport unavailable")
+                    }
+                }
+                bytes.size.toLong()
             }
 
             activeTransferJobs.remove(taskId)
-            result.onSuccess { finalBytes ->
+            val elapsedSec = ((System.nanoTime() - startedNs) / 1_000_000_000.0).coerceAtLeast(0.001)
+            withContext(Dispatchers.Main.immediate) {
                 val idx = transferQueue.indexOfFirst { it.id == taskId }
                 if (idx >= 0) {
-                    transferQueue[idx] = transferQueue[idx].copy(
-                        progressFraction = 1.0f,
-                        speedLabel = "${formatHumanBytes(finalBytes)} • Done",
-                        paused = false,
-                        completed = true
-                    )
+                    result.onSuccess { total ->
+                        val mbps = (total / 1_048_576.0) / elapsedSec
+                        transferQueue[idx] = transferQueue[idx].copy(
+                            progressFraction = 1.0f,
+                            speedLabel = "${formatHumanBytes(total)} • ${String.format(Locale.US, "%.1f MB/s", mbps)} • Done",
+                            paused = false,
+                            completed = true
+                        )
+                    }.onFailure { err ->
+                        transferQueue[idx] = transferQueue[idx].copy(
+                            speedLabel = "Failed: ${err.message ?: "I/O error"}",
+                            paused = false
+                        )
+                    }
                 }
-                onCompletedRefresh()
-            }.onFailure { err ->
-                val idx = transferQueue.indexOfFirst { it.id == taskId }
-                if (idx >= 0) {
-                    transferQueue[idx] = transferQueue[idx].copy(
-                        speedLabel = "Failed: ${err.message ?: "I/O error"}",
-                        paused = false
-                    )
-                }
+            }
+            if (result.isSuccess) {
+                refreshRemotePane(remotePath)
             }
         }
         activeTransferJobs[taskId] = job
     }
 
-    val enqueueUpload: (CommanderFileItem) -> Unit = { file ->
-        if (!file.isDirectory) {
-            val srcFile = File(file.fullPath)
-            val dstFile = File(mapRemoteVirtualToStageFile(remotePath), file.name)
-            startStreamingCopy(
-                sourceFile = srcFile,
-                destFile = dstFile,
-                displayFileName = file.name,
-                directionLabel = "UPLOAD → $remoteHost",
-                onCompletedRefresh = { refreshRemotePane(remotePath) }
+    fun enqueueDownload(remoteFileItem: CommanderFileItem, localRootDir: File) {
+        if (remoteFileItem.isDirectory) return
+        val taskId = UUID.randomUUID().toString()
+        val dstFile = File(localPath, remoteFileItem.name)
+
+        transferQueue.add(
+            0,
+            CommanderTransferTask(
+                id = taskId,
+                fileName = remoteFileItem.name,
+                directionLabel = "DOWNLOAD ← $host:$port",
+                progressFraction = 0f,
+                speedLabel = "Starting…",
+                completed = false
+            )
+        )
+
+        val job = scope.launch {
+            val startedNs = System.nanoTime()
+            val result = runCatching {
+                waitWhilePaused(taskId) ?: return@runCatching 0L
+                updateTaskProgress(taskId, 0.25f, "Downloading…")
+                val downloaded: ByteArray = ioMutex.withLock {
+                    ensureRemoteConnectedLocked()
+                    when {
+                        usesJvmFtpBackend -> {
+                            jvmFtpClient?.downloadFile(remoteFileItem.fullPath)
+                                ?: throw IOException("FTP/FTPS session not connected")
+                        }
+                        usesNativeRustBackend -> {
+                            SshNativeBridge.nativeTransferReadFile(nativeHandle, remoteFileItem.fullPath)
+                                ?: throw IOException(
+                                    SshNativeBridge.nativeTransferLastError(nativeHandle)
+                                        .ifBlank { "Download failed for ${remoteFileItem.fullPath}" }
+                                )
+                        }
+                        else -> throw IOException("Remote ${protocolType.name} transport unavailable")
+                    }
+                }
+                waitWhilePaused(taskId) ?: return@runCatching 0L
+                dstFile.parentFile?.mkdirs()
+                dstFile.writeBytes(downloaded)
+                downloaded.size.toLong()
+            }
+
+            activeTransferJobs.remove(taskId)
+            val elapsedSec = ((System.nanoTime() - startedNs) / 1_000_000_000.0).coerceAtLeast(0.001)
+            withContext(Dispatchers.Main.immediate) {
+                val idx = transferQueue.indexOfFirst { it.id == taskId }
+                if (idx >= 0) {
+                    result.onSuccess { total ->
+                        val mbps = (total / 1_048_576.0) / elapsedSec
+                        transferQueue[idx] = transferQueue[idx].copy(
+                            progressFraction = 1.0f,
+                            speedLabel = "${formatHumanBytes(total)} • ${String.format(Locale.US, "%.1f MB/s", mbps)} • Done",
+                            paused = false,
+                            completed = true
+                        )
+                    }.onFailure { err ->
+                        transferQueue[idx] = transferQueue[idx].copy(
+                            speedLabel = "Failed: ${err.message ?: "I/O error"}",
+                            paused = false
+                        )
+                    }
+                }
+            }
+            if (result.isSuccess) {
+                refreshLocalPane(localRootDir, localPath)
+            }
+        }
+        activeTransferJobs[taskId] = job
+    }
+
+    private suspend fun waitWhilePaused(taskId: String): Unit? {
+        while (scope.isActive) {
+            val task = withContext(Dispatchers.Main.immediate) {
+                transferQueue.firstOrNull { it.id == taskId }
+            } ?: return null
+            if (!task.paused) return Unit
+            delay(80L)
+        }
+        return null
+    }
+
+    private suspend fun updateTaskProgress(taskId: String, progress: Float, label: String) {
+        withContext(Dispatchers.Main.immediate) {
+            val idx = transferQueue.indexOfFirst { it.id == taskId }
+            if (idx >= 0) {
+                transferQueue[idx] = transferQueue[idx].copy(
+                    progressFraction = progress.coerceIn(0f, 1f),
+                    speedLabel = label
+                )
+            }
+        }
+    }
+
+    fun createRemoteFolder(dirName: String) {
+        val safeName = dirName.replace("/", "_").trim()
+        if (safeName.isEmpty() || safeName == "." || safeName == "..") return
+        val base = remotePath.trimEnd('/').ifEmpty { "/" }
+        val fullRemote = if (base == "/") "/$safeName" else "$base/$safeName"
+        scope.launch {
+            val err = ioMutex.withLock {
+                runCatching {
+                    ensureRemoteConnectedLocked()
+                    val ok = when {
+                        usesJvmFtpBackend -> jvmFtpClient?.mkdir(fullRemote) == true
+                        usesNativeRustBackend -> SshNativeBridge.nativeTransferMkdir(nativeHandle, fullRemote)
+                        else -> false
+                    }
+                    if (!ok) {
+                        throw IOException(
+                            if (usesNativeRustBackend) {
+                                SshNativeBridge.nativeTransferLastError(nativeHandle).ifBlank { "mkdir failed" }
+                            } else {
+                                "Remote MKD failed for $fullRemote"
+                            }
+                        )
+                    }
+                }.exceptionOrNull()
+            }
+            if (err != null) {
+                withContext(Dispatchers.Main.immediate) {
+                    remoteStatusBanner = err.message ?: "mkdir failed"
+                }
+            } else {
+                refreshRemotePane(remotePath)
+            }
+        }
+    }
+
+    fun chmodRemoteItem(item: CommanderFileItem, rawPermInput: String) {
+        val mode = parseChmodPermissionsToOctal(rawPermInput) ?: return
+        scope.launch {
+            val err = ioMutex.withLock {
+                runCatching {
+                    ensureRemoteConnectedLocked()
+                    val ok = when {
+                        usesJvmFtpBackend -> jvmFtpClient?.chmod(item.fullPath, mode) == true
+                        usesNativeRustBackend -> SshNativeBridge.nativeTransferChmod(nativeHandle, item.fullPath, mode)
+                        else -> false
+                    }
+                    if (!ok) {
+                        throw IOException(
+                            if (usesNativeRustBackend) {
+                                SshNativeBridge.nativeTransferLastError(nativeHandle).ifBlank { "chmod failed" }
+                            } else {
+                                "Remote CHMOD failed for ${item.fullPath}"
+                            }
+                        )
+                    }
+                }.exceptionOrNull()
+            }
+            if (err != null) {
+                withContext(Dispatchers.Main.immediate) {
+                    remoteStatusBanner = err.message ?: "chmod failed"
+                }
+            } else {
+                refreshRemotePane(remotePath)
+            }
+        }
+    }
+
+    fun renameRemoteItem(item: CommanderFileItem, newName: String) {
+        val safeName = newName.replace("/", "_").trim()
+        if (safeName.isEmpty() || safeName == "." || safeName == ".." || safeName == item.name) return
+        val parent = item.fullPath.trimEnd('/').substringBeforeLast('/', "").ifEmpty { "/" }
+        val newFullPath = if (parent == "/") "/$safeName" else "$parent/$safeName"
+        scope.launch {
+            val err = ioMutex.withLock {
+                runCatching {
+                    ensureRemoteConnectedLocked()
+                    val ok = when {
+                        usesJvmFtpBackend -> jvmFtpClient?.rename(item.fullPath, newFullPath) == true
+                        usesNativeRustBackend -> SshNativeBridge.nativeTransferRename(nativeHandle, item.fullPath, newFullPath)
+                        else -> false
+                    }
+                    if (!ok) {
+                        throw IOException(
+                            if (usesNativeRustBackend) {
+                                SshNativeBridge.nativeTransferLastError(nativeHandle).ifBlank { "rename failed" }
+                            } else {
+                                "Remote rename failed for ${item.fullPath}"
+                            }
+                        )
+                    }
+                }.exceptionOrNull()
+            }
+            if (err != null) {
+                withContext(Dispatchers.Main.immediate) {
+                    remoteStatusBanner = err.message ?: "rename failed"
+                }
+            } else {
+                refreshRemotePane(remotePath)
+            }
+        }
+    }
+
+    fun deleteRemoteItem(item: CommanderFileItem) {
+        if (item.name == "..") return
+        scope.launch {
+            val err = ioMutex.withLock {
+                runCatching {
+                    ensureRemoteConnectedLocked()
+                    val ok = when {
+                        usesJvmFtpBackend -> jvmFtpClient?.remove(item.fullPath, item.isDirectory) == true
+                        usesNativeRustBackend -> SshNativeBridge.nativeTransferRemove(nativeHandle, item.fullPath, item.isDirectory)
+                        else -> false
+                    }
+                    if (!ok) {
+                        throw IOException(
+                            if (usesNativeRustBackend) {
+                                SshNativeBridge.nativeTransferLastError(nativeHandle).ifBlank { "remove failed" }
+                            } else {
+                                "Remote delete failed for ${item.fullPath}"
+                            }
+                        )
+                    }
+                }.exceptionOrNull()
+            }
+            if (err != null) {
+                withContext(Dispatchers.Main.immediate) {
+                    remoteStatusBanner = err.message ?: "delete failed"
+                }
+            } else {
+                withContext(Dispatchers.Main.immediate) {
+                    if (selectedRemote?.fullPath == item.fullPath) {
+                        selectedRemote = null
+                    }
+                }
+                refreshRemotePane(remotePath)
+            }
+        }
+    }
+
+    override fun close() {
+        activeTransferJobs.values.forEach { it.cancel() }
+        activeTransferJobs.clear()
+        val handle = nativeHandle
+        nativeHandle = 0L
+        if (handle > 0L && SshNativeBridge.isNativeLoaded) {
+            runCatching { SshNativeBridge.nativeTransferDisconnect(handle) }
+        }
+        val ftp = jvmFtpClient
+        jvmFtpClient = null
+        runCatching { ftp?.close() }
+        runCatching { tunnelLease?.close() }
+        scope.cancel()
+    }
+}
+
+/**
+ * Dual-Pane SFTP / FTP / FTPS / SCP File Transfer Commander View for Googlebook OS & Android Tablets:
+ * - Real local filesystem browsing rooted at `context.filesDir`
+ * - Live remote SFTP, SCP, FTP (Rust JNI + JVM FTP fallback) & Explicit/Implicit FTPS (`JvmFtpFtpsTransferClient`)
+ * - Persistent session & directory state across split-pane tab switches via [sessionController]
+ * - Native Drag-and-Drop (`dragAndDropSource` / `dragAndDropTarget`) across Local <-> Remote panes
+ * - Context menu for Octal & Symbolic `chmod` permissions (`0755`, `rwxr-xr-x`, `0644`), `mv` rename, and `rm` deletion
+ * - New Directory (`mkdir`) creation modal and Live Background Transfer Queue with Pause / Resume / Cancel
+ */
+@Composable
+fun DualPaneTransferCommanderView(
+    protocolBadge: String,
+    remoteHost: String,
+    localTitle: String,
+    remoteTitle: String,
+    transferQueueTitle: String,
+    initialLocalPath: String = "/home/googlebook/Downloads",
+    initialRemotePath: String = "",
+    connection: VaultConnection? = null,
+    secret: ResolvedSessionSecret = ResolvedSessionSecret(),
+    adHocPort: Int? = null,
+    controller: TransferCommanderSessionController? = null,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    val uiScope = rememberCoroutineScope()
+    val localRootDir = remember(context) { context.filesDir }
+
+    val resolvedController = remember(controller, protocolBadge, remoteHost, connection?.id, adHocPort) {
+        controller ?: run {
+            val proto = connection?.protocol ?: when (protocolBadge.uppercase(Locale.ROOT)) {
+                "SCP" -> VaultProtocolType.SCP
+                "FTP" -> VaultProtocolType.FTP
+                "FTPS" -> VaultProtocolType.FTPS
+                else -> VaultProtocolType.SFTP
+            }
+            val ftSettings = connection?.settings as? ProtocolSpecificSettings.FileTransfer
+            val defaultPort = when (proto) {
+                VaultProtocolType.FTP -> 21
+                VaultProtocolType.FTPS -> if (ftSettings?.ftpsImplicitTls == true) 990 else 21
+                else -> 22
+            }
+            TransferCommanderSessionController(
+                protocolType = proto,
+                host = connection?.host?.takeIf { it.isNotBlank() } ?: remoteHost,
+                port = adHocPort ?: ftSettings?.port?.takeIf { it > 0 } ?: defaultPort,
+                secret = secret,
+                initialLocalPathHint = ftSettings?.initialLocalDirectory?.ifBlank { initialLocalPath } ?: initialLocalPath,
+                initialRemotePathHint = ftSettings?.initialRemoteDirectory?.ifBlank { initialRemotePath } ?: initialRemotePath,
+                ftpsImplicitTls = ftSettings?.ftpsImplicitTls ?: false
             )
         }
     }
 
-    val enqueueDownload: (CommanderFileItem) -> Unit = { file ->
-        if (!file.isDirectory) {
-            val srcFile = mapRemoteVirtualToStageFile(file.fullPath)
-            val dstFile = File(localPath, file.name)
-            startStreamingCopy(
-                sourceFile = srcFile,
-                destFile = dstFile,
-                displayFileName = file.name,
-                directionLabel = "DOWNLOAD ← $remoteHost",
-                onCompletedRefresh = { refreshLocalPane(localPath) }
-            )
+    LaunchedEffect(resolvedController, localRootDir) {
+        resolvedController.initializeLocalIfNeeded(localRootDir)
+        resolvedController.refreshLocalPane(localRootDir, resolvedController.localPath)
+        if (resolvedController.remoteEntries.isEmpty()) {
+            resolvedController.refreshRemotePane(resolvedController.remotePath)
         }
     }
 
@@ -438,6 +911,38 @@ fun DualPaneTransferCommanderView(
             .padding(8.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
+        if (resolvedController.remoteStatusBanner.isNotBlank()) {
+            Surface(
+                shape = MaterialTheme.shapes.small,
+                color = MaterialTheme.colorScheme.errorContainer,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = "${resolvedController.protocolType.name} (${resolvedController.host}:${resolvedController.port}): ${resolvedController.remoteStatusBanner}",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                        modifier = Modifier.weight(1f),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    TextButton(
+                        onClick = {
+                            uiScope.launch { resolvedController.refreshRemotePane(resolvedController.remotePath) }
+                        }
+                    ) {
+                        Text("Retry")
+                    }
+                }
+            }
+        }
+
         Row(
             modifier = Modifier
                 .weight(1f)
@@ -448,67 +953,79 @@ fun DualPaneTransferCommanderView(
             CommanderPaneCard(
                 paneId = "LOCAL",
                 paneTitle = localTitle,
-                currentPath = localPath,
-                entries = localEntries,
-                selectedItem = selectedLocal,
+                currentPath = resolvedController.localPath,
+                entries = resolvedController.localEntries,
+                selectedItem = resolvedController.selectedLocal,
                 accentColor = MaterialTheme.colorScheme.primary,
                 onSelect = { item ->
                     if (item.isDirectory) {
-                        localPath = item.fullPath.ifBlank { localRootDir.absolutePath }
-                        selectedLocal = null
+                        val nextPath = item.fullPath.ifBlank { localRootDir.absolutePath }
+                        resolvedController.localPath = nextPath
+                        resolvedController.selectedLocal = null
+                        uiScope.launch { resolvedController.refreshLocalPane(localRootDir, nextPath) }
                     } else {
-                        selectedLocal = item
+                        resolvedController.selectedLocal = item
                     }
                 },
                 onRefreshPane = {
-                    selectedLocal = null
-                    scope.launch { refreshLocalPane(localPath) }
+                    resolvedController.selectedLocal = null
+                    uiScope.launch { resolvedController.refreshLocalPane(localRootDir, resolvedController.localPath) }
                 },
                 onCreateFolder = { dirName ->
                     val safeName = dirName.replace("/", "_").trim()
                     if (safeName.isNotEmpty() && safeName != "." && safeName != "..") {
-                        scope.launch {
+                        uiScope.launch {
                             withContext(Dispatchers.IO) {
-                                File(localPath, safeName).mkdirs()
+                                File(resolvedController.localPath, safeName).mkdirs()
                             }
-                            refreshLocalPane(localPath)
+                            resolvedController.refreshLocalPane(localRootDir, resolvedController.localPath)
                         }
                     }
                 },
-                onChmodItem = { item, octalOrRwx ->
-                    scope.launch {
-                        withContext(Dispatchers.IO) {
-                            val f = File(item.fullPath)
-                            if (octalOrRwx.all { it in '0'..'7' }) {
-                                applyOctalToFile(f, octalOrRwx)
+                onChmodItem = { item, rawPermInput ->
+                    val mode = parseChmodPermissionsToOctal(rawPermInput)
+                    if (mode != null) {
+                        uiScope.launch {
+                            withContext(Dispatchers.IO) {
+                                applyOctalModeToLocalFile(File(item.fullPath), mode)
                             }
+                            resolvedController.refreshLocalPane(localRootDir, resolvedController.localPath)
                         }
-                        refreshLocalPane(localPath)
-                        val idx = localEntries.indexOfFirst { it.fullPath == item.fullPath }
-                        if (idx >= 0 && !octalOrRwx.all { it in '0'..'7' }) {
-                            localEntries[idx] = localEntries[idx].copy(permissions = octalOrRwx)
+                    }
+                },
+                onRenameItem = { item, newName ->
+                    val safeName = newName.replace("/", "_").trim()
+                    if (safeName.isNotEmpty() && safeName != "." && safeName != "..") {
+                        uiScope.launch {
+                            withContext(Dispatchers.IO) {
+                                val src = File(item.fullPath)
+                                val dst = File(src.parentFile ?: localRootDir, safeName)
+                                src.renameTo(dst)
+                            }
+                            resolvedController.refreshLocalPane(localRootDir, resolvedController.localPath)
                         }
                     }
                 },
                 onDeleteItem = { item ->
                     if (item.name != "..") {
-                        scope.launch {
+                        uiScope.launch {
                             withContext(Dispatchers.IO) {
                                 File(item.fullPath).deleteRecursively()
                             }
-                            if (selectedLocal?.fullPath == item.fullPath) {
-                                selectedLocal = null
+                            if (resolvedController.selectedLocal?.fullPath == item.fullPath) {
+                                resolvedController.selectedLocal = null
                             }
-                            refreshLocalPane(localPath)
+                            resolvedController.refreshLocalPane(localRootDir, resolvedController.localPath)
                         }
                     }
                 },
                 onReceiveDroppedFile = { srcPane, droppedName, sizeBytes, perms ->
                     if (srcPane == "REMOTE") {
-                        val cleanRemote = "/" + remotePath.trim('/')
-                        val virtualFull = if (cleanRemote == "/") "/$droppedName" else "$cleanRemote/$droppedName"
-                        enqueueDownload(
-                            CommanderFileItem(droppedName, virtualFull, false, sizeBytes, perms, "")
+                        val cleanRemote = "/" + resolvedController.remotePath.trim('/')
+                        val remoteFull = if (cleanRemote == "/") "/$droppedName" else "$cleanRemote/$droppedName"
+                        resolvedController.enqueueDownload(
+                            CommanderFileItem(droppedName, remoteFull, false, sizeBytes, perms, ""),
+                            localRootDir
                         )
                     }
                 },
@@ -526,8 +1043,8 @@ fun DualPaneTransferCommanderView(
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 FilledTonalIconButton(
-                    enabled = selectedLocal != null && selectedLocal?.isDirectory == false,
-                    onClick = { selectedLocal?.let(enqueueUpload) }
+                    enabled = resolvedController.selectedLocal != null && resolvedController.selectedLocal?.isDirectory == false,
+                    onClick = { resolvedController.selectedLocal?.let(resolvedController::enqueueUpload) }
                 ) {
                     Icon(Icons.Outlined.CloudUpload, contentDescription = "Upload")
                 }
@@ -535,73 +1052,62 @@ fun DualPaneTransferCommanderView(
                 Spacer(modifier = Modifier.height(12.dp))
 
                 FilledTonalIconButton(
-                    enabled = selectedRemote != null && selectedRemote?.isDirectory == false,
-                    onClick = { selectedRemote?.let(enqueueDownload) }
+                    enabled = resolvedController.selectedRemote != null && resolvedController.selectedRemote?.isDirectory == false,
+                    onClick = {
+                        resolvedController.selectedRemote?.let {
+                            resolvedController.enqueueDownload(it, localRootDir)
+                        }
+                    }
                 ) {
                     Icon(Icons.Outlined.CloudDownload, contentDescription = "Download")
                 }
             }
 
-            // Right Pane: Remote SFTP / FTPS / SCP Endpoint
+            // Right Pane: Live Remote SFTP / SCP / FTP / FTPS Endpoint
             CommanderPaneCard(
                 paneId = "REMOTE",
-                paneTitle = "$remoteTitle ($protocolBadge • $remoteHost)",
-                currentPath = remotePath,
-                entries = remoteEntries,
-                selectedItem = selectedRemote,
+                paneTitle = "$remoteTitle ($protocolBadge • ${resolvedController.host}:${resolvedController.port})",
+                currentPath = resolvedController.remotePath,
+                entries = resolvedController.remoteEntries,
+                selectedItem = resolvedController.selectedRemote,
                 accentColor = NexusTheme.extendedColors.sftpAccent,
                 onSelect = { item ->
                     if (item.isDirectory) {
-                        remotePath = item.fullPath.ifBlank { "/" }
-                        selectedRemote = null
+                        val nextRemote = item.fullPath.ifBlank { "/" }
+                        resolvedController.remotePath = nextRemote
+                        resolvedController.selectedRemote = null
+                        uiScope.launch { resolvedController.refreshRemotePane(nextRemote) }
                     } else {
-                        selectedRemote = item
+                        resolvedController.selectedRemote = item
                     }
                 },
                 onRefreshPane = {
-                    selectedRemote = null
-                    scope.launch { refreshRemotePane(remotePath) }
+                    resolvedController.selectedRemote = null
+                    uiScope.launch { resolvedController.refreshRemotePane(resolvedController.remotePath) }
                 },
                 onCreateFolder = { dirName ->
-                    val safeName = dirName.replace("/", "_").trim()
-                    if (safeName.isNotEmpty() && safeName != "." && safeName != "..") {
-                        scope.launch {
-                            withContext(Dispatchers.IO) {
-                                File(mapRemoteVirtualToStageFile(remotePath), safeName).mkdirs()
-                            }
-                            refreshRemotePane(remotePath)
-                        }
-                    }
+                    resolvedController.createRemoteFolder(dirName)
                 },
-                onChmodItem = { item, rwx ->
-                    scope.launch {
-                        withContext(Dispatchers.IO) {
-                            val stageFile = mapRemoteVirtualToStageFile(item.fullPath)
-                            if (rwx.all { it in '0'..'7' }) {
-                                applyOctalToFile(stageFile, rwx)
-                            }
-                        }
-                        val idx = remoteEntries.indexOfFirst { it.fullPath == item.fullPath }
-                        if (idx >= 0) remoteEntries[idx] = item.copy(permissions = rwx)
-                    }
+                onChmodItem = { item, rawPermInput ->
+                    resolvedController.chmodRemoteItem(item, rawPermInput)
+                },
+                onRenameItem = { item, newName ->
+                    resolvedController.renameRemoteItem(item, newName)
                 },
                 onDeleteItem = { item ->
-                    if (item.name != "..") {
-                        scope.launch {
-                            withContext(Dispatchers.IO) {
-                                mapRemoteVirtualToStageFile(item.fullPath).deleteRecursively()
-                            }
-                            if (selectedRemote?.fullPath == item.fullPath) {
-                                selectedRemote = null
-                            }
-                            refreshRemotePane(remotePath)
-                        }
-                    }
+                    resolvedController.deleteRemoteItem(item)
                 },
                 onReceiveDroppedFile = { srcPane, droppedName, sizeBytes, perms ->
                     if (srcPane == "LOCAL") {
-                        enqueueUpload(
-                            CommanderFileItem(droppedName, File(localPath, droppedName).absolutePath, false, sizeBytes, perms, "")
+                        resolvedController.enqueueUpload(
+                            CommanderFileItem(
+                                droppedName,
+                                File(resolvedController.localPath, droppedName).absolutePath,
+                                false,
+                                sizeBytes,
+                                perms,
+                                ""
+                            )
                         )
                     }
                 },
@@ -634,7 +1140,7 @@ fun DualPaneTransferCommanderView(
                         )
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            text = "$transferQueueTitle (${transferQueue.size})",
+                            text = "$transferQueueTitle (${resolvedController.transferQueue.size})",
                             style = MaterialTheme.typography.labelLarge
                         )
                     }
@@ -646,7 +1152,7 @@ fun DualPaneTransferCommanderView(
                 }
                 Spacer(modifier = Modifier.height(6.dp))
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    items(transferQueue, key = { it.id }) { item ->
+                    items(resolvedController.transferQueue, key = { it.id }) { item ->
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             verticalAlignment = Alignment.CenterVertically,
@@ -690,9 +1196,9 @@ fun DualPaneTransferCommanderView(
                             if (!item.completed) {
                                 IconButton(
                                     onClick = {
-                                        val idx = transferQueue.indexOfFirst { it.id == item.id }
+                                        val idx = resolvedController.transferQueue.indexOfFirst { it.id == item.id }
                                         if (idx >= 0) {
-                                            transferQueue[idx] = item.copy(paused = !item.paused)
+                                            resolvedController.transferQueue[idx] = item.copy(paused = !item.paused)
                                         }
                                     },
                                     modifier = Modifier.size(24.dp)
@@ -706,8 +1212,8 @@ fun DualPaneTransferCommanderView(
                             }
                             IconButton(
                                 onClick = {
-                                    activeTransferJobs.remove(item.id)?.cancel()
-                                    transferQueue.removeAll { it.id == item.id }
+                                    resolvedController.activeTransferJobs.remove(item.id)?.cancel()
+                                    resolvedController.transferQueue.removeAll { it.id == item.id }
                                 },
                                 modifier = Modifier.size(24.dp)
                             ) {
@@ -738,6 +1244,7 @@ private fun CommanderPaneCard(
     onRefreshPane: () -> Unit,
     onCreateFolder: (String) -> Unit,
     onChmodItem: (CommanderFileItem, String) -> Unit,
+    onRenameItem: (CommanderFileItem, String) -> Unit,
     onDeleteItem: (CommanderFileItem) -> Unit,
     onReceiveDroppedFile: (srcPane: String, fileName: String, sizeBytes: Long, perms: String) -> Unit,
     modifier: Modifier = Modifier
@@ -746,7 +1253,9 @@ private fun CommanderPaneCard(
     var showMkdirDialog by remember { mutableStateOf(false) }
     var mkdirName by remember { mutableStateOf("") }
     var chmodTarget by remember { mutableStateOf<CommanderFileItem?>(null) }
-    var octalInput by remember { mutableStateOf("0644") }
+    var permInput by remember { mutableStateOf("0644") }
+    var renameTarget by remember { mutableStateOf<CommanderFileItem?>(null) }
+    var renameInput by remember { mutableStateOf("") }
 
     val dropTarget = remember(paneId) {
         object : DragAndDropTarget {
@@ -811,25 +1320,71 @@ private fun CommanderPaneCard(
     }
 
     chmodTarget?.let { item ->
+        val parsedOctal = parseChmodPermissionsToOctal(permInput)
         AlertDialog(
             onDismissRequest = { chmodTarget = null },
             title = { Text("chmod • ${item.name}", style = MaterialTheme.typography.titleMedium) },
             text = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    OutlinedTextField(
+                        value = permInput,
+                        onValueChange = { next ->
+                            permInput = next.filter { ch -> ch in "01234567rwxstSTdl-" }.take(10)
+                        },
+                        label = { Text("Octal (e.g. 0755) or Symbolic (rwxr-xr-x)") },
+                        singleLine = true,
+                        isError = permInput.isNotBlank() && parsedOctal == null,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    if (parsedOctal != null) {
+                        Text(
+                            text = String.format(
+                                Locale.US,
+                                "Resolved: %04o (%s)",
+                                parsedOctal,
+                                octalModeToRwx(parsedOctal, item.isDirectory)
+                            ),
+                            style = NexusTheme.monospace.keycapShortcut,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = parsedOctal != null,
+                    onClick = {
+                        onChmodItem(item, permInput)
+                        chmodTarget = null
+                    }
+                ) {
+                    Text("chmod")
+                }
+            }
+        )
+    }
+
+    renameTarget?.let { item ->
+        AlertDialog(
+            onDismissRequest = { renameTarget = null },
+            title = { Text("mv • ${item.name}", style = MaterialTheme.typography.titleMedium) },
+            text = {
                 OutlinedTextField(
-                    value = octalInput,
-                    onValueChange = { octalInput = it.filter { ch -> ch in '0'..'7' }.take(4) },
+                    value = renameInput,
+                    onValueChange = { renameInput = it },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
             },
             confirmButton = {
                 TextButton(
+                    enabled = renameInput.isNotBlank() && renameInput.trim() != item.name,
                     onClick = {
-                        onChmodItem(item, octalToRwx(octalInput, item.isDirectory))
-                        chmodTarget = null
+                        onRenameItem(item, renameInput.trim())
+                        renameTarget = null
                     }
                 ) {
-                    Text("chmod")
+                    Text("Rename")
                 }
             }
         )
@@ -896,7 +1451,7 @@ private fun CommanderPaneCard(
                     .padding(6.dp),
                 verticalArrangement = Arrangement.spacedBy(2.dp)
             ) {
-                items(entries, key = { it.fullPath + it.name }) { item ->
+                items(entries, key = { it.fullPath + "|" + it.name }) { item ->
                     val isSelected = selectedItem?.fullPath == item.fullPath && selectedItem.name == item.name
                     var rowMenuExpanded by remember { mutableStateOf(false) }
 
@@ -971,11 +1526,26 @@ private fun CommanderPaneCard(
                             onDismissRequest = { rowMenuExpanded = false }
                         ) {
                             DropdownMenuItem(
-                                text = { Text("chmod (Octal)") },
+                                text = { Text("chmod (Octal / rwx)") },
                                 leadingIcon = { Icon(Icons.Outlined.LockOpen, contentDescription = null) },
                                 onClick = {
                                     rowMenuExpanded = false
+                                    val currentOct = parseChmodPermissionsToOctal(item.permissions)
+                                    permInput = if (currentOct != null) {
+                                        String.format(Locale.US, "%04o", currentOct)
+                                    } else {
+                                        "0644"
+                                    }
                                     chmodTarget = item
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("mv • Rename") },
+                                leadingIcon = { Icon(Icons.Outlined.DriveFileRenameOutline, contentDescription = null) },
+                                onClick = {
+                                    rowMenuExpanded = false
+                                    renameInput = item.name
+                                    renameTarget = item
                                 }
                             )
                             DropdownMenuItem(
@@ -992,19 +1562,6 @@ private fun CommanderPaneCard(
             }
         }
     }
-}
-
-private fun octalToRwx(octalStr: String, isDir: Boolean): String {
-    val mode = octalStr.toIntOrNull(8) ?: 0b110_100_100
-    fun triplet(shift: Int): String {
-        val bits = (mode ushr shift) and 0b111
-        val r = if ((bits and 0b100) != 0) 'r' else '-'
-        val w = if ((bits and 0b010) != 0) 'w' else '-'
-        val x = if ((bits and 0b001) != 0) 'x' else '-'
-        return "$r$w$x"
-    }
-    val prefix = if (isDir) 'd' else '-'
-    return "$prefix${triplet(6)}${triplet(3)}${triplet(0)}"
 }
 
 private fun formatHumanBytes(bytes: Long): String = when {

@@ -1861,6 +1861,9 @@ fun ActiveProtocolSessionDispatcher(
     val (conn, secret) = remember(tab.tabId, tab.connectionId, uiState.vaultDocument, viewModel) {
         viewModel.resolveConnectionAndSecret(tab.connectionId, tab.tabId)
     }
+    val adHocOverride = remember(tab.tabId, viewModel) {
+        viewModel.sessionStore.adHocOverrides[tab.tabId]
+    }
     val onZoomChanged: (Float) -> Unit = remember(tab.tabId, viewModel) {
         { nextZoom ->
             viewModel.tilingController.updateTab(tab.tabId) { it.copy(zoomFactor = nextZoom) }
@@ -1868,7 +1871,7 @@ fun ActiveProtocolSessionDispatcher(
     }
 
     when (tab.protocol) {
-        SessionProtocolKind.RDP -> {
+        SessionProtocolKind.RDP, SessionProtocolKind.WINDOWS_TS -> {
             val rdpSession = remember(tab.tabId, conn, secret) { viewModel.getOrCreateRdpSession(tab) }
             RdpSessionSurfaceView(
                 session = rdpSession,
@@ -1923,12 +1926,19 @@ fun ActiveProtocolSessionDispatcher(
 
         SessionProtocolKind.SFTP, SessionProtocolKind.FTP,
         SessionProtocolKind.FTPS, SessionProtocolKind.SCP -> {
+            val transferController = remember(tab.tabId, conn, secret) {
+                viewModel.getOrCreateTransferController(tab)
+            }
             DualPaneTransferCommanderView(
                 protocolBadge = tab.protocol.name,
                 remoteHost = tab.subtitleHost,
                 localTitle = strings.sftpLocalPane,
                 remoteTitle = strings.sftpRemotePane,
-                transferQueueTitle = strings.sftpTransferQueue
+                transferQueueTitle = strings.sftpTransferQueue,
+                connection = conn,
+                secret = secret,
+                adHocPort = adHocOverride?.adHocPort,
+                controller = transferController
             )
         }
 
@@ -1937,12 +1947,20 @@ fun ActiveProtocolSessionDispatcher(
                 ?: ProtocolSpecificSettings.Vnc(
                     appleArdDiffieHellmanAuth = tab.protocol == SessionProtocolKind.APPLE_SCREEN_SHARING
                 )
+            val vncClient = remember(tab.tabId, conn, secret) {
+                viewModel.getOrCreateVncSession(tab)
+            }
             VncSessionCanvasView(
-                host = tab.subtitleHost,
-                isAppleScreenSharing = tab.protocol == SessionProtocolKind.APPLE_SCREEN_SHARING,
+                host = adHocOverride?.adHocHost ?: conn?.host ?: tab.subtitleHost,
+                isAppleScreenSharing = tab.protocol == SessionProtocolKind.APPLE_SCREEN_SHARING ||
+                    conn?.protocol == VaultProtocolType.APPLE_SCREEN_SHARING ||
+                    adHocOverride?.adHocProtocolType == VaultProtocolType.APPLE_SCREEN_SHARING,
                 settings = vncSettings,
                 externalZoomFactor = tab.zoomFactor,
-                onZoomFactorChanged = onZoomChanged
+                onZoomFactorChanged = onZoomChanged,
+                secret = secret,
+                adHocPort = adHocOverride?.adHocPort,
+                retainedClient = vncClient
             )
         }
 
@@ -1952,20 +1970,24 @@ fun ActiveProtocolSessionDispatcher(
             IsolatedWebSessionView(
                 settings = webSettings,
                 secret = secret,
-                autoFillActionLabel = strings.webAutofillCredentials
+                autoFillActionLabel = strings.webAutofillCredentials,
+                adHocHost = adHocOverride?.adHocHost,
+                adHocPort = adHocOverride?.adHocPort
             )
         }
 
         SessionProtocolKind.VMWARE_VSPHERE, SessionProtocolKind.PROXMOX_VE,
         SessionProtocolKind.HYPER_V, SessionProtocolKind.AWS_EC2,
-        SessionProtocolKind.AZURE_VM, SessionProtocolKind.WINDOWS_TS -> {
+        SessionProtocolKind.AZURE_VM -> {
             val cloudSettings = (conn?.settings as? ProtocolSpecificSettings.CloudVirtualization)
                 ?: ProtocolSpecificSettings.CloudVirtualization(apiEndpointUrl = "https://${tab.subtitleHost}")
             CloudHypervisorConsoleView(
-                protocol = conn?.protocol ?: if (tab.protocol == SessionProtocolKind.WINDOWS_TS) {
-                    VaultProtocolType.WINDOWS_TERMINAL_SERVICES
-                } else {
-                    VaultProtocolType.PROXMOX_VE
+                protocol = conn?.protocol ?: adHocOverride?.adHocProtocolType ?: when (tab.protocol) {
+                    SessionProtocolKind.VMWARE_VSPHERE -> VaultProtocolType.VMWARE_VSPHERE
+                    SessionProtocolKind.HYPER_V -> VaultProtocolType.HYPER_V
+                    SessionProtocolKind.AWS_EC2 -> VaultProtocolType.AWS_EC2
+                    SessionProtocolKind.AZURE_VM -> VaultProtocolType.AZURE_VM
+                    else -> VaultProtocolType.PROXMOX_VE
                 },
                 endpointHost = tab.subtitleHost,
                 settings = cloudSettings,
@@ -1976,9 +1998,11 @@ fun ActiveProtocolSessionDispatcher(
                         host = vmIp,
                         protocol = vmProto,
                         settings = when (vmProto) {
-                            VaultProtocolType.RDP -> ProtocolSpecificSettings.Rdp()
+                            VaultProtocolType.RDP,
+                            VaultProtocolType.WINDOWS_TERMINAL_SERVICES -> ProtocolSpecificSettings.Rdp()
                             VaultProtocolType.VNC -> ProtocolSpecificSettings.Vnc(appleArdDiffieHellmanAuth = false)
                             VaultProtocolType.APPLE_SCREEN_SHARING -> ProtocolSpecificSettings.Vnc(appleArdDiffieHellmanAuth = true)
+                            VaultProtocolType.TELNET -> ProtocolSpecificSettings.Ssh(port = 23)
                             else -> ProtocolSpecificSettings.Ssh()
                         }
                     )
@@ -1988,10 +2012,21 @@ fun ActiveProtocolSessionDispatcher(
         }
 
         SessionProtocolKind.NET_UTILITY -> {
-            val netSettings = (conn?.settings as? ProtocolSpecificSettings.NetUtility)
+            val resolvedTool = conn?.protocol
+                ?: adHocOverride?.adHocProtocolType
+                ?: VaultProtocolType.UTILITY_PING
+            val baseNetSettings = (conn?.settings as? ProtocolSpecificSettings.NetUtility)
                 ?: ProtocolSpecificSettings.NetUtility()
+            val netSettings = if (resolvedTool == VaultProtocolType.UTILITY_WAKE_ON_LAN &&
+                baseNetSettings.wolMacAddress.isBlank() &&
+                tab.subtitleHost.count { it == ':' || it == '-' } == 5
+            ) {
+                baseNetSettings.copy(wolMacAddress = tab.subtitleHost)
+            } else {
+                baseNetSettings
+            }
             NetworkUtilitiesView(
-                initialTool = conn?.protocol ?: VaultProtocolType.UTILITY_PORT_SCANNER,
+                initialTool = resolvedTool,
                 initialHost = tab.subtitleHost,
                 settings = netSettings,
                 executeLabel = strings.netutilExecute
@@ -7419,7 +7454,7 @@ private fun PlayProtectAutoUpdateDialog(
                                     ).trim()
                                     else -> String.format(
                                         strings.autoUpdateUpToDateFormat,
-                                        uiState.updateCurrentVersion.ifBlank { "0.3.0-beta.6" }
+                                        uiState.updateCurrentVersion.ifBlank { "0.8.0" }
                                     )
                                 },
                                 style = MaterialTheme.typography.titleSmall,
@@ -7434,7 +7469,7 @@ private fun PlayProtectAutoUpdateDialog(
                                 ""
                             }
                             Text(
-                                text = "Installed: v${uiState.updateCurrentVersion.ifBlank { "0.3.0-beta.6" }}  →  Latest: ${uiState.updateLatestTag.ifBlank { "current" }}$sizeMb",
+                                text = "Installed: v${uiState.updateCurrentVersion.ifBlank { "0.8.0" }}  →  Latest: ${uiState.updateLatestTag.ifBlank { "current" }}$sizeMb",
                                 style = NexusTheme.monospace.keycapShortcut,
                                 color = MaterialTheme.colorScheme.secondary
                             )

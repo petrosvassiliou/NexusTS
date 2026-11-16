@@ -100,6 +100,7 @@ public struct NexusTSApp: App {
             store.openConnection(
                 adHoc.toAdHocVaultConnection(),
                 adHocUsername: adHoc.username,
+                adHocPassword: adHoc.password,
                 adHocDomain: adHoc.domain
             )
         } else {

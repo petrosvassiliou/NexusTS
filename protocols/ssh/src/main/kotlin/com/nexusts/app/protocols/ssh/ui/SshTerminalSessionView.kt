@@ -364,7 +364,8 @@ fun SshTerminalSessionView(
                             keyCode = nativeEv.keyCode,
                             unicodeChar = nativeEv.unicodeChar,
                             ctrlPressed = effectiveCtrl,
-                            altPressed = effectiveAlt
+                            altPressed = effectiveAlt,
+                            applicationCursorKeys = controller.isApplicationCursorKeys()
                         )
                         if (ansi != null) {
                             stickyCtrl = false

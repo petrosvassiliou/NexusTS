@@ -74,6 +74,23 @@ public struct ConnectionEditorSheet: View {
                             Text(p.displayName).tag(p)
                         }
                     }
+                    .onChange(of: protocolType) { oldProto, newProto in
+                        guard existing == nil || oldProto != newProto else { return }
+                        if newProto == .TELNET && sshSettings.port == 22 {
+                            sshSettings.port = 23
+                        } else if newProto == .SSH && sshSettings.port == 23 {
+                            sshSettings.port = 22
+                        }
+                        if [.SFTP, .SCP, .FTP, .FTPS].contains(newProto) {
+                            transferSettings.port = newProto.defaultPort
+                            transferSettings.ftpsImplicitTls = newProto == .FTPS
+                        }
+                        if newProto == .RDP || newProto == .WINDOWS_TERMINAL_SERVICES || newProto == .HYPER_V {
+                            if osFamily == "Linux" {
+                                osFamily = "Windows"
+                            }
+                        }
+                    }
                     TextField(protocolType == .SERIAL ? "Device Hint (/dev/cu.*)" : "Hostname / IP / URI", text: $host)
 
                     Picker("Parent Folder", selection: $parentFolderId) {
@@ -197,6 +214,10 @@ public struct ConnectionEditorSheet: View {
                 TextField("Initial Remote Directory", text: $transferSettings.initialRemoteDirectory)
                 Toggle("Show Hidden Dotfiles", isOn: $transferSettings.showHiddenDotfiles)
                 Toggle("Preserve Timestamps", isOn: $transferSettings.preserveTimestamps)
+                if protocolType == .FTPS {
+                    Toggle("Implicit TLS on Port 990 (Uncheck for Explicit AUTH TLS on 21)", isOn: $transferSettings.ftpsImplicitTls)
+                    Toggle("Verify Server TLS Certificate", isOn: $transferSettings.verifyTls)
+                }
             }
 
         case .VNC, .APPLE_SCREEN_SHARING:
@@ -215,6 +236,11 @@ public struct ConnectionEditorSheet: View {
                         Text("\(b) baud").tag(b)
                     }
                 }
+                Picker("Line Ending", selection: $serialSettings.lineEnding) {
+                    Text("CRLF (\\r\\n)").tag("CRLF")
+                    Text("LF (\\n)").tag("LF")
+                    Text("CR (\\r)").tag("CR")
+                }
                 Toggle("Assert DTR", isOn: $serialSettings.dtrEnabled)
                 Toggle("Assert RTS", isOn: $serialSettings.rtsEnabled)
             }
@@ -223,7 +249,9 @@ public struct ConnectionEditorSheet: View {
             Section("Isolated Web Console") {
                 TextField("Target HTTPS URL", text: $webSettings.url)
                 Toggle("Enable Vault Credential JS Auto-Fill", isOn: $webSettings.autoFillEnabled)
+                Toggle("Inject HTTP Basic / Digest Auth", isOn: $webSettings.injectHttpBasicAuth)
                 Toggle("Allow Internal Self-Signed TLS Certificates", isOn: $webSettings.ignoreSelfSignedInternalCert)
+                TextField("Pinned TLS SHA-256 Fingerprint (Optional)", text: $webSettings.pinnedCertSha256)
             }
 
         case .KUBERNETES_POD, .DOCKER_CONTAINER:
@@ -232,6 +260,9 @@ public struct ConnectionEditorSheet: View {
                 TextField("Namespace", text: $containerSettings.namespace)
                 TextField("Pod or Container Name", text: $containerSettings.podOrContainerName)
                 TextField("Exec Shell", text: $containerSettings.shellCommand)
+                if protocolType == .KUBERNETES_POD {
+                    Toggle("Verify Kubernetes API TLS Certificate", isOn: $containerSettings.verifyTls)
+                }
             }
 
         case .VMWARE_VSPHERE, .PROXMOX_VE, .HYPER_V, .AWS_EC2, .AZURE_VM:
@@ -239,6 +270,7 @@ public struct ConnectionEditorSheet: View {
                 TextField("API Endpoint URL", text: $cloudSettings.apiEndpointUrl)
                 TextField("Region or Cluster (e.g. eu-central-1)", text: $cloudSettings.regionOrCluster)
                 TextField("Subscription / Account ID", text: $cloudSettings.subscriptionOrAccountId)
+                Toggle("Verify Hypervisor TLS Certificate", isOn: $cloudSettings.verifyTls)
             }
 
         case .UTILITY_PING, .UTILITY_TRACEROUTE, .UTILITY_PORT_SCANNER, .UTILITY_WAKE_ON_LAN:
@@ -279,8 +311,12 @@ public struct ConnectionEditorSheet: View {
             protocolType = initialProtocol
             let safeInitialFolder = (initialFolderId == VaultHierarchySanitizer.systemCredentialsFolderId) ? nil : initialFolderId
             parentFolderId = safeInitialFolder ?? ""
+            if initialProtocol == .RDP || initialProtocol == .WINDOWS_TERMINAL_SERVICES || initialProtocol == .HYPER_V {
+                osFamily = "Windows"
+            }
             sshSettings.port = initialProtocol == .TELNET ? 23 : 22
             transferSettings.port = initialProtocol.defaultPort
+            transferSettings.ftpsImplicitTls = initialProtocol == .FTPS
             if initialProtocol == .APPLE_SCREEN_SHARING {
                 vncSettings.appleArdDiffieHellmanAuth = true
             }

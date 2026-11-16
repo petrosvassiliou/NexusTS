@@ -172,7 +172,12 @@ class MainActivity : AppCompatActivity() {
             updateCoordinator.checkAndTriggerPlayUpdate(playUpdateLauncher)
             // For direct-installed APKs (outside Google Play), run Play-Protect-compatible HTTPS GitHub Releases auto-check
             val installerPkg = runCatching {
-                packageManager.getInstallSourceInfo(packageName).installingPackageName
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+                    packageManager.getInstallSourceInfo(packageName).installingPackageName
+                } else {
+                    @Suppress("DEPRECATION")
+                    packageManager.getInstallerPackageName(packageName)
+                }
             }.getOrNull()
             if (installerPkg != "com.android.vending") {
                 if (updateCoordinator.isAutoCheckEnabled()) {

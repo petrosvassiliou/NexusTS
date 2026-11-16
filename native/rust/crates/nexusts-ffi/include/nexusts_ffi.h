@@ -56,6 +56,8 @@ int64_t nexusts_ffi_vt_create(uint32_t cols, uint32_t rows, uint32_t max_scrollb
 void nexusts_ffi_vt_resize(int64_t handle, uint32_t cols, uint32_t rows);
 char* nexusts_ffi_vt_feed_and_snapshot_json(int64_t handle, const uint8_t* data_ptr, size_t data_len);
 char* nexusts_ffi_vt_snapshot_json(int64_t handle);
+bool nexusts_vt_application_cursor_keys(int64_t handle);
+bool nexusts_ffi_vt_application_cursor_keys(int64_t handle);
 void nexusts_ffi_vt_destroy(int64_t handle);
 
 NexusFfiBuffer nexusts_ffi_telnet_process(
@@ -67,6 +69,23 @@ NexusFfiBuffer nexusts_ffi_telnet_process(
     NexusFfiBuffer* out_replies
 );
 
+/* --- Live Stateful Async Telnet Client (RFC 854 / NAWS / TTYPE / SGA / ECHO) --- */
+
+int64_t nexusts_telnet_connect(
+    const char* host_cstr,
+    uint16_t port,
+    uint16_t cols,
+    uint16_t rows,
+    const char* term_cstr,
+    char** out_error
+);
+bool nexusts_telnet_write(int64_t handle, const uint8_t* bytes_ptr, size_t bytes_len);
+NexusFfiBuffer nexusts_telnet_read(int64_t handle, bool* out_eof);
+bool nexusts_telnet_resize(int64_t handle, uint16_t cols, uint16_t rows);
+bool nexusts_telnet_is_connected(int64_t handle);
+char* nexusts_telnet_last_error(int64_t handle);
+void nexusts_telnet_disconnect(int64_t handle);
+
 /* --- Async SSHv2 (russh), Bastion Chaining, Port Forwards & SFTP v3 --- */
 
 int64_t nexusts_ffi_ssh_connect_json(
@@ -76,6 +95,7 @@ int64_t nexusts_ffi_ssh_connect_json(
     char** out_error
 );
 
+bool nexusts_ffi_ssh_is_connected(int64_t session_handle);
 bool nexusts_ffi_ssh_send_input(int64_t session_handle, const uint8_t* bytes_ptr, size_t bytes_len);
 NexusFfiBuffer nexusts_ffi_ssh_drain_output(int64_t session_handle, bool* out_eof);
 bool nexusts_ffi_ssh_resize_pty(int64_t session_handle, uint32_t cols, uint32_t rows);
@@ -99,17 +119,71 @@ bool nexusts_ffi_ssh_start_socks5_forward(
 void nexusts_ffi_ssh_disconnect(int64_t session_handle);
 
 int64_t nexusts_ffi_sftp_open_on_ssh(int64_t ssh_session_handle, char** out_error);
+char* nexusts_sftp_pwd(int64_t sftp_handle, char** out_error);
+char* nexusts_ffi_sftp_pwd(int64_t sftp_handle, char** out_error);
 char* nexusts_ffi_sftp_list_dir_json(int64_t sftp_handle, const char* remote_dir_cstr, char** out_error);
 bool nexusts_ffi_sftp_mkdir(int64_t sftp_handle, const char* remote_path_cstr, char** out_error);
 bool nexusts_ffi_sftp_remove(int64_t sftp_handle, const char* remote_path_cstr, bool is_dir, char** out_error);
 bool nexusts_ffi_sftp_rename(int64_t sftp_handle, const char* old_path_cstr, const char* new_path_cstr, char** out_error);
+bool nexusts_sftp_chmod(int64_t sftp_handle, const char* remote_path_cstr, uint32_t mode_octal, char** out_error);
+bool nexusts_ffi_sftp_chmod(int64_t sftp_handle, const char* remote_path_cstr, uint32_t mode_octal, char** out_error);
 NexusFfiBuffer nexusts_ffi_sftp_download(int64_t sftp_handle, const char* remote_path_cstr);
 bool nexusts_ffi_sftp_upload(int64_t sftp_handle, const char* remote_path_cstr, const uint8_t* data_ptr, size_t data_len, char** out_error);
 void nexusts_ffi_sftp_close(int64_t sftp_handle);
 
+/* --- Live SCP Wire Client (`scp -t` / `scp -f` + SSH exec directory management) --- */
+
+int64_t nexusts_scp_connect_json(
+    const char* connect_spec_json_cstr,
+    const char* bastion_spec_json_cstr,
+    char** out_error
+);
+char* nexusts_scp_pwd(int64_t scp_handle, char** out_error);
+char* nexusts_scp_list_dir_json(int64_t scp_handle, const char* remote_dir_cstr, char** out_error);
+NexusFfiBuffer nexusts_scp_download(int64_t scp_handle, const char* remote_path_cstr);
+bool nexusts_scp_upload(
+    int64_t scp_handle,
+    const char* remote_path_cstr,
+    const uint8_t* data_ptr,
+    size_t data_len,
+    uint32_t mode_octal,
+    char** out_error
+);
+bool nexusts_scp_mkdir(int64_t scp_handle, const char* remote_path_cstr, char** out_error);
+bool nexusts_scp_remove(int64_t scp_handle, const char* remote_path_cstr, char** out_error);
+bool nexusts_scp_rename(int64_t scp_handle, const char* old_path_cstr, const char* new_path_cstr, char** out_error);
+bool nexusts_scp_chmod(int64_t scp_handle, const char* remote_path_cstr, uint32_t mode_octal, char** out_error);
+void nexusts_scp_disconnect(int64_t scp_handle);
+
+/* --- Live FTP Wire Client (RFC 959 + RFC 2428 EPSV + RFC 3659 MLSD + LIST fallback) --- */
+
+int64_t nexusts_ftp_connect(
+    const char* host_cstr,
+    uint16_t port,
+    const char* username_cstr,
+    const char* password_cstr,
+    char** out_error
+);
+char* nexusts_ftp_pwd(int64_t ftp_handle, char** out_error);
+bool nexusts_ftp_cwd(int64_t ftp_handle, const char* remote_dir_cstr, char** out_error);
+char* nexusts_ftp_list_dir_json(int64_t ftp_handle, const char* remote_dir_cstr, char** out_error);
+NexusFfiBuffer nexusts_ftp_download(int64_t ftp_handle, const char* remote_path_cstr);
+bool nexusts_ftp_upload(
+    int64_t ftp_handle,
+    const char* remote_path_cstr,
+    const uint8_t* data_ptr,
+    size_t data_len,
+    char** out_error
+);
+bool nexusts_ftp_mkdir(int64_t ftp_handle, const char* remote_path_cstr, char** out_error);
+bool nexusts_ftp_remove(int64_t ftp_handle, const char* remote_path_cstr, char** out_error);
+bool nexusts_ftp_rename(int64_t ftp_handle, const char* old_path_cstr, const char* new_path_cstr, char** out_error);
+bool nexusts_ftp_chmod(int64_t ftp_handle, const char* remote_path_cstr, uint32_t mode_octal, char** out_error);
+void nexusts_ftp_disconnect(int64_t ftp_handle);
+
 char* nexusts_ffi_parse_ftp_mlsd_json(const char* parent_dir_cstr, const char* mlsd_cstr);
 
-/* --- RFB / VNC / Apple Screen Sharing Framebuffer --- */
+/* --- RFB / VNC / Apple Screen Sharing Framebuffer & Live Session Engine --- */
 
 int64_t nexusts_ffi_vnc_create(uint32_t width, uint32_t height);
 void nexusts_ffi_vnc_resize(int64_t handle, uint32_t width, uint32_t height);
@@ -125,9 +199,32 @@ bool nexusts_ffi_vnc_apply_rect(
     char** out_error
 );
 size_t nexusts_ffi_vnc_copy_rgba(int64_t handle, uint8_t* dst_ptr, size_t dst_cap);
+size_t nexusts_ffi_vnc_copy_bgra(int64_t handle, uint8_t* dst_ptr, size_t dst_cap);
 void nexusts_ffi_vnc_destroy(int64_t handle);
 
-/* --- Integrated Network Diagnostics (WoL, Port Probe, Traceroute, Banner) --- */
+int64_t nexusts_vnc_session_connect(
+    const char* host_cstr,
+    uint16_t port,
+    const char* username_cstr,
+    const char* password_cstr,
+    bool shared_session,
+    bool view_only,
+    char** out_error
+);
+bool nexusts_vnc_session_is_connected(int64_t handle);
+char* nexusts_vnc_session_last_error(int64_t handle);
+char* nexusts_vnc_session_desktop_name(int64_t handle);
+uint64_t nexusts_vnc_session_frame_sequence(int64_t handle);
+bool nexusts_vnc_session_get_dimensions(int64_t handle, uint32_t* out_width, uint32_t* out_height);
+size_t nexusts_vnc_session_copy_frame_bgra(int64_t handle, uint8_t* dst_ptr, size_t dst_cap);
+size_t nexusts_vnc_session_copy_frame_rgba(int64_t handle, uint8_t* dst_ptr, size_t dst_cap);
+bool nexusts_vnc_session_send_pointer(int64_t handle, uint8_t button_mask, uint16_t x, uint16_t y);
+bool nexusts_vnc_session_send_key(int64_t handle, bool down, uint32_t keysym);
+bool nexusts_vnc_session_send_clipboard(int64_t handle, const char* text_cstr);
+char* nexusts_vnc_session_pull_clipboard(int64_t handle);
+void nexusts_vnc_session_disconnect(int64_t handle);
+
+/* --- Integrated Network Diagnostics (WoL, Port Probe, Scanner, Traceroute, Banner) --- */
 
 int32_t nexusts_ffi_net_wol(
     const char* mac_cstr,
@@ -137,6 +234,21 @@ int32_t nexusts_ffi_net_wol(
     char** out_error
 );
 char* nexusts_ffi_net_probe_tcp_json(const char* host_cstr, uint16_t port, uint64_t timeout_ms);
+char* nexusts_net_scan_ports_json(
+    const char* host_cstr,
+    uint16_t start_port,
+    uint16_t end_port,
+    uint64_t timeout_ms,
+    uint32_t concurrency
+);
+char* nexusts_ffi_net_scan_ports_json(
+    const char* host_cstr,
+    uint16_t start_port,
+    uint16_t end_port,
+    uint64_t timeout_ms,
+    uint32_t concurrency
+);
+int64_t nexusts_net_tcp_ping_ms(const char* host_cstr, uint16_t port, uint64_t timeout_ms);
 char* nexusts_ffi_net_traceroute_json(const char* host_cstr, uint16_t probe_port, uint8_t max_hops, uint64_t timeout_ms);
 char* nexusts_ffi_net_grab_banner(const char* host_cstr, uint16_t port, uint64_t timeout_ms);
 

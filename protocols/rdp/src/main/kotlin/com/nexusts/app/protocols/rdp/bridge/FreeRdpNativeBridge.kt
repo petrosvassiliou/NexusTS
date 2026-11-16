@@ -33,6 +33,7 @@ object FreeRdpNativeBridge {
     }.getOrDefault(false)
 
     // MS-RDPBCGR Pointer Event Flags
+    const val PTRFLAGS_HWHEEL = 0x0400
     const val PTRFLAGS_WHEEL = 0x0200
     const val PTRFLAGS_WHEEL_NEGATIVE = 0x0100
     const val PTRFLAGS_MOVE = 0x0800
@@ -53,6 +54,16 @@ object FreeRdpNativeBridge {
             magnitude and 0x00FF
         }
         return PTRFLAGS_WHEEL or rotationBits
+    }
+
+    fun encodeHorizontalMouseWheelFlags(steps: Int, negative: Boolean): Int {
+        val magnitude = kotlin.math.abs(steps).coerceIn(1, 255)
+        val rotationBits = if (negative) {
+            PTRFLAGS_WHEEL_NEGATIVE or ((-magnitude) and 0x00FF)
+        } else {
+            magnitude and 0x00FF
+        }
+        return PTRFLAGS_HWHEEL or rotationBits
     }
 
     @JvmStatic
@@ -140,6 +151,9 @@ object FreeRdpNativeBridge {
 
     @JvmStatic
     external fun nativeIsConnected(handle: Long): Boolean
+
+    @JvmStatic
+    external fun nativeGetDesktopDimensions(handle: Long): Long
 
     @JvmStatic
     external fun nativeDestroySession(handle: Long)
@@ -467,6 +481,19 @@ class RdpManagedSession(
         )
     }
 
+    fun syncServerDesktopDimensions() {
+        val handle = nativeHandle
+        if (handle == 0L || !FreeRdpNativeBridge.isNativeLoaded) return
+        val packed = runCatching { FreeRdpNativeBridge.nativeGetDesktopDimensions(handle) }.getOrDefault(0L)
+        if (packed != 0L) {
+            val w = (packed ushr 32).toInt()
+            val h = (packed and 0xFFFFFFFFL).toInt()
+            if (w >= 320 && h >= 240 && _remoteDesktopDimensions.value != (w to h)) {
+                _remoteDesktopDimensions.value = w to h
+            }
+        }
+    }
+
     fun pollSessionHealth() {
         val handle = nativeHandle
         if (handle == 0L || !FreeRdpNativeBridge.isNativeLoaded || _isConnecting.value) return
@@ -484,6 +511,8 @@ class RdpManagedSession(
                         connectionId = connection.id
                     )
                 }
+            } else {
+                syncServerDesktopDimensions()
             }
         }
     }
@@ -625,7 +654,9 @@ class RdpManagedSession(
             }
             val connected = createdHandle != 0L && FreeRdpNativeBridge.nativeConnect(createdHandle)
             _isConnected.value = connected
-            if (!connected) {
+            if (connected) {
+                syncServerDesktopDimensions()
+            } else {
                 val rawNativeErr = if (createdHandle != 0L) {
                     runCatching { FreeRdpNativeBridge.nativeGetLastError(createdHandle) }.getOrDefault("")
                 } else {
@@ -737,9 +768,8 @@ class RdpManagedSession(
         val handle = nativeHandle
         if (handle != 0L && FreeRdpNativeBridge.isNativeLoaded) {
             val effectiveScale = if (settings.hiDpiEnabled || forceDynamic) scalePercent.coerceIn(100, 200) else 100
-            if (FreeRdpNativeBridge.nativeRequestDynamicResize(handle, alignedW, alignedH, effectiveScale)) {
-                _remoteDesktopDimensions.value = alignedW to alignedH
-            }
+            FreeRdpNativeBridge.nativeRequestDynamicResize(handle, alignedW, alignedH, effectiveScale)
+            syncServerDesktopDimensions()
         } else {
             _remoteDesktopDimensions.value = alignedW to alignedH
         }

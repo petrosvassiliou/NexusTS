@@ -121,7 +121,7 @@ public enum VaultProtocolType: String, Codable, CaseIterable, Identifiable, Send
 
     public func defaultSettings(host: String = "") -> ProtocolSpecificSettings {
         switch self {
-        case .RDP:
+        case .RDP, .WINDOWS_TERMINAL_SERVICES:
             return .rdp(RdpProtocolSettings())
         case .SSH, .TELNET:
             return .ssh(SshProtocolSettings(port: defaultPort == 0 ? 22 : defaultPort))
@@ -142,7 +142,7 @@ public enum VaultProtocolType: String, Codable, CaseIterable, Identifiable, Send
                 ? host
                 : (host.isEmpty ? "https://localhost" : "https://\(host)")
             return .webPage(WebPageProtocolSettings(url: url))
-        case .VMWARE_VSPHERE, .PROXMOX_VE, .HYPER_V, .AWS_EC2, .AZURE_VM, .WINDOWS_TERMINAL_SERVICES:
+        case .VMWARE_VSPHERE, .PROXMOX_VE, .HYPER_V, .AWS_EC2, .AZURE_VM:
             let url = host.hasPrefix("http") ? host : "https://\(host.isEmpty ? "localhost" : host):\(defaultPort)"
             return .cloudVirtualization(CloudVirtualizationProtocolSettings(apiEndpointUrl: url))
         case .UTILITY_PING, .UTILITY_TRACEROUTE, .UTILITY_PORT_SCANNER, .UTILITY_WAKE_ON_LAN:
@@ -497,15 +497,17 @@ public struct FileTransferProtocolSettings: Codable, Equatable, Hashable, Sendab
     public var showHiddenDotfiles: Bool = true
     public var maxConcurrentTransfers: Int = 4
     public var ftpsImplicitTls: Bool = false
+    public var verifyTls: Bool = true
 
-    public init(port: Int = 22, ftpsImplicitTls: Bool = false) {
+    public init(port: Int = 22, ftpsImplicitTls: Bool = false, verifyTls: Bool = true) {
         self.port = port
         self.ftpsImplicitTls = ftpsImplicitTls
+        self.verifyTls = verifyTls
     }
 
     enum CodingKeys: String, CodingKey {
         case port, initialLocalDirectory, initialRemoteDirectory
-        case preserveTimestamps, showHiddenDotfiles, maxConcurrentTransfers, ftpsImplicitTls
+        case preserveTimestamps, showHiddenDotfiles, maxConcurrentTransfers, ftpsImplicitTls, verifyTls
     }
 
     public init(from decoder: Decoder) throws {
@@ -517,6 +519,7 @@ public struct FileTransferProtocolSettings: Codable, Equatable, Hashable, Sendab
         self.showHiddenDotfiles = try c.decodeIfPresent(Bool.self, forKey: .showHiddenDotfiles) ?? true
         self.maxConcurrentTransfers = try c.decodeIfPresent(Int.self, forKey: .maxConcurrentTransfers) ?? 4
         self.ftpsImplicitTls = try c.decodeIfPresent(Bool.self, forKey: .ftpsImplicitTls) ?? false
+        self.verifyTls = try c.decodeIfPresent(Bool.self, forKey: .verifyTls) ?? true
     }
 }
 
@@ -611,23 +614,26 @@ public struct CloudVirtualizationProtocolSettings: Codable, Equatable, Hashable,
     public var subscriptionOrAccountId: String
     public var realmOrDomain: String
     public var autoSyncDynamicInventory: Bool
+    public var verifyTls: Bool
 
     public init(
         apiEndpointUrl: String = "https://localhost:8006",
         regionOrCluster: String = "",
         subscriptionOrAccountId: String = "",
         realmOrDomain: String = "pam",
-        autoSyncDynamicInventory: Bool = true
+        autoSyncDynamicInventory: Bool = true,
+        verifyTls: Bool = false
     ) {
         self.apiEndpointUrl = apiEndpointUrl
         self.regionOrCluster = regionOrCluster
         self.subscriptionOrAccountId = subscriptionOrAccountId
         self.realmOrDomain = realmOrDomain
         self.autoSyncDynamicInventory = autoSyncDynamicInventory
+        self.verifyTls = verifyTls
     }
 
     enum CodingKeys: String, CodingKey {
-        case apiEndpointUrl, regionOrCluster, subscriptionOrAccountId, realmOrDomain, autoSyncDynamicInventory
+        case apiEndpointUrl, regionOrCluster, subscriptionOrAccountId, realmOrDomain, autoSyncDynamicInventory, verifyTls
     }
 
     public init(from decoder: Decoder) throws {
@@ -637,6 +643,7 @@ public struct CloudVirtualizationProtocolSettings: Codable, Equatable, Hashable,
         self.subscriptionOrAccountId = try c.decodeIfPresent(String.self, forKey: .subscriptionOrAccountId) ?? ""
         self.realmOrDomain = try c.decodeIfPresent(String.self, forKey: .realmOrDomain) ?? "pam"
         self.autoSyncDynamicInventory = try c.decodeIfPresent(Bool.self, forKey: .autoSyncDynamicInventory) ?? true
+        self.verifyTls = try c.decodeIfPresent(Bool.self, forKey: .verifyTls) ?? false
     }
 }
 
@@ -824,17 +831,39 @@ public enum ProtocolSpecificSettings: Codable, Equatable, Hashable, Sendable {
         }
     }
 
+    public static func portFromUrlString(_ rawUrl: String, defaultHttps: Int = 443, defaultHttp: Int = 80) -> Int {
+        let trimmed = rawUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return defaultHttps }
+        if let comps = URLComponents(string: trimmed), let p = comps.port, p > 0 {
+            return p
+        }
+        let lower = trimmed.lowercased()
+        if lower.hasPrefix("http://") {
+            return defaultHttp
+        }
+        if lower.hasPrefix("https://") {
+            return defaultHttps
+        }
+        if let comps = URLComponents(string: "https://\(trimmed)"), let p = comps.port, p > 0 {
+            return p
+        }
+        return defaultHttps
+    }
+
     public var effectivePort: Int {
         switch self {
         case .rdp(let s): return s.port
         case .ssh(let s): return s.port
         case .fileTransfer(let s): return s.port
         case .vnc(let s): return s.port
-        case .webPage: return 443
-        case .cloudVirtualization: return 443
+        case .webPage(let s): return Self.portFromUrlString(s.url, defaultHttps: 443, defaultHttp: 80)
+        case .cloudVirtualization(let s): return Self.portFromUrlString(s.apiEndpointUrl, defaultHttps: 443, defaultHttp: 80)
         case .netUtility(let s): return s.wolUdpPort
         case .serialUart(let s): return s.baudRate
-        case .containerExec: return 6443
+        case .containerExec(let s):
+            return s.clusterOrSocketEndpoint.lowercased().hasPrefix("unix:")
+                ? 0
+                : Self.portFromUrlString(s.clusterOrSocketEndpoint, defaultHttps: 6443, defaultHttp: 80)
         }
     }
 }
@@ -1081,6 +1110,19 @@ public struct VaultConnection: VaultTimestampedEntity, Hashable {
         self.inheritable = try c.decodeIfPresent(InheritableProperties.self, forKey: .inheritable) ?? InheritableProperties()
         self.settings = try c.decodeIfPresent(ProtocolSpecificSettings.self, forKey: .settings) ?? proto.defaultSettings(host: hostVal)
         self.updatedAtEpochMs = try c.decodeIfPresent(Int64.self, forKey: .updatedAtEpochMs) ?? 0
+    }
+
+    public var effectivePort: Int {
+        if case .webPage(let s) = settings {
+            let trimmedUrl = s.url.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmedUrl.isEmpty && trimmedUrl != "https://localhost" {
+                return ProtocolSpecificSettings.portFromUrlString(trimmedUrl, defaultHttps: 443, defaultHttp: 80)
+            }
+            if !host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return ProtocolSpecificSettings.portFromUrlString(host, defaultHttps: 443, defaultHttp: 80)
+            }
+        }
+        return settings.effectivePort
     }
 }
 

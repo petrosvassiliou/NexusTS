@@ -200,8 +200,21 @@ public:
         uint32_t* out_height
     ) const;
 
+    size_t copy_dirty_shadow_pixels(
+        uint8_t* dst_pixels,
+        size_t dst_capacity,
+        uint32_t* out_width,
+        uint32_t* out_height,
+        uint32_t* out_dirty_x,
+        uint32_t* out_dirty_y,
+        uint32_t* out_dirty_w,
+        uint32_t* out_dirty_h
+    );
+
 private:
     void ensure_window_geometry_locked(uint32_t width, uint32_t height);
+    void expand_dirty_bounds_locked(uint32_t x, uint32_t y, uint32_t w, uint32_t h);
+    void mark_full_frame_dirty_locked(uint32_t width, uint32_t height);
     void present_locked();
 
     mutable std::mutex surface_mutex_;
@@ -212,6 +225,16 @@ private:
     std::atomic<uint32_t> height_{1080};
     std::atomic<uint64_t> frame_seq_{0};
     std::atomic<bool> dirty_pending_{false};
+    bool has_acc_dirty_{true};
+    uint32_t acc_dirty_left_{0};
+    uint32_t acc_dirty_top_{0};
+    uint32_t acc_dirty_right_{1920};
+    uint32_t acc_dirty_bottom_{1080};
+    bool has_client_dirty_{true};
+    uint32_t client_dirty_left_{0};
+    uint32_t client_dirty_top_{0};
+    uint32_t client_dirty_right_{1920};
+    uint32_t client_dirty_bottom_{1080};
     std::vector<uint8_t> shadow_rgba_;
 };
 
@@ -261,12 +284,28 @@ public:
     RdpHardwareH264Decoder& decoder() noexcept { return h264_decoder_; }
 
 private:
+    struct QueuedKeyEvent {
+        uint16_t scancode{0};
+        bool key_down{false};
+        bool extended{false};
+    };
+
+    struct QueuedPointerEvent {
+        uint16_t flags{0};
+        uint16_t x{0};
+        uint16_t y{0};
+    };
+
     void render_diagnostic_surface_frame(uint32_t width, uint32_t height);
+    void signal_event_loop_wakeup() noexcept;
+    void drain_queued_commands_on_event_thread(void* raw_instance);
 
     RdpConnectParams params_;
     std::atomic<bool> connected_{false};
     std::atomic<bool> stop_requested_{false};
     std::atomic<uint32_t> active_scale_percent_{100};
+    std::atomic<uint32_t> last_requested_width_{0};
+    std::atomic<uint32_t> last_requested_height_{0};
     std::mutex state_mutex_;
     std::mutex input_mutex_;
     std::mutex cliprdr_mutex_;
@@ -277,6 +316,12 @@ private:
     RdpHardwareH264Decoder h264_decoder_;
     std::thread event_loop_thread_;
     [[maybe_unused]] void* freerdp_instance_{nullptr};
+    [[maybe_unused]] void* wakeup_event_{nullptr};
+    std::vector<QueuedKeyEvent> pending_keys_;
+    std::vector<QueuedPointerEvent> pending_pointer_events_;
+    std::vector<RdpMonitorLayout> pending_monitors_;
+    bool has_pending_monitors_{false};
+    bool pending_clipboard_announce_{false};
     std::atomic<void*> disp_context_{nullptr};
     void* cliprdr_context_{nullptr};
 };

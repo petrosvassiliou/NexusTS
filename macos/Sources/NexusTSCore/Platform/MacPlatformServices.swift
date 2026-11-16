@@ -346,14 +346,20 @@ public final class MacSerialPortSession: @unchecked Sendable {
             options.c_iflag |= tcflag_t(IXON | IXOFF)
         }
 
-        let speed = speed_t(max(300, settings.baudRate))
-        cfsetspeed(&options, speed)
+        let requestedBaud = max(300, settings.baudRate)
+        if requestedBaud > 230_400 {
+            cfsetspeed(&options, speed_t(B115200))
+        } else {
+            cfsetspeed(&options, speed_t(requestedBaud))
+        }
         tcsetattr(rawFd, TCSANOW, &options)
 
-        // macOS IOSSIOSPEED ioctl (0x80085402) allows non-standard high baud rates like 460800 / 921600
-        let iossiospeed: UInt = 0x8008_5402
-        var customSpeed = speed_t(settings.baudRate)
-        _ = ioctl(rawFd, iossiospeed, &customSpeed)
+        // macOS IOSSIOSPEED ioctl allows non-standard high baud rates such as 460800 / 921600.
+        // Try both 32-bit speed ioctl (0x80045402) and 64-bit speed_t ioctl (0x80085402).
+        var customSpeed = speed_t(requestedBaud)
+        if ioctl(rawFd, UInt(0x8004_5402), &customSpeed) < 0 {
+            _ = ioctl(rawFd, UInt(0x8008_5402), &customSpeed)
+        }
 
         lock.lock()
         self.fd = rawFd
@@ -433,6 +439,12 @@ public final class MacLocalPtySession: @unchecked Sendable {
 
     deinit {
         terminate()
+    }
+
+    public var processIdentifier: pid_t {
+        lock.lock()
+        defer { lock.unlock() }
+        return childPid
     }
 
     public func launchLoginShell(cols: Int = 110, rows: Int = 32) throws {
@@ -535,6 +547,13 @@ public final class MacLocalPtySession: @unchecked Sendable {
         var status: Int32 = 0
         let w = pid > 0 ? waitpid(pid, &status, WNOHANG) : -1
         let exited = (w == pid)
+        if exited {
+            lock.lock()
+            if childPid == pid {
+                childPid = -1
+            }
+            lock.unlock()
+        }
         return (out, exited)
     }
 
@@ -548,9 +567,30 @@ public final class MacLocalPtySession: @unchecked Sendable {
 
         if fd >= 0 { Darwin.close(fd) }
         if pid > 0 {
-            kill(pid, SIGHUP)
+            _ = kill(-pid, SIGHUP)
+            _ = kill(pid, SIGHUP)
             var st: Int32 = 0
-            _ = waitpid(pid, &st, WNOHANG)
+            if waitpid(pid, &st, WNOHANG) == pid {
+                return
+            }
+            DispatchQueue.global(qos: .utility).async {
+                var status: Int32 = 0
+                usleep(30_000)
+                if waitpid(pid, &status, WNOHANG) == pid {
+                    return
+                }
+                _ = kill(-pid, SIGTERM)
+                _ = kill(pid, SIGTERM)
+                for _ in 0..<10 {
+                    usleep(20_000)
+                    if waitpid(pid, &status, WNOHANG) == pid {
+                        return
+                    }
+                }
+                _ = kill(-pid, SIGKILL)
+                _ = kill(pid, SIGKILL)
+                _ = waitpid(pid, &status, 0)
+            }
         }
     }
 }
@@ -676,7 +716,7 @@ public struct MacReleaseUpdateCandidate: Equatable, Sendable {
 }
 
 public enum MacGitHubReleaseUpdater {
-    public static let currentVersion = "0.3.0-beta.6"
+    public static let currentVersion = "0.8.0"
     public static let githubTokenKeychainKey = "github_release_pat"
 
     private static let legacyPreRebaseVersions: Set<String> = [

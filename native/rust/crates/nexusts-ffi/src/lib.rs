@@ -1,6 +1,7 @@
 //! Unified C-ABI FFI Bridge (`libnexusts_ffi.a` / `libnexusts_ffi.dylib`) exposing
-//! Zero-Knowledge `.nxts` v2 Vault Crypto, `xterm-256color` VT Terminal Engine,
-//! Async `russh` SSHv2 + Bastion + Port Forwards + SFTP v3, RFB VNC Framebuffer,
+//! Zero-Knowledge `.nxts` v2 Vault Crypto, `xterm-256color` VT Terminal Engine (incl. DECCKM),
+//! Async `russh` SSHv2 + Bastion + Abort-Safe Port Forwards, Stateful Telnet,
+//! SFTP v3 + SCP + FTP File Transfer, Live RFB 3.3/3.7/3.8 VNC & Apple ARD Type 30,
 //! and Network Diagnostics natively to Swift 6 / macOS.
 
 use nexusts_crypto::{
@@ -8,17 +9,20 @@ use nexusts_crypto::{
     sign_ssh_agent_challenge, Argon2idProfile,
 };
 use nexusts_netutils::{
-    grab_tcp_service_banner, probe_tcp_port, send_wake_on_lan, trace_route_hops,
+    grab_tcp_service_banner, probe_tcp_port, scan_tcp_ports, send_wake_on_lan, tcp_latency_ping,
+    trace_route_hops,
 };
 use nexusts_terminal::ssh_transport::{
     ActiveSshClientSession, SshConnectSpec, TelnetNegotiator,
 };
+use nexusts_terminal::telnet_transport::ActiveTelnetSession;
 use nexusts_terminal::VtTerminalBuffer;
-use nexusts_transfer::wire_clients::{parse_ftp_mlsd_listing, NexusSftpClient};
-use nexusts_vnc::rfb_client::apply_hextile_rect;
+use nexusts_transfer::ftp_client::NexusFtpClient;
+use nexusts_transfer::wire_clients::{parse_ftp_mlsd_listing, NexusScpClient, NexusSftpClient};
+use nexusts_vnc::rfb_client::{apply_hextile_rect, ActiveVncClient};
 use nexusts_vnc::{
     RfbFramebuffer, RFB_ENCODING_COPYRECT, RFB_ENCODING_HEXTILE, RFB_ENCODING_RAW,
-    RFB_ENCODING_TIGHT, RFB_ENCODING_ZRLE,
+    RFB_ENCODING_RRE, RFB_ENCODING_TIGHT, RFB_ENCODING_ZRLE, RFB_PSEUDO_DESKTOP_SIZE,
 };
 use russh::ChannelMsg;
 use std::collections::HashMap;
@@ -29,10 +33,9 @@ use std::ptr;
 use std::slice;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpListener;
 use tokio::runtime::{Builder, Runtime};
 use tokio::sync::mpsc;
+use tokio::task::AbortHandle;
 
 #[repr(C)]
 pub struct NexusFfiBuffer {
@@ -101,6 +104,7 @@ struct LiveSshRecord {
     cmd_tx: Option<mpsc::UnboundedSender<SshActorCommand>>,
     output_buf: Arc<Mutex<Vec<u8>>>,
     eof_flag: Arc<AtomicBool>,
+    abort_handles: Mutex<Vec<AbortHandle>>,
 }
 
 fn vt_registry() -> &'static Mutex<HashMap<i64, VtTerminalBuffer>> {
@@ -113,13 +117,33 @@ fn ssh_registry() -> &'static Mutex<HashMap<i64, LiveSshRecord>> {
     REG.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+fn telnet_registry() -> &'static Mutex<HashMap<i64, Arc<ActiveTelnetSession>>> {
+    static REG: OnceLock<Mutex<HashMap<i64, Arc<ActiveTelnetSession>>>> = OnceLock::new();
+    REG.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
 fn sftp_registry() -> &'static Mutex<HashMap<i64, Arc<NexusSftpClient>>> {
     static REG: OnceLock<Mutex<HashMap<i64, Arc<NexusSftpClient>>>> = OnceLock::new();
     REG.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+fn scp_registry() -> &'static Mutex<HashMap<i64, Arc<NexusScpClient>>> {
+    static REG: OnceLock<Mutex<HashMap<i64, Arc<NexusScpClient>>>> = OnceLock::new();
+    REG.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn ftp_registry() -> &'static Mutex<HashMap<i64, Arc<NexusFtpClient>>> {
+    static REG: OnceLock<Mutex<HashMap<i64, Arc<NexusFtpClient>>>> = OnceLock::new();
+    REG.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
 fn vnc_registry() -> &'static Mutex<HashMap<i64, RfbFramebuffer>> {
     static REG: OnceLock<Mutex<HashMap<i64, RfbFramebuffer>>> = OnceLock::new();
+    REG.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn vnc_session_registry() -> &'static Mutex<HashMap<i64, Arc<ActiveVncClient>>> {
+    static REG: OnceLock<Mutex<HashMap<i64, Arc<ActiveVncClient>>>> = OnceLock::new();
     REG.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -271,7 +295,7 @@ pub extern "C" fn nexusts_ffi_ssh_agent_clear() {
 }
 
 // ============================================================================
-// 2. xterm-256color / 24-bit TrueColor VT Terminal Engine & Telnet RFC 854
+// 2. xterm-256color / 24-bit TrueColor VT Terminal Engine & Stateful Telnet
 // ============================================================================
 
 #[no_mangle]
@@ -341,6 +365,23 @@ pub extern "C" fn nexusts_ffi_vt_snapshot_json(handle: i64) -> *mut c_char {
 }
 
 #[no_mangle]
+pub extern "C" fn nexusts_vt_application_cursor_keys(handle: i64) -> bool {
+    catch_unwind(AssertUnwindSafe(|| {
+        vt_registry()
+            .lock()
+            .ok()
+            .and_then(|reg| reg.get(&handle).map(VtTerminalBuffer::application_cursor_keys))
+            .unwrap_or(false)
+    }))
+    .unwrap_or(false)
+}
+
+#[no_mangle]
+pub extern "C" fn nexusts_ffi_vt_application_cursor_keys(handle: i64) -> bool {
+    nexusts_vt_application_cursor_keys(handle)
+}
+
+#[no_mangle]
 pub extern "C" fn nexusts_ffi_vt_destroy(handle: i64) {
     let _ = catch_unwind(AssertUnwindSafe(|| {
         if let Ok(mut reg) = vt_registry().lock() {
@@ -371,8 +412,147 @@ pub extern "C" fn nexusts_ffi_telnet_process(
     .unwrap_or_else(|_| NexusFfiBuffer::from_error("Panic in nexusts_ffi_telnet_process"))
 }
 
+fn get_telnet_session(handle: i64) -> Option<Arc<ActiveTelnetSession>> {
+    telnet_registry()
+        .lock()
+        .ok()
+        .and_then(|reg| reg.get(&handle).cloned())
+}
+
+#[no_mangle]
+pub extern "C" fn nexusts_telnet_connect(
+    host_cstr: *const c_char,
+    port: u16,
+    cols: u16,
+    rows: u16,
+    term_cstr: *const c_char,
+    out_error: *mut *mut c_char,
+) -> i64 {
+    catch_unwind(AssertUnwindSafe(|| unsafe {
+        let host = match opt_str_from_c(host_cstr).map(str::trim).filter(|s| !s.is_empty()) {
+            Some(h) => h.to_string(),
+            None => {
+                write_out_error(out_error, "Missing Telnet host");
+                return 0;
+            }
+        };
+        let term = opt_str_from_c(term_cstr)
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or("xterm-256color")
+            .to_string();
+
+        let connect_res = tokio_runtime().block_on(async move {
+            ActiveTelnetSession::connect(&host, port, cols.max(10), rows.max(4), &term).await
+        });
+
+        match connect_res {
+            Ok(session) => {
+                let handle = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
+                if let Ok(mut reg) = telnet_registry().lock() {
+                    reg.insert(handle, Arc::new(session));
+                    handle
+                } else {
+                    write_out_error(out_error, "Telnet registry poisoned");
+                    0
+                }
+            }
+            Err(err) => {
+                write_out_error(out_error, err.to_string());
+                0
+            }
+        }
+    }))
+    .unwrap_or_else(|_| unsafe {
+        write_out_error(out_error, "Panic in nexusts_telnet_connect");
+        0
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn nexusts_telnet_write(
+    handle: i64,
+    bytes_ptr: *const u8,
+    bytes_len: usize,
+) -> bool {
+    catch_unwind(AssertUnwindSafe(|| unsafe {
+        let data = slice_from_c(bytes_ptr, bytes_len);
+        get_telnet_session(handle)
+            .map(|s| s.write_stdin(data))
+            .unwrap_or(false)
+    }))
+    .unwrap_or(false)
+}
+
+#[no_mangle]
+pub extern "C" fn nexusts_telnet_read(handle: i64, out_eof: *mut bool) -> NexusFfiBuffer {
+    catch_unwind(AssertUnwindSafe(|| unsafe {
+        if let Some(session) = get_telnet_session(handle) {
+            let drained = session.drain_output();
+            let is_conn = session.is_connected();
+            if !out_eof.is_null() {
+                *out_eof = !is_conn && drained.is_empty();
+            }
+            if drained.is_empty() {
+                NexusFfiBuffer::empty()
+            } else {
+                NexusFfiBuffer::from_vec(drained)
+            }
+        } else {
+            if !out_eof.is_null() {
+                *out_eof = true;
+            }
+            NexusFfiBuffer::empty()
+        }
+    }))
+    .unwrap_or_else(|_| NexusFfiBuffer::from_error("Panic in nexusts_telnet_read"))
+}
+
+#[no_mangle]
+pub extern "C" fn nexusts_telnet_resize(handle: i64, cols: u16, rows: u16) -> bool {
+    catch_unwind(AssertUnwindSafe(|| {
+        get_telnet_session(handle)
+            .map(|s| s.resize_pty(cols.max(10), rows.max(4)))
+            .unwrap_or(false)
+    }))
+    .unwrap_or(false)
+}
+
+#[no_mangle]
+pub extern "C" fn nexusts_telnet_is_connected(handle: i64) -> bool {
+    catch_unwind(AssertUnwindSafe(|| {
+        get_telnet_session(handle)
+            .map(|s| s.is_connected())
+            .unwrap_or(false)
+    }))
+    .unwrap_or(false)
+}
+
+#[no_mangle]
+pub extern "C" fn nexusts_telnet_last_error(handle: i64) -> *mut c_char {
+    catch_unwind(AssertUnwindSafe(|| {
+        let err = get_telnet_session(handle)
+            .map(|s| s.last_error())
+            .unwrap_or_default();
+        to_c_string(err)
+    }))
+    .unwrap_or(ptr::null_mut())
+}
+
+#[no_mangle]
+pub extern "C" fn nexusts_telnet_disconnect(handle: i64) {
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        let removed = telnet_registry()
+            .lock()
+            .ok()
+            .and_then(|mut reg| reg.remove(&handle));
+        if let Some(session) = removed {
+            session.disconnect();
+        }
+    }));
+}
+
 // ============================================================================
-// 3. Async SSHv2 (russh), Bastion Chaining, Port Forwards & SFTP v3
+// 3. Async SSHv2 (russh), Bastion Chaining, Port Forwards & SFTP/SCP/FTP
 // ============================================================================
 
 #[no_mangle]
@@ -401,6 +581,11 @@ pub extern "C" fn nexusts_ffi_ssh_connect_json(
             .filter(|s| !s.trim().is_empty())
             .and_then(|s| serde_json::from_str(s).ok());
 
+        let startup_cmd = spec
+            .startup_command
+            .clone()
+            .filter(|s| !s.trim().is_empty());
+
         let rt = tokio_runtime();
         let connect_res = rt.block_on(async move {
             let bastion_session = if let Some(bspec) = bastion_spec {
@@ -411,15 +596,21 @@ pub extern "C" fn nexusts_ffi_ssh_connect_json(
 
             let output_buf = Arc::new(Mutex::new(Vec::<u8>::with_capacity(16_384)));
             let eof_flag = Arc::new(AtomicBool::new(false));
+            let mut aborts = Vec::new();
 
             if open_pty {
                 let (session, mut pty_channel) =
                     ActiveSshClientSession::connect(spec, bastion_session.as_ref()).await?;
+                if let Some(init_cmd) = startup_cmd {
+                    let line = format!("{init_cmd}\r");
+                    let _ = pty_channel.data(line.as_bytes()).await;
+                }
+
                 let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<SshActorCommand>();
                 let out_clone = Arc::clone(&output_buf);
                 let eof_clone = Arc::clone(&eof_flag);
 
-                tokio::spawn(async move {
+                let actor_task = tokio::spawn(async move {
                     // Keep bastion session alive for the lifetime of the tunneled session
                     let _keep_bastion_alive = bastion_session;
                     loop {
@@ -465,28 +656,32 @@ pub extern "C" fn nexusts_ffi_ssh_connect_json(
                         }
                     }
                 });
+                aborts.push(actor_task.abort_handle());
 
                 Ok::<LiveSshRecord, nexusts_terminal::ssh_transport::TransportError>(LiveSshRecord {
                     session: Arc::new(session),
                     cmd_tx: Some(cmd_tx),
                     output_buf,
                     eof_flag,
+                    abort_handles: Mutex::new(aborts),
                 })
             } else {
                 let session =
                     ActiveSshClientSession::connect_without_shell(spec, bastion_session.as_ref())
                         .await?;
                 if let Some(b) = bastion_session {
-                    tokio::spawn(async move {
+                    let bastion_guard = tokio::spawn(async move {
                         let _keep = b;
                         std::future::pending::<()>().await;
                     });
+                    aborts.push(bastion_guard.abort_handle());
                 }
                 Ok(LiveSshRecord {
                     session: Arc::new(session),
                     cmd_tx: None,
                     output_buf,
                     eof_flag,
+                    abort_handles: Mutex::new(aborts),
                 })
             }
         });
@@ -512,6 +707,21 @@ pub extern "C" fn nexusts_ffi_ssh_connect_json(
         write_out_error(out_error, "Panic in nexusts_ffi_ssh_connect_json");
         0
     })
+}
+
+#[no_mangle]
+pub extern "C" fn nexusts_ffi_ssh_is_connected(session_handle: i64) -> bool {
+    catch_unwind(AssertUnwindSafe(|| {
+        ssh_registry()
+            .lock()
+            .ok()
+            .and_then(|reg| {
+                reg.get(&session_handle)
+                    .map(|rec| !rec.eof_flag.load(Ordering::Acquire))
+            })
+            .unwrap_or(false)
+    }))
+    .unwrap_or(false)
 }
 
 #[no_mangle]
@@ -606,7 +816,7 @@ pub extern "C" fn nexusts_ffi_ssh_start_local_forward(
             .unwrap_or("127.0.0.1")
             .to_string();
 
-        let shared_ssh = {
+        let session = {
             let reg = match ssh_registry().lock() {
                 Ok(r) => r,
                 Err(_) => {
@@ -615,7 +825,7 @@ pub extern "C" fn nexusts_ffi_ssh_start_local_forward(
                 }
             };
             match reg.get(&session_handle) {
-                Some(rec) => rec.session.shared_handle(),
+                Some(rec) => Arc::clone(&rec.session),
                 None => {
                     write_out_error(out_error, "Unknown SSH session handle");
                     return false;
@@ -623,8 +833,9 @@ pub extern "C" fn nexusts_ffi_ssh_start_local_forward(
             }
         };
 
+        let shared_ssh = session.shared_handle();
         let res = tokio_runtime().block_on(async move {
-            ActiveSshClientSession::spawn_local_port_forward(
+            ActiveSshClientSession::start_local_port_forward(
                 shared_ssh,
                 bind_addr,
                 bind_port,
@@ -635,7 +846,18 @@ pub extern "C" fn nexusts_ffi_ssh_start_local_forward(
         });
 
         match res {
-            Ok(()) => true,
+            Ok(abort_handle) => {
+                if let Ok(reg) = ssh_registry().lock() {
+                    if let Some(rec) = reg.get(&session_handle) {
+                        if let Ok(mut aborts) = rec.abort_handles.lock() {
+                            aborts.push(abort_handle);
+                        }
+                    } else {
+                        abort_handle.abort();
+                    }
+                }
+                true
+            }
             Err(e) => {
                 write_out_error(out_error, e.to_string());
                 false
@@ -657,7 +879,7 @@ pub extern "C" fn nexusts_ffi_ssh_start_socks5_forward(
             .unwrap_or("127.0.0.1")
             .to_string();
 
-        let shared_ssh = {
+        let session = {
             let reg = match ssh_registry().lock() {
                 Ok(r) => r,
                 Err(_) => {
@@ -666,7 +888,7 @@ pub extern "C" fn nexusts_ffi_ssh_start_socks5_forward(
                 }
             };
             match reg.get(&session_handle) {
-                Some(rec) => rec.session.shared_handle(),
+                Some(rec) => Arc::clone(&rec.session),
                 None => {
                     write_out_error(out_error, "Unknown SSH session handle");
                     return false;
@@ -674,98 +896,27 @@ pub extern "C" fn nexusts_ffi_ssh_start_socks5_forward(
             }
         };
 
-        let res: Result<(), String> = tokio_runtime().block_on(async move {
-            let listener = TcpListener::bind((bind_addr.as_str(), bind_port))
+        let shared_ssh = session.shared_handle();
+        let res = tokio_runtime().block_on(async move {
+            ActiveSshClientSession::start_dynamic_socks5_proxy(shared_ssh, bind_addr, bind_port)
                 .await
-                .map_err(|e| e.to_string())?;
-            tokio::spawn(async move {
-                while let Ok((mut client_sock, peer)) = listener.accept().await {
-                    let h = Arc::clone(&shared_ssh);
-                    tokio::spawn(async move {
-                        // RFC 1928 SOCKS5 greeting
-                        let mut hdr = [0u8; 2];
-                        if client_sock.read_exact(&mut hdr).await.is_err() || hdr[0] != 0x05 {
-                            return;
-                        }
-                        let mut methods = vec![0u8; hdr[1] as usize];
-                        if client_sock.read_exact(&mut methods).await.is_err() {
-                            return;
-                        }
-                        if client_sock.write_all(&[0x05, 0x00]).await.is_err() {
-                            return;
-                        }
-                        // Request header [VER=5, CMD=1, RSV=0, ATYP]
-                        let mut req = [0u8; 4];
-                        if client_sock.read_exact(&mut req).await.is_err() || req[1] != 0x01 {
-                            return;
-                        }
-                        let dest_host = match req[3] {
-                            0x01 => {
-                                let mut ip = [0u8; 4];
-                                if client_sock.read_exact(&mut ip).await.is_err() {
-                                    return;
-                                }
-                                std::net::Ipv4Addr::from(ip).to_string()
-                            }
-                            0x03 => {
-                                let mut len_b = [0u8; 1];
-                                if client_sock.read_exact(&mut len_b).await.is_err() {
-                                    return;
-                                }
-                                let mut dom = vec![0u8; len_b[0] as usize];
-                                if client_sock.read_exact(&mut dom).await.is_err() {
-                                    return;
-                                }
-                                String::from_utf8_lossy(&dom).to_string()
-                            }
-                            0x04 => {
-                                let mut ip6 = [0u8; 16];
-                                if client_sock.read_exact(&mut ip6).await.is_err() {
-                                    return;
-                                }
-                                std::net::Ipv6Addr::from(ip6).to_string()
-                            }
-                            _ => return,
-                        };
-                        let mut port_b = [0u8; 2];
-                        if client_sock.read_exact(&mut port_b).await.is_err() {
-                            return;
-                        }
-                        let dest_port = u16::from_be_bytes(port_b);
-
-                        if let Ok(ch) = h
-                            .channel_open_direct_tcpip(
-                                &dest_host,
-                                u32::from(dest_port),
-                                &peer.ip().to_string(),
-                                u32::from(peer.port()),
-                            )
-                            .await
-                        {
-                            let reply = [0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0];
-                            if client_sock.write_all(&reply).await.is_ok() {
-                                let mut ssh_stream = ch.into_stream();
-                                let _ = tokio::io::copy_bidirectional(
-                                    &mut client_sock,
-                                    &mut ssh_stream,
-                                )
-                                .await;
-                            }
-                        } else {
-                            let _ = client_sock
-                                .write_all(&[0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
-                                .await;
-                        }
-                    });
-                }
-            });
-            Ok(())
         });
 
         match res {
-            Ok(()) => true,
+            Ok(abort_handle) => {
+                if let Ok(reg) = ssh_registry().lock() {
+                    if let Some(rec) = reg.get(&session_handle) {
+                        if let Ok(mut aborts) = rec.abort_handles.lock() {
+                            aborts.push(abort_handle);
+                        }
+                    } else {
+                        abort_handle.abort();
+                    }
+                }
+                true
+            }
             Err(e) => {
-                write_out_error(out_error, e);
+                write_out_error(out_error, e.to_string());
                 false
             }
         }
@@ -783,6 +934,11 @@ pub extern "C" fn nexusts_ffi_ssh_disconnect(session_handle: i64) {
         if let Some(rec) = removed {
             if let Some(tx) = rec.cmd_tx {
                 let _ = tx.send(SshActorCommand::Close);
+            }
+            if let Ok(mut aborts) = rec.abort_handles.lock() {
+                for handle in aborts.drain(..) {
+                    handle.abort();
+                }
             }
             let session = rec.session;
             tokio_runtime().spawn(async move {
@@ -850,6 +1006,35 @@ fn get_sftp_client(handle: i64) -> Option<Arc<NexusSftpClient>> {
         .lock()
         .ok()
         .and_then(|reg| reg.get(&handle).cloned())
+}
+
+#[no_mangle]
+pub extern "C" fn nexusts_sftp_pwd(
+    sftp_handle: i64,
+    out_error: *mut *mut c_char,
+) -> *mut c_char {
+    catch_unwind(AssertUnwindSafe(|| unsafe {
+        let Some(client) = get_sftp_client(sftp_handle) else {
+            write_out_error(out_error, "Unknown SFTP handle");
+            return ptr::null_mut();
+        };
+        match tokio_runtime().block_on(async move { client.pwd().await }) {
+            Ok(cwd) => to_c_string(cwd),
+            Err(e) => {
+                write_out_error(out_error, e.to_string());
+                ptr::null_mut()
+            }
+        }
+    }))
+    .unwrap_or(ptr::null_mut())
+}
+
+#[no_mangle]
+pub extern "C" fn nexusts_ffi_sftp_pwd(
+    sftp_handle: i64,
+    out_error: *mut *mut c_char,
+) -> *mut c_char {
+    nexusts_sftp_pwd(sftp_handle, out_error)
 }
 
 #[no_mangle]
@@ -939,7 +1124,7 @@ pub extern "C" fn nexusts_ffi_sftp_rename(
             write_out_error(out_error, "Unknown SFTP handle");
             return false;
         };
-        match tokio_runtime().block_on(async move { client.rename_entry(&old_p, &new_p).await }) {
+        match tokio_runtime().block_on(async move { client.rename(&old_p, &new_p).await }) {
             Ok(()) => true,
             Err(e) => {
                 write_out_error(out_error, e.to_string());
@@ -948,6 +1133,40 @@ pub extern "C" fn nexusts_ffi_sftp_rename(
         }
     }))
     .unwrap_or(false)
+}
+
+#[no_mangle]
+pub extern "C" fn nexusts_sftp_chmod(
+    sftp_handle: i64,
+    remote_path_cstr: *const c_char,
+    mode_octal: u32,
+    out_error: *mut *mut c_char,
+) -> bool {
+    catch_unwind(AssertUnwindSafe(|| unsafe {
+        let path = opt_str_from_c(remote_path_cstr).unwrap_or("").to_string();
+        let Some(client) = get_sftp_client(sftp_handle) else {
+            write_out_error(out_error, "Unknown SFTP handle");
+            return false;
+        };
+        match tokio_runtime().block_on(async move { client.chmod(&path, mode_octal).await }) {
+            Ok(()) => true,
+            Err(e) => {
+                write_out_error(out_error, e.to_string());
+                false
+            }
+        }
+    }))
+    .unwrap_or(false)
+}
+
+#[no_mangle]
+pub extern "C" fn nexusts_ffi_sftp_chmod(
+    sftp_handle: i64,
+    remote_path_cstr: *const c_char,
+    mode_octal: u32,
+    out_error: *mut *mut c_char,
+) -> bool {
+    nexusts_sftp_chmod(sftp_handle, remote_path_cstr, mode_octal, out_error)
 }
 
 #[no_mangle]
@@ -997,8 +1216,546 @@ pub extern "C" fn nexusts_ffi_sftp_upload(
 #[no_mangle]
 pub extern "C" fn nexusts_ffi_sftp_close(sftp_handle: i64) {
     let _ = catch_unwind(AssertUnwindSafe(|| {
-        if let Ok(mut reg) = sftp_registry().lock() {
-            reg.remove(&sftp_handle);
+        let removed = sftp_registry()
+            .lock()
+            .ok()
+            .and_then(|mut reg| reg.remove(&sftp_handle));
+        if let Some(client) = removed {
+            tokio_runtime().spawn(async move {
+                let _ = client.close().await;
+            });
+        }
+    }));
+}
+
+// --- SCP Client C-ABI (`NexusScpClient`) ---
+
+fn get_scp_client(handle: i64) -> Option<Arc<NexusScpClient>> {
+    scp_registry()
+        .lock()
+        .ok()
+        .and_then(|reg| reg.get(&handle).cloned())
+}
+
+#[no_mangle]
+pub extern "C" fn nexusts_scp_connect_json(
+    connect_spec_json_cstr: *const c_char,
+    bastion_spec_json_cstr: *const c_char,
+    out_error: *mut *mut c_char,
+) -> i64 {
+    catch_unwind(AssertUnwindSafe(|| unsafe {
+        let Some(spec_str) = opt_str_from_c(connect_spec_json_cstr) else {
+            write_out_error(out_error, "Missing SCP connection spec JSON");
+            return 0;
+        };
+        let spec: SshConnectSpec = match serde_json::from_str(spec_str) {
+            Ok(s) => s,
+            Err(e) => {
+                write_out_error(out_error, format!("Invalid SCP SshConnectSpec JSON: {e}"));
+                return 0;
+            }
+        };
+        let bastion_spec: Option<SshConnectSpec> = opt_str_from_c(bastion_spec_json_cstr)
+            .filter(|s| !s.trim().is_empty())
+            .and_then(|s| serde_json::from_str(s).ok());
+
+        match tokio_runtime().block_on(async move { NexusScpClient::connect(spec, bastion_spec).await })
+        {
+            Ok(client) => {
+                let handle = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
+                if let Ok(mut reg) = scp_registry().lock() {
+                    reg.insert(handle, Arc::new(client));
+                    handle
+                } else {
+                    write_out_error(out_error, "SCP registry poisoned");
+                    0
+                }
+            }
+            Err(e) => {
+                write_out_error(out_error, e.to_string());
+                0
+            }
+        }
+    }))
+    .unwrap_or(0)
+}
+
+#[no_mangle]
+pub extern "C" fn nexusts_scp_pwd(
+    scp_handle: i64,
+    out_error: *mut *mut c_char,
+) -> *mut c_char {
+    catch_unwind(AssertUnwindSafe(|| unsafe {
+        let Some(client) = get_scp_client(scp_handle) else {
+            write_out_error(out_error, "Unknown SCP handle");
+            return ptr::null_mut();
+        };
+        match tokio_runtime().block_on(async move { client.pwd().await }) {
+            Ok(cwd) => to_c_string(cwd),
+            Err(e) => {
+                write_out_error(out_error, e.to_string());
+                ptr::null_mut()
+            }
+        }
+    }))
+    .unwrap_or(ptr::null_mut())
+}
+
+#[no_mangle]
+pub extern "C" fn nexusts_scp_list_dir_json(
+    scp_handle: i64,
+    remote_dir_cstr: *const c_char,
+    out_error: *mut *mut c_char,
+) -> *mut c_char {
+    catch_unwind(AssertUnwindSafe(|| unsafe {
+        let dir = opt_str_from_c(remote_dir_cstr).unwrap_or("/").to_string();
+        let Some(client) = get_scp_client(scp_handle) else {
+            write_out_error(out_error, "Unknown SCP handle");
+            return ptr::null_mut();
+        };
+        match tokio_runtime().block_on(async move { client.list_directory(&dir).await }) {
+            Ok(entries) => {
+                let json = serde_json::to_string(&entries).unwrap_or_else(|_| "[]".into());
+                to_c_string(json)
+            }
+            Err(e) => {
+                write_out_error(out_error, e.to_string());
+                ptr::null_mut()
+            }
+        }
+    }))
+    .unwrap_or(ptr::null_mut())
+}
+
+#[no_mangle]
+pub extern "C" fn nexusts_scp_download(
+    scp_handle: i64,
+    remote_path_cstr: *const c_char,
+) -> NexusFfiBuffer {
+    catch_unwind(AssertUnwindSafe(|| unsafe {
+        let path = opt_str_from_c(remote_path_cstr).unwrap_or("").to_string();
+        let Some(client) = get_scp_client(scp_handle) else {
+            return NexusFfiBuffer::from_error("Unknown SCP handle");
+        };
+        match tokio_runtime().block_on(async move { client.download_bytes(&path).await }) {
+            Ok(bytes) => NexusFfiBuffer::from_vec(bytes),
+            Err(e) => NexusFfiBuffer::from_error(e.to_string()),
+        }
+    }))
+    .unwrap_or_else(|_| NexusFfiBuffer::from_error("Panic in nexusts_scp_download"))
+}
+
+#[no_mangle]
+pub extern "C" fn nexusts_scp_upload(
+    scp_handle: i64,
+    remote_path_cstr: *const c_char,
+    data_ptr: *const u8,
+    data_len: usize,
+    mode_octal: u32,
+    out_error: *mut *mut c_char,
+) -> bool {
+    catch_unwind(AssertUnwindSafe(|| unsafe {
+        let path = opt_str_from_c(remote_path_cstr).unwrap_or("").to_string();
+        let payload = slice_from_c(data_ptr, data_len).to_vec();
+        let mode = if mode_octal == 0 { 0o644 } else { mode_octal };
+        let Some(client) = get_scp_client(scp_handle) else {
+            write_out_error(out_error, "Unknown SCP handle");
+            return false;
+        };
+        match tokio_runtime()
+            .block_on(async move { client.upload_bytes(&path, &payload, mode).await })
+        {
+            Ok(_) => true,
+            Err(e) => {
+                write_out_error(out_error, e.to_string());
+                false
+            }
+        }
+    }))
+    .unwrap_or(false)
+}
+
+#[no_mangle]
+pub extern "C" fn nexusts_scp_mkdir(
+    scp_handle: i64,
+    remote_path_cstr: *const c_char,
+    out_error: *mut *mut c_char,
+) -> bool {
+    catch_unwind(AssertUnwindSafe(|| unsafe {
+        let path = opt_str_from_c(remote_path_cstr).unwrap_or("").to_string();
+        let Some(client) = get_scp_client(scp_handle) else {
+            write_out_error(out_error, "Unknown SCP handle");
+            return false;
+        };
+        match tokio_runtime().block_on(async move { client.create_directory(&path).await }) {
+            Ok(()) => true,
+            Err(e) => {
+                write_out_error(out_error, e.to_string());
+                false
+            }
+        }
+    }))
+    .unwrap_or(false)
+}
+
+#[no_mangle]
+pub extern "C" fn nexusts_scp_remove(
+    scp_handle: i64,
+    remote_path_cstr: *const c_char,
+    out_error: *mut *mut c_char,
+) -> bool {
+    catch_unwind(AssertUnwindSafe(|| unsafe {
+        let path = opt_str_from_c(remote_path_cstr).unwrap_or("").to_string();
+        let Some(client) = get_scp_client(scp_handle) else {
+            write_out_error(out_error, "Unknown SCP handle");
+            return false;
+        };
+        match tokio_runtime().block_on(async move { client.remove_entry(&path).await }) {
+            Ok(()) => true,
+            Err(e) => {
+                write_out_error(out_error, e.to_string());
+                false
+            }
+        }
+    }))
+    .unwrap_or(false)
+}
+
+#[no_mangle]
+pub extern "C" fn nexusts_scp_rename(
+    scp_handle: i64,
+    old_path_cstr: *const c_char,
+    new_path_cstr: *const c_char,
+    out_error: *mut *mut c_char,
+) -> bool {
+    catch_unwind(AssertUnwindSafe(|| unsafe {
+        let old_p = opt_str_from_c(old_path_cstr).unwrap_or("").to_string();
+        let new_p = opt_str_from_c(new_path_cstr).unwrap_or("").to_string();
+        let Some(client) = get_scp_client(scp_handle) else {
+            write_out_error(out_error, "Unknown SCP handle");
+            return false;
+        };
+        match tokio_runtime().block_on(async move { client.rename(&old_p, &new_p).await }) {
+            Ok(()) => true,
+            Err(e) => {
+                write_out_error(out_error, e.to_string());
+                false
+            }
+        }
+    }))
+    .unwrap_or(false)
+}
+
+#[no_mangle]
+pub extern "C" fn nexusts_scp_chmod(
+    scp_handle: i64,
+    remote_path_cstr: *const c_char,
+    mode_octal: u32,
+    out_error: *mut *mut c_char,
+) -> bool {
+    catch_unwind(AssertUnwindSafe(|| unsafe {
+        let path = opt_str_from_c(remote_path_cstr).unwrap_or("").to_string();
+        let Some(client) = get_scp_client(scp_handle) else {
+            write_out_error(out_error, "Unknown SCP handle");
+            return false;
+        };
+        match tokio_runtime().block_on(async move { client.chmod(&path, mode_octal).await }) {
+            Ok(()) => true,
+            Err(e) => {
+                write_out_error(out_error, e.to_string());
+                false
+            }
+        }
+    }))
+    .unwrap_or(false)
+}
+
+#[no_mangle]
+pub extern "C" fn nexusts_scp_disconnect(scp_handle: i64) {
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        let removed = scp_registry()
+            .lock()
+            .ok()
+            .and_then(|mut reg| reg.remove(&scp_handle));
+        if let Some(client) = removed {
+            tokio_runtime().spawn(async move {
+                let _ = client.disconnect().await;
+            });
+        }
+    }));
+}
+
+// --- FTP Client C-ABI (`NexusFtpClient`) ---
+
+fn get_ftp_client(handle: i64) -> Option<Arc<NexusFtpClient>> {
+    ftp_registry()
+        .lock()
+        .ok()
+        .and_then(|reg| reg.get(&handle).cloned())
+}
+
+#[no_mangle]
+pub extern "C" fn nexusts_ftp_connect(
+    host_cstr: *const c_char,
+    port: u16,
+    username_cstr: *const c_char,
+    password_cstr: *const c_char,
+    out_error: *mut *mut c_char,
+) -> i64 {
+    catch_unwind(AssertUnwindSafe(|| unsafe {
+        let Some(host) = opt_str_from_c(host_cstr).map(str::trim).filter(|s| !s.is_empty()) else {
+            write_out_error(out_error, "Missing FTP host");
+            return 0;
+        };
+        let host = host.to_string();
+        let user = opt_str_from_c(username_cstr)
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or("anonymous")
+            .to_string();
+        let pass = opt_str_from_c(password_cstr).unwrap_or("").to_string();
+
+        match tokio_runtime()
+            .block_on(async move { NexusFtpClient::connect(&host, port, &user, &pass).await })
+        {
+            Ok(client) => {
+                let handle = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
+                if let Ok(mut reg) = ftp_registry().lock() {
+                    reg.insert(handle, Arc::new(client));
+                    handle
+                } else {
+                    write_out_error(out_error, "FTP registry poisoned");
+                    0
+                }
+            }
+            Err(e) => {
+                write_out_error(out_error, e.to_string());
+                0
+            }
+        }
+    }))
+    .unwrap_or(0)
+}
+
+#[no_mangle]
+pub extern "C" fn nexusts_ftp_pwd(
+    ftp_handle: i64,
+    out_error: *mut *mut c_char,
+) -> *mut c_char {
+    catch_unwind(AssertUnwindSafe(|| unsafe {
+        let Some(client) = get_ftp_client(ftp_handle) else {
+            write_out_error(out_error, "Unknown FTP handle");
+            return ptr::null_mut();
+        };
+        match tokio_runtime().block_on(async move { client.pwd().await }) {
+            Ok(cwd) => to_c_string(cwd),
+            Err(e) => {
+                write_out_error(out_error, e.to_string());
+                ptr::null_mut()
+            }
+        }
+    }))
+    .unwrap_or(ptr::null_mut())
+}
+
+#[no_mangle]
+pub extern "C" fn nexusts_ftp_cwd(
+    ftp_handle: i64,
+    remote_dir_cstr: *const c_char,
+    out_error: *mut *mut c_char,
+) -> bool {
+    catch_unwind(AssertUnwindSafe(|| unsafe {
+        let dir = opt_str_from_c(remote_dir_cstr).unwrap_or("/").to_string();
+        let Some(client) = get_ftp_client(ftp_handle) else {
+            write_out_error(out_error, "Unknown FTP handle");
+            return false;
+        };
+        match tokio_runtime().block_on(async move { client.cwd(&dir).await }) {
+            Ok(()) => true,
+            Err(e) => {
+                write_out_error(out_error, e.to_string());
+                false
+            }
+        }
+    }))
+    .unwrap_or(false)
+}
+
+#[no_mangle]
+pub extern "C" fn nexusts_ftp_list_dir_json(
+    ftp_handle: i64,
+    remote_dir_cstr: *const c_char,
+    out_error: *mut *mut c_char,
+) -> *mut c_char {
+    catch_unwind(AssertUnwindSafe(|| unsafe {
+        let dir = opt_str_from_c(remote_dir_cstr).unwrap_or("/").to_string();
+        let Some(client) = get_ftp_client(ftp_handle) else {
+            write_out_error(out_error, "Unknown FTP handle");
+            return ptr::null_mut();
+        };
+        match tokio_runtime().block_on(async move { client.list_directory(&dir).await }) {
+            Ok(entries) => {
+                let json = serde_json::to_string(&entries).unwrap_or_else(|_| "[]".into());
+                to_c_string(json)
+            }
+            Err(e) => {
+                write_out_error(out_error, e.to_string());
+                ptr::null_mut()
+            }
+        }
+    }))
+    .unwrap_or(ptr::null_mut())
+}
+
+#[no_mangle]
+pub extern "C" fn nexusts_ftp_download(
+    ftp_handle: i64,
+    remote_path_cstr: *const c_char,
+) -> NexusFfiBuffer {
+    catch_unwind(AssertUnwindSafe(|| unsafe {
+        let path = opt_str_from_c(remote_path_cstr).unwrap_or("").to_string();
+        let Some(client) = get_ftp_client(ftp_handle) else {
+            return NexusFfiBuffer::from_error("Unknown FTP handle");
+        };
+        match tokio_runtime().block_on(async move { client.download_bytes(&path).await }) {
+            Ok(bytes) => NexusFfiBuffer::from_vec(bytes),
+            Err(e) => NexusFfiBuffer::from_error(e.to_string()),
+        }
+    }))
+    .unwrap_or_else(|_| NexusFfiBuffer::from_error("Panic in nexusts_ftp_download"))
+}
+
+#[no_mangle]
+pub extern "C" fn nexusts_ftp_upload(
+    ftp_handle: i64,
+    remote_path_cstr: *const c_char,
+    data_ptr: *const u8,
+    data_len: usize,
+    out_error: *mut *mut c_char,
+) -> bool {
+    catch_unwind(AssertUnwindSafe(|| unsafe {
+        let path = opt_str_from_c(remote_path_cstr).unwrap_or("").to_string();
+        let payload = slice_from_c(data_ptr, data_len).to_vec();
+        let Some(client) = get_ftp_client(ftp_handle) else {
+            write_out_error(out_error, "Unknown FTP handle");
+            return false;
+        };
+        match tokio_runtime().block_on(async move { client.upload_bytes(&path, &payload).await }) {
+            Ok(_) => true,
+            Err(e) => {
+                write_out_error(out_error, e.to_string());
+                false
+            }
+        }
+    }))
+    .unwrap_or(false)
+}
+
+#[no_mangle]
+pub extern "C" fn nexusts_ftp_mkdir(
+    ftp_handle: i64,
+    remote_path_cstr: *const c_char,
+    out_error: *mut *mut c_char,
+) -> bool {
+    catch_unwind(AssertUnwindSafe(|| unsafe {
+        let path = opt_str_from_c(remote_path_cstr).unwrap_or("").to_string();
+        let Some(client) = get_ftp_client(ftp_handle) else {
+            write_out_error(out_error, "Unknown FTP handle");
+            return false;
+        };
+        match tokio_runtime().block_on(async move { client.create_directory(&path).await }) {
+            Ok(()) => true,
+            Err(e) => {
+                write_out_error(out_error, e.to_string());
+                false
+            }
+        }
+    }))
+    .unwrap_or(false)
+}
+
+#[no_mangle]
+pub extern "C" fn nexusts_ftp_remove(
+    ftp_handle: i64,
+    remote_path_cstr: *const c_char,
+    out_error: *mut *mut c_char,
+) -> bool {
+    catch_unwind(AssertUnwindSafe(|| unsafe {
+        let path = opt_str_from_c(remote_path_cstr).unwrap_or("").to_string();
+        let Some(client) = get_ftp_client(ftp_handle) else {
+            write_out_error(out_error, "Unknown FTP handle");
+            return false;
+        };
+        match tokio_runtime().block_on(async move { client.remove_entry(&path).await }) {
+            Ok(()) => true,
+            Err(e) => {
+                write_out_error(out_error, e.to_string());
+                false
+            }
+        }
+    }))
+    .unwrap_or(false)
+}
+
+#[no_mangle]
+pub extern "C" fn nexusts_ftp_rename(
+    ftp_handle: i64,
+    old_path_cstr: *const c_char,
+    new_path_cstr: *const c_char,
+    out_error: *mut *mut c_char,
+) -> bool {
+    catch_unwind(AssertUnwindSafe(|| unsafe {
+        let old_p = opt_str_from_c(old_path_cstr).unwrap_or("").to_string();
+        let new_p = opt_str_from_c(new_path_cstr).unwrap_or("").to_string();
+        let Some(client) = get_ftp_client(ftp_handle) else {
+            write_out_error(out_error, "Unknown FTP handle");
+            return false;
+        };
+        match tokio_runtime().block_on(async move { client.rename(&old_p, &new_p).await }) {
+            Ok(()) => true,
+            Err(e) => {
+                write_out_error(out_error, e.to_string());
+                false
+            }
+        }
+    }))
+    .unwrap_or(false)
+}
+
+#[no_mangle]
+pub extern "C" fn nexusts_ftp_chmod(
+    ftp_handle: i64,
+    remote_path_cstr: *const c_char,
+    mode_octal: u32,
+    out_error: *mut *mut c_char,
+) -> bool {
+    catch_unwind(AssertUnwindSafe(|| unsafe {
+        let path = opt_str_from_c(remote_path_cstr).unwrap_or("").to_string();
+        let Some(client) = get_ftp_client(ftp_handle) else {
+            write_out_error(out_error, "Unknown FTP handle");
+            return false;
+        };
+        match tokio_runtime().block_on(async move { client.chmod(&path, mode_octal).await }) {
+            Ok(()) => true,
+            Err(e) => {
+                write_out_error(out_error, e.to_string());
+                false
+            }
+        }
+    }))
+    .unwrap_or(false)
+}
+
+#[no_mangle]
+pub extern "C" fn nexusts_ftp_disconnect(ftp_handle: i64) {
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        let removed = ftp_registry()
+            .lock()
+            .ok()
+            .and_then(|mut reg| reg.remove(&ftp_handle));
+        if let Some(client) = removed {
+            tokio_runtime().spawn(async move {
+                let _ = client.disconnect().await;
+            });
         }
     }));
 }
@@ -1019,7 +1776,7 @@ pub extern "C" fn nexusts_ffi_parse_ftp_mlsd_json(
 }
 
 // ============================================================================
-// 4. RFB / VNC / Apple Screen Sharing Framebuffer
+// 4. RFB / VNC / Apple Screen Sharing (ARD Type 30) Framebuffer & Live Client
 // ============================================================================
 
 #[no_mangle]
@@ -1068,12 +1825,17 @@ pub extern "C" fn nexusts_ffi_vnc_apply_rect(
         if let Ok(mut reg) = vnc_registry().lock() {
             if let Some(fb) = reg.get_mut(&handle) {
                 let res = match encoding {
+                    RFB_PSEUDO_DESKTOP_SIZE => {
+                        fb.resize(u32::from(w.max(1)), u32::from(h.max(1)));
+                        Ok(())
+                    }
                     RFB_ENCODING_RAW => fb.apply_raw_rect(x, y, w, h, payload),
                     RFB_ENCODING_COPYRECT if payload.len() >= 4 => {
                         let sx = u16::from_be_bytes([payload[0], payload[1]]);
                         let sy = u16::from_be_bytes([payload[2], payload[3]]);
                         fb.apply_copy_rect(x, y, w, h, sx, sy)
                     }
+                    RFB_ENCODING_RRE => fb.apply_rre_rect(x, y, w, h, payload),
                     RFB_ENCODING_HEXTILE => apply_hextile_rect(fb, x, y, w, h, payload),
                     RFB_ENCODING_TIGHT => fb.apply_tight_rect(x, y, w, h, payload),
                     RFB_ENCODING_ZRLE => fb.apply_zrle_rect(x, y, w, h, payload),
@@ -1106,9 +1868,29 @@ pub extern "C" fn nexusts_ffi_vnc_copy_rgba(
         }
         if let Ok(reg) = vnc_registry().lock() {
             if let Some(fb) = reg.get(&handle) {
-                let copy_len = fb.rgba_pixels.len().min(dst_cap);
-                ptr::copy_nonoverlapping(fb.rgba_pixels.as_ptr(), dst_ptr, copy_len);
-                return copy_len;
+                let dst = slice::from_raw_parts_mut(dst_ptr, dst_cap);
+                return fb.copy_rgba(dst);
+            }
+        }
+        0
+    }))
+    .unwrap_or(0)
+}
+
+#[no_mangle]
+pub extern "C" fn nexusts_ffi_vnc_copy_bgra(
+    handle: i64,
+    dst_ptr: *mut u8,
+    dst_cap: usize,
+) -> usize {
+    catch_unwind(AssertUnwindSafe(|| unsafe {
+        if dst_ptr.is_null() || dst_cap == 0 {
+            return 0;
+        }
+        if let Ok(reg) = vnc_registry().lock() {
+            if let Some(fb) = reg.get(&handle) {
+                let dst = slice::from_raw_parts_mut(dst_ptr, dst_cap);
+                return fb.copy_bgra(dst);
             }
         }
         0
@@ -1125,8 +1907,230 @@ pub extern "C" fn nexusts_ffi_vnc_destroy(handle: i64) {
     }));
 }
 
+fn get_vnc_session(handle: i64) -> Option<Arc<ActiveVncClient>> {
+    vnc_session_registry()
+        .lock()
+        .ok()
+        .and_then(|reg| reg.get(&handle).cloned())
+}
+
+#[no_mangle]
+pub extern "C" fn nexusts_vnc_session_connect(
+    host_cstr: *const c_char,
+    port: u16,
+    username_cstr: *const c_char,
+    password_cstr: *const c_char,
+    shared_session: bool,
+    view_only: bool,
+    out_error: *mut *mut c_char,
+) -> i64 {
+    catch_unwind(AssertUnwindSafe(|| unsafe {
+        let Some(host) = opt_str_from_c(host_cstr).map(str::trim).filter(|s| !s.is_empty()) else {
+            write_out_error(out_error, "Missing VNC host");
+            return 0;
+        };
+        let host = host.to_string();
+        let username = opt_str_from_c(username_cstr).unwrap_or("").to_string();
+        let password = opt_str_from_c(password_cstr).unwrap_or("").to_string();
+
+        let connect_res = tokio_runtime().block_on(async move {
+            ActiveVncClient::connect(&host, port, &username, &password, shared_session, view_only)
+                .await
+        });
+
+        match connect_res {
+            Ok(client) => {
+                let handle = NEXT_HANDLE.fetch_add(1, Ordering::Relaxed);
+                if let Ok(mut reg) = vnc_session_registry().lock() {
+                    reg.insert(handle, Arc::new(client));
+                    handle
+                } else {
+                    write_out_error(out_error, "VNC session registry poisoned");
+                    0
+                }
+            }
+            Err(e) => {
+                write_out_error(out_error, e.to_string());
+                0
+            }
+        }
+    }))
+    .unwrap_or_else(|_| unsafe {
+        write_out_error(out_error, "Panic in nexusts_vnc_session_connect");
+        0
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn nexusts_vnc_session_is_connected(handle: i64) -> bool {
+    catch_unwind(AssertUnwindSafe(|| {
+        get_vnc_session(handle)
+            .map(|c| c.is_connected())
+            .unwrap_or(false)
+    }))
+    .unwrap_or(false)
+}
+
+#[no_mangle]
+pub extern "C" fn nexusts_vnc_session_last_error(handle: i64) -> *mut c_char {
+    catch_unwind(AssertUnwindSafe(|| {
+        let err = get_vnc_session(handle)
+            .map(|c| c.last_error())
+            .unwrap_or_default();
+        to_c_string(err)
+    }))
+    .unwrap_or(ptr::null_mut())
+}
+
+#[no_mangle]
+pub extern "C" fn nexusts_vnc_session_desktop_name(handle: i64) -> *mut c_char {
+    catch_unwind(AssertUnwindSafe(|| {
+        let name = get_vnc_session(handle)
+            .map(|c| c.desktop_name().to_string())
+            .unwrap_or_default();
+        to_c_string(name)
+    }))
+    .unwrap_or(ptr::null_mut())
+}
+
+#[no_mangle]
+pub extern "C" fn nexusts_vnc_session_frame_sequence(handle: i64) -> u64 {
+    catch_unwind(AssertUnwindSafe(|| {
+        get_vnc_session(handle)
+            .map(|c| c.frame_sequence())
+            .unwrap_or(0)
+    }))
+    .unwrap_or(0)
+}
+
+#[no_mangle]
+pub extern "C" fn nexusts_vnc_session_get_dimensions(
+    handle: i64,
+    out_width: *mut u32,
+    out_height: *mut u32,
+) -> bool {
+    catch_unwind(AssertUnwindSafe(|| unsafe {
+        if let Some(client) = get_vnc_session(handle) {
+            let (w, h) = client.dimensions();
+            if !out_width.is_null() {
+                *out_width = w;
+            }
+            if !out_height.is_null() {
+                *out_height = h;
+            }
+            true
+        } else {
+            false
+        }
+    }))
+    .unwrap_or(false)
+}
+
+#[no_mangle]
+pub extern "C" fn nexusts_vnc_session_copy_frame_bgra(
+    handle: i64,
+    dst_ptr: *mut u8,
+    dst_cap: usize,
+) -> usize {
+    catch_unwind(AssertUnwindSafe(|| unsafe {
+        if dst_ptr.is_null() || dst_cap == 0 {
+            return 0;
+        }
+        if let Some(client) = get_vnc_session(handle) {
+            let dst = slice::from_raw_parts_mut(dst_ptr, dst_cap);
+            client.copy_frame_bgra(dst)
+        } else {
+            0
+        }
+    }))
+    .unwrap_or(0)
+}
+
+#[no_mangle]
+pub extern "C" fn nexusts_vnc_session_copy_frame_rgba(
+    handle: i64,
+    dst_ptr: *mut u8,
+    dst_cap: usize,
+) -> usize {
+    catch_unwind(AssertUnwindSafe(|| unsafe {
+        if dst_ptr.is_null() || dst_cap == 0 {
+            return 0;
+        }
+        if let Some(client) = get_vnc_session(handle) {
+            let dst = slice::from_raw_parts_mut(dst_ptr, dst_cap);
+            client.copy_frame_rgba(dst)
+        } else {
+            0
+        }
+    }))
+    .unwrap_or(0)
+}
+
+#[no_mangle]
+pub extern "C" fn nexusts_vnc_session_send_pointer(
+    handle: i64,
+    button_mask: u8,
+    x: u16,
+    y: u16,
+) -> bool {
+    catch_unwind(AssertUnwindSafe(|| {
+        get_vnc_session(handle)
+            .map(|c| c.send_pointer(button_mask, x, y))
+            .unwrap_or(false)
+    }))
+    .unwrap_or(false)
+}
+
+#[no_mangle]
+pub extern "C" fn nexusts_vnc_session_send_key(handle: i64, down: bool, keysym: u32) -> bool {
+    catch_unwind(AssertUnwindSafe(|| {
+        get_vnc_session(handle)
+            .map(|c| c.send_key(down, keysym))
+            .unwrap_or(false)
+    }))
+    .unwrap_or(false)
+}
+
+#[no_mangle]
+pub extern "C" fn nexusts_vnc_session_send_clipboard(
+    handle: i64,
+    text_cstr: *const c_char,
+) -> bool {
+    catch_unwind(AssertUnwindSafe(|| unsafe {
+        let text = opt_str_from_c(text_cstr).unwrap_or("");
+        get_vnc_session(handle)
+            .map(|c| c.send_clipboard(text))
+            .unwrap_or(false)
+    }))
+    .unwrap_or(false)
+}
+
+#[no_mangle]
+pub extern "C" fn nexusts_vnc_session_pull_clipboard(handle: i64) -> *mut c_char {
+    catch_unwind(AssertUnwindSafe(|| {
+        get_vnc_session(handle)
+            .and_then(|c| c.pull_clipboard())
+            .map(to_c_string)
+            .unwrap_or(ptr::null_mut())
+    }))
+    .unwrap_or(ptr::null_mut())
+}
+
+#[no_mangle]
+pub extern "C" fn nexusts_vnc_session_disconnect(handle: i64) {
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        let removed = vnc_session_registry()
+            .lock()
+            .ok()
+            .and_then(|mut reg| reg.remove(&handle));
+        if let Some(client) = removed {
+            client.disconnect();
+        }
+    }));
+}
+
 // ============================================================================
-// 5. Integrated Network Diagnostics (WoL, Port Probe, Traceroute, Banner)
+// 5. Integrated Network Diagnostics (WoL, Port Probe, Scanner, Traceroute, Banner)
 // ============================================================================
 
 #[no_mangle]
@@ -1169,6 +2173,65 @@ pub extern "C" fn nexusts_ffi_net_probe_tcp_json(
         to_c_string(json)
     }))
     .unwrap_or(ptr::null_mut())
+}
+
+#[no_mangle]
+pub extern "C" fn nexusts_net_scan_ports_json(
+    host_cstr: *const c_char,
+    start_port: u16,
+    end_port: u16,
+    timeout_ms: u64,
+    concurrency: u32,
+) -> *mut c_char {
+    catch_unwind(AssertUnwindSafe(|| unsafe {
+        let host = opt_str_from_c(host_cstr).unwrap_or("").trim().to_string();
+        if host.is_empty() || (start_port == 0 && end_port == 0) {
+            return to_c_string("[]");
+        }
+        let hits = tokio_runtime().block_on(async move {
+            scan_tcp_ports(
+                &host,
+                start_port.max(1),
+                end_port.max(1),
+                timeout_ms.max(20),
+                (concurrency as usize).clamp(1, 512),
+            )
+            .await
+        });
+        let json = serde_json::to_string(&hits).unwrap_or_else(|_| "[]".into());
+        to_c_string(json)
+    }))
+    .unwrap_or(ptr::null_mut())
+}
+
+#[no_mangle]
+pub extern "C" fn nexusts_ffi_net_scan_ports_json(
+    host_cstr: *const c_char,
+    start_port: u16,
+    end_port: u16,
+    timeout_ms: u64,
+    concurrency: u32,
+) -> *mut c_char {
+    nexusts_net_scan_ports_json(host_cstr, start_port, end_port, timeout_ms, concurrency)
+}
+
+#[no_mangle]
+pub extern "C" fn nexusts_net_tcp_ping_ms(
+    host_cstr: *const c_char,
+    port: u16,
+    timeout_ms: u64,
+) -> i64 {
+    catch_unwind(AssertUnwindSafe(|| unsafe {
+        let host = opt_str_from_c(host_cstr).unwrap_or("").trim().to_string();
+        if host.is_empty() || port == 0 {
+            return -1;
+        }
+        tokio_runtime()
+            .block_on(async move { tcp_latency_ping(&host, port, timeout_ms.max(20)).await })
+            .map(|ms| ms as i64)
+            .unwrap_or(-1)
+    }))
+    .unwrap_or(-1)
 }
 
 #[no_mangle]
@@ -1259,20 +2322,31 @@ mod tests {
     }
 
     #[test]
-    fn ffi_vt_and_vnc_framebuffer_lifecycle() {
+    fn ffi_vt_decckm_and_vnc_framebuffer_rgba_bgra_lifecycle() {
         let vt = nexusts_ffi_vt_create(80, 24, 1000);
         assert!(vt > 0);
-        let sample = b"\x1b[38;2;91;155;255mNexusTS macOS\x1b[0m\r\n";
+        assert!(!nexusts_vt_application_cursor_keys(vt));
+
+        let sample = b"\x1b[?1h\x1b[38;2;91;155;255mNexusTS macOS\x1b[0m\r\n";
         let snap_ptr = nexusts_ffi_vt_feed_and_snapshot_json(vt, sample.as_ptr(), sample.len());
         assert!(!snap_ptr.is_null());
         let snap_str = unsafe { CStr::from_ptr(snap_ptr).to_str().unwrap().to_owned() };
         nexusts_ffi_free_cstr(snap_ptr);
         assert!(snap_str.contains("NexusTS macOS"));
+        assert!(nexusts_vt_application_cursor_keys(vt));
+
+        let reset_decckm = b"\x1b[?1l";
+        let snap2 =
+            nexusts_ffi_vt_feed_and_snapshot_json(vt, reset_decckm.as_ptr(), reset_decckm.len());
+        nexusts_ffi_free_cstr(snap2);
+        assert!(!nexusts_vt_application_cursor_keys(vt));
         nexusts_ffi_vt_destroy(vt);
 
         let vnc = nexusts_ffi_vnc_create(2, 2);
         assert!(vnc > 0);
-        let raw_pixels = [255u8, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255];
+        let raw_pixels = [
+            255u8, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255,
+        ];
         let mut err: *mut c_char = ptr::null_mut();
         assert!(nexusts_ffi_vnc_apply_rect(
             vnc,
@@ -1286,9 +2360,61 @@ mod tests {
             &mut err,
         ));
         assert!(err.is_null());
-        let mut out = [0u8; 16];
-        assert_eq!(nexusts_ffi_vnc_copy_rgba(vnc, out.as_mut_ptr(), out.len()), 16);
-        assert_eq!(out, raw_pixels);
+        let mut out_rgba = [0u8; 16];
+        let mut out_bgra = [0u8; 16];
+        assert_eq!(
+            nexusts_ffi_vnc_copy_rgba(vnc, out_rgba.as_mut_ptr(), out_rgba.len()),
+            16
+        );
+        assert_eq!(out_rgba, raw_pixels);
+        assert_eq!(
+            nexusts_ffi_vnc_copy_bgra(vnc, out_bgra.as_mut_ptr(), out_bgra.len()),
+            16
+        );
+        assert_eq!(&out_bgra[0..4], &[0, 0, 255, 255]);
         nexusts_ffi_vnc_destroy(vnc);
+    }
+
+    #[test]
+    fn ffi_live_telnet_and_port_scanner_roundtrip() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            if let Ok((mut s, _)) = listener.accept() {
+                use std::io::{Read, Write};
+                let _ = s.write_all(b"Welcome Telnet\r\n");
+                let mut buf = [0u8; 64];
+                if let Ok(n) = s.read(&mut buf) {
+                    let _ = s.write_all(&buf[..n]);
+                }
+            }
+        });
+
+        let host_c = CString::new("127.0.0.1").unwrap();
+        let term_c = CString::new("xterm-256color").unwrap();
+        let mut err: *mut c_char = ptr::null_mut();
+        let tn = nexusts_telnet_connect(host_c.as_ptr(), port, 100, 30, term_c.as_ptr(), &mut err);
+        assert!(tn > 0, "telnet connect failed");
+        assert!(err.is_null());
+        assert!(nexusts_telnet_is_connected(tn));
+
+        assert!(nexusts_telnet_write(tn, b"hello\r\n".as_ptr(), 7));
+        let mut collected = Vec::new();
+        for _ in 0..40 {
+            let mut eof = false;
+            let buf = nexusts_telnet_read(tn, &mut eof);
+            if !buf.data.is_null() && buf.len > 0 {
+                collected.extend_from_slice(unsafe { slice::from_raw_parts(buf.data, buf.len) });
+            }
+            nexusts_ffi_free_buffer(buf);
+            if String::from_utf8_lossy(&collected).contains("hello") {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(15));
+        }
+        let text = String::from_utf8_lossy(&collected);
+        assert!(text.contains("Welcome Telnet"));
+        assert!(text.contains("hello"));
+        nexusts_telnet_disconnect(tn);
     }
 }

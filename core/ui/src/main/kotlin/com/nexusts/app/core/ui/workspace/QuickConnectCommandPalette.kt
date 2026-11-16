@@ -75,7 +75,8 @@ data class QuickConnectCandidate(
     val parsedHost: String? = null,
     val parsedPort: Int? = null,
     val parsedUsername: String? = null,
-    val parsedDomain: String? = null
+    val parsedDomain: String? = null,
+    val parsedProtocolSubtype: String? = null
 )
 
 enum class QuickLaunchPlacement {
@@ -87,10 +88,11 @@ enum class QuickLaunchPlacement {
 /**
  * Parses ad-hoc quick connect expressions typed directly into the Ctrl/Cmd + K palette, e.g.:
  * - `ssh://root@10.20.0.5:2222` or `ssh deploy@prod-api.internal:22`
- * - `rdp://corp\admin@win-jump.corp.local:3389`
+ * - `rdp://corp\admin@win-jump.corp.local:3389` or `wts://10.0.0.8`
  * - `nexusts://ssh/ubuntu@10.0.0.12:2222` or `nexusts://10.0.0.12:3389`
  * - `sftp://ubuntu@files.example.com`
- * - `vnc://192.168.1.50:5901`
+ * - `vnc://192.168.1.50:5901` or `ard://mac-mini.local`
+ * - `ping://1.1.1.1`, `traceroute://8.8.8.8`, `portscan://10.0.0.1`, `wol://00:11:22:33:44:55`
  * - `https://proxmox.internal:8006`
  * - `root@10.20.0.5:2222` or `CORP\admin@dc01.corp.local`
  */
@@ -102,6 +104,13 @@ object AdHocConnectionSyntaxParser {
         val domain: String? = null
     )
 
+    private val knownProtos = setOf(
+        "ssh", "rdp", "wts", "ts", "sftp", "scp", "ftp", "ftps", "vnc",
+        "ard", "screensharing", "telnet", "serial", "k8s", "kubectl", "docker",
+        "http", "https", "ping", "traceroute", "tracert", "mtr",
+        "portscan", "scan", "wol", "wakeonlan", "proxmox", "pve", "vsphere", "esxi", "hyperv"
+    )
+
     fun parseOrNull(rawQuery: String): QuickConnectCandidate? {
         val trimmed = rawQuery.trim()
         if (trimmed.length < 4) return null
@@ -111,10 +120,6 @@ object AdHocConnectionSyntaxParser {
             val remainder = trimmed.substring("nexusts://".length).trimStart('/')
             if (remainder.isBlank()) return null
             val slashIdx = remainder.indexOf('/')
-            val knownProtos = setOf(
-                "ssh", "rdp", "sftp", "scp", "ftp", "ftps", "vnc",
-                "telnet", "serial", "k8s", "kubectl", "docker", "http", "https"
-            )
             val (protoToken, rawTarget) = if (slashIdx > 0 &&
                 remainder.substring(0, slashIdx).lowercase() in knownProtos
             ) {
@@ -134,6 +139,7 @@ object AdHocConnectionSyntaxParser {
             val cleanTarget = rawTarget.substringBefore('?').trimEnd('/')
             if (cleanTarget.isBlank()) return null
             val protocol = mapProtocolToken(protoToken)
+            val subtype = mapProtocolSubtype(protoToken)
             val endpoint = if (protocol == SessionProtocolKind.WEB_PAGE) {
                 val scheme = if (protoToken == "http") "http" else "https"
                 ParsedTargetEndpoint(host = "$scheme://$cleanTarget")
@@ -150,19 +156,21 @@ object AdHocConnectionSyntaxParser {
                 parsedHost = endpoint.host,
                 parsedPort = endpoint.port,
                 parsedUsername = endpoint.username,
-                parsedDomain = endpoint.domain
+                parsedDomain = endpoint.domain,
+                parsedProtocolSubtype = subtype
             )
         }
 
-        // 2. Shorthand command syntax: "ssh root@10.20.0.5:2222", "rdp corp\admin@10.0.0.5"
+        // 2. Shorthand command syntax: "ssh root@10.20.0.5:2222", "ping 1.1.1.1", "traceroute 8.8.8.8"
         val shorthandRegex = Regex(
-            "^(ssh|rdp|sftp|scp|ftp|ftps|vnc|telnet|serial|k8s|kubectl|docker)\\s+([^\\s]+)$",
+            "^(ssh|rdp|wts|ts|sftp|scp|ftp|ftps|vnc|ard|screensharing|telnet|serial|k8s|kubectl|docker|ping|traceroute|tracert|mtr|portscan|scan|wol|wakeonlan|proxmox|pve|vsphere|esxi|hyperv)\\s+([^\\s]+)$",
             RegexOption.IGNORE_CASE
         )
         shorthandRegex.matchEntire(trimmed)?.let { match ->
             val protoToken = match.groupValues[1].lowercase()
             val target = match.groupValues[2]
             val protocol = mapProtocolToken(protoToken)
+            val subtype = mapProtocolSubtype(protoToken)
             val endpoint = parseAuthorityEndpoint(target) ?: ParsedTargetEndpoint(host = target)
             return QuickConnectCandidate(
                 id = "adhoc:$protoToken://$target",
@@ -174,13 +182,14 @@ object AdHocConnectionSyntaxParser {
                 parsedHost = endpoint.host,
                 parsedPort = endpoint.port,
                 parsedUsername = endpoint.username,
-                parsedDomain = endpoint.domain
+                parsedDomain = endpoint.domain,
+                parsedProtocolSubtype = subtype
             )
         }
 
-        // 3. Explicit protocol URI: "ssh://...", "rdp://...", "https://..."
+        // 3. Explicit protocol URI: "ssh://...", "rdp://...", "ping://...", "ard://...", "https://..."
         val uriRegex = Regex(
-            "^(ssh|rdp|sftp|scp|ftp|ftps|vnc|telnet|serial|k8s|kubectl|docker|http|https)://(.+)$",
+            "^(ssh|rdp|wts|ts|sftp|scp|ftp|ftps|vnc|ard|screensharing|telnet|serial|k8s|kubectl|docker|http|https|ping|traceroute|tracert|mtr|portscan|scan|wol|wakeonlan|proxmox|pve|vsphere|esxi|hyperv)://(.+)$",
             RegexOption.IGNORE_CASE
         )
         uriRegex.matchEntire(trimmed)?.let { match ->
@@ -188,6 +197,7 @@ object AdHocConnectionSyntaxParser {
             val target = match.groupValues[2].trim()
             if (target.isEmpty()) return null
             val protocol = mapProtocolToken(scheme)
+            val subtype = mapProtocolSubtype(scheme)
             val endpoint = if (protocol == SessionProtocolKind.WEB_PAGE) {
                 ParsedTargetEndpoint(host = trimmed)
             } else {
@@ -203,7 +213,8 @@ object AdHocConnectionSyntaxParser {
                 parsedHost = endpoint.host,
                 parsedPort = endpoint.port,
                 parsedUsername = endpoint.username,
-                parsedDomain = endpoint.domain
+                parsedDomain = endpoint.domain,
+                parsedProtocolSubtype = subtype
             )
         }
 
@@ -211,11 +222,13 @@ object AdHocConnectionSyntaxParser {
         if (!trimmed.contains(' ') && trimmed.contains('@') && !trimmed.startsWith('@') && !trimmed.endsWith('@')) {
             val endpoint = parseAuthorityEndpoint(trimmed)
             if (endpoint != null && endpoint.host.isNotBlank() && !endpoint.username.isNullOrBlank()) {
-                val inferredProto = when {
-                    endpoint.port == 3389 || endpoint.domain != null -> SessionProtocolKind.RDP
-                    endpoint.port == 5900 || endpoint.port == 5901 -> SessionProtocolKind.VNC
-                    endpoint.port == 21 -> SessionProtocolKind.FTP
-                    else -> SessionProtocolKind.SSH
+                val (inferredProto, inferredSubtype) = when {
+                    endpoint.port == 3389 || endpoint.domain != null -> SessionProtocolKind.RDP to "RDP"
+                    endpoint.port == 5900 || endpoint.port == 5901 -> SessionProtocolKind.VNC to "VNC"
+                    endpoint.port == 23 -> SessionProtocolKind.TELNET to "TELNET"
+                    endpoint.port == 21 -> SessionProtocolKind.FTP to "FTP"
+                    endpoint.port == 990 -> SessionProtocolKind.FTPS to "FTPS"
+                    else -> SessionProtocolKind.SSH to "SSH"
                 }
                 return QuickConnectCandidate(
                     id = "adhoc:${inferredProto.name.lowercase()}://$trimmed",
@@ -227,7 +240,8 @@ object AdHocConnectionSyntaxParser {
                     parsedHost = endpoint.host,
                     parsedPort = endpoint.port,
                     parsedUsername = endpoint.username,
-                    parsedDomain = endpoint.domain
+                    parsedDomain = endpoint.domain,
+                    parsedProtocolSubtype = inferredSubtype
                 )
             }
         }
@@ -299,7 +313,7 @@ object AdHocConnectionSyntaxParser {
     }
 
     private fun mapProtocolToken(token: String): SessionProtocolKind = when (token) {
-        "rdp" -> SessionProtocolKind.RDP
+        "rdp", "wts", "ts" -> SessionProtocolKind.RDP
         "ssh" -> SessionProtocolKind.SSH
         "telnet" -> SessionProtocolKind.TELNET
         "serial" -> SessionProtocolKind.SERIAL
@@ -310,7 +324,37 @@ object AdHocConnectionSyntaxParser {
         "ftp" -> SessionProtocolKind.FTP
         "ftps" -> SessionProtocolKind.FTPS
         "vnc" -> SessionProtocolKind.VNC
+        "ard", "screensharing" -> SessionProtocolKind.APPLE_SCREEN_SHARING
+        "ping", "traceroute", "tracert", "mtr", "portscan", "scan", "wol", "wakeonlan" ->
+            SessionProtocolKind.NET_UTILITY
+        "proxmox", "pve" -> SessionProtocolKind.PROXMOX_VE
+        "vsphere", "esxi" -> SessionProtocolKind.VMWARE_VSPHERE
+        "hyperv" -> SessionProtocolKind.HYPER_V
         else -> SessionProtocolKind.WEB_PAGE
+    }
+
+    private fun mapProtocolSubtype(token: String): String = when (token) {
+        "rdp" -> "RDP"
+        "wts", "ts" -> "WINDOWS_TERMINAL_SERVICES"
+        "ssh" -> "SSH"
+        "telnet" -> "TELNET"
+        "serial" -> "SERIAL"
+        "k8s", "kubectl" -> "KUBERNETES_POD"
+        "docker" -> "DOCKER_CONTAINER"
+        "sftp" -> "SFTP"
+        "scp" -> "SCP"
+        "ftp" -> "FTP"
+        "ftps" -> "FTPS"
+        "vnc" -> "VNC"
+        "ard", "screensharing" -> "APPLE_SCREEN_SHARING"
+        "ping" -> "UTILITY_PING"
+        "traceroute", "tracert", "mtr" -> "UTILITY_TRACEROUTE"
+        "portscan", "scan" -> "UTILITY_PORT_SCANNER"
+        "wol", "wakeonlan" -> "UTILITY_WAKE_ON_LAN"
+        "proxmox", "pve" -> "PROXMOX_VE"
+        "vsphere", "esxi" -> "VMWARE_VSPHERE"
+        "hyperv" -> "HYPER_V"
+        else -> "WEB_PAGE"
     }
 }
 

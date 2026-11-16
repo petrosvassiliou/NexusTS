@@ -62,6 +62,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
@@ -94,8 +95,10 @@ import com.nexusts.app.protocols.rdp.bridge.FreeRdpNativeBridge
 import com.nexusts.app.protocols.rdp.bridge.RdpManagedSession
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 private fun transformViewportToRemoteDesktop(
     rawX: Float,
@@ -188,6 +191,7 @@ fun RdpSessionSurfaceView(
             IntSize(session.settings.customDesktopWidth, session.settings.customDesktopHeight)
         )
     }
+    var hasMeasuredViewport by remember(session) { mutableStateOf(false) }
     var activeScalePercent by remember(session) { mutableIntStateOf(initialScale) }
     var zoomScale by remember(externalZoomFactor) { mutableFloatStateOf(externalZoomFactor) }
     var panOffsetX by remember(session) { mutableFloatStateOf(0f) }
@@ -256,8 +260,13 @@ fun RdpSessionSurfaceView(
         }
     }
 
-    // Connect asynchronously on Dispatchers.IO so slow network / NLA handshakes never block the Main thread
+    // Connect asynchronously on Dispatchers.IO after initial pane measurement (48ms fast fallback for headless tests)
     LaunchedEffect(session) {
+        if (liveResizeBehavior == RdpResizeBehavior.DYNAMIC_DISP_DVC && !hasMeasuredViewport) {
+            withTimeoutOrNull(48L) {
+                snapshotFlow { hasMeasuredViewport }.first { it }
+            }
+        }
         withContext(Dispatchers.IO) {
             session.start(
                 initialWidthPx = latestViewportSize.width,
@@ -269,15 +278,17 @@ fun RdpSessionSurfaceView(
         }
     }
 
-    // Health monitor + automatic remote-to-local CLIPRDR clipboard pull
+    // Health monitor + server-confirmed GDI dimension sync + automatic remote-to-local CLIPRDR pull
     LaunchedEffect(session, isConnected) {
         var tick = 0
         while (isConnected) {
             delay(450L)
             tick++
             val pulledRemoteClip = withContext(Dispatchers.IO) {
-                if (tick % 3 == 0) {
+                if (tick % 2 == 0) {
                     session.pollSessionHealth()
+                } else {
+                    session.syncServerDesktopDimensions()
                 }
                 if (session.settings.redirectClipboard) {
                     val seq = session.remoteClipboardSequence()
@@ -302,13 +313,15 @@ fun RdpSessionSurfaceView(
         }
     }
 
-    // Debounce window drag resizing (120ms) and HiDPI scale changes so DISP_DVC cleanly updates desktop geometry
-    LaunchedEffect(session, viewportSize, liveResizeBehavior) {
-        if (liveResizeBehavior == RdpResizeBehavior.DYNAMIC_DISP_DVC &&
+    // Debounce window drag resizing (220ms) and HiDPI scale changes so DISP_DVC never floods Windows mid-drag
+    LaunchedEffect(session, viewportSize, activeScalePercent, liveResizeBehavior, isConnected) {
+        if (isConnected &&
+            hasMeasuredViewport &&
+            liveResizeBehavior == RdpResizeBehavior.DYNAMIC_DISP_DVC &&
             viewportSize.width >= 320 &&
             viewportSize.height >= 240
         ) {
-            delay(120L)
+            delay(220L)
             withContext(Dispatchers.IO) {
                 session.onViewportResized(
                     widthPx = viewportSize.width,
@@ -636,7 +649,12 @@ fun RdpSessionSurfaceView(
                         else -> false
                     }
                 }
-                .onSizeChanged { newSize -> viewportSize = newSize }
+                .onSizeChanged { newSize ->
+                    viewportSize = newSize
+                    if (newSize.width >= 320 && newSize.height >= 240) {
+                        hasMeasuredViewport = true
+                    }
+                }
                 .nexusTrackpadCanvasGesture { _, pan, zoom ->
                     val nextZoom = (zoomScale * zoom).coerceIn(0.75f, 3.0f)
                     zoomScale = nextZoom
@@ -650,15 +668,21 @@ fun RdpSessionSurfaceView(
                     }
                 }
                 .nexusMouseWheelHandler(
-                    onScroll = { _, dy, _ ->
+                    onScroll = { dx, dy, _ ->
+                        val (wx, wy) = lastRemoteCursor
                         if (dy != 0f) {
-                            val steps = 120
                             val wheelFlags = FreeRdpNativeBridge.encodeMouseWheelFlags(
-                                steps = steps,
+                                steps = 120,
                                 negative = dy > 0f
                             )
-                            val (wx, wy) = lastRemoteCursor
                             session.sendMouse(wheelFlags, wx, wy)
+                        }
+                        if (dx != 0f) {
+                            val hWheelFlags = FreeRdpNativeBridge.encodeHorizontalMouseWheelFlags(
+                                steps = 120,
+                                negative = dx < 0f
+                            )
+                            session.sendMouse(hWheelFlags, wx, wy)
                         }
                     },
                     onZoom = { delta, _ ->

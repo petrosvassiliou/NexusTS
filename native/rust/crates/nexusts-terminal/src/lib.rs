@@ -2,6 +2,7 @@
 //! SSHv2 (`russh`) Session & Port/X11/Bastion Multiplexer, Serial Port Framing, and Telnet (`IAC` NAWS) Engine.
 
 pub mod ssh_transport;
+pub mod telnet_transport;
 
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
@@ -52,6 +53,8 @@ pub struct TerminalViewportSnapshot {
     pub cursor_row: usize,
     pub cursor_visible: bool,
     pub bracketed_paste_mode: bool,
+    #[serde(default)]
+    pub application_cursor_keys: bool,
     pub title: String,
     pub visible_lines: Vec<String>,
     #[serde(default)]
@@ -85,6 +88,7 @@ pub struct VtTerminalBuffer {
     current_attrs: CellAttributes,
     cursor_visible: bool,
     bracketed_paste: bool,
+    application_cursor_keys: bool,
     window_title: String,
     parser_state: ParserState,
     csi_buf: String,
@@ -112,12 +116,17 @@ impl VtTerminalBuffer {
             current_attrs: CellAttributes::default(),
             cursor_visible: true,
             bracketed_paste: false,
+            application_cursor_keys: false,
             window_title: String::from("NexusTS Terminal"),
             parser_state: ParserState::Ground,
             csi_buf: String::with_capacity(32),
             osc_buf: String::with_capacity(64),
             pending_utf8: Vec::with_capacity(4),
         }
+    }
+
+    pub fn application_cursor_keys(&self) -> bool {
+        self.application_cursor_keys
     }
 
     pub fn resize(&mut self, new_cols: usize, new_rows: usize) {
@@ -350,6 +359,7 @@ impl VtTerminalBuffer {
                 let enable = final_byte == 'h';
                 for code in nums {
                     match code {
+                        1 => self.application_cursor_keys = enable,
                         25 => self.cursor_visible = enable,
                         1049 | 47 => {
                             if enable {
@@ -523,6 +533,7 @@ impl VtTerminalBuffer {
             cursor_row: self.cursor_row,
             cursor_visible: self.cursor_visible,
             bracketed_paste_mode: self.bracketed_paste,
+            application_cursor_keys: self.application_cursor_keys,
             title: self.window_title.clone(),
             visible_lines,
             scrollback_lines,
@@ -556,19 +567,25 @@ pub fn xterm_palette_256(idx: usize) -> u32 {
     }
 }
 
-/// Encodes Telnet RFC 1073 NAWS (Negotiate About Window Size) `IAC SB NAWS <w_hi> <w_lo> <h_hi> <h_lo> IAC SE`.
+/// Encodes Telnet RFC 1073 NAWS (Negotiate About Window Size) `IAC SB NAWS <w_hi> <w_lo> <h_hi> <h_lo> IAC SE`,
+/// doubling any `0xFF` dimension byte per RFC 855.
 pub fn build_telnet_naws_packet(cols: u16, rows: u16) -> Vec<u8> {
-    vec![
-        255, // IAC
-        250, // SB
-        31,  // OPT_NAWS
+    let mut pkt = Vec::with_capacity(13);
+    pkt.extend_from_slice(&[255, 250, 31]); // IAC SB OPT_NAWS
+    let dims = [
         (cols >> 8) as u8,
         (cols & 0xFF) as u8,
         (rows >> 8) as u8,
         (rows & 0xFF) as u8,
-        255, // IAC
-        240, // SE
-    ]
+    ];
+    for b in dims {
+        pkt.push(b);
+        if b == 255 {
+            pkt.push(255);
+        }
+    }
+    pkt.extend_from_slice(&[255, 240]); // IAC SE
+    pkt
 }
 
 /// Hardware Serial Port (USB-CDC / FTDI / CP210x / RS-232) framing parameters for Googlebook OS.
@@ -663,6 +680,30 @@ mod tests {
     fn telnet_naws_encodes_big_endian_dimensions() {
         let pkt = build_telnet_naws_packet(132, 43);
         assert_eq!(pkt, vec![255, 250, 31, 0, 132, 0, 43, 255, 240]);
+
+        // RFC 855: 0xFF bytes inside NAWS dimensions must be doubled
+        let ff_pkt = build_telnet_naws_packet(255, 0xFF10);
+        assert_eq!(ff_pkt, vec![255, 250, 31, 0, 255, 255, 255, 255, 16, 255, 240]);
+    }
+
+    #[test]
+    fn vt_buffer_tracks_decckm_application_cursor_keys_and_ris_reset() {
+        let mut vt = VtTerminalBuffer::new(80, 24, 200);
+        assert!(!vt.application_cursor_keys());
+        assert!(!vt.snapshot().application_cursor_keys);
+
+        vt.feed_bytes(b"\x1b[?1h");
+        assert!(vt.application_cursor_keys());
+        assert!(vt.snapshot().application_cursor_keys);
+
+        vt.feed_bytes(b"\x1b[?1l");
+        assert!(!vt.application_cursor_keys());
+
+        vt.feed_bytes(b"\x1b[?1h");
+        assert!(vt.application_cursor_keys());
+        // RIS (ESC c) resets DECCKM back to false
+        vt.feed_bytes(b"\x1bc");
+        assert!(!vt.application_cursor_keys());
     }
 }
 

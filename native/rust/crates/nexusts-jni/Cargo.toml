@@ -13,5 +13,9 @@ nexusts-terminal = { path = "../nexusts-terminal" }
 nexusts-transfer = { path = "../nexusts-transfer" }
 nexusts-vnc = { path = "../nexusts-vnc" }
 nexusts-netutils = { path = "../nexusts-netutils" }
+tokio.workspace = true
+russh.workspace = true
+dashmap.workspace = true
 jni.workspace = true
+serde.workspace = true
 serde_json.workspace = true

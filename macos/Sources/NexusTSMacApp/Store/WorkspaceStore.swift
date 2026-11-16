@@ -94,9 +94,14 @@ public final class LiveTerminalController: ObservableObject {
     private let vtEngine: NativeVtTerminalEngine
     private var localPty: MacLocalPtySession?
     private var sshSession: NativeSshSession?
+    private var telnetSession: NativeTelnetSession?
     private var pollTimer: Timer?
     private var currentCols: Int = 110
     private var currentRows: Int = 32
+
+    public var applicationCursorKeys: Bool {
+        vtEngine.applicationCursorKeys
+    }
 
     public init(
         tabId: UUID,
@@ -104,7 +109,8 @@ public final class LiveTerminalController: ObservableObject {
         isLocalShell: Bool,
         effectiveCredential: VaultCredential?,
         bastionConnection: VaultConnection? = nil,
-        bastionCredential: VaultCredential? = nil
+        bastionCredential: VaultCredential? = nil,
+        gatewayBastionSpec: SshFfiConnectPayload? = nil
     ) {
         self.tabId = tabId
         self.connection = connection
@@ -117,11 +123,14 @@ public final class LiveTerminalController: ObservableObject {
 
         if isLocalShell {
             startLocalShell()
+        } else if connection.protocolType == .TELNET {
+            startRemoteTelnetSession()
         } else {
             startRemoteSshSession(
                 credential: effectiveCredential,
                 bastionConn: bastionConnection,
-                bastionCred: bastionCredential
+                bastionCred: bastionCredential,
+                gatewayBastionSpec: gatewayBastionSpec
             )
         }
     }
@@ -133,6 +142,8 @@ public final class LiveTerminalController: ObservableObject {
         localPty = nil
         sshSession?.disconnect()
         sshSession = nil
+        telnetSession?.disconnect()
+        telnetSession = nil
         isConnected = false
     }
 
@@ -152,10 +163,66 @@ public final class LiveTerminalController: ObservableObject {
         }
     }
 
+    private func startRemoteTelnetSession() {
+        let sshSettings: SshProtocolSettings = {
+            if case .ssh(let s) = connection.settings { return s }
+            return SshProtocolSettings(port: 23)
+        }()
+        let resolvedPort = sshSettings.port > 0 ? sshSettings.port : 23
+        let termType = sshSettings.terminalType.isEmpty ? "xterm-256color" : sshSettings.terminalType
+        let startupCmd = sshSettings.startupCommand
+        let connId = connection.id
+        let connHost = connection.host
+        let cols = currentCols
+        let rows = currentRows
+
+        feedBannerText("\u{1B}[38;2;91;155;255m● Connecting via Telnet to \(connHost):\(resolvedPort)…\u{1B}[0m\r\n")
+        statusBanner = "Connecting to \(connHost):\(resolvedPort)…"
+
+        Task { @MainActor [weak self] in
+            do {
+                let session = try await Task.detached(priority: .userInitiated) { () -> NativeTelnetSession in
+                    let tn = try NativeTelnetSession.connect(
+                        host: connHost,
+                        port: UInt16(clamping: resolvedPort),
+                        cols: cols,
+                        rows: rows,
+                        term: termType
+                    )
+                    if !startupCmd.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        _ = tn.sendInput(Data((startupCmd + "\r\n").utf8))
+                    }
+                    return tn
+                }.value
+
+                guard let self else {
+                    session.disconnect()
+                    return
+                }
+                self.telnetSession = session
+                self.isConnected = true
+                self.lastConnectError = nil
+                self.statusBanner = "Connected • Telnet RFC 854 (\(termType))"
+                self.startOutputPump()
+            } catch {
+                let classified = NexusErrorClassifier.classify(
+                    error,
+                    operationTitle: "Telnet Connection Failed (\(connHost))",
+                    recoveryConnectionId: connId
+                )
+                self?.isConnected = false
+                self?.lastConnectError = classified
+                self?.statusBanner = classified.userMessage
+                self?.feedBannerText("\r\n\u{1B}[38;2;255;99;99m✖ \(classified.userMessage)\r\n  ↳ \(classified.remediationHint)\r\n  [\(error.localizedDescription)]\u{1B}[0m\r\n")
+            }
+        }
+    }
+
     private func startRemoteSshSession(
         credential: VaultCredential?,
         bastionConn: VaultConnection?,
-        bastionCred: VaultCredential?
+        bastionCred: VaultCredential?,
+        gatewayBastionSpec: SshFfiConnectPayload?
     ) {
         let sshSettings: SshProtocolSettings = {
             if case .ssh(let s) = connection.settings { return s }
@@ -164,7 +231,7 @@ public final class LiveTerminalController: ObservableObject {
         let user = (credential?.username.isEmpty == false) ? credential!.username : NSUserName()
         let auth: SshFfiConnectPayload.Auth = {
             if let pem = credential?.privateKeyPem, !pem.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                let pass = credential?.keyPassphrase.isEmpty == true ? nil : credential?.keyPassphrase
+                let pass = (credential?.keyPassphrase.isEmpty == true) ? nil : credential?.keyPassphrase
                 return .privateKeyPem(pem: pem, passphrase: pass)
             }
             return .password(credential?.secretPassword ?? "")
@@ -172,7 +239,7 @@ public final class LiveTerminalController: ObservableObject {
 
         let spec = SshFfiConnectPayload(
             host: connection.host,
-            port: UInt16(clamping: sshSettings.port),
+            port: UInt16(clamping: sshSettings.port > 0 ? sshSettings.port : 22),
             username: user,
             auth: auth,
             termEnv: sshSettings.terminalType,
@@ -189,13 +256,14 @@ public final class LiveTerminalController: ObservableObject {
             }()
             let bUser = (bastionCred?.username.isEmpty == false) ? bastionCred!.username : user
             let bAuth: SshFfiConnectPayload.Auth = {
-                if let pem = bastionCred?.privateKeyPem, !pem.isEmpty {
-                    return .privateKeyPem(pem: pem, passphrase: bastionCred?.keyPassphrase)
+                if let pem = bastionCred?.privateKeyPem, !pem.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    let bPass = (bastionCred?.keyPassphrase.isEmpty == true) ? nil : bastionCred?.keyPassphrase
+                    return .privateKeyPem(pem: pem, passphrase: bPass)
                 }
                 return .password(bastionCred?.secretPassword ?? "")
             }()
             return SshFfiConnectPayload(host: bConn.host, port: UInt16(clamping: bPort), username: bUser, auth: bAuth)
-        }
+        } ?? gatewayBastionSpec
 
         feedBannerText("\u{1B}[38;2;91;155;255m● Connecting to \(user)@\(connection.host):\(sshSettings.port)…\u{1B}[0m\r\n")
         statusBanner = "Connecting to \(connection.host):\(sshSettings.port)…"
@@ -318,6 +386,23 @@ public final class LiveTerminalController: ObservableObject {
                 feedBannerText("\r\n\u{1B}[90m[Connection closed by remote host]\u{1B}[0m\r\n")
                 pollTimer?.invalidate()
             }
+        } else if let tn = telnetSession {
+            let (bytes, eof) = tn.drainOutput()
+            if !bytes.isEmpty {
+                if let text = String(data: bytes, encoding: .utf8) {
+                    recorder.recordOutput(text)
+                }
+                if let snap = vtEngine.feedAndSnapshot(bytes) {
+                    self.snapshot = snap
+                }
+            }
+            if eof && isConnected {
+                isConnected = false
+                let err = tn.lastErrorMessage()
+                statusBanner = err.isEmpty ? "Remote Telnet closed" : "Telnet closed: \(err)"
+                feedBannerText("\r\n\u{1B}[90m[Telnet connection closed by remote host]\u{1B}[0m\r\n")
+                pollTimer?.invalidate()
+            }
         }
     }
 
@@ -326,6 +411,8 @@ public final class LiveTerminalController: ObservableObject {
             pty.sendInput(data)
         } else if let ssh = sshSession {
             _ = ssh.sendInput(data)
+        } else if let tn = telnetSession {
+            _ = tn.sendInput(data)
         }
     }
 
@@ -346,6 +433,7 @@ public final class LiveTerminalController: ObservableObject {
         vtEngine.resize(cols: c, rows: r)
         localPty?.resize(cols: c, rows: r)
         sshSession?.resizePty(cols: c, rows: r)
+        telnetSession?.resize(cols: c, rows: r)
         if let snap = vtEngine.currentSnapshot() {
             self.snapshot = snap
         }
@@ -391,6 +479,512 @@ public final class LiveTerminalController: ObservableObject {
         if let snap = vtEngine.feedAndSnapshot(Data(ansi.utf8)) {
             self.snapshot = snap
         }
+    }
+}
+
+// MARK: - Persistent Dual-Pane File Transfer Runtime (SFTP / SCP / FTP / FTPS)
+
+@MainActor
+public final class LiveTransferController: ObservableObject {
+    public let tabId: UUID
+    public private(set) var connection: VaultConnection
+
+    @Published public var localPath: String
+    @Published public var remotePath: String
+    @Published public private(set) var localEntries: [URL] = []
+    @Published public private(set) var remoteEntries: [SftpRemoteEntry] = []
+    @Published public private(set) var isConnecting: Bool = false
+    @Published public private(set) var isConnected: Bool = false
+    @Published public var statusText: String = "Initializing…"
+    @Published public var lastErrorText: String? = nil
+
+    private var underlyingSshSession: NativeSshSession?
+    private var remoteClient: RemoteFileTransferClient?
+    private var showHiddenDotfiles: Bool = true
+
+    public init(
+        tabId: UUID,
+        connection: VaultConnection,
+        credential: VaultCredential?,
+        bastionSpec: SshFfiConnectPayload?
+    ) {
+        self.tabId = tabId
+        self.connection = connection
+        let ftSettings: FileTransferProtocolSettings = {
+            if case .fileTransfer(let s) = connection.settings { return s }
+            return FileTransferProtocolSettings(
+                port: connection.protocolType.defaultPort,
+                ftpsImplicitTls: connection.protocolType == .FTPS
+            )
+        }()
+        self.showHiddenDotfiles = ftSettings.showHiddenDotfiles
+        self.localPath = ftSettings.initialLocalDirectory.isEmpty
+            ? FileManager.default.homeDirectoryForCurrentUser.path
+            : ftSettings.initialLocalDirectory
+        self.remotePath = ftSettings.initialRemoteDirectory.isEmpty ? "/" : ftSettings.initialRemoteDirectory
+        refreshLocal()
+        connect(connection: connection, credential: credential, bastionSpec: bastionSpec)
+    }
+
+    public func shutdown() {
+        let client = remoteClient
+        let ssh = underlyingSshSession
+        remoteClient = nil
+        underlyingSshSession = nil
+        isConnected = false
+        isConnecting = false
+        Task.detached(priority: .utility) {
+            client?.disconnect()
+            ssh?.disconnect()
+        }
+    }
+
+    public func connect(
+        connection: VaultConnection,
+        credential: VaultCredential?,
+        bastionSpec: SshFfiConnectPayload?
+    ) {
+        self.connection = connection
+        let oldClient = remoteClient
+        let oldSsh = underlyingSshSession
+        remoteClient = nil
+        underlyingSshSession = nil
+
+        let ftSettings: FileTransferProtocolSettings = {
+            if case .fileTransfer(let s) = connection.settings { return s }
+            return FileTransferProtocolSettings(
+                port: connection.protocolType.defaultPort,
+                ftpsImplicitTls: connection.protocolType == .FTPS
+            )
+        }()
+        self.showHiddenDotfiles = ftSettings.showHiddenDotfiles
+        let proto = connection.protocolType
+        let host = connection.host
+        let port = UInt16(clamping: ftSettings.port > 0 ? ftSettings.port : proto.defaultPort)
+        let user = (credential?.username.isEmpty == false)
+            ? credential!.username
+            : ((proto == .FTP || proto == .FTPS) ? "anonymous" : NSUserName())
+        let password = credential?.secretPassword ?? ""
+        let keyPem = credential?.privateKeyPem ?? ""
+        let keyPass = (credential?.keyPassphrase.isEmpty == true) ? nil : credential?.keyPassphrase
+        let initialRemote = remotePath
+
+        isConnecting = true
+        isConnected = false
+        lastErrorText = nil
+        statusText = "Connecting via \(proto.shortBadge) to \(host):\(port)…"
+
+        Task { @MainActor [weak self] in
+            do {
+                let (sshHolder, client, resolvedDir, entries) = try await Task.detached(
+                    priority: .userInitiated
+                ) { () -> (NativeSshSession?, RemoteFileTransferClient, String, [SftpRemoteEntry]) in
+                    oldClient?.disconnect()
+                    oldSsh?.disconnect()
+
+                    let sshAuth: SshFfiConnectPayload.Auth = {
+                        if !keyPem.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            return .privateKeyPem(pem: keyPem, passphrase: keyPass)
+                        }
+                        return .password(password)
+                    }()
+
+                    var sshSession: NativeSshSession? = nil
+                    let transferClient: RemoteFileTransferClient
+
+                    switch proto {
+                    case .SCP:
+                        let spec = SshFfiConnectPayload(host: host, port: port, username: user, auth: sshAuth)
+                        transferClient = try NativeScpClient.connect(spec: spec, bastion: bastionSpec)
+                    case .FTP:
+                        transferClient = try NativeFtpClient.connect(
+                            host: host,
+                            port: port,
+                            username: user,
+                            password: password
+                        )
+                    case .FTPS:
+                        let implicit = ftSettings.ftpsImplicitTls || port == 990
+                        transferClient = try MacFtpsClient.connect(
+                            host: host,
+                            port: port,
+                            username: user,
+                            password: password,
+                            implicitTls: implicit,
+                            verifyTls: ftSettings.verifyTls
+                        )
+                    default:
+                        let spec = SshFfiConnectPayload(host: host, port: port, username: user, auth: sshAuth)
+                        let ssh = try NativeSshSession.connect(spec: spec, bastion: bastionSpec, openPty: false)
+                        do {
+                            let sftp = try ssh.openSftpSubsystem()
+                            sshSession = ssh
+                            transferClient = sftp
+                        } catch {
+                            ssh.disconnect()
+                            throw error
+                        }
+                    }
+
+                    var targetDir = initialRemote.isEmpty ? "/" : initialRemote
+                    if targetDir == "~" || targetDir == "." {
+                        targetDir = (try? transferClient.pwd()) ?? "/"
+                    }
+                    do {
+                        let listed = try transferClient.listDirectory(targetDir)
+                        return (sshSession, transferClient, targetDir, listed)
+                    } catch {
+                        if let fallbackPwd = try? transferClient.pwd(), fallbackPwd != targetDir {
+                            let listed = try transferClient.listDirectory(fallbackPwd)
+                            return (sshSession, transferClient, fallbackPwd, listed)
+                        }
+                        throw error
+                    }
+                }.value
+
+                guard let self else {
+                    client.disconnect()
+                    sshHolder?.disconnect()
+                    return
+                }
+                self.underlyingSshSession = sshHolder
+                self.remoteClient = client
+                self.remotePath = resolvedDir
+                self.remoteEntries = self.filterHidden(entries)
+                self.isConnecting = false
+                self.isConnected = true
+                self.lastErrorText = nil
+                self.statusText = "Connected • \(proto.displayName) (\(entries.count) items)"
+            } catch {
+                guard let self else { return }
+                self.isConnecting = false
+                self.isConnected = false
+                self.lastErrorText = error.localizedDescription
+                self.statusText = "\(proto.shortBadge) error: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func filterHidden(_ entries: [SftpRemoteEntry]) -> [SftpRemoteEntry] {
+        guard !showHiddenDotfiles else { return entries }
+        return entries.filter { !$0.name.hasPrefix(".") }
+    }
+
+    public func refreshLocal() {
+        do {
+            let items = try FileManager.default.contentsOfDirectory(
+                at: URL(fileURLWithPath: localPath),
+                includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey],
+                options: showHiddenDotfiles ? [] : [.skipsHiddenFiles]
+            )
+            localEntries = items.sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+        } catch {
+            lastErrorText = "Local directory error: \(error.localizedDescription)"
+            statusText = lastErrorText ?? ""
+        }
+    }
+
+    public func refreshRemote(
+        pathOverride: String? = nil,
+        onError: ((Error) -> Void)? = nil
+    ) {
+        let target = pathOverride ?? remotePath
+        guard let client = remoteClient else {
+            statusText = "Not connected to \(connection.host)"
+            return
+        }
+        Task { @MainActor [weak self] in
+            do {
+                let listed = try await Task.detached(priority: .userInitiated) {
+                    try client.listDirectory(target)
+                }.value
+                guard let self else { return }
+                self.remotePath = target
+                self.remoteEntries = self.filterHidden(listed)
+                self.lastErrorText = nil
+                self.statusText = "Listed \(self.remoteEntries.count) items in \(target)"
+            } catch {
+                self?.lastErrorText = error.localizedDescription
+                self?.statusText = "Directory error: \(error.localizedDescription)"
+                onError?(error)
+            }
+        }
+    }
+
+    public func uploadFiles(_ urls: [URL], onError: ((Error) -> Void)? = nil) {
+        guard let client = remoteClient else {
+            let err = NativeBridgeError.sftpError("Connect remote session before uploading files.")
+            statusText = err.localizedDescription
+            onError?(err)
+            return
+        }
+        let targetDir = remotePath
+        statusText = "Uploading \(urls.count) item(s)…"
+        Task { @MainActor [weak self] in
+            do {
+                var uploadedCount = 0
+                try await Task.detached(priority: .userInitiated) {
+                    for fileUrl in urls {
+                        var isDir: ObjCBool = false
+                        guard FileManager.default.fileExists(atPath: fileUrl.path, isDirectory: &isDir),
+                              !isDir.boolValue else {
+                            continue
+                        }
+                        let bytes = try Data(contentsOf: fileUrl)
+                        let cleanDir = targetDir.hasSuffix("/") ? String(targetDir.dropLast()) : targetDir
+                        let dest = cleanDir.isEmpty ? "/\(fileUrl.lastPathComponent)" : "\(cleanDir)/\(fileUrl.lastPathComponent)"
+                        try client.uploadBytes(bytes, to: dest)
+                        uploadedCount += 1
+                    }
+                }.value
+                guard let self else { return }
+                self.statusText = "Uploaded \(uploadedCount) file(s) to \(targetDir)"
+                self.refreshRemote(onError: onError)
+            } catch {
+                self?.lastErrorText = error.localizedDescription
+                self?.statusText = "Upload failed: \(error.localizedDescription)"
+                onError?(error)
+            }
+        }
+    }
+
+    public func downloadEntry(
+        _ entry: SftpRemoteEntry,
+        destinationDirectory: URL? = nil,
+        onError: ((Error) -> Void)? = nil
+    ) {
+        guard !entry.isDirectory else { return }
+        guard let client = remoteClient else {
+            let err = NativeBridgeError.sftpError("Connect remote session before downloading files.")
+            statusText = err.localizedDescription
+            onError?(err)
+            return
+        }
+        let destFolder = destinationDirectory ?? URL(fileURLWithPath: localPath)
+        let destFile = destFolder.appendingPathComponent(entry.name)
+        statusText = "Downloading \(entry.name)…"
+        Task { @MainActor [weak self] in
+            do {
+                let count = try await Task.detached(priority: .userInitiated) { () -> Int in
+                    let data = try client.downloadBytes(entry.fullPath)
+                    try data.write(to: destFile, options: .atomic)
+                    return data.count
+                }.value
+                guard let self else { return }
+                self.statusText = "Downloaded \(entry.name) (\(ByteCountFormatter.string(fromByteCount: Int64(count), countStyle: .file)))"
+                self.refreshLocal()
+            } catch {
+                self?.lastErrorText = error.localizedDescription
+                self?.statusText = "Download failed: \(error.localizedDescription)"
+                onError?(error)
+            }
+        }
+    }
+
+    public func createRemoteDirectory(named name: String, onError: ((Error) -> Void)? = nil) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let client = remoteClient else { return }
+        let base = remotePath.hasSuffix("/") ? String(remotePath.dropLast()) : remotePath
+        let target = base.isEmpty ? "/\(trimmed)" : "\(base)/\(trimmed)"
+        Task { @MainActor [weak self] in
+            do {
+                try await Task.detached(priority: .userInitiated) {
+                    try client.createDirectory(target)
+                }.value
+                self?.statusText = "Created \(target)"
+                self?.refreshRemote(onError: onError)
+            } catch {
+                self?.lastErrorText = error.localizedDescription
+                self?.statusText = "mkdir failed: \(error.localizedDescription)"
+                onError?(error)
+            }
+        }
+    }
+
+    public func deleteRemoteEntry(_ entry: SftpRemoteEntry, onError: ((Error) -> Void)? = nil) {
+        guard let client = remoteClient else { return }
+        Task { @MainActor [weak self] in
+            do {
+                try await Task.detached(priority: .userInitiated) {
+                    try client.removeEntry(entry.fullPath, isDirectory: entry.isDirectory)
+                }.value
+                self?.statusText = "Deleted \(entry.name)"
+                self?.refreshRemote(onError: onError)
+            } catch {
+                self?.lastErrorText = error.localizedDescription
+                self?.statusText = "Delete failed: \(error.localizedDescription)"
+                onError?(error)
+            }
+        }
+    }
+
+    public func renameRemoteEntry(
+        _ entry: SftpRemoteEntry,
+        newName: String,
+        onError: ((Error) -> Void)? = nil
+    ) {
+        let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let client = remoteClient else { return }
+        let parent = (entry.fullPath as NSString).deletingLastPathComponent
+        let cleanParent = parent.hasSuffix("/") ? String(parent.dropLast()) : parent
+        let dest = cleanParent.isEmpty ? "/\(trimmed)" : "\(cleanParent)/\(trimmed)"
+        Task { @MainActor [weak self] in
+            do {
+                try await Task.detached(priority: .userInitiated) {
+                    try client.renameEntry(from: entry.fullPath, to: dest)
+                }.value
+                self?.statusText = "Renamed \(entry.name) → \(trimmed)"
+                self?.refreshRemote(onError: onError)
+            } catch {
+                self?.lastErrorText = error.localizedDescription
+                self?.statusText = "Rename failed: \(error.localizedDescription)"
+                onError?(error)
+            }
+        }
+    }
+
+    public func chmodRemoteEntry(
+        _ entry: SftpRemoteEntry,
+        octalString: String,
+        onError: ((Error) -> Void)? = nil
+    ) {
+        let cleaned = octalString
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "0o", with: "")
+        guard let mode = UInt32(cleaned, radix: 8), let client = remoteClient else {
+            statusText = "Invalid octal mode '\(octalString)' (example: 0755 or 644)"
+            return
+        }
+        Task { @MainActor [weak self] in
+            do {
+                try await Task.detached(priority: .userInitiated) {
+                    try client.chmod(entry.fullPath, modeOctal: mode)
+                }.value
+                self?.statusText = String(format: "Changed permissions on %@ to %04o", entry.name, mode)
+                self?.refreshRemote(onError: onError)
+            } catch {
+                self?.lastErrorText = error.localizedDescription
+                self?.statusText = "chmod failed: \(error.localizedDescription)"
+                onError?(error)
+            }
+        }
+    }
+}
+
+// MARK: - Persistent Live VNC / Apple ARD Desktop Runtime
+
+@MainActor
+public final class LiveVncController: ObservableObject {
+    public let tabId: UUID
+    public private(set) var connection: VaultConnection
+    public private(set) var vncSettings: VncProtocolSettings
+    public private(set) var effectiveUsername: String
+    public private(set) var effectivePassword: String
+
+    @Published public private(set) var session: NativeLiveVncSession?
+    @Published public private(set) var isConnecting: Bool = false
+    @Published public private(set) var isConnected: Bool = false
+    @Published public private(set) var desktopName: String = ""
+    @Published public private(set) var dimensionsText: String = "Connecting…"
+    @Published public private(set) var lastErrorText: String? = nil
+
+    public init(
+        tabId: UUID,
+        connection: VaultConnection,
+        credential: VaultCredential?
+    ) {
+        self.tabId = tabId
+        self.connection = connection
+        if case .vnc(let s) = connection.settings {
+            self.vncSettings = s
+        } else {
+            self.vncSettings = VncProtocolSettings(
+                port: 5900,
+                appleArdDiffieHellmanAuth: connection.protocolType == .APPLE_SCREEN_SHARING
+            )
+        }
+        self.effectiveUsername = credential?.username ?? ""
+        self.effectivePassword = credential?.secretPassword ?? ""
+        connect(connection: connection, credential: credential)
+    }
+
+    public func connect(connection: VaultConnection, credential: VaultCredential?) {
+        self.connection = connection
+        if case .vnc(let s) = connection.settings {
+            self.vncSettings = s
+        }
+        self.effectiveUsername = credential?.username ?? ""
+        self.effectivePassword = credential?.secretPassword ?? ""
+
+        let old = session
+        session = nil
+        isConnecting = true
+        isConnected = false
+        lastErrorText = nil
+        dimensionsText = "Connecting…"
+
+        let host = connection.host
+        let port = UInt16(clamping: vncSettings.port > 0 ? vncSettings.port : 5900)
+        let user = effectiveUsername
+        let pass = effectivePassword
+        let shared = vncSettings.sharedSession
+        let viewOnly = vncSettings.viewOnly
+
+        Task { @MainActor [weak self] in
+            do {
+                let connected = try await Task.detached(priority: .userInitiated) { () -> NativeLiveVncSession in
+                    old?.disconnect()
+                    return try NativeLiveVncSession.connect(
+                        host: host,
+                        port: port,
+                        username: user,
+                        password: pass,
+                        sharedSession: shared,
+                        viewOnly: viewOnly
+                    )
+                }.value
+
+                guard let self else {
+                    connected.disconnect()
+                    return
+                }
+                self.session = connected
+                self.isConnecting = false
+                self.isConnected = connected.isConnected
+                self.desktopName = connected.desktopName()
+                if let dims = connected.dimensions() {
+                    self.dimensionsText = "\(dims.width)×\(dims.height)"
+                } else {
+                    self.dimensionsText = "Connected"
+                }
+            } catch {
+                guard let self else { return }
+                self.isConnecting = false
+                self.isConnected = false
+                self.lastErrorText = error.localizedDescription
+                self.dimensionsText = "Disconnected"
+            }
+        }
+    }
+
+    public func updateRuntimeStatus(isConnected: Bool, dimensionsText: String?, errorText: String?) {
+        if self.isConnected != isConnected {
+            self.isConnected = isConnected
+        }
+        if let dims = dimensionsText, !dims.isEmpty, self.dimensionsText != dims {
+            self.dimensionsText = dims
+        }
+        if let err = errorText, !err.isEmpty, self.lastErrorText != err {
+            self.lastErrorText = err
+        }
+    }
+
+    public func shutdown() {
+        let current = session
+        session = nil
+        isConnected = false
+        isConnecting = false
+        current?.disconnect()
     }
 }
 
@@ -467,6 +1061,8 @@ public final class WorkspaceStore: ObservableObject {
     private var activePassphrase: String = NxtsVaultSerializer.defaultTransparentPassphrase
     private var terminalControllers: [UUID: LiveTerminalController] = [:]
     private var rdpSessions: [UUID: NativeRdpSession] = [:]
+    private var transferControllers: [UUID: LiveTransferController] = [:]
+    private var vncControllers: [UUID: LiveVncController] = [:]
     public let cloudBookmarkBridge = MacCloudBookmarkSyncBridge()
     public let googleDriveEngine = GoogleDriveRestSyncEngine()
 
@@ -610,12 +1206,20 @@ public final class WorkspaceStore: ObservableObject {
         appendAudit("Vault", "\(reason) (rev \(document.revision))")
     }
 
-    public func lockVault() {
-        // Close live interactive sessions for zero-knowledge protection
+    private func shutdownAllLiveRuntimes() {
         for (_, ctrl) in terminalControllers { ctrl.shutdown() }
         terminalControllers.removeAll()
         for (_, rdp) in rdpSessions { rdp.destroy() }
         rdpSessions.removeAll()
+        for (_, transfer) in transferControllers { transfer.shutdown() }
+        transferControllers.removeAll()
+        for (_, vnc) in vncControllers { vnc.shutdown() }
+        vncControllers.removeAll()
+    }
+
+    public func lockVault() {
+        // Close live interactive sessions for zero-knowledge protection
+        shutdownAllLiveRuntimes()
         paneTree = .initialEmpty()
         detachedWindowTabs.removeAll()
         isFullScreenSessionMode = false
@@ -685,10 +1289,7 @@ public final class WorkspaceStore: ObservableObject {
     }
 
     public func resetVaultDatabase() {
-        for (_, ctrl) in terminalControllers { ctrl.shutdown() }
-        terminalControllers.removeAll()
-        for (_, rdp) in rdpSessions { rdp.destroy() }
-        rdpSessions.removeAll()
+        shutdownAllLiveRuntimes()
         paneTree = .initialEmpty()
         detachedWindowTabs.removeAll()
         isFullScreenSessionMode = false
@@ -933,7 +1534,13 @@ public final class WorkspaceStore: ObservableObject {
         detachedWindowTabs.removeValue(forKey: tabId)
         if destroyRuntime {
             terminalControllers.removeValue(forKey: tabId)?.shutdown()
-            rdpSessions.removeValue(forKey: tabId)?.destroy()
+            if let oldRdp = rdpSessions.removeValue(forKey: tabId) {
+                Task.detached(priority: .utility) {
+                    oldRdp.destroy()
+                }
+            }
+            transferControllers.removeValue(forKey: tabId)?.shutdown()
+            vncControllers.removeValue(forKey: tabId)?.shutdown()
         }
         if let focused = focusedPaneId, !paneTree.allLeafIds.contains(focused) {
             focusedPaneId = paneTree.allLeafIds.first
@@ -1001,20 +1608,56 @@ public final class WorkspaceStore: ObservableObject {
         return docked + detached
     }
 
-    public func terminalController(for tab: WorkspaceSessionTab) -> LiveTerminalController {
-        if let existing = terminalControllers[tab.id] {
-            return existing
-        }
-        let latestConnection = activeConnections.first(where: { $0.id == tab.connection.id }) ?? tab.connection
-        let resolved = PropertyInheritanceResolver.resolve(connection: latestConnection, in: document)
+    private func resolveEffectiveCredential(
+        for tab: WorkspaceSessionTab,
+        resolved: EffectiveConnectionProfile
+    ) -> VaultCredential? {
         var effectiveCred = resolved.effectiveCredential
-        if tab.adHocUsernameOverride != nil || tab.adHocPasswordOverride != nil {
+        if tab.adHocUsernameOverride != nil || tab.adHocPasswordOverride != nil || tab.adHocDomainOverride != nil {
             var copy = effectiveCred ?? VaultCredential(name: "Ad-Hoc")
             if let u = tab.adHocUsernameOverride, !u.isEmpty { copy.username = u }
             if let p = tab.adHocPasswordOverride, !p.isEmpty { copy.secretPassword = p }
             if let d = tab.adHocDomainOverride, !d.isEmpty { copy.domain = d }
             effectiveCred = copy
         }
+        return effectiveCred
+    }
+
+    private func resolveGatewayBastionPayload(
+        resolved: EffectiveConnectionProfile,
+        fallbackUser: String
+    ) -> SshFfiConnectPayload? {
+        guard let gw = resolved.effectiveGateway,
+              gw.kind == .SSH_TUNNEL_BASTION,
+              !gw.host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+        let gwCred = gw.credentialId.flatMap { id in
+            activeCredentials.first(where: { $0.id == id })
+        }
+        let user = (gwCred?.username.isEmpty == false) ? gwCred!.username : fallbackUser
+        let auth: SshFfiConnectPayload.Auth = {
+            if let pem = gwCred?.privateKeyPem, !pem.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                let pass = (gwCred?.keyPassphrase.isEmpty == true) ? nil : gwCred?.keyPassphrase
+                return .privateKeyPem(pem: pem, passphrase: pass)
+            }
+            return .password(gwCred?.secretPassword ?? "")
+        }()
+        return SshFfiConnectPayload(
+            host: gw.host,
+            port: UInt16(clamping: gw.port > 0 ? gw.port : 22),
+            username: user,
+            auth: auth
+        )
+    }
+
+    public func terminalController(for tab: WorkspaceSessionTab) -> LiveTerminalController {
+        if let existing = terminalControllers[tab.id] {
+            return existing
+        }
+        let latestConnection = activeConnections.first(where: { $0.id == tab.connection.id }) ?? tab.connection
+        let resolved = PropertyInheritanceResolver.resolve(connection: latestConnection, in: document)
+        let effectiveCred = resolveEffectiveCredential(for: tab, resolved: resolved)
 
         var bastionConn: VaultConnection? = nil
         var bastionCred: VaultCredential? = nil
@@ -1024,6 +1667,9 @@ public final class WorkspaceStore: ObservableObject {
             bastionConn = foundBastion
             bastionCred = PropertyInheritanceResolver.resolve(connection: foundBastion, in: document).effectiveCredential
         }
+        let gatewayBastion = bastionConn == nil
+            ? resolveGatewayBastionPayload(resolved: resolved, fallbackUser: effectiveCred?.username ?? NSUserName())
+            : nil
 
         let created = LiveTerminalController(
             tabId: tab.id,
@@ -1031,7 +1677,8 @@ public final class WorkspaceStore: ObservableObject {
             isLocalShell: tab.isLocalShell,
             effectiveCredential: effectiveCred,
             bastionConnection: bastionConn,
-            bastionCredential: bastionCred
+            bastionCredential: bastionCred,
+            gatewayBastionSpec: gatewayBastion
         )
         terminalControllers[tab.id] = created
         return created
@@ -1046,7 +1693,11 @@ public final class WorkspaceStore: ObservableObject {
 
     @discardableResult
     public func reconnectRdpSession(for tab: WorkspaceSessionTab) -> NativeRdpSession {
-        rdpSessions.removeValue(forKey: tab.id)?.destroy()
+        if let old = rdpSessions.removeValue(forKey: tab.id) {
+            Task.detached(priority: .utility) {
+                old.destroy()
+            }
+        }
         return buildAndConnectRdpSession(for: tab)
     }
 
@@ -1070,9 +1721,75 @@ public final class WorkspaceStore: ObservableObject {
             initialWidth: rdpSettings.customDesktopWidth,
             initialHeight: rdpSettings.customDesktopHeight
         )
-        _ = session.connect()
+        session.setConnecting(true)
         rdpSessions[tab.id] = session
+        Task.detached(priority: .userInitiated) {
+            _ = session.connect()
+        }
         return session
+    }
+
+    public func transferController(for tab: WorkspaceSessionTab) -> LiveTransferController {
+        if let existing = transferControllers[tab.id] {
+            return existing
+        }
+        let latestConnection = activeConnections.first(where: { $0.id == tab.connection.id }) ?? tab.connection
+        let resolved = PropertyInheritanceResolver.resolve(connection: latestConnection, in: document)
+        let effectiveCred = resolveEffectiveCredential(for: tab, resolved: resolved)
+        let bastionSpec = resolveGatewayBastionPayload(
+            resolved: resolved,
+            fallbackUser: effectiveCred?.username ?? NSUserName()
+        )
+        let created = LiveTransferController(
+            tabId: tab.id,
+            connection: latestConnection,
+            credential: effectiveCred,
+            bastionSpec: bastionSpec
+        )
+        transferControllers[tab.id] = created
+        return created
+    }
+
+    public func reconnectTransferController(for tab: WorkspaceSessionTab) {
+        let latestConnection = activeConnections.first(where: { $0.id == tab.connection.id }) ?? tab.connection
+        let resolved = PropertyInheritanceResolver.resolve(connection: latestConnection, in: document)
+        let effectiveCred = resolveEffectiveCredential(for: tab, resolved: resolved)
+        let bastionSpec = resolveGatewayBastionPayload(
+            resolved: resolved,
+            fallbackUser: effectiveCred?.username ?? NSUserName()
+        )
+        if let existing = transferControllers[tab.id] {
+            existing.connect(connection: latestConnection, credential: effectiveCred, bastionSpec: bastionSpec)
+        } else {
+            _ = transferController(for: tab)
+        }
+    }
+
+    public func vncController(for tab: WorkspaceSessionTab) -> LiveVncController {
+        if let existing = vncControllers[tab.id] {
+            return existing
+        }
+        let latestConnection = activeConnections.first(where: { $0.id == tab.connection.id }) ?? tab.connection
+        let resolved = PropertyInheritanceResolver.resolve(connection: latestConnection, in: document)
+        let effectiveCred = resolveEffectiveCredential(for: tab, resolved: resolved)
+        let created = LiveVncController(
+            tabId: tab.id,
+            connection: latestConnection,
+            credential: effectiveCred
+        )
+        vncControllers[tab.id] = created
+        return created
+    }
+
+    public func reconnectVncController(for tab: WorkspaceSessionTab) {
+        let latestConnection = activeConnections.first(where: { $0.id == tab.connection.id }) ?? tab.connection
+        let resolved = PropertyInheritanceResolver.resolve(connection: latestConnection, in: document)
+        let effectiveCred = resolveEffectiveCredential(for: tab, resolved: resolved)
+        if let existing = vncControllers[tab.id] {
+            existing.connect(connection: latestConnection, credential: effectiveCred)
+        } else {
+            _ = vncController(for: tab)
+        }
     }
 
     // MARK: - Broadcast Bus & Automation Execution
@@ -1629,7 +2346,9 @@ public final class WorkspaceStore: ObservableObject {
     }
 
     public func deleteConnection(_ connectionId: String) {
-        let tabsToClose = paneTree.allTabs.filter { $0.connection.id == connectionId }.map(\.id)
+        let tabsToClose = (paneTree.allTabs + Array(detachedWindowTabs.values))
+            .filter { $0.connection.id == connectionId }
+            .map(\.id)
         for id in tabsToClose { closeTab(id) }
         commitMutation("Deleted connection") { doc in
             doc.tombstonedObjectIds.insert(connectionId)
@@ -1678,10 +2397,7 @@ public final class WorkspaceStore: ObservableObject {
             newFolderName: folderName
         )
         if mode == .replaceExisting {
-            for (_, ctrl) in terminalControllers { ctrl.shutdown() }
-            terminalControllers.removeAll()
-            for (_, rdp) in rdpSessions { rdp.destroy() }
-            rdpSessions.removeAll()
+            shutdownAllLiveRuntimes()
             paneTree = .initialEmpty()
             detachedWindowTabs.removeAll()
             selectedConnectionId = nil
@@ -1789,10 +2505,7 @@ public final class WorkspaceStore: ObservableObject {
             updateInstallPhase = .applyingAndRelaunching
             appendAudit("Updater", "Applying NexusTS \(candidate.tagName) in place and relaunching…")
             persistLocalVault()
-            for (_, ctrl) in terminalControllers { ctrl.shutdown() }
-            terminalControllers.removeAll()
-            for (_, rdp) in rdpSessions { rdp.destroy() }
-            rdpSessions.removeAll()
+            shutdownAllLiveRuntimes()
 
             try MacGitHubReleaseUpdater.launchAtomicSwapHelperAndRelaunch(
                 stagedAppURL: stagedAppURL,

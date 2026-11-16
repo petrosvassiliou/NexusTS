@@ -1,0 +1,4 @@
+• v0.8.0: High-throughput FreeRDP dirty-rect rendering & Windows Terminal Services routing
+• Live SSHv2, Telnet, SFTP/SCP/FTP/FTPS, VNC & Apple ARD Screen Sharing with tab-switch session persistence
+• Upgraded Kubernetes v4 WebSocket exec, Proxmox/Azure/vSphere/Hyper-V cloud consoles, USB Serial & Web certificate pinning
+• Streamlined top-bar Manage menu across all 6 enterprise locales

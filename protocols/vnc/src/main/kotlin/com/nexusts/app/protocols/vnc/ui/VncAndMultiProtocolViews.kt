@@ -20,7 +20,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -45,8 +44,6 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import com.nexusts.app.core.ui.components.NexusActionChip
-import com.nexusts.app.core.ui.components.NexusChoiceChip
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -83,6 +80,8 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import com.nexusts.app.core.ui.components.NexusActionChip
+import com.nexusts.app.core.ui.components.NexusChoiceChip
 import com.nexusts.app.core.ui.input.nexusTrackpadCanvasGesture
 import com.nexusts.app.core.ui.theme.NexusTheme
 import com.nexusts.app.core.vault.credentials.ResolvedSessionSecret
@@ -90,17 +89,23 @@ import com.nexusts.app.core.vault.model.ProtocolSpecificSettings
 import com.nexusts.app.core.vault.model.VaultProtocolType
 import com.nexusts.app.protocols.vnc.bridge.VncNativeBridge
 import com.nexusts.app.protocols.vnc.bridge.VncRfbSessionClient
+import com.nexusts.app.protocols.vnc.cloud.CloudManagedResource
+import com.nexusts.app.protocols.vnc.cloud.CloudVirtualizationHubClient
+import com.nexusts.app.protocols.vnc.cloud.VmPowerAction
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import java.security.MessageDigest
+import java.security.cert.X509Certificate
+import java.util.Base64
 import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
 /**
  * 1. UltraVNC / TightVNC / RealVNC / Apple Screen Sharing (ARD) Interactive Session View
- *    with async RFB 3.8 framebuffer rendering, coordinate-mapped pointer dispatch,
+ *    with async RFB 3.8 + ARD Type 30 DH-AES rendering, single-allocation RGBA frame buffer,
+ *    coordinate-mapped pointer dispatch, `viewOnly` & `sharedSession` enforcement,
  *    special keys (`Ctrl+Alt+Del`, `Esc`, `Tab`), and trackpad pinch-zoom.
  */
 @Composable
@@ -110,27 +115,35 @@ fun VncSessionCanvasView(
     settings: ProtocolSpecificSettings.Vnc,
     externalZoomFactor: Float = 1.0f,
     onZoomFactorChanged: (Float) -> Unit = {},
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    secret: ResolvedSessionSecret = ResolvedSessionSecret(),
+    adHocPort: Int? = null,
+    retainedClient: VncRfbSessionClient? = null
 ) {
-    val client = remember { VncRfbSessionClient() }
+    val client = remember(retainedClient) { retainedClient ?: VncRfbSessionClient() }
     val sessionState by client.state.collectAsState()
     val frameBitmap by client.frameBitmap.collectAsState()
+    val frameRevision by client.frameRevision.collectAsState()
+
+    val effectivePort = adHocPort ?: settings.port
+    val effectiveArd = isAppleScreenSharing || settings.appleArdDiffieHellmanAuth
 
     var zoom by remember(externalZoomFactor) { mutableFloatStateOf(externalZoomFactor) }
     var viewportSize by remember { mutableStateOf(IntSize(1, 1)) }
     var reconnectNonce by remember { mutableIntStateOf(0) }
+    var lastAppliedNonce by remember { mutableIntStateOf(0) }
     var showInputBar by remember { mutableStateOf(false) }
     var rightClickToggle by remember { mutableStateOf(false) }
     var textToType by remember { mutableStateOf("") }
-    var vncPassword by remember { mutableStateOf("") }
+    var vncUsername by remember(secret.username) { mutableStateOf(secret.username) }
+    var vncPassword by remember(secret.password) { mutableStateOf(secret.password) }
 
     val focusRequester = remember { FocusRequester() }
-    val preferZrle = remember(isAppleScreenSharing, settings.preferredEncodings) {
-        isAppleScreenSharing || settings.preferredEncodings.firstOrNull()
-            ?.toString()
+    val preferZrle = remember(effectiveArd, settings.preferredEncodings) {
+        effectiveArd || settings.preferredEncodings.firstOrNull()
             ?.contains("ZRLE", ignoreCase = true) != false
     }
-    val encodingLabel = if (isAppleScreenSharing) {
+    val encodingLabel = if (effectiveArd) {
         "ARD DH-AES • ZRLE"
     } else {
         "${settings.preferredEncodings.firstOrNull() ?: "ZRLE"} • ${sessionState.negotiatedProtocol}"
@@ -140,17 +153,38 @@ fun VncSessionCanvasView(
     val latestViewportSize by rememberUpdatedState(viewportSize)
     val latestSessionState by rememberUpdatedState(sessionState)
     val latestRightClick by rememberUpdatedState(rightClickToggle)
+    val latestViewOnly by rememberUpdatedState(settings.viewOnly)
 
-    DisposableEffect(client) {
-        onDispose { client.close() }
+    DisposableEffect(client, retainedClient) {
+        onDispose {
+            if (retainedClient == null) {
+                client.close()
+            }
+        }
     }
 
-    LaunchedEffect(host, settings.port, reconnectNonce, preferZrle) {
+    LaunchedEffect(
+        client,
+        host,
+        effectivePort,
+        reconnectNonce,
+        preferZrle,
+        settings.sharedSession,
+        settings.viewOnly,
+        effectiveArd
+    ) {
+        val force = reconnectNonce != lastAppliedNonce
+        lastAppliedNonce = reconnectNonce
         client.connect(
             host = host,
-            port = settings.port,
+            port = effectivePort,
             password = vncPassword,
-            preferZrle = preferZrle
+            preferZrle = preferZrle,
+            username = vncUsername,
+            sharedSession = settings.sharedSession,
+            viewOnly = settings.viewOnly,
+            isAppleScreenSharing = effectiveArd,
+            forceReconnect = force
         )
     }
 
@@ -173,11 +207,13 @@ fun VncSessionCanvasView(
                 .focusRequester(focusRequester)
                 .focusable()
                 .onKeyEvent { keyEv ->
+                    if (latestViewOnly) return@onKeyEvent false
                     val native = keyEv.nativeKeyEvent
                     if (native.action != AndroidKeyEvent.ACTION_DOWN && native.action != AndroidKeyEvent.ACTION_UP) {
                         return@onKeyEvent false
                     }
-                    val keysym = mapAndroidKeyToX11Keysym(native) ?: return@onKeyEvent false
+                    val keysym = VncNativeBridge.mapAndroidKeyCodeToX11Keysym(native.keyCode, native.unicodeChar)
+                        ?: return@onKeyEvent false
                     client.sendKeyEvent(down = native.action == AndroidKeyEvent.ACTION_DOWN, keysym = keysym)
                     true
                 }
@@ -193,6 +229,7 @@ fun VncSessionCanvasView(
                             val ev = awaitPointerEvent()
                             if (ev.changes.size != 1) continue
                             val change = ev.changes.first()
+                            if (latestViewOnly) continue
                             val (rx, ry) = mapViewportToVncCoordinates(
                                 rawPos = change.position,
                                 viewportSize = latestViewportSize,
@@ -244,6 +281,10 @@ fun VncSessionCanvasView(
                         scaleY = zoom
                     }
             ) {
+                // Read frameRevision so Compose redraws when the single reusable Bitmap mutates in place
+                val observedRevision = frameRevision
+                if (observedRevision < 0L) return@Canvas
+
                 val desktopRect = computeFittedVncDesktopRect(
                     canvasWidth = size.width,
                     canvasHeight = size.height,
@@ -336,23 +377,26 @@ fun VncSessionCanvasView(
                         modifier = Modifier.size(16.dp),
                         tint = NexusTheme.extendedColors.vncAccent
                     )
+                    val roTag = if (settings.viewOnly) " • VIEW ONLY" else ""
                     Text(
-                        text = "$host:${settings.port} • $encodingLabel",
+                        text = "$host:$effectivePort • $encodingLabel$roTag",
                         style = NexusTheme.monospace.keycapShortcut
                     )
-                    NexusChoiceChip(
-                        selected = rightClickToggle,
-                        onClick = { rightClickToggle = !rightClickToggle },
-                        label = "R-Click",
-                        showCheckmarkWhenSelected = false
-                    )
-                    NexusChoiceChip(
-                        selected = showInputBar,
-                        onClick = { showInputBar = !showInputBar },
-                        leadingIcon = Icons.Outlined.Keyboard,
-                        label = "Keys",
-                        showCheckmarkWhenSelected = false
-                    )
+                    if (!settings.viewOnly) {
+                        NexusChoiceChip(
+                            selected = rightClickToggle,
+                            onClick = { rightClickToggle = !rightClickToggle },
+                            label = "R-Click",
+                            showCheckmarkWhenSelected = false
+                        )
+                        NexusChoiceChip(
+                            selected = showInputBar,
+                            onClick = { showInputBar = !showInputBar },
+                            leadingIcon = Icons.Outlined.Keyboard,
+                            label = "Keys",
+                            showCheckmarkWhenSelected = false
+                        )
+                    }
                     IconButton(
                         onClick = { reconnectNonce++ },
                         modifier = Modifier.size(28.dp)
@@ -374,42 +418,44 @@ fun VncSessionCanvasView(
                         .padding(horizontal = 12.dp, vertical = 8.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        NexusActionChip(
-                            onClick = { client.sendCtrlAltDel() },
-                            label = "Ctrl+Alt+Del",
-                            monospace = true
-                        )
-                        NexusActionChip(
-                            onClick = { client.sendKeyTap(0xFF1B) },
-                            label = "Esc",
-                            monospace = true
-                        )
-                        NexusActionChip(
-                            onClick = { client.sendKeyTap(0xFF09) },
-                            label = "Tab",
-                            monospace = true
-                        )
-                        NexusActionChip(
-                            onClick = { client.sendKeyTap(0xFFEB) },
-                            label = "Super/Win",
-                            monospace = true
-                        )
-                        NexusActionChip(
-                            onClick = { client.sendKeyTap(0xFF0D) },
-                            label = "Enter",
-                            monospace = true
-                        )
-                        NexusActionChip(
-                            onClick = { client.sendKeyTap(0xFF08) },
-                            label = "Bksp",
-                            monospace = true
-                        )
+                    if (!settings.viewOnly) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            NexusActionChip(
+                                onClick = { client.sendCtrlAltDel() },
+                                label = "Ctrl+Alt+Del",
+                                monospace = true
+                            )
+                            NexusActionChip(
+                                onClick = { client.sendKeyTap(0xFF1B) },
+                                label = "Esc",
+                                monospace = true
+                            )
+                            NexusActionChip(
+                                onClick = { client.sendKeyTap(0xFF09) },
+                                label = "Tab",
+                                monospace = true
+                            )
+                            NexusActionChip(
+                                onClick = { client.sendKeyTap(0xFFEB) },
+                                label = "Super/Win",
+                                monospace = true
+                            )
+                            NexusActionChip(
+                                onClick = { client.sendKeyTap(0xFF0D) },
+                                label = "Enter",
+                                monospace = true
+                            )
+                            NexusActionChip(
+                                onClick = { client.sendKeyTap(0xFF08) },
+                                label = "Bksp",
+                                monospace = true
+                            )
+                        }
                     }
 
                     if (sessionState.authRequired) {
@@ -418,10 +464,19 @@ fun VncSessionCanvasView(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
+                            if (effectiveArd) {
+                                OutlinedTextField(
+                                    value = vncUsername,
+                                    onValueChange = { vncUsername = it },
+                                    placeholder = { Text("macOS username…", style = MaterialTheme.typography.bodySmall) },
+                                    singleLine = true,
+                                    modifier = Modifier.weight(0.8f)
+                                )
+                            }
                             OutlinedTextField(
                                 value = vncPassword,
                                 onValueChange = { vncPassword = it },
-                                placeholder = { Text("VNC password…", style = MaterialTheme.typography.bodySmall) },
+                                placeholder = { Text("VNC / ARD password…", style = MaterialTheme.typography.bodySmall) },
                                 visualTransformation = PasswordVisualTransformation(),
                                 singleLine = true,
                                 modifier = Modifier.weight(1f)
@@ -432,29 +487,31 @@ fun VncSessionCanvasView(
                         }
                     }
 
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        OutlinedTextField(
-                            value = textToType,
-                            onValueChange = { textToType = it },
-                            placeholder = { Text("Type text to remote VNC desktop…", style = MaterialTheme.typography.bodySmall) },
-                            singleLine = true,
-                            modifier = Modifier.weight(1f)
-                        )
-                        Button(
-                            onClick = {
-                                if (textToType.isNotEmpty()) {
-                                    client.sendText(textToType)
-                                    textToType = ""
-                                }
-                            }
+                    if (!settings.viewOnly) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Icon(Icons.AutoMirrored.Outlined.Send, contentDescription = null, modifier = Modifier.size(15.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("Send")
+                            OutlinedTextField(
+                                value = textToType,
+                                onValueChange = { textToType = it },
+                                placeholder = { Text("Type text to remote VNC desktop…", style = MaterialTheme.typography.bodySmall) },
+                                singleLine = true,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Button(
+                                onClick = {
+                                    if (textToType.isNotEmpty()) {
+                                        client.sendText(textToType)
+                                        textToType = ""
+                                    }
+                                }
+                            ) {
+                                Icon(Icons.AutoMirrored.Outlined.Send, contentDescription = null, modifier = Modifier.size(15.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Send")
+                            }
                         }
                     }
                 }
@@ -505,43 +562,6 @@ private fun mapViewportToVncCoordinates(
     return rx to ry
 }
 
-private fun mapAndroidKeyToX11Keysym(event: AndroidKeyEvent): Int? {
-    return when (event.keyCode) {
-        AndroidKeyEvent.KEYCODE_ENTER, AndroidKeyEvent.KEYCODE_NUMPAD_ENTER -> 0xFF0D
-        AndroidKeyEvent.KEYCODE_DEL -> 0xFF08
-        AndroidKeyEvent.KEYCODE_FORWARD_DEL -> 0xFFFF
-        AndroidKeyEvent.KEYCODE_TAB -> 0xFF09
-        AndroidKeyEvent.KEYCODE_ESCAPE -> 0xFF1B
-        AndroidKeyEvent.KEYCODE_DPAD_UP -> 0xFF52
-        AndroidKeyEvent.KEYCODE_DPAD_DOWN -> 0xFF54
-        AndroidKeyEvent.KEYCODE_DPAD_LEFT -> 0xFF51
-        AndroidKeyEvent.KEYCODE_DPAD_RIGHT -> 0xFF53
-        AndroidKeyEvent.KEYCODE_MOVE_HOME -> 0xFF50
-        AndroidKeyEvent.KEYCODE_MOVE_END -> 0xFF57
-        AndroidKeyEvent.KEYCODE_PAGE_UP -> 0xFF55
-        AndroidKeyEvent.KEYCODE_PAGE_DOWN -> 0xFF56
-        AndroidKeyEvent.KEYCODE_INSERT -> 0xFF63
-        AndroidKeyEvent.KEYCODE_SHIFT_LEFT -> 0xFFE1
-        AndroidKeyEvent.KEYCODE_SHIFT_RIGHT -> 0xFFE2
-        AndroidKeyEvent.KEYCODE_CTRL_LEFT -> 0xFFE3
-        AndroidKeyEvent.KEYCODE_CTRL_RIGHT -> 0xFFE4
-        AndroidKeyEvent.KEYCODE_ALT_LEFT -> 0xFFE9
-        AndroidKeyEvent.KEYCODE_ALT_RIGHT -> 0xFFEA
-        AndroidKeyEvent.KEYCODE_META_LEFT -> 0xFFEB
-        AndroidKeyEvent.KEYCODE_META_RIGHT -> 0xFFEC
-        in AndroidKeyEvent.KEYCODE_F1..AndroidKeyEvent.KEYCODE_F12 ->
-            0xFFBE + (event.keyCode - AndroidKeyEvent.KEYCODE_F1)
-        else -> {
-            val uni = event.unicodeChar
-            when {
-                uni in 0x20..0x7E || uni in 0xA0..0xFF -> uni
-                uni > 0xFF -> 0x01000000 or uni
-                else -> null
-            }
-        }
-    }
-}
-
 private fun escJs(raw: String): String = buildString(raw.length + 8) {
     for (ch in raw) {
         when (ch) {
@@ -558,11 +578,79 @@ private fun escJs(raw: String): String = buildString(raw.length + 8) {
     }
 }
 
+internal fun normalizeWebSessionUrl(
+    configuredUrl: String,
+    adHocHost: String? = null,
+    adHocPort: Int? = null
+): String {
+    val rawCandidate = if (!adHocHost.isNullOrBlank()) {
+        val h = adHocHost.trim()
+        if (adHocPort != null && !h.contains("://") && !h.substringAfterLast(']').contains(':')) {
+            val scheme = if (adHocPort == 80) "http://" else "https://"
+            "$scheme$h:$adHocPort"
+        } else {
+            h
+        }
+    } else {
+        configuredUrl.trim()
+    }
+    if (rawCandidate.isBlank()) return ""
+    return when {
+        rawCandidate.startsWith("https://", ignoreCase = true) ||
+            rawCandidate.startsWith("http://", ignoreCase = true) ||
+            rawCandidate.startsWith("about:", ignoreCase = true) -> rawCandidate
+        else -> "https://$rawCandidate"
+    }
+}
+
+internal fun verifyPinnedCertificateSha256(
+    cert: X509Certificate?,
+    pinnedSha256Raw: String
+): Boolean {
+    val cleanedPin = pinnedSha256Raw
+        .trim()
+        .removePrefix("sha256/")
+        .removePrefix("SHA256:")
+        .removePrefix("sha256:")
+        .replace(":", "")
+        .replace("-", "")
+        .replace(" ", "")
+    if (cleanedPin.isEmpty()) return true
+    if (cert == null) return false
+
+    val sha256 = MessageDigest.getInstance("SHA-256")
+    val leafDerDigest = sha256.digest(cert.encoded)
+    val leafHex = bytesToLowerHex(leafDerDigest)
+    val leafBase64 = Base64.getEncoder().encodeToString(leafDerDigest)
+
+    val spkiEncoded = runCatching { cert.publicKey?.encoded }.getOrNull()
+    val spkiDigest = spkiEncoded?.let { MessageDigest.getInstance("SHA-256").digest(it) }
+    val spkiHex = spkiDigest?.let { bytesToLowerHex(it) }.orEmpty()
+    val spkiBase64 = spkiDigest?.let { Base64.getEncoder().encodeToString(it) }.orEmpty()
+
+    return leafHex.equals(cleanedPin, ignoreCase = true) ||
+        spkiHex.equals(cleanedPin, ignoreCase = true) ||
+        leafBase64 == cleanedPin ||
+        spkiBase64 == cleanedPin
+}
+
+private fun bytesToLowerHex(bytes: ByteArray): String {
+    val hexChars = "0123456789abcdef"
+    val out = CharArray(bytes.size * 2)
+    for (i in bytes.indices) {
+        val v = bytes[i].toInt() and 0xFF
+        out[i * 2] = hexChars[v ushr 4]
+        out[i * 2 + 1] = hexChars[v and 0x0F]
+    }
+    return String(out)
+}
+
 /**
  * 2. Isolated Web Page Connection View (HTTP/HTTPS) with:
- *    - Automated CSS-selector credential form-filling & optional submit click
- *    - Single-attempt HTTP Basic Auth injection (protected against 401 lockout loops)
- *    - Self-signed certificate override & custom SHA-256 X.509 certificate pinning verification
+ *    - `adHocHost`/`adHocPort` resolution & automatic `https://` prefixing on bare hostnames
+ *    - Automated CSS-selector credential form-filling & deferred `pendingPassword` clearing
+ *    - Single-attempt HTTP Basic Auth injection (`injectHttpBasicAuth`)
+ *    - Strict leaf DER / SPKI SHA-256 X.509 certificate pinning (`pinnedCertSha256`)
  */
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
@@ -570,17 +658,30 @@ fun IsolatedWebSessionView(
     settings: ProtocolSpecificSettings.WebPage,
     secret: ResolvedSessionSecret,
     autoFillActionLabel: String,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    adHocHost: String? = null,
+    adHocPort: Int? = null
 ) {
+    val effectiveUrl = remember(settings.url, adHocHost, adHocPort) {
+        normalizeWebSessionUrl(settings.url, adHocHost, adHocPort)
+    }
+
     var webViewRef by remember { mutableStateOf<WebView?>(null) }
+    var tlsPinErrorBanner by remember(effectiveUrl, settings.pinnedCertSha256) { mutableStateOf("") }
+    var pendingPassword by remember(secret.password, effectiveUrl) {
+        mutableStateOf<String?>(secret.password.takeIf { it.isNotEmpty() })
+    }
+
     val latestSettings by rememberUpdatedState(settings)
     val latestSecret by rememberUpdatedState(secret)
-    val attemptedHttpAuthScopes = remember(settings.url, secret.username, secret.password) {
+    val latestEffectiveUrl by rememberUpdatedState(effectiveUrl)
+    val attemptedHttpAuthScopes = remember(effectiveUrl, secret.username, secret.password) {
         mutableSetOf<Pair<String, String>>()
     }
 
     DisposableEffect(Unit) {
         onDispose {
+            pendingPassword = null
             webViewRef?.apply {
                 stopLoading()
                 webChromeClient = null
@@ -593,9 +694,15 @@ fun IsolatedWebSessionView(
     val injectAutoFillJs: (WebView, Boolean) -> Unit = { webView, manualClick ->
         val cfg = latestSettings
         val cred = latestSecret
-        if ((cfg.autoFillEnabled || manualClick) && (cred.username.isNotBlank() || cred.password.isNotBlank())) {
+        val activePassword = if (manualClick) {
+            cred.password.also { if (it.isNotEmpty()) pendingPassword = it }
+        } else {
+            pendingPassword.orEmpty()
+        }
+
+        if ((cfg.autoFillEnabled || manualClick) && (cred.username.isNotBlank() || activePassword.isNotBlank())) {
             val escapedUser = escJs(cred.username)
-            val escapedPass = escJs(cred.password)
+            val escapedPass = escJs(activePassword)
             val userSel = escJs(cfg.usernameCssSelector)
             val passSel = escJs(cfg.passwordCssSelector)
             val submitSel = escJs(cfg.submitCssSelector.trim())
@@ -603,26 +710,34 @@ fun IsolatedWebSessionView(
                 (function() {
                   const u = '$userSel' ? document.querySelector('$userSel') : null;
                   const p = '$passSel' ? document.querySelector('$passSel') : null;
-                  if (u) {
+                  let filledPassword = false;
+                  if (u && '$escapedUser'.length > 0) {
                     u.value = '$escapedUser';
                     u.dispatchEvent(new Event('input', { bubbles: true }));
                     u.dispatchEvent(new Event('change', { bubbles: true }));
                   }
-                  if (p) {
+                  if (p && '$escapedPass'.length > 0) {
                     p.value = '$escapedPass';
                     p.dispatchEvent(new Event('input', { bubbles: true }));
                     p.dispatchEvent(new Event('change', { bubbles: true }));
+                    filledPassword = true;
                   }
-                  if ('$submitSel') {
+                  if ('$submitSel' && (u || filledPassword)) {
                     const s = document.querySelector('$submitSel');
                     if (s && ($manualClick || !window.__nexusAutoSubmitted)) {
                       window.__nexusAutoSubmitted = true;
                       s.click();
                     }
                   }
+                  return filledPassword ? 'FILLED_PASSWORD' : 'NO_PASSWORD_INPUT';
                 })();
             """.trimIndent()
-            webView.evaluateJavascript(script, null)
+            webView.evaluateJavascript(script) { rawResult ->
+                val unquoted = rawResult?.trim()?.trim('"').orEmpty()
+                if (unquoted == "FILLED_PASSWORD") {
+                    pendingPassword = null
+                }
+            }
         }
     }
 
@@ -631,48 +746,70 @@ fun IsolatedWebSessionView(
             color = MaterialTheme.colorScheme.surfaceContainer,
             modifier = Modifier.fillMaxWidth()
         ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
+            Column(modifier = Modifier.fillMaxWidth()) {
                 Row(
-                    modifier = Modifier.weight(1f),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        imageVector = Icons.Outlined.Lock,
-                        contentDescription = null,
-                        modifier = Modifier.size(15.dp),
-                        tint = NexusTheme.extendedColors.webAccent
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = settings.url,
-                        style = NexusTheme.monospace.keycapShortcut,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        maxLines = 1
-                    )
-                }
-                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    NexusActionChip(
-                        onClick = { webViewRef?.let { injectAutoFillJs(it, true) } },
-                        label = autoFillActionLabel
-                    )
-                    IconButton(
-                        onClick = {
-                            attemptedHttpAuthScopes.clear()
-                            webViewRef?.reload()
-                        },
-                        modifier = Modifier.size(28.dp)
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(Icons.Outlined.Refresh, contentDescription = "Reload", modifier = Modifier.size(15.dp))
+                        Icon(
+                            imageVector = Icons.Outlined.Lock,
+                            contentDescription = null,
+                            modifier = Modifier.size(15.dp),
+                            tint = if (tlsPinErrorBanner.isNotBlank()) {
+                                NexusTheme.extendedColors.statusDisconnected
+                            } else {
+                                NexusTheme.extendedColors.webAccent
+                            }
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = effectiveUrl.ifBlank { settings.url },
+                            style = NexusTheme.monospace.keycapShortcut,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1
+                        )
                     }
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        NexusActionChip(
+                            onClick = { webViewRef?.let { injectAutoFillJs(it, true) } },
+                            label = autoFillActionLabel
+                        )
+                        IconButton(
+                            onClick = {
+                                attemptedHttpAuthScopes.clear()
+                                tlsPinErrorBanner = ""
+                                pendingPassword = latestSecret.password.takeIf { it.isNotEmpty() }
+                                webViewRef?.let { wv ->
+                                    if (latestEffectiveUrl.isNotBlank() && wv.url == "about:blank") {
+                                        wv.loadUrl(latestEffectiveUrl)
+                                    } else {
+                                        wv.reload()
+                                    }
+                                }
+                            },
+                            modifier = Modifier.size(28.dp)
+                        ) {
+                            Icon(Icons.Outlined.Refresh, contentDescription = "Reload", modifier = Modifier.size(15.dp))
+                        }
+                    }
+                }
+                if (tlsPinErrorBanner.isNotBlank()) {
+                    Text(
+                        text = tlsPinErrorBanner,
+                        style = NexusTheme.monospace.keycapShortcut,
+                        color = Color(0xFFFF6E6E),
+                        modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 6.dp)
+                    )
                 }
             }
         }
@@ -695,7 +832,10 @@ fun IsolatedWebSessionView(
                             val cfg = latestSettings
                             val cred = latestSecret
                             val scopeKey = (host.orEmpty()) to (realm.orEmpty())
-                            if (cfg.injectHttpBasicAuth && cred.username.isNotBlank() && attemptedHttpAuthScopes.add(scopeKey)) {
+                            if (cfg.injectHttpBasicAuth &&
+                                (cred.username.isNotBlank() || cred.password.isNotBlank()) &&
+                                attemptedHttpAuthScopes.add(scopeKey)
+                            ) {
                                 handler?.proceed(cred.username, cred.password)
                             } else {
                                 handler?.cancel()
@@ -708,25 +848,22 @@ fun IsolatedWebSessionView(
                             error: SslError?
                         ) {
                             val cfg = latestSettings
-                            if (cfg.ignoreSelfSignedInternalCert) {
-                                handler?.proceed()
+                            if (cfg.pinnedCertSha256.isNotBlank()) {
+                                val leafCert = error?.certificate?.x509Certificate
+                                if (verifyPinnedCertificateSha256(leafCert, cfg.pinnedCertSha256)) {
+                                    tlsPinErrorBanner = ""
+                                    handler?.proceed()
+                                } else {
+                                    tlsPinErrorBanner = "TLS Certificate Pin Mismatch — connection blocked"
+                                    handler?.cancel()
+                                }
                                 return
                             }
-                            val certBytes = error?.certificate?.x509Certificate?.encoded
-                            if (certBytes != null && cfg.pinnedCertSha256.isNotBlank()) {
-                                val actualHex = MessageDigest.getInstance("SHA-256")
-                                    .digest(certBytes)
-                                    .joinToString("") { "%02x".format(it) }
-                                val expectedHex = cfg.pinnedCertSha256
-                                    .replace(":", "")
-                                    .replace(" ", "")
-                                    .lowercase(Locale.ROOT)
-                                if (actualHex.equals(expectedHex, ignoreCase = true)) {
-                                    handler?.proceed()
-                                    return
-                                }
+                            if (cfg.ignoreSelfSignedInternalCert) {
+                                handler?.proceed()
+                            } else {
+                                handler?.cancel()
                             }
-                            handler?.cancel()
                         }
 
                         override fun shouldOverrideUrlLoading(
@@ -736,23 +873,37 @@ fun IsolatedWebSessionView(
 
                         override fun onPageFinished(view: WebView?, url: String?) {
                             super.onPageFinished(view, url)
-                            if (view != null && latestSettings.autoFillEnabled) {
+                            if (view == null || url == "about:blank") return
+                            val cfg = latestSettings
+                            if (cfg.pinnedCertSha256.isNotBlank() && url.orEmpty().startsWith("https://", ignoreCase = true)) {
+                                val activeCert = view.certificate?.x509Certificate
+                                if (!verifyPinnedCertificateSha256(activeCert, cfg.pinnedCertSha256)) {
+                                    tlsPinErrorBanner = "TLS Certificate Pin Mismatch — connection blocked"
+                                    view.stopLoading()
+                                    view.loadUrl("about:blank")
+                                    return
+                                }
+                                tlsPinErrorBanner = ""
+                            }
+                            if (cfg.autoFillEnabled) {
                                 injectAutoFillJs(view, false)
                             }
                         }
                     }
-                    tag = settings.url
-                    if (settings.url.isNotBlank()) {
-                        loadUrl(settings.url)
+                    tag = effectiveUrl
+                    if (effectiveUrl.isNotBlank()) {
+                        loadUrl(effectiveUrl)
                     }
                     webViewRef = this
                 }
             },
             update = { webView ->
-                if (webView.tag != settings.url && settings.url.isNotBlank()) {
-                    webView.tag = settings.url
+                if (webView.tag != effectiveUrl && effectiveUrl.isNotBlank()) {
+                    webView.tag = effectiveUrl
                     attemptedHttpAuthScopes.clear()
-                    webView.loadUrl(settings.url)
+                    tlsPinErrorBanner = ""
+                    pendingPassword = latestSecret.password.takeIf { it.isNotEmpty() }
+                    webView.loadUrl(effectiveUrl)
                 }
             },
             modifier = Modifier.fillMaxSize()
@@ -762,8 +913,7 @@ fun IsolatedWebSessionView(
 
 /**
  * 3. Cloud & Virtualization Hypervisor Management View supporting:
- *    VMware vSphere/ESXi, Proxmox VE, Microsoft Hyper-V, AWS EC2 (SigV4), Microsoft Azure ARM,
- *    and Windows Terminal Services (RDS session management).
+ *    VMware vSphere/ESXi, Proxmox VE, Microsoft Hyper-V, AWS EC2 (SigV4), and Microsoft Azure ARM.
  */
 @Composable
 fun CloudHypervisorConsoleView(
@@ -776,65 +926,30 @@ fun CloudHypervisorConsoleView(
 ) {
     val scope = rememberCoroutineScope()
     var statusBanner by remember { mutableStateOf("") }
+    var isErrorBanner by remember { mutableStateOf(false) }
+    var isSyncing by remember { mutableStateOf(false) }
 
     val instances = remember(protocol, endpointHost) {
-        mutableStateListOf(
-            com.nexusts.app.protocols.vnc.cloud.CloudManagedResource(
-                id = "vm-101",
-                name = "prod-k8s-control-01",
-                nodeOrZone = settings.regionOrCluster.ifBlank { "node-01" },
-                powerState = "RUNNING",
-                cpuRamSummary = "8 vCPU • 32 GB",
-                addressOrSessionHost = "10.40.1.11",
-                preferredConsoleProtocol = VaultProtocolType.SSH
-            ),
-            com.nexusts.app.protocols.vnc.cloud.CloudManagedResource(
-                id = "vm-102",
-                name = "corp-win-rds-broker",
-                nodeOrZone = settings.regionOrCluster.ifBlank { "node-01" },
-                powerState = "RUNNING",
-                cpuRamSummary = "16 vCPU • 64 GB",
-                addressOrSessionHost = "10.40.1.25",
-                preferredConsoleProtocol = VaultProtocolType.RDP,
-                isTerminalServicesSession = protocol == VaultProtocolType.WINDOWS_TERMINAL_SERVICES
-            ),
-            com.nexusts.app.protocols.vnc.cloud.CloudManagedResource(
-                id = "vm-103",
-                name = "macos-ci-builder",
-                nodeOrZone = settings.regionOrCluster.ifBlank { "node-02" },
-                powerState = "RUNNING",
-                cpuRamSummary = "12 Core • 32 GB",
-                addressOrSessionHost = "10.40.2.19",
-                preferredConsoleProtocol = VaultProtocolType.VNC
-            ),
-            com.nexusts.app.protocols.vnc.cloud.CloudManagedResource(
-                id = "vm-104",
-                name = "dr-postgres-replica",
-                nodeOrZone = settings.regionOrCluster.ifBlank { "node-02" },
-                powerState = "STOPPED",
-                cpuRamSummary = "8 vCPU • 64 GB",
-                addressOrSessionHost = "10.40.3.40",
-                preferredConsoleProtocol = VaultProtocolType.SSH
-            )
-        )
+        mutableStateListOf<CloudManagedResource>()
     }
 
     val refreshLiveInventory: () -> Unit = {
         scope.launch {
-            com.nexusts.app.protocols.vnc.cloud.CloudVirtualizationHubClient
+            isSyncing = true
+            isErrorBanner = false
+            CloudVirtualizationHubClient
                 .listInventory(protocol, endpointHost, settings, secret)
                 .onSuccess { liveList ->
-                    if (liveList.isNotEmpty()) {
-                        instances.clear()
-                        instances.addAll(liveList)
-                        statusBanner = "${liveList.size} live resources synced from $endpointHost"
-                    } else {
-                        statusBanner = "0 resources returned from $endpointHost"
-                    }
+                    instances.clear()
+                    instances.addAll(liveList)
+                    statusBanner = "${liveList.size} live resources synced from ${endpointHost.ifBlank { settings.apiEndpointUrl }}"
+                    isErrorBanner = false
                 }
                 .onFailure { err ->
-                    statusBanner = "Cached inventory active (${err.message ?: "offline"})"
+                    statusBanner = "Inventory sync failed: ${err.message ?: "endpoint unreachable"}"
+                    isErrorBanner = true
                 }
+            isSyncing = false
         }
     }
 
@@ -869,108 +984,125 @@ fun CloudHypervisorConsoleView(
                 Spacer(modifier = Modifier.width(10.dp))
                 Column {
                     Text(
-                        text = "${protocol.name.replace('_', ' ')} • $endpointHost",
+                        text = "${protocol.name.replace('_', ' ')} • ${endpointHost.ifBlank { settings.apiEndpointUrl }}",
                         style = MaterialTheme.typography.titleMedium
                     )
                     Text(
                         text = "${settings.regionOrCluster.ifBlank { "default" }} • ${settings.apiEndpointUrl.ifBlank { endpointHost }}" +
                             if (statusBanner.isNotBlank()) " • $statusBanner" else "",
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = if (isErrorBanner) Color(0xFFFFB86B) else MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
             NexusActionChip(
                 onClick = refreshLiveInventory,
                 leadingIcon = Icons.Outlined.Refresh,
-                label = "Sync"
+                label = if (isSyncing) "Syncing…" else "Sync"
             )
         }
 
         HorizontalDivider()
 
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(instances, key = { it.id }) { vm ->
-                val isRunning = vm.powerState == "RUNNING" || vm.powerState == "ACTIVE"
-                Surface(
-                    shape = MaterialTheme.shapes.medium,
-                    color = MaterialTheme.colorScheme.surfaceContainer,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
+        if (instances.isEmpty()) {
+            Surface(
+                shape = MaterialTheme.shapes.medium,
+                color = MaterialTheme.colorScheme.surfaceContainer,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    text = when {
+                        isSyncing -> "Querying live ${protocol.displayName} inventory…"
+                        isErrorBanner -> statusBanner
+                        else -> "No virtual machines or active resources returned from ${endpointHost.ifBlank { settings.apiEndpointUrl.ifBlank { "configured endpoint" } }}."
+                    },
+                    style = NexusTheme.monospace.keycapShortcut,
+                    color = if (isErrorBanner) Color(0xFFFFB86B) else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(16.dp)
+                )
+            }
+        } else {
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(instances, key = { it.id }) { vm ->
+                    val isRunning = vm.powerState == "RUNNING" || vm.powerState == "ACTIVE"
+                    Surface(
+                        shape = MaterialTheme.shapes.medium,
+                        color = MaterialTheme.colorScheme.surfaceContainer,
+                        modifier = Modifier.fillMaxWidth()
                     ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(text = vm.name, style = MaterialTheme.typography.titleSmall)
-                            Text(
-                                text = "${vm.id}  •  ${vm.nodeOrZone}  •  ${vm.cpuRamSummary}  •  ${vm.addressOrSessionHost}",
-                                style = NexusTheme.monospace.keycapShortcut,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        Text(
-                            text = vm.powerState,
-                            style = NexusTheme.monospace.keycapShortcut,
-                            color = if (isRunning) {
-                                NexusTheme.extendedColors.statusConnected
-                            } else {
-                                NexusTheme.extendedColors.statusDisconnected
-                            },
-                            modifier = Modifier.padding(end = 12.dp)
-                        )
                         Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 12.dp),
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            IconButton(
-                                onClick = {
-                                    val desired = if (isRunning) {
-                                        com.nexusts.app.protocols.vnc.cloud.VmPowerAction.STOP
-                                    } else {
-                                        com.nexusts.app.protocols.vnc.cloud.VmPowerAction.START
-                                    }
-                                    scope.launch {
-                                        com.nexusts.app.protocols.vnc.cloud.CloudVirtualizationHubClient
-                                            .executePowerOrSessionAction(protocol, endpointHost, settings, secret, vm, desired)
-                                            .onSuccess { msg ->
-                                                statusBanner = msg
-                                                val idx = instances.indexOfFirst { it.id == vm.id }
-                                                if (idx >= 0) {
-                                                    instances[idx] = instances[idx].copy(
-                                                        powerState = when {
-                                                            vm.isTerminalServicesSession && desired == com.nexusts.app.protocols.vnc.cloud.VmPowerAction.STOP -> "LOGGED OFF"
-                                                            vm.isTerminalServicesSession -> "DISCONNECTED"
-                                                            desired == com.nexusts.app.protocols.vnc.cloud.VmPowerAction.START -> "RUNNING"
-                                                            else -> "STOPPED"
-                                                        }
-                                                    )
-                                                }
-                                            }
-                                            .onFailure { err ->
-                                                statusBanner = "Action failed: ${err.message ?: "API error"}"
-                                            }
-                                    }
-                                },
-                                modifier = Modifier.size(32.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Outlined.PowerSettingsNew,
-                                    contentDescription = "Toggle Power",
-                                    modifier = Modifier.size(16.dp)
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(text = vm.name, style = MaterialTheme.typography.titleSmall)
+                                Text(
+                                    text = "${vm.id}  •  ${vm.nodeOrZone}  •  ${vm.cpuRamSummary}  •  ${vm.addressOrSessionHost}",
+                                    style = NexusTheme.monospace.keycapShortcut,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
-                            FilledTonalButton(
-                                onClick = {
-                                    openConsoleCallback(vm.name, vm.addressOrSessionHost, vm.preferredConsoleProtocol)
-                                }
+                            Text(
+                                text = vm.powerState,
+                                style = NexusTheme.monospace.keycapShortcut,
+                                color = if (isRunning) {
+                                    NexusTheme.extendedColors.statusConnected
+                                } else {
+                                    NexusTheme.extendedColors.statusDisconnected
+                                },
+                                modifier = Modifier.padding(end = 12.dp)
+                            )
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
-                                Icon(Icons.Outlined.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text(vm.preferredConsoleProtocol.name)
+                                IconButton(
+                                    onClick = {
+                                        val desired = if (isRunning) VmPowerAction.STOP else VmPowerAction.START
+                                        scope.launch {
+                                            CloudVirtualizationHubClient
+                                                .executePowerOrSessionAction(protocol, endpointHost, settings, secret, vm, desired)
+                                                .onSuccess { msg ->
+                                                    statusBanner = msg
+                                                    isErrorBanner = false
+                                                    val idx = instances.indexOfFirst { it.id == vm.id }
+                                                    if (idx >= 0) {
+                                                        instances[idx] = instances[idx].copy(
+                                                            powerState = when {
+                                                                vm.isTerminalServicesSession && desired == VmPowerAction.STOP -> "LOGGED OFF"
+                                                                vm.isTerminalServicesSession -> "DISCONNECTED"
+                                                                desired == VmPowerAction.START -> "RUNNING"
+                                                                else -> "STOPPED"
+                                                            }
+                                                        )
+                                                    }
+                                                }
+                                                .onFailure { err ->
+                                                    statusBanner = "Action failed: ${err.message ?: "API error"}"
+                                                    isErrorBanner = true
+                                                }
+                                        }
+                                    },
+                                    modifier = Modifier.size(32.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Outlined.PowerSettingsNew,
+                                        contentDescription = "Toggle Power",
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                                FilledTonalButton(
+                                    onClick = {
+                                        openConsoleCallback(vm.name, vm.addressOrSessionHost, vm.preferredConsoleProtocol)
+                                    }
+                                ) {
+                                    Icon(Icons.Outlined.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(vm.preferredConsoleProtocol.name)
+                                }
                             }
                         }
                     }
@@ -1129,12 +1261,13 @@ fun NetworkUtilitiesView(
                                 }
 
                                 NetUtilityMode.TRACEROUTE -> {
-                                    outputLines += "[Traceroute] Tracing route to $targetHost (max 16 hops, ICMP/UDP/TCP TTL probe)..."
+                                    val maxHops = settings.tracerouteMaxHops.coerceIn(1, 30)
+                                    outputLines += "[Traceroute] Tracing route to $targetHost (max $maxHops hops, ICMP/UDP/TCP TTL probe)..."
                                     runCatching {
                                         val hops = VncNativeBridge.runTraceroute(
                                             host = targetHost,
                                             probePort = 443,
-                                            maxHops = 16
+                                            maxHops = maxHops
                                         )
                                         hops.forEach { hop ->
                                             val rttFormatted = String.format(Locale.US, "%.2f ms", hop.rttMs)
@@ -1247,4 +1380,3 @@ fun NetworkUtilitiesView(
         }
     }
 }
-

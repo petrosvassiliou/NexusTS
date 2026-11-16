@@ -1438,7 +1438,8 @@ fun NewOrEditConnectionDialog(
                 enabled = name.isNotBlank() && host.isNotBlank(),
                 onClick = {
                     val configuredSettings: ProtocolSpecificSettings = when (selectedProto) {
-                        VaultProtocolType.RDP -> initialRdp.copy(
+                        VaultProtocolType.RDP,
+                        VaultProtocolType.WINDOWS_TERMINAL_SERVICES -> initialRdp.copy(
                             port = rdpPortText.toIntOrNull()?.takeIf { it in 1..65535 } ?: 3389,
                             connectToConsoleAdmin = connectToConsole,
                             hiDpiEnabled = hiDpiEnabled,
@@ -1528,7 +1529,7 @@ fun NewOrEditConnectionDialog(
 
                         VaultProtocolType.VMWARE_VSPHERE, VaultProtocolType.PROXMOX_VE,
                         VaultProtocolType.HYPER_V, VaultProtocolType.AWS_EC2,
-                        VaultProtocolType.AZURE_VM, VaultProtocolType.WINDOWS_TERMINAL_SERVICES -> {
+                        VaultProtocolType.AZURE_VM -> {
                             val normalizedUrl = if (host.startsWith("http")) host.trim() else "https://${host.trim()}"
                             ((initialConnection?.settings as? ProtocolSpecificSettings.CloudVirtualization)
                                 ?: ProtocolSpecificSettings.CloudVirtualization(apiEndpointUrl = normalizedUrl))
@@ -1569,7 +1570,7 @@ fun NewOrEditConnectionDialog(
                         name = name.trim(),
                         host = host.trim(),
                         protocol = selectedProto,
-                        osFamily = if (selectedProto == VaultProtocolType.RDP) "Windows" else "Linux",
+                        osFamily = if (selectedProto == VaultProtocolType.RDP || selectedProto == VaultProtocolType.WINDOWS_TERMINAL_SERVICES) "Windows" else "Linux",
                         inheritable = resolvedInheritable,
                         settings = configuredSettings
                     ))

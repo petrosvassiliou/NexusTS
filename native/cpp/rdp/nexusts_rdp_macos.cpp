@@ -255,4 +255,30 @@ size_t nexusts_rdp_copy_frame_rgba(
     return 0;
 }
 
+size_t nexusts_rdp_copy_dirty_frame(
+    int64_t handle,
+    uint8_t* dst_pixels,
+    size_t dst_capacity,
+    uint32_t* out_width,
+    uint32_t* out_height,
+    uint32_t* out_dirty_x,
+    uint32_t* out_dirty_y,
+    uint32_t* out_dirty_w,
+    uint32_t* out_dirty_h
+) {
+    if (auto ctx = lookup_session(handle)) {
+        return ctx->presenter().copy_dirty_shadow_pixels(
+            dst_pixels,
+            dst_capacity,
+            out_width,
+            out_height,
+            out_dirty_x,
+            out_dirty_y,
+            out_dirty_w,
+            out_dirty_h
+        );
+    }
+    return 0;
+}
+
 } // extern "C"

@@ -1,0 +1,4 @@
+• v0.8.0: Renderizado FreeRDP optimizado y enrutamiento directo de Windows Terminal Services
+• Soporte en vivo para SSHv2, Telnet, SFTP/SCP/FTP/FTPS, VNC y Apple ARD con persistencia al cambiar de pestaña
+• Kubernetes v4 WebSocket exec, consolas cloud Proxmox/Azure/vSphere/Hyper-V, USB serie y fijación TLS Web
+• Menú superior «Gestionar» simplificado para credenciales, plantillas y tareas
