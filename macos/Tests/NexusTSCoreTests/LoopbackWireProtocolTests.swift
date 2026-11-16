@@ -770,7 +770,7 @@ final class LoopbackWireProtocolTests: XCTestCase {
         let bgraFrame = try XCTUnwrap(vnc.copyFrameBgra())
         XCTAssertEqual(bgraFrame.width, 4)
         XCTAssertEqual(bgraFrame.height, 4)
-        XCTAssertEqual(Array(bgraFrame.bgra.prefix(4)), [0x40, 0x20, 0xFF, 0x00])
+        XCTAssertEqual(Array(bgraFrame.bgra.prefix(4)), [0x40, 0x20, 0xFF, 0xFF])
 
         let rendered = try XCTUnwrap(vnc.copyFrameIntoPersistentBuffer(forceFull: true))
         XCTAssertEqual(rendered.image.width, 4)

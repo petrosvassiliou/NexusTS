@@ -529,10 +529,12 @@ public enum QuickConnectParser {
                     case 5900: return .VNC
                     case 23: return .TELNET
                     case 443, 8080, 8443: return .WEB_PAGE
-                    default: return .SSH
+                    case 22: return .SSH
+                    default:
+                        return (domain?.isEmpty == false) ? .RDP : .SSH
                     }
                 }
-                return .SSH
+                return (domain?.isEmpty == false) ? .RDP : .SSH
             }
         }()
 
