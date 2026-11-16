@@ -23,19 +23,24 @@ on:
         required: false
         default: "v0.8.2"
         type: string
+      runner_label:
+        description: "GitHub-hosted macOS runner label (macos-15-intel avoids arm64 queue backlogs)"
+        required: false
+        default: "macos-15-intel"
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: nexusts-macos-${{ github.ref }}
+  group: nexusts-macos-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
 jobs:
   build-and-test-macos:
     name: Build Universal2 NexusTS.app & Run XCTests (macOS 15)
-    runs-on: macos-15
-    timeout-minutes: 45
+    runs-on: ${{ inputs.runner_label || 'macos-15-intel' }}
+    timeout-minutes: 75
 
     steps:
       - name: Checkout repository
