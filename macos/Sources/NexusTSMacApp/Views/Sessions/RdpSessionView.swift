@@ -1350,7 +1350,7 @@ final class RdpPointerAndKeyNSView: NSView {
         executeRemoteCommandShortcut(.cut)
     }
 
-    @objc func selectAll(_ sender: Any?) {
+    override func selectAll(_ sender: Any?) {
         executeRemoteCommandShortcut(.selectAll)
     }
 
