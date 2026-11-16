@@ -1,0 +1,1 @@
+• v0.8.2: RDP-Sitzungswechsel behoben, OpenH264 AVC444 + Metal-GPU-Rendering & Hardware-Cursor sowie Verbindungstyp-Icons in der Seitenleiste

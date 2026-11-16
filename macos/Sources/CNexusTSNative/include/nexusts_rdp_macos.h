@@ -109,7 +109,34 @@ uint64_t nexusts_rdp_remote_clipboard_sequence(int64_t handle);
 char* nexusts_rdp_copy_last_error(int64_t handle);
 void nexusts_rdp_free_cstr(char* ptr);
 
+typedef void (*NexusRdpFrameReadyCallback)(void* user_data);
+
+typedef void (*NexusRdpDirtyRegionConsumer)(
+    const uint8_t* full_frame_pixels,
+    uint32_t stride_bytes,
+    uint32_t fb_width,
+    uint32_t fb_height,
+    uint32_t dirty_x,
+    uint32_t dirty_y,
+    uint32_t dirty_w,
+    uint32_t dirty_h,
+    uint64_t frame_seq,
+    void* user_data
+);
+
+void nexusts_rdp_set_frame_ready_callback(
+    int64_t handle,
+    NexusRdpFrameReadyCallback callback,
+    void* user_data
+);
+
 uint64_t nexusts_rdp_frame_sequence(int64_t handle);
+bool nexusts_rdp_consume_dirty_region(
+    int64_t handle,
+    bool force_full,
+    NexusRdpDirtyRegionConsumer consumer,
+    void* user_data
+);
 size_t nexusts_rdp_copy_frame_rgba(
     int64_t handle,
     uint8_t* dst_rgba,
@@ -127,6 +154,19 @@ size_t nexusts_rdp_copy_dirty_frame(
     uint32_t* out_dirty_y,
     uint32_t* out_dirty_w,
     uint32_t* out_dirty_h
+);
+
+uint64_t nexusts_rdp_cursor_sequence(int64_t handle);
+size_t nexusts_rdp_copy_cursor_bgra(
+    int64_t handle,
+    uint8_t* dst_bgra,
+    size_t dst_capacity,
+    uint32_t* out_width,
+    uint32_t* out_height,
+    uint32_t* out_hot_x,
+    uint32_t* out_hot_y,
+    bool* out_visible,
+    bool* out_is_default
 );
 
 #ifdef __cplusplus

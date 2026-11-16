@@ -21,7 +21,7 @@ on:
       release_tag:
         description: "Tag name when publishing via workflow_dispatch"
         required: false
-        default: "v0.8.1"
+        default: "v0.8.2"
         type: string
 
 permissions:
@@ -49,7 +49,7 @@ jobs:
           bash -n scripts/package-macos-app.sh
           ./scripts/build-freerdp3-macos.sh --dry-run
 
-      - name: Cache Prebuilt Universal2 OpenSSL 3.4 + FreeRDP 3.12 macOS SDK
+      - name: Cache Prebuilt Universal2 OpenSSL 3.4 + OpenH264 2.5 + FreeRDP 3.12 macOS SDK
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.compile_full_freerdp3 == true }}
         id: freerdp-macos-cache
         uses: actions/cache@v4
@@ -57,10 +57,12 @@ jobs:
           path: native/third_party/freerdp3/macos
           key: freerdp3-macos-static-universal2-v2-${{ hashFiles('scripts/build-freerdp3-macos.sh') }}
 
-      - name: Build & Stage Universal2 OpenSSL 3.4.1 + FreeRDP 3.12.0 (arm64 + x86_64)
+      - name: Build & Stage Universal2 OpenSSL 3.4.1 + OpenH264 2.5.0 + FreeRDP 3.12.0 (arm64 + x86_64)
         if: ${{ (github.event_name != 'workflow_dispatch' || inputs.compile_full_freerdp3 == true) && steps.freerdp-macos-cache.outputs.cache-hit != 'true' }}
         run: |
-          command -v ninja >/dev/null 2>&1 || brew install ninja pkg-config
+          for pkg in ninja pkg-config nasm; do
+            command -v "$pkg" >/dev/null 2>&1 || brew install "$pkg"
+          done
           ./scripts/build-freerdp3-macos.sh --archs arm64,x86_64
 
       - name: Install Rust toolchain & Universal2 Apple targets
@@ -141,7 +143,7 @@ jobs:
           echo "==> Executing packaged NexusTS --self-test binary"
           SELF_TEST_OUT="$("${BIN}" --self-test)"
           echo "${SELF_TEST_OUT}"
-          echo "${SELF_TEST_OUT}" | grep -q "NEXUSTS_MACOS_SELF_TEST_OK version=0.8.1"
+          echo "${SELF_TEST_OUT}" | grep -q "NEXUSTS_MACOS_SELF_TEST_OK version=0.8.2"
 
       - name: Upload NexusTS macOS Universal DMG & App Bundle
         uses: actions/upload-artifact@v4
@@ -172,7 +174,7 @@ jobs:
           set -euo pipefail
           TAG_NAME="${GITHUB_REF_NAME}"
           if [[ "${TAG_NAME}" != v* ]]; then
-            TAG_NAME="${{ inputs.release_tag || 'v0.8.1' }}"
+            TAG_NAME="${{ inputs.release_tag || 'v0.8.2' }}"
           fi
           echo "tag_name=${TAG_NAME}" >> "${GITHUB_OUTPUT}"
 

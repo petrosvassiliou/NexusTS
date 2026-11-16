@@ -1,0 +1,1 @@
+• v0.8.2: Corretto il cambio sessione RDP, motore OpenH264 AVC444 + Metal GPU, cursore hardware e icone del tipo di connessione

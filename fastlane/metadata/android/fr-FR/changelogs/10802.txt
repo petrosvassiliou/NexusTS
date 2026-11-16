@@ -1,0 +1,1 @@
+• v0.8.2 : Correction du changement d'onglet RDP, moteur OpenH264 AVC444 + Metal GPU, curseur matériel et icônes de type de connexion

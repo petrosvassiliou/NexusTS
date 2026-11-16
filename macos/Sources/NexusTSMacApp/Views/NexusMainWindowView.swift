@@ -535,7 +535,7 @@ struct QuickConnectSpotlightOverlay: View {
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text("Instant Connect to \(adHoc.displayName)")
                                             .font(.body.weight(.medium))
-                                        Text("\(adHoc.protocolType.displayName) • Port \(adHoc.port)")
+                                        Text(verbatim: "\(adHoc.protocolType.displayName) • Port \(String(adHoc.port))")
                                             .font(.caption)
                                             .foregroundStyle(.secondary)
                                     }
@@ -1079,15 +1079,17 @@ private struct FullScreenFolderLauncherPopover: View {
 
     private func connectionLauncherRow(_ conn: VaultConnection, depth: Int) -> some View {
         let isSelected = store.selectedConnectionId == conn.id
-        return HStack(spacing: 8) {
+        return HStack(spacing: 6) {
+            SidebarConnectionTypeIcon(
+                protocolType: conn.protocolType,
+                customHex: conn.inheritable.displayColorAccentHex,
+                size: 15
+            )
             Text(conn.name)
                 .font(.system(size: 14, weight: isSelected ? .semibold : .medium))
                 .foregroundStyle(.primary)
                 .lineLimit(1)
             Spacer()
-            Text(conn.protocolType.shortBadge)
-                .font(.system(size: 9.5, weight: .regular, design: .monospaced))
-                .foregroundStyle(.tertiary)
             Button {
                 store.openConnection(conn)
                 isPresented = false
@@ -1099,7 +1101,7 @@ private struct FullScreenFolderLauncherPopover: View {
             .buttonStyle(.borderless)
             .help("Connect to \(conn.name)")
         }
-        .padding(.leading, CGFloat(depth) * 14 + 14)
+        .padding(.leading, CGFloat(depth) * 14 + 16)
         .padding(.vertical, 5)
         .padding(.horizontal, 6)
         .background(

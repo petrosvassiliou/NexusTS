@@ -24,6 +24,7 @@
 #include <freerdp/freerdp.h>
 #include <freerdp/error.h>
 #include <freerdp/event.h>
+#include <freerdp/codec/color.h>
 #include <freerdp/codec/h264.h>
 #include <freerdp/gdi/gdi.h>
 #include <freerdp/gdi/gfx.h>
@@ -706,22 +707,128 @@ BOOL freerdp_on_pre_connect(freerdp* instance) {
     return TRUE;
 }
 
-BOOL nexusts_pointer_new(rdpContext* /*context*/, rdpPointer* /*pointer*/) {
+struct NexusRdpPointer {
+    rdpPointer base;
+    uint32_t decoded_w;
+    uint32_t decoded_h;
+    uint32_t hot_x;
+    uint32_t hot_y;
+    std::vector<uint8_t>* premul_bgra;
+};
+
+BOOL nexusts_pointer_new(rdpContext* context, rdpPointer* pointer) {
+    if (!pointer) {
+        return FALSE;
+    }
+    auto* np = reinterpret_cast<NexusRdpPointer*>(pointer);
+    np->decoded_w = 0u;
+    np->decoded_h = 0u;
+    np->hot_x = 0u;
+    np->hot_y = 0u;
+    np->premul_bgra = nullptr;
+
+    if (pointer->width == 0u || pointer->height == 0u ||
+        pointer->width > 512u || pointer->height > 512u) {
+        return TRUE;
+    }
+
+    const uint32_t w = pointer->width;
+    const uint32_t h = pointer->height;
+    const size_t pixel_count = static_cast<size_t>(w) * static_cast<size_t>(h);
+    auto* buf = new std::vector<uint8_t>(pixel_count * 4u, 0u);
+    const gdiPalette* palette = (context && context->gdi) ? &context->gdi->palette : nullptr;
+
+    const BOOL decoded = freerdp_image_copy_from_pointer_data(
+        buf->data(),
+        PIXEL_FORMAT_BGRA32,
+        w * 4u,
+        0u,
+        0u,
+        w,
+        h,
+        pointer->xorMaskData,
+        pointer->lengthXorMask,
+        pointer->andMaskData,
+        pointer->lengthAndMask,
+        pointer->xorBpp,
+        palette
+    );
+    if (!decoded) {
+        delete buf;
+        return TRUE;
+    }
+
+    // Premultiply BGRA32 alpha for CoreGraphics kCGBitmapByteOrder32Little | kCGImageAlphaPremultipliedFirst
+    uint8_t* raw = buf->data();
+    for (size_t i = 0; i < pixel_count; ++i) {
+        uint8_t* px = raw + i * 4u;
+        const uint32_t a = px[3];
+        if (a == 0u) {
+            px[0] = 0u;
+            px[1] = 0u;
+            px[2] = 0u;
+        } else if (a < 255u) {
+            px[0] = static_cast<uint8_t>((static_cast<uint32_t>(px[0]) * a + 127u) / 255u);
+            px[1] = static_cast<uint8_t>((static_cast<uint32_t>(px[1]) * a + 127u) / 255u);
+            px[2] = static_cast<uint8_t>((static_cast<uint32_t>(px[2]) * a + 127u) / 255u);
+        }
+    }
+
+    np->decoded_w = w;
+    np->decoded_h = h;
+    np->hot_x = std::min(pointer->xPos, w - 1u);
+    np->hot_y = std::min(pointer->yPos, h - 1u);
+    np->premul_bgra = buf;
     return TRUE;
 }
 
-void nexusts_pointer_free(rdpContext* /*context*/, rdpPointer* /*pointer*/) {
+void nexusts_pointer_free(rdpContext* /*context*/, rdpPointer* pointer) {
+    if (!pointer) {
+        return;
+    }
+    auto* np = reinterpret_cast<NexusRdpPointer*>(pointer);
+    delete np->premul_bgra;
+    np->premul_bgra = nullptr;
 }
 
-BOOL nexusts_pointer_set(rdpContext* /*context*/, rdpPointer* /*pointer*/) {
+BOOL nexusts_pointer_set(rdpContext* context, rdpPointer* pointer) {
+    if (!context || !pointer) {
+        return TRUE;
+    }
+    const auto cb = lookup_freerdp_callbacks(context->instance);
+    if (cb.owner) {
+        const auto* np = reinterpret_cast<const NexusRdpPointer*>(pointer);
+        if (np->premul_bgra && !np->premul_bgra->empty() && np->decoded_w > 0u && np->decoded_h > 0u) {
+            cb.owner->update_remote_cursor_bitmap(
+                np->decoded_w,
+                np->decoded_h,
+                np->hot_x,
+                np->hot_y,
+                np->premul_bgra->data(),
+                np->premul_bgra->size()
+            );
+        }
+    }
     return TRUE;
 }
 
-BOOL nexusts_pointer_set_null(rdpContext* /*context*/) {
+BOOL nexusts_pointer_set_null(rdpContext* context) {
+    if (context) {
+        const auto cb = lookup_freerdp_callbacks(context->instance);
+        if (cb.owner) {
+            cb.owner->update_remote_cursor_state(false, false);
+        }
+    }
     return TRUE;
 }
 
-BOOL nexusts_pointer_set_default(rdpContext* /*context*/) {
+BOOL nexusts_pointer_set_default(rdpContext* context) {
+    if (context) {
+        const auto cb = lookup_freerdp_callbacks(context->instance);
+        if (cb.owner) {
+            cb.owner->update_remote_cursor_state(true, true);
+        }
+    }
     return TRUE;
 }
 
@@ -734,7 +841,7 @@ void register_safe_pointer_callbacks(rdpGraphics* graphics) {
         return;
     }
     rdpPointer pointer{};
-    pointer.size = sizeof(pointer);
+    pointer.size = sizeof(NexusRdpPointer);
     pointer.New = &nexusts_pointer_new;
     pointer.Free = &nexusts_pointer_free;
     pointer.Set = &nexusts_pointer_set;
@@ -1355,8 +1462,8 @@ bool RdpSessionContext::connect() {
     // causes rdp_client_wait_for_activation() to abort with FREERDP_ERROR_CONNECT_TRANSPORT_FAILED (0x0002000D).
     freerdp_settings_set_bool(settings, FreeRDP_SupportGraphicsPipeline, params_.enable_gfx_pipeline);
     freerdp_settings_set_bool(settings, FreeRDP_GfxH264, h264_runtime_supported);
-    freerdp_settings_set_bool(settings, FreeRDP_GfxAVC444, FALSE);
-    freerdp_settings_set_bool(settings, FreeRDP_GfxAVC444v2, FALSE);
+    freerdp_settings_set_bool(settings, FreeRDP_GfxAVC444, h264_runtime_supported);
+    freerdp_settings_set_bool(settings, FreeRDP_GfxAVC444v2, h264_runtime_supported);
     freerdp_settings_set_bool(settings, FreeRDP_GfxProgressive, params_.enable_gfx_pipeline);
     freerdp_settings_set_bool(settings, FreeRDP_GfxProgressiveV2, params_.enable_gfx_pipeline);
     freerdp_settings_set_bool(settings, FreeRDP_RemoteFxCodec, params_.enable_remotefx);
@@ -1472,8 +1579,10 @@ bool RdpSessionContext::connect() {
 
     event_loop_thread_ = std::thread([this, instance, wakeup_ev, effective_host, effective_port]() {
         HANDLE handles[64]{};
-        constexpr auto kFrameBudget = std::chrono::milliseconds(8); // ~120 Hz ceiling
+#ifndef __APPLE__
+        constexpr auto kFrameBudget = std::chrono::milliseconds(8); // ~120 Hz ANativeWindow ceiling
         auto last_present_tp = std::chrono::steady_clock::now() - kFrameBudget;
+#endif
 
         while (!stop_requested_.load(std::memory_order_acquire)) {
             if (!instance->context || freerdp_shall_disconnect_context(instance->context)) {
@@ -1491,6 +1600,11 @@ bool RdpSessionContext::connect() {
             }
 
             DWORD wait_ms = 60u;
+#ifdef __APPLE__
+            if (gdi_presenter_->has_pending_dirty()) {
+                wait_ms = 0u;
+            }
+#else
             if (gdi_presenter_->has_pending_dirty()) {
                 const auto elapsed = std::chrono::steady_clock::now() - last_present_tp;
                 if (elapsed >= kFrameBudget) {
@@ -1500,6 +1614,7 @@ bool RdpSessionContext::connect() {
                     wait_ms = static_cast<DWORD>(std::max<int64_t>(1, rem));
                 }
             }
+#endif
 
             const DWORD wait_status = WaitForMultipleObjects(count, handles, FALSE, wait_ms);
             if (wait_status == WAIT_FAILED) {
@@ -1517,6 +1632,11 @@ bool RdpSessionContext::connect() {
             if (!freerdp_check_event_handles(instance->context)) {
                 break;
             }
+#ifdef __APPLE__
+            if (gdi_presenter_->has_pending_dirty()) {
+                gdi_presenter_->flush_pending_frame();
+            }
+#else
             if (gdi_presenter_->has_pending_dirty()) {
                 const auto now = std::chrono::steady_clock::now();
                 if (now - last_present_tp >= kFrameBudget) {
@@ -1525,6 +1645,7 @@ bool RdpSessionContext::connect() {
                     }
                 }
             }
+#endif
         }
         gdi_presenter_->flush_pending_frame();
         if (!stop_requested_.load(std::memory_order_acquire) && instance->context) {
@@ -1751,6 +1872,77 @@ void RdpSessionContext::send_pointer_event(
     (void)x;
     (void)y;
 #endif
+}
+
+void RdpSessionContext::update_remote_cursor_bitmap(
+    uint32_t width,
+    uint32_t height,
+    uint32_t hot_x,
+    uint32_t hot_y,
+    const uint8_t* premultiplied_bgra,
+    size_t byte_len
+) {
+    if (!premultiplied_bgra || width == 0u || height == 0u) {
+        return;
+    }
+    const size_t expected = static_cast<size_t>(width) * static_cast<size_t>(height) * 4u;
+    if (byte_len < expected) {
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(cursor_mutex_);
+        cursor_width_ = width;
+        cursor_height_ = height;
+        cursor_hot_x_ = std::min(hot_x, width - 1u);
+        cursor_hot_y_ = std::min(hot_y, height - 1u);
+        cursor_visible_ = true;
+        cursor_is_default_ = false;
+        cursor_bgra_.assign(premultiplied_bgra, premultiplied_bgra + expected);
+        cursor_seq_.fetch_add(1u, std::memory_order_release);
+    }
+    gdi_presenter_->notify_frame_ready();
+}
+
+void RdpSessionContext::update_remote_cursor_state(bool visible, bool use_default) {
+    {
+        std::lock_guard<std::mutex> lock(cursor_mutex_);
+        cursor_visible_ = visible;
+        cursor_is_default_ = use_default;
+        if (use_default || !visible) {
+            cursor_width_ = 0u;
+            cursor_height_ = 0u;
+            cursor_hot_x_ = 0u;
+            cursor_hot_y_ = 0u;
+            cursor_bgra_.clear();
+        }
+        cursor_seq_.fetch_add(1u, std::memory_order_release);
+    }
+    gdi_presenter_->notify_frame_ready();
+}
+
+size_t RdpSessionContext::copy_cursor_bgra(
+    uint8_t* dst_bgra,
+    size_t dst_capacity,
+    uint32_t* out_width,
+    uint32_t* out_height,
+    uint32_t* out_hot_x,
+    uint32_t* out_hot_y,
+    bool* out_visible,
+    bool* out_is_default
+) const {
+    std::lock_guard<std::mutex> lock(cursor_mutex_);
+    if (out_width) *out_width = cursor_width_;
+    if (out_height) *out_height = cursor_height_;
+    if (out_hot_x) *out_hot_x = cursor_hot_x_;
+    if (out_hot_y) *out_hot_y = cursor_hot_y_;
+    if (out_visible) *out_visible = cursor_visible_;
+    if (out_is_default) *out_is_default = cursor_is_default_;
+    if (!dst_bgra || dst_capacity == 0u || cursor_bgra_.empty()) {
+        return cursor_bgra_.size();
+    }
+    const size_t n = std::min(dst_capacity, cursor_bgra_.size());
+    std::memcpy(dst_bgra, cursor_bgra_.data(), n);
+    return n;
 }
 
 } // namespace nexusts::rdp

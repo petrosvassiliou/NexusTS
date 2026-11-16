@@ -108,7 +108,7 @@ private struct DualPaneTransferLiveBody: View {
                     )
                     .frame(width: 8, height: 8)
 
-                Text("\(latestConnection.protocolType.shortBadge) Commander • \(latestConnection.host):\(transferSettings.port)")
+                Text(verbatim: "\(latestConnection.protocolType.shortBadge) Commander • \(latestConnection.host):\(String(transferSettings.port))")
                     .font(.callout.weight(.semibold))
 
                 if latestConnection.protocolType == .FTPS {

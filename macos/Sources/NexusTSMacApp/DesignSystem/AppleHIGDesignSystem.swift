@@ -331,6 +331,72 @@ public struct ProtocolSquircleIcon: View {
     }
 }
 
+public struct SidebarConnectionTypeIcon: View {
+    public let protocolType: VaultProtocolType
+    public var customHex: String? = nil
+    public var size: CGFloat = 15
+
+    public init(protocolType: VaultProtocolType, customHex: String? = nil, size: CGFloat = 15) {
+        self.protocolType = protocolType
+        self.customHex = customHex
+        self.size = size
+    }
+
+    public var body: some View {
+        let tint = HIGColorUtilities.color(fromHex: customHex) ?? protocolType.appleSystemTint
+        Group {
+            switch protocolType {
+            case .RDP, .WINDOWS_TERMINAL_SERVICES:
+                Canvas { context, canvasSize in
+                    let s = min(canvasSize.width, canvasSize.height)
+                    let center = CGPoint(x: canvasSize.width * 0.5, y: canvasSize.height * 0.5)
+                    let ringRadius = s * 0.43
+                    let ringStroke = max(1.25, s * 0.092)
+                    let chevronStroke = max(1.35, s * 0.102)
+
+                    var ring = Path()
+                    ring.addArc(
+                        center: center,
+                        radius: ringRadius,
+                        startAngle: .degrees(0),
+                        endAngle: .degrees(360),
+                        clockwise: false
+                    )
+                    context.stroke(
+                        ring,
+                        with: .color(tint),
+                        style: StrokeStyle(lineWidth: ringStroke, lineCap: .round, lineJoin: .round)
+                    )
+
+                    // Classic Remote Desktop / Royal TSX opposing chevrons:
+                    // Lower-left '>' pointing right + upper-right '<' pointing left
+                    var chevrons = Path()
+                    chevrons.move(to: CGPoint(x: s * 0.29, y: s * 0.44))
+                    chevrons.addLine(to: CGPoint(x: s * 0.44, y: s * 0.58))
+                    chevrons.addLine(to: CGPoint(x: s * 0.29, y: s * 0.72))
+
+                    chevrons.move(to: CGPoint(x: s * 0.71, y: s * 0.28))
+                    chevrons.addLine(to: CGPoint(x: s * 0.56, y: s * 0.42))
+                    chevrons.addLine(to: CGPoint(x: s * 0.71, y: s * 0.56))
+
+                    context.stroke(
+                        chevrons,
+                        with: .color(tint),
+                        style: StrokeStyle(lineWidth: chevronStroke, lineCap: .round, lineJoin: .round)
+                    )
+                }
+            default:
+                Image(systemName: protocolType.sfSymbolName)
+                    .font(.system(size: size * 0.82, weight: .semibold))
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(tint)
+            }
+        }
+        .frame(width: size, height: size)
+        .accessibilityHidden(true)
+    }
+}
+
 public struct ProtocolHoverGlassPill: View {
     public let protocolType: VaultProtocolType
     public var customHex: String? = nil

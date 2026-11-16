@@ -193,6 +193,28 @@ public:
     uint64_t frame_sequence() const noexcept { return frame_seq_.load(std::memory_order_acquire); }
     bool has_pending_dirty() const noexcept { return dirty_pending_.load(std::memory_order_acquire); }
 
+    using FrameReadyCallback = void(*)(void* user_data);
+    using DirtyRegionConsumer = void(*)(
+        const uint8_t* full_frame_pixels,
+        uint32_t stride_bytes,
+        uint32_t fb_width,
+        uint32_t fb_height,
+        uint32_t dirty_x,
+        uint32_t dirty_y,
+        uint32_t dirty_w,
+        uint32_t dirty_h,
+        uint64_t frame_seq,
+        void* user_data
+    );
+
+    void set_frame_ready_callback(FrameReadyCallback cb, void* user_data);
+    void notify_frame_ready() const;
+    bool consume_dirty_shadow_region(
+        bool force_full,
+        DirtyRegionConsumer consumer,
+        void* user_data
+    );
+
     size_t copy_shadow_rgba(
         uint8_t* dst_rgba,
         size_t dst_capacity,
@@ -218,6 +240,9 @@ private:
     void present_locked();
 
     mutable std::mutex surface_mutex_;
+    mutable std::mutex callback_mutex_;
+    FrameReadyCallback frame_ready_cb_{nullptr};
+    void* frame_ready_user_data_{nullptr};
     ANativeWindow* native_window_{nullptr};
     uint32_t configured_geom_w_{0};
     uint32_t configured_geom_h_{0};
@@ -279,6 +304,27 @@ public:
         uint16_t y
     );
 
+    void update_remote_cursor_bitmap(
+        uint32_t width,
+        uint32_t height,
+        uint32_t hot_x,
+        uint32_t hot_y,
+        const uint8_t* premultiplied_bgra,
+        size_t byte_len
+    );
+    void update_remote_cursor_state(bool visible, bool use_default);
+    uint64_t cursor_sequence() const noexcept { return cursor_seq_.load(std::memory_order_acquire); }
+    size_t copy_cursor_bgra(
+        uint8_t* dst_bgra,
+        size_t dst_capacity,
+        uint32_t* out_width,
+        uint32_t* out_height,
+        uint32_t* out_hot_x,
+        uint32_t* out_hot_y,
+        bool* out_visible,
+        bool* out_is_default
+    ) const;
+
     RdpGdiSurfacePresenter& presenter() noexcept { return *gdi_presenter_; }
     RdpVirtualChannelHub& channels() noexcept { return channels_; }
     RdpHardwareH264Decoder& decoder() noexcept { return h264_decoder_; }
@@ -311,6 +357,15 @@ private:
     std::mutex cliprdr_mutex_;
     mutable std::mutex error_mutex_;
     std::string last_error_;
+    mutable std::mutex cursor_mutex_;
+    std::atomic<uint64_t> cursor_seq_{0};
+    uint32_t cursor_width_{0};
+    uint32_t cursor_height_{0};
+    uint32_t cursor_hot_x_{0};
+    uint32_t cursor_hot_y_{0};
+    bool cursor_visible_{true};
+    bool cursor_is_default_{true};
+    std::vector<uint8_t> cursor_bgra_;
     std::unique_ptr<RdpGdiSurfacePresenter> gdi_presenter_;
     RdpVirtualChannelHub channels_;
     RdpHardwareH264Decoder h264_decoder_;

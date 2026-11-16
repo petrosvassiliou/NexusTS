@@ -350,10 +350,10 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
     }
 
     func testV118LocalizationUpgradeVersionAndVaultReplacementCompatibility() throws {
-        XCTAssertEqual(MacGitHubReleaseUpdater.currentVersion, "0.8.1")
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.1", isNewerThan: "0.8.0"))
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.1", isNewerThan: "0.3.0-beta.5"))
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.1", isNewerThan: "0.3.0-beta.6"))
+        XCTAssertEqual(MacGitHubReleaseUpdater.currentVersion, "0.8.2")
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.2", isNewerThan: "0.8.1"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.2", isNewerThan: "0.8.0"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.2", isNewerThan: "0.3.0-beta.6"))
         XCTAssertEqual(LocalizedWorkspaceStrings.catalog(for: .en).studios, "Manage")
 
         for lang in NexusAppLanguage.allCases {
@@ -595,5 +595,39 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
                 atPath: unpackedApp.appendingPathComponent("Contents/MacOS/NexusTS").path
             )
         )
+    }
+
+    func testRdpMetalDirtyRegionAndRemoteCursorParityDefaults() {
+        let defaultSettings = RdpProtocolSettings()
+        let session = NativeRdpSession(
+            host: "10.2.200.11",
+            username: "admin",
+            password: "",
+            domain: "",
+            settings: defaultSettings
+        )
+        // Royal TSX parity: default 100% desktopScaleFactorPercent uses fast 1x logical desktop sizing
+        XCTAssertFalse(session.hiDpiEnabled)
+        XCTAssertFalse(session.hasValidFrame)
+        XCTAssertEqual(session.cursorSequence, 0)
+        XCTAssertNil(session.copyRemoteCursor())
+        let consumed = session.consumeDirtyRegion(forceFull: false) { _ in true }
+        XCTAssertFalse(consumed)
+
+        var invoked = false
+        session.setFrameReadyHandler { invoked = true }
+        session.setFrameReadyHandler(nil)
+        XCTAssertFalse(invoked)
+
+        // Explicit 200% scale factor enables 2x Retina desktop resolution at connect time
+        let retinaSettings = RdpProtocolSettings(desktopScaleFactorPercent: 200, hiDpiEnabled: true)
+        let retinaSession = NativeRdpSession(
+            host: "10.2.200.11",
+            username: "admin",
+            password: "",
+            domain: "",
+            settings: retinaSettings
+        )
+        XCTAssertTrue(retinaSession.hiDpiEnabled)
     }
 }

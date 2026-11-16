@@ -334,30 +334,33 @@ public struct SessionCanvasRouterView: View {
     }
 
     public var body: some View {
-        if tab.isLocalShell {
-            TerminalSessionView(tab: tab)
-        } else {
-            switch tab.connection.protocolType {
-            case .SSH, .TELNET:
+        Group {
+            if tab.isLocalShell {
                 TerminalSessionView(tab: tab)
-            case .RDP, .WINDOWS_TERMINAL_SERVICES:
-                RdpSessionView(tab: tab)
-            case .VNC, .APPLE_SCREEN_SHARING:
-                VncScreenSharingView(tab: tab)
-            case .SFTP, .FTP, .FTPS, .SCP:
-                DualPaneTransferView(tab: tab)
-            case .SERIAL:
-                SerialConsoleView(tab: tab)
-            case .WEB_PAGE:
-                IsolatedWebSessionView(tab: tab)
-            case .KUBERNETES_POD, .DOCKER_CONTAINER:
-                ContainerWorkloadStudioView(tab: tab)
-            case .VMWARE_VSPHERE, .PROXMOX_VE, .HYPER_V, .AWS_EC2, .AZURE_VM:
-                CloudHypervisorSessionView(tab: tab)
-            case .UTILITY_PING, .UTILITY_TRACEROUTE, .UTILITY_PORT_SCANNER, .UTILITY_WAKE_ON_LAN:
-                NetworkDiagnosticsSessionView(tab: tab)
+            } else {
+                switch tab.connection.protocolType {
+                case .SSH, .TELNET:
+                    TerminalSessionView(tab: tab)
+                case .RDP, .WINDOWS_TERMINAL_SERVICES:
+                    RdpSessionView(tab: tab)
+                case .VNC, .APPLE_SCREEN_SHARING:
+                    VncScreenSharingView(tab: tab)
+                case .SFTP, .FTP, .FTPS, .SCP:
+                    DualPaneTransferView(tab: tab)
+                case .SERIAL:
+                    SerialConsoleView(tab: tab)
+                case .WEB_PAGE:
+                    IsolatedWebSessionView(tab: tab)
+                case .KUBERNETES_POD, .DOCKER_CONTAINER:
+                    ContainerWorkloadStudioView(tab: tab)
+                case .VMWARE_VSPHERE, .PROXMOX_VE, .HYPER_V, .AWS_EC2, .AZURE_VM:
+                    CloudHypervisorSessionView(tab: tab)
+                case .UTILITY_PING, .UTILITY_TRACEROUTE, .UTILITY_PORT_SCANNER, .UTILITY_WAKE_ON_LAN:
+                    NetworkDiagnosticsSessionView(tab: tab)
+                }
             }
         }
+        .id(tab.id)
     }
 }
 

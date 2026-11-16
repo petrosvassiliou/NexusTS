@@ -52,7 +52,7 @@ private struct VncLiveWorkspaceBody: View {
 
                 ProtocolSquircleIcon(protocolType: latestConnection.protocolType, size: 22)
 
-                Text("\(latestConnection.name) (\(latestConnection.host):\(vncSettings.port))")
+                Text(verbatim: "\(latestConnection.name) (\(latestConnection.host):\(String(vncSettings.port)))")
                     .font(.callout.weight(.semibold))
                     .lineLimit(1)
 

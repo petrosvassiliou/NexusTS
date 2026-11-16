@@ -273,20 +273,45 @@ void RdpGdiSurfacePresenter::stage_gdi_dirty_region(
     dirty_pending_.store(true, std::memory_order_release);
 }
 
+void RdpGdiSurfacePresenter::set_frame_ready_callback(FrameReadyCallback cb, void* user_data) {
+    std::lock_guard<std::mutex> lock(callback_mutex_);
+    frame_ready_cb_ = cb;
+    frame_ready_user_data_ = user_data;
+}
+
+void RdpGdiSurfacePresenter::notify_frame_ready() const {
+    FrameReadyCallback cb = nullptr;
+    void* ud = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(callback_mutex_);
+        cb = frame_ready_cb_;
+        ud = frame_ready_user_data_;
+    }
+    if (cb) {
+        cb(ud);
+    }
+}
+
 bool RdpGdiSurfacePresenter::flush_pending_frame() {
     if (!dirty_pending_.exchange(false, std::memory_order_acq_rel)) {
         return false;
     }
-    std::lock_guard<std::mutex> lock(surface_mutex_);
-    present_locked();
+    {
+        std::lock_guard<std::mutex> lock(surface_mutex_);
+        present_locked();
+    }
+    notify_frame_ready();
     return true;
 }
 
 void RdpGdiSurfacePresenter::present_frame() {
-    std::lock_guard<std::mutex> lock(surface_mutex_);
-    dirty_pending_.store(false, std::memory_order_release);
-    mark_full_frame_dirty_locked(width_.load(), height_.load());
-    present_locked();
+    {
+        std::lock_guard<std::mutex> lock(surface_mutex_);
+        dirty_pending_.store(false, std::memory_order_release);
+        mark_full_frame_dirty_locked(width_.load(), height_.load());
+        present_locked();
+    }
+    notify_frame_ready();
 }
 
 void RdpGdiSurfacePresenter::present_frame(
@@ -298,30 +323,84 @@ void RdpGdiSurfacePresenter::present_frame(
     if (!src_rgba || width == 0 || height == 0) {
         return;
     }
-    std::lock_guard<std::mutex> lock(surface_mutex_);
-    if (width != width_.load() || height != height_.load() ||
-        shadow_rgba_.size() != static_cast<size_t>(width) * static_cast<size_t>(height) * 4u) {
-        width_.store(width);
-        height_.store(height);
-        shadow_rgba_.resize(static_cast<size_t>(width) * static_cast<size_t>(height) * 4u);
-        ensure_window_geometry_locked(width, height);
-    }
-    const size_t dst_stride = static_cast<size_t>(width) * 4u;
-    const size_t effective_src_stride = src_stride >= dst_stride ? static_cast<size_t>(src_stride) : dst_stride;
-    if (effective_src_stride == dst_stride) {
-        std::memcpy(shadow_rgba_.data(), src_rgba, static_cast<size_t>(height) * dst_stride);
-    } else {
-        for (uint32_t r = 0; r < height; ++r) {
-            std::memcpy(
-                shadow_rgba_.data() + static_cast<size_t>(r) * dst_stride,
-                src_rgba + static_cast<size_t>(r) * effective_src_stride,
-                dst_stride
-            );
+    {
+        std::lock_guard<std::mutex> lock(surface_mutex_);
+        if (width != width_.load() || height != height_.load() ||
+            shadow_rgba_.size() != static_cast<size_t>(width) * static_cast<size_t>(height) * 4u) {
+            width_.store(width);
+            height_.store(height);
+            shadow_rgba_.resize(static_cast<size_t>(width) * static_cast<size_t>(height) * 4u);
+            ensure_window_geometry_locked(width, height);
         }
+        const size_t dst_stride = static_cast<size_t>(width) * 4u;
+        const size_t effective_src_stride = src_stride >= dst_stride ? static_cast<size_t>(src_stride) : dst_stride;
+        if (effective_src_stride == dst_stride) {
+            std::memcpy(shadow_rgba_.data(), src_rgba, static_cast<size_t>(height) * dst_stride);
+        } else {
+            for (uint32_t r = 0; r < height; ++r) {
+                std::memcpy(
+                    shadow_rgba_.data() + static_cast<size_t>(r) * dst_stride,
+                    src_rgba + static_cast<size_t>(r) * effective_src_stride,
+                    dst_stride
+                );
+            }
+        }
+        mark_full_frame_dirty_locked(width, height);
+        dirty_pending_.store(false, std::memory_order_release);
+        present_locked();
     }
-    mark_full_frame_dirty_locked(width, height);
-    dirty_pending_.store(false, std::memory_order_release);
-    present_locked();
+    notify_frame_ready();
+}
+
+bool RdpGdiSurfacePresenter::consume_dirty_shadow_region(
+    bool force_full,
+    DirtyRegionConsumer consumer,
+    void* user_data
+) {
+    if (!consumer) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(surface_mutex_);
+    const uint64_t seq = frame_seq_.load(std::memory_order_acquire);
+    const uint32_t w = width_.load();
+    const uint32_t h = height_.load();
+    const size_t expected_bytes = static_cast<size_t>(w) * static_cast<size_t>(h) * 4u;
+    if (seq == 0 || w == 0 || h == 0 || shadow_rgba_.size() < expected_bytes) {
+        return false;
+    }
+
+    uint32_t dx = 0u;
+    uint32_t dy = 0u;
+    uint32_t dw = 0u;
+    uint32_t dh = 0u;
+    if (force_full) {
+        dx = 0u;
+        dy = 0u;
+        dw = w;
+        dh = h;
+    } else if (has_client_dirty_ && client_dirty_right_ > client_dirty_left_ && client_dirty_bottom_ > client_dirty_top_) {
+        dx = std::min(client_dirty_left_, w);
+        dy = std::min(client_dirty_top_, h);
+        const uint32_t right = std::min(client_dirty_right_, w);
+        const uint32_t bottom = std::min(client_dirty_bottom_, h);
+        dw = right > dx ? (right - dx) : 0u;
+        dh = bottom > dy ? (bottom - dy) : 0u;
+    }
+    has_client_dirty_ = false;
+
+    consumer(
+        shadow_rgba_.data(),
+        w * 4u,
+        w,
+        h,
+        dx,
+        dy,
+        dw,
+        dh,
+        seq,
+        user_data
+    );
+    return true;
 }
 
 size_t RdpGdiSurfacePresenter::copy_shadow_rgba(

@@ -1595,14 +1595,97 @@ public final class NativeLiveVncSession: @unchecked Sendable {
 
 // MARK: - 6. FreeRDP 3.x Native macOS Session Bridge & PC XT Set-1 Input Mapper
 
+public struct RdpDirtyRegionSlice {
+    public let fullFramePixels: UnsafePointer<UInt8>
+    public let strideBytes: Int
+    public let frameWidth: Int
+    public let frameHeight: Int
+    public let dirtyX: Int
+    public let dirtyY: Int
+    public let dirtyWidth: Int
+    public let dirtyHeight: Int
+    public let sequence: UInt64
+}
+
+public enum RdpRemoteCursorSnapshot: Sendable {
+    case hidden
+    case systemDefault
+    case custom(cgImage: CGImage, width: Int, height: Int, hotX: Int, hotY: Int)
+}
+
+private final class RdpFrameCallbackBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var handler: (@Sendable () -> Void)?
+
+    func set(_ newHandler: (@Sendable () -> Void)?) {
+        lock.lock()
+        handler = newHandler
+        lock.unlock()
+    }
+
+    func fire() {
+        lock.lock()
+        let current = handler
+        lock.unlock()
+        current?()
+    }
+}
+
+private func nexusRdpFrameReadyBridgeCallback(_ userData: UnsafeMutableRawPointer?) {
+    guard let userData else { return }
+    let box = Unmanaged<RdpFrameCallbackBox>.fromOpaque(userData).takeUnretainedValue()
+    box.fire()
+}
+
+private final class RdpDirtyConsumerContext {
+    let body: (RdpDirtyRegionSlice) -> Void
+
+    init(body: @escaping (RdpDirtyRegionSlice) -> Void) {
+        self.body = body
+    }
+}
+
+private func nexusRdpDirtyRegionBridgeCallback(
+    _ fullFramePixels: UnsafePointer<UInt8>?,
+    _ strideBytes: UInt32,
+    _ fbWidth: UInt32,
+    _ fbHeight: UInt32,
+    _ dirtyX: UInt32,
+    _ dirtyY: UInt32,
+    _ dirtyW: UInt32,
+    _ dirtyH: UInt32,
+    _ frameSeq: UInt64,
+    _ userData: UnsafeMutableRawPointer?
+) {
+    guard let fullFramePixels, let userData else { return }
+    let ctx = Unmanaged<RdpDirtyConsumerContext>.fromOpaque(userData).takeUnretainedValue()
+    ctx.body(
+        RdpDirtyRegionSlice(
+            fullFramePixels: fullFramePixels,
+            strideBytes: Int(strideBytes),
+            frameWidth: Int(fbWidth),
+            frameHeight: Int(fbHeight),
+            dirtyX: Int(dirtyX),
+            dirtyY: Int(dirtyY),
+            dirtyWidth: Int(dirtyW),
+            dirtyHeight: Int(dirtyH),
+            sequence: frameSeq
+        )
+    )
+}
+
 public final class NativeRdpSession: @unchecked Sendable {
     public static let deviceRgbColorSpace = CGColorSpaceCreateDeviceRGB()
     public static let bgrxBitmapInfo: UInt32 =
         CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.noneSkipFirst.rawValue
+    public static let premulBgraBitmapInfo: UInt32 =
+        CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.premultipliedFirst.rawValue
 
     private var handle: Int64 = 0
     private let stateLock = NSLock()
     private var connectingFlag: Bool = false
+    private let callbackBox: RdpFrameCallbackBox
+    private var callbackBoxUnmanaged: Unmanaged<RdpFrameCallbackBox>?
 
     private let frameLock = NSLock()
     private var persistentContext: CGContext?
@@ -1620,11 +1703,15 @@ public final class NativeRdpSession: @unchecked Sendable {
         initialWidth: Int = 1920,
         initialHeight: Int = 1080
     ) {
+        let box = RdpFrameCallbackBox()
+        self.callbackBox = box
         let driveName = settings.macSharedDriveName
         let drivePath = settings.macSharedFolderPath ?? ""
         let runtimeHomeDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
             .appendingPathComponent("NexusTS/freerdp_runtime", isDirectory: true)
             .path ?? ""
+        // Match Royal TSX default: use crisp 1x logical resolution unless explicit HiDPI scale >= 150% is configured
+        let effectiveInitialHiDpi = settings.hiDpiEnabled && settings.desktopScaleFactorPercent >= 150
         self.handle = host.withCString { hostPtr in
             username.withCString { userPtr in
                 password.withCString { passPtr in
@@ -1645,11 +1732,11 @@ public final class NativeRdpSession: @unchecked Sendable {
                                                 cfg.rd_gateway_port = UInt16(clamping: settings.rdGatewayPort)
                                                 cfg.initial_width = UInt32(max(640, initialWidth))
                                                 cfg.initial_height = UInt32(max(480, initialHeight))
-                                                cfg.desktop_dpi = settings.hiDpiEnabled ? 192 : 96
+                                                cfg.desktop_dpi = effectiveInitialHiDpi ? 192 : 96
                                                 cfg.connect_to_console = settings.connectToConsoleAdmin
-                                                cfg.hidpi_enabled = settings.hiDpiEnabled
-                                                cfg.desktop_scale_factor = UInt32(max(100, settings.desktopScaleFactorPercent))
-                                                cfg.device_scale_factor = UInt32(max(100, settings.deviceScaleFactorPercent))
+                                                cfg.hidpi_enabled = effectiveInitialHiDpi
+                                                cfg.desktop_scale_factor = UInt32(effectiveInitialHiDpi ? max(100, settings.desktopScaleFactorPercent) : 100)
+                                                cfg.device_scale_factor = UInt32(effectiveInitialHiDpi ? max(100, settings.deviceScaleFactorPercent) : 100)
                                                 cfg.color_depth_bits = UInt32(settings.colorDepthBits)
                                                 cfg.enable_gfx_pipeline = settings.enableGfxPipeline
                                                 cfg.enable_h264_avc444 = settings.enableH264Avc444
@@ -1691,6 +1778,15 @@ public final class NativeRdpSession: @unchecked Sendable {
                     }
                 }
             }
+        }
+        if self.handle > 0 {
+            let retained = Unmanaged.passRetained(box)
+            self.callbackBoxUnmanaged = retained
+            nexusts_rdp_set_frame_ready_callback(
+                self.handle,
+                nexusRdpFrameReadyBridgeCallback,
+                retained.toOpaque()
+            )
         }
     }
 
@@ -1794,6 +1890,10 @@ public final class NativeRdpSession: @unchecked Sendable {
         return String(cString: ptr)
     }
 
+    public func setFrameReadyHandler(_ handler: (@Sendable () -> Void)?) {
+        callbackBox.set(handler)
+    }
+
     public var frameSequence: UInt64 {
         stateLock.lock()
         let h = handle
@@ -1801,11 +1901,105 @@ public final class NativeRdpSession: @unchecked Sendable {
         return h > 0 ? nexusts_rdp_frame_sequence(h) : 0
     }
 
+    public var hasValidFrame: Bool {
+        frameSequence > 0
+    }
+
+    public var cursorSequence: UInt64 {
+        stateLock.lock()
+        let h = handle
+        stateLock.unlock()
+        return h > 0 ? nexusts_rdp_cursor_sequence(h) : 0
+    }
+
     public var remoteClipboardSequence: UInt64 {
         stateLock.lock()
         let h = handle
         stateLock.unlock()
         return h > 0 ? nexusts_rdp_remote_clipboard_sequence(h) : 0
+    }
+
+    /// Zero-copy direct C shadow-framebuffer dirty-region consumer for Metal `MTLTexture.replace(region:)`.
+    @discardableResult
+    public func consumeDirtyRegion(
+        forceFull: Bool = false,
+        _ body: (RdpDirtyRegionSlice) -> Void
+    ) -> Bool {
+        stateLock.lock()
+        let h = handle
+        stateLock.unlock()
+        guard h > 0 else { return false }
+
+        return withoutActuallyEscaping(body) { escapableBody in
+            let ctx = RdpDirtyConsumerContext(body: escapableBody)
+            return withExtendedLifetime(ctx) {
+                let opaque = Unmanaged.passUnretained(ctx).toOpaque()
+                return nexusts_rdp_consume_dirty_region(
+                    h,
+                    forceFull,
+                    nexusRdpDirtyRegionBridgeCallback,
+                    opaque
+                )
+            }
+        }
+    }
+
+    /// Snapshots the latest remote Windows `rdpPointer` cursor shape decoded into premultiplied BGRA32.
+    public func copyRemoteCursor() -> RdpRemoteCursorSnapshot {
+        stateLock.lock()
+        let h = handle
+        stateLock.unlock()
+        guard h > 0 else { return .systemDefault }
+
+        var w: UInt32 = 0
+        var ht: UInt32 = 0
+        var hotX: UInt32 = 0
+        var hotY: UInt32 = 0
+        var visible: Bool = true
+        var isDefault: Bool = true
+
+        let needed = nexusts_rdp_copy_cursor_bgra(h, nil, 0, &w, &ht, &hotX, &hotY, &visible, &isDefault)
+        if !visible {
+            return .hidden
+        }
+        if isDefault || needed == 0 || w == 0 || ht == 0 {
+            return .systemDefault
+        }
+
+        var data = Data(count: needed)
+        let copied = data.withUnsafeMutableBytes { raw -> Int in
+            guard let base = raw.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return 0 }
+            return nexusts_rdp_copy_cursor_bgra(h, base, needed, &w, &ht, &hotX, &hotY, &visible, &isDefault)
+        }
+        if !visible {
+            return .hidden
+        }
+        guard copied >= Int(w) * Int(ht) * 4,
+              w > 0,
+              ht > 0,
+              let provider = CGDataProvider(data: data as CFData),
+              let cgImage = CGImage(
+                  width: Int(w),
+                  height: Int(ht),
+                  bitsPerComponent: 8,
+                  bitsPerPixel: 32,
+                  bytesPerRow: Int(w) * 4,
+                  space: Self.deviceRgbColorSpace,
+                  bitmapInfo: CGBitmapInfo(rawValue: Self.premulBgraBitmapInfo),
+                  provider: provider,
+                  decode: nil,
+                  shouldInterpolate: true,
+                  intent: .defaultIntent
+              ) else {
+            return .systemDefault
+        }
+        return .custom(
+            cgImage: cgImage,
+            width: Int(w),
+            height: Int(ht),
+            hotX: Int(hotX),
+            hotY: Int(hotY)
+        )
     }
 
     /// Copies the latest native shadow surface (`BGRX32` layout on macOS `[B, G, R, X]`).
@@ -1953,10 +2147,13 @@ public final class NativeRdpSession: @unchecked Sendable {
     }
 
     public func destroy() {
+        callbackBox.set(nil)
         stateLock.lock()
         let h = handle
         handle = 0
         connectingFlag = false
+        let retainedBox = callbackBoxUnmanaged
+        callbackBoxUnmanaged = nil
         stateLock.unlock()
 
         frameLock.lock()
@@ -1970,6 +2167,7 @@ public final class NativeRdpSession: @unchecked Sendable {
         if h > 0 {
             nexusts_rdp_destroy_session(h)
         }
+        retainedBox?.release()
     }
 }
 

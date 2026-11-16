@@ -908,7 +908,12 @@ struct SidebarConnectionRow: View {
             ?? connection.protocolType.appleSystemTint
         let tooltipText = "\(connection.name) • \(connection.protocolType.displayName)"
 
-        HStack(spacing: 5) {
+        HStack(spacing: 6) {
+            SidebarConnectionTypeIcon(
+                protocolType: connection.protocolType,
+                customHex: connection.inheritable.displayColorAccentHex,
+                size: 15
+            )
             // Strictly display ONLY the connection name — never the IP address
             Text(connection.name)
                 .font(.system(size: 12.5, weight: isSelected ? .semibold : .regular))
@@ -920,13 +925,6 @@ struct SidebarConnectionRow: View {
                     .foregroundStyle(.yellow)
             }
             Spacer(minLength: 4)
-            if isHovered {
-                ProtocolHoverGlassPill(
-                    protocolType: connection.protocolType,
-                    customHex: connection.inheritable.displayColorAccentHex
-                )
-                .transition(.opacity.combined(with: .scale(scale: 0.94)))
-            }
             if liveCount > 0 {
                 HStack(spacing: 3) {
                     Circle()
@@ -940,7 +938,7 @@ struct SidebarConnectionRow: View {
                 }
             }
         }
-        .padding(.leading, CGFloat(depth) * 14 + 14)
+        .padding(.leading, CGFloat(depth) * 14 + 16)
         .padding(.vertical, 2.5)
         .padding(.horizontal, 6)
         .background {

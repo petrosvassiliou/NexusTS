@@ -1,6 +1,7 @@
 package com.nexusts.app.feature.workspace
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -138,7 +139,11 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.input.pointer.PointerType
@@ -159,6 +164,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpOffset
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
@@ -1787,8 +1793,13 @@ private fun FullScreenFolderStructurePanel(
                                             bottom = 7.dp
                                         ),
                                     verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
+                                    SidebarConnectionProtocolIcon(
+                                        protocol = conn.protocol,
+                                        customAccentHex = conn.inheritable.displayColorAccentHex,
+                                        size = 15.dp
+                                    )
                                     if (isActive) {
                                         Box(
                                             modifier = Modifier
@@ -1813,16 +1824,6 @@ private fun FullScreenFolderStructurePanel(
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis,
                                         modifier = Modifier.weight(1f)
-                                    )
-                                    Text(
-                                        text = conn.protocol.shortSidebarBadge(),
-                                        style = NexusTheme.monospace.keycapShortcut.copy(
-                                            fontSize = 9.sp,
-                                            lineHeight = 11.sp,
-                                            fontWeight = FontWeight.Normal
-                                        ),
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.50f),
-                                        maxLines = 1
                                     )
                                     IconButton(
                                         onClick = {
@@ -5399,6 +5400,56 @@ private fun SidebarProtocolGroupHeaderRow(
 }
 
 @Composable
+private fun SidebarConnectionProtocolIcon(
+    protocol: VaultProtocolType,
+    customAccentHex: String? = null,
+    size: Dp = 15.dp
+) {
+    val uiProto = NexusWorkspaceViewModel.mapProtocolToUiKind(protocol)
+    val tint = parseHexColorOrNull(customAccentHex) ?: protocolAccentColor(uiProto)
+    when (protocol) {
+        VaultProtocolType.RDP, VaultProtocolType.WINDOWS_TERMINAL_SERVICES -> {
+            Canvas(modifier = Modifier.size(size)) {
+                val s = this.size.minDimension
+                val ringRadius = s * 0.43f
+                val ringStroke = (s * 0.092f).coerceAtLeast(1.25.dp.toPx())
+                val chevronStroke = (s * 0.102f).coerceAtLeast(1.35.dp.toPx())
+
+                drawCircle(
+                    color = tint,
+                    radius = ringRadius,
+                    center = Offset(this.size.width * 0.5f, this.size.height * 0.5f),
+                    style = Stroke(width = ringStroke, cap = StrokeCap.Round, join = StrokeJoin.Round)
+                )
+
+                val chevrons = Path().apply {
+                    moveTo(s * 0.29f, s * 0.44f)
+                    lineTo(s * 0.44f, s * 0.58f)
+                    lineTo(s * 0.29f, s * 0.72f)
+
+                    moveTo(s * 0.71f, s * 0.28f)
+                    lineTo(s * 0.56f, s * 0.42f)
+                    lineTo(s * 0.71f, s * 0.56f)
+                }
+                drawPath(
+                    path = chevrons,
+                    color = tint,
+                    style = Stroke(width = chevronStroke, cap = StrokeCap.Round, join = StrokeJoin.Round)
+                )
+            }
+        }
+        else -> {
+            Icon(
+                imageVector = protocolIcon(uiProto),
+                contentDescription = null,
+                modifier = Modifier.size(size),
+                tint = tint
+            )
+        }
+    }
+}
+
+@Composable
 private fun ConnectionTreeRow(
     connection: VaultConnection,
     isSelected: Boolean,
@@ -5429,9 +5480,6 @@ private fun ConnectionTreeRow(
     val hover = rememberDesktopHoverState()
     val handleHover = rememberDesktopHoverState()
     val isHovered = hover.value.isHovered
-    val uiProto = NexusWorkspaceViewModel.mapProtocolToUiKind(connection.protocol)
-    val customAccent = parseHexColorOrNull(connection.inheritable.displayColorAccentHex)
-    val effectiveIconTint = customAccent ?: protocolAccentColor(uiProto)
     val isBeingDragged = dragDropState?.draggingConnection?.id == connection.id
     val isReorderTarget = enableDragToFolder && dragDropState?.hoveredConnectionTargetId == connection.id
     val reorderPlaceAfter = dragDropState?.hoveredConnectionPlaceAfter == true
@@ -5621,8 +5669,13 @@ private fun ConnectionTreeRow(
                     Row(
                         modifier = Modifier.weight(1f),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
+                        SidebarConnectionProtocolIcon(
+                            protocol = connection.protocol,
+                            customAccentHex = connection.inheritable.displayColorAccentHex,
+                            size = 15.dp
+                        )
                         Text(
                             text = connection.name,
                             style = MaterialTheme.typography.bodyMedium,
@@ -5637,27 +5690,6 @@ private fun ConnectionTreeRow(
                                 contentDescription = null,
                                 modifier = Modifier.size(12.dp),
                                 tint = MaterialTheme.colorScheme.tertiary
-                            )
-                        }
-                    }
-
-                    if (isHovered) {
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Surface(
-                            shape = RoundedCornerShape(99.dp),
-                            color = effectiveIconTint.copy(alpha = 0.14f),
-                            border = BorderStroke(0.6.dp, effectiveIconTint.copy(alpha = 0.32f))
-                        ) {
-                            Text(
-                                text = connection.protocol.shortSidebarBadge(),
-                                style = NexusTheme.monospace.keycapShortcut.copy(
-                                    fontSize = 8.5.sp,
-                                    lineHeight = 10.sp,
-                                    fontWeight = FontWeight.SemiBold
-                                ),
-                                color = MaterialTheme.colorScheme.onSurface,
-                                maxLines = 1,
-                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
                             )
                         }
                     }
@@ -7454,7 +7486,7 @@ private fun PlayProtectAutoUpdateDialog(
                                     ).trim()
                                     else -> String.format(
                                         strings.autoUpdateUpToDateFormat,
-                                        uiState.updateCurrentVersion.ifBlank { "0.8.1" }
+                                        uiState.updateCurrentVersion.ifBlank { "0.8.2" }
                                     )
                                 },
                                 style = MaterialTheme.typography.titleSmall,
@@ -7469,7 +7501,7 @@ private fun PlayProtectAutoUpdateDialog(
                                 ""
                             }
                             Text(
-                                text = "Installed: v${uiState.updateCurrentVersion.ifBlank { "0.8.1" }}  →  Latest: ${uiState.updateLatestTag.ifBlank { "current" }}$sizeMb",
+                                text = "Installed: v${uiState.updateCurrentVersion.ifBlank { "0.8.2" }}  →  Latest: ${uiState.updateLatestTag.ifBlank { "current" }}$sizeMb",
                                 style = NexusTheme.monospace.keycapShortcut,
                                 color = MaterialTheme.colorScheme.secondary
                             )

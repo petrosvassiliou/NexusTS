@@ -19,6 +19,7 @@ WORK_DIR="${NEXUSTS_FREERDP_MAC_WORK_DIR:-${RUNNER_TEMP:-/tmp}/nexusts-freerdp-m
 STAGE_ROOT="${REPO_ROOT}/native/third_party/freerdp3/macos"
 
 OPENSSL_VERSION="${OPENSSL_VERSION:-3.4.1}"
+OPENH264_VERSION="${OPENH264_VERSION:-2.5.0}"
 FREERDP_VERSION="${FREERDP_VERSION:-3.12.0}"
 MACOS_MIN_VERSION="${MACOSX_DEPLOYMENT_TARGET:-14.0}"
 ARCHS_CSV="arm64,x86_64"
@@ -54,7 +55,7 @@ EOF
 done
 
 if [[ "$DRY_RUN" -eq 1 ]]; then
-  echo "[Dry Run] NexusTS macOS Universal2 FreeRDP ${FREERDP_VERSION} + OpenSSL ${OPENSSL_VERSION}"
+  echo "[Dry Run] NexusTS macOS Universal2 FreeRDP ${FREERDP_VERSION} + OpenH264 ${OPENH264_VERSION} + OpenSSL ${OPENSSL_VERSION}"
   echo "  Target Archs : ${ARCHS_CSV} (macOS ${MACOS_MIN_VERSION}+)"
   echo "  Stage Root   : ${STAGE_ROOT}/{include,lib}"
   exit 0
@@ -81,6 +82,11 @@ download_and_extract \
   "openssl-${OPENSSL_VERSION}"
 
 download_and_extract \
+  "https://github.com/cisco/openh264/archive/refs/tags/v${OPENH264_VERSION}.tar.gz" \
+  "openh264-${OPENH264_VERSION}.tar.gz" \
+  "openh264-${OPENH264_VERSION}"
+
+download_and_extract \
   "https://github.com/FreeRDP/FreeRDP/releases/download/${FREERDP_VERSION}/freerdp-${FREERDP_VERSION}.tar.gz" \
   "freerdp-${FREERDP_VERSION}.tar.gz" \
   "freerdp-${FREERDP_VERSION}"
@@ -97,9 +103,16 @@ for ARCH in "${TARGET_ARCHS[@]}"; do
   case "$ARCH" in
     arm64)
       OPENSSL_TARGET="darwin64-arm64-cc"
+      OPENH264_ASM_FLAG="Yes"
       ;;
     x86_64)
       OPENSSL_TARGET="darwin64-x86_64-cc"
+      if command -v nasm >/dev/null 2>&1; then
+        OPENH264_ASM_FLAG="Yes"
+      else
+        echo "WARN: nasm not found; building x86_64 OpenH264 slice with USE_ASM=No"
+        OPENH264_ASM_FLAG="No"
+      fi
       ;;
     *)
       echo "ERROR: Unsupported macOS arch '$ARCH' (supported: arm64, x86_64)" >&2
@@ -113,7 +126,7 @@ for ARCH in "${TARGET_ARCHS[@]}"; do
   mkdir -p "$ARCH_PREFIX/lib" "$ARCH_PREFIX/include" "$ARCH_BUILD"
 
   echo "======================================================================"
-  echo "==> [1/2] Building OpenSSL ${OPENSSL_VERSION} (${ARCH}, macOS ${MACOS_MIN_VERSION})"
+  echo "==> [1/3] Building OpenSSL ${OPENSSL_VERSION} (${ARCH}, macOS ${MACOS_MIN_VERSION})"
   echo "======================================================================"
   cp -a "$WORK_DIR/src/openssl-${OPENSSL_VERSION}" "$ARCH_BUILD/openssl"
   (
@@ -133,7 +146,23 @@ for ARCH in "${TARGET_ARCHS[@]}"; do
   )
 
   echo "======================================================================"
-  echo "==> [2/2] Building FreeRDP ${FREERDP_VERSION} (${ARCH}, @rpath Universal Slice)"
+  echo "==> [2/3] Building Cisco OpenH264 ${OPENH264_VERSION} (${ARCH}, SIMD=${OPENH264_ASM_FLAG})"
+  echo "======================================================================"
+  cp -a "$WORK_DIR/src/openh264-${OPENH264_VERSION}" "$ARCH_BUILD/openh264"
+  (
+    cd "$ARCH_BUILD/openh264"
+    make -j"$JOBS" \
+      OS=darwin \
+      ARCH="$ARCH" \
+      USE_ASM="$OPENH264_ASM_FLAG" \
+      PREFIX="$ARCH_PREFIX" \
+      STATIC_LDFLAGS="-lc++" \
+      CFLAGS_OPT="-O3 -mmacosx-version-min=${MACOS_MIN_VERSION}" \
+      install-static
+  )
+
+  echo "======================================================================"
+  echo "==> [3/3] Building FreeRDP ${FREERDP_VERSION} (${ARCH}, OpenH264 AVC420/AVC444 + SIMD)"
   echo "======================================================================"
   PKG_CONFIG_PATH="" \
   PKG_CONFIG_LIBDIR="$ARCH_PREFIX/lib/pkgconfig" \
@@ -151,6 +180,7 @@ for ARCH in "${TARGET_ARCHS[@]}"; do
     -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
     -DUSE_VERSION_FROM_GIT_TAG=OFF \
     -DWITH_LIBRARY_VERSIONING=ON \
+    -DWITH_SIMD=ON \
     -DWITH_INTERNAL_RC4=ON \
     -DWITH_INTERNAL_MD4=ON \
     -DWITH_INTERNAL_MD5=ON \
@@ -158,6 +188,10 @@ for ARCH in "${TARGET_ARCHS[@]}"; do
     -DOPENSSL_INCLUDE_DIR="$ARCH_PREFIX/include" \
     -DOPENSSL_CRYPTO_LIBRARY="$ARCH_PREFIX/lib/libcrypto.a" \
     -DOPENSSL_SSL_LIBRARY="$ARCH_PREFIX/lib/libssl.a" \
+    -DWITH_OPENH264=ON \
+    -DWITH_OPENH264_LOADING=OFF \
+    -DOPENH264_INCLUDE_DIR="$ARCH_PREFIX/include" \
+    -DOPENH264_LIBRARY="$ARCH_PREFIX/lib/libopenh264.a" \
     -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
     -DBUILD_SHARED_LIBS=OFF \
     -DBUILTIN_CHANNELS=ON \
@@ -190,7 +224,6 @@ for ARCH in "${TARGET_ARCHS[@]}"; do
     -DWITH_JPEG=OFF \
     -DWITH_WEBP=OFF \
     -DWITH_CAIRO=OFF \
-    -DWITH_OPENH264=OFF \
     -DWITH_FFMPEG=OFF \
     -DWITH_VIDEO_FFMPEG=OFF \
     -DWITH_DSP_FFMPEG=OFF \
@@ -228,7 +261,7 @@ for ARCH in "${TARGET_ARCHS[@]}"; do
 done
 
 echo "======================================================================"
-echo "==> Merging Static OpenSSL + FreeRDP ${FREERDP_VERSION} into Universal2 Stage: ${STAGE_ROOT}"
+echo "==> Merging Static OpenSSL + OpenH264 + FreeRDP ${FREERDP_VERSION} into Universal2 Stage: ${STAGE_ROOT}"
 echo "======================================================================"
 rm -rf "$STAGE_ROOT"
 mkdir -p "$STAGE_ROOT/include" "$STAGE_ROOT/lib"
@@ -256,7 +289,7 @@ while IFS= read -r -d '' primary_a; do
   fi
 done < <(find "$WORK_DIR/stage/$PRIMARY_ARCH/lib" -type f -name "*.a" -print0)
 
-for required_archive in libfreerdp3.a libfreerdp-client3.a libwinpr3.a libssl.a libcrypto.a; do
+for required_archive in libfreerdp3.a libfreerdp-client3.a libwinpr3.a libopenh264.a libssl.a libcrypto.a; do
   if [[ ! -f "$STAGE_ROOT/lib/$required_archive" ]]; then
     echo "ERROR: Expected static archive $STAGE_ROOT/lib/$required_archive was not staged!" >&2
     exit 1
@@ -266,4 +299,4 @@ done
 
 echo "  Total Universal2 static archives staged: $(find "$STAGE_ROOT/lib" -type f -name "*.a" | wc -l)"
 rm -rf "$WORK_DIR/build"
-echo "SUCCESS: Staged Universal2 Static FreeRDP ${FREERDP_VERSION} -> $STAGE_ROOT"
+echo "SUCCESS: Staged Universal2 Static FreeRDP ${FREERDP_VERSION} + OpenH264 ${OPENH264_VERSION} -> $STAGE_ROOT"
