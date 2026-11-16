@@ -300,10 +300,10 @@ final class LoopbackWireProtocolTests: XCTestCase {
 
         // Verify shell metacharacter injection neutralization in container exec builder
         var untrustedExec = ContainerExecProtocolSettings(
-            podOrContainerName: "api-pod; touch /tmp/pwned",
-            namespace: "prod$(whoami)",
-            shellCommand: "/bin/sh -c id"
+            podOrContainerName: "api-pod; touch /tmp/pwned"
         )
+        untrustedExec.namespace = "prod$(whoami)"
+        untrustedExec.shellCommand = "/bin/sh -c id"
         untrustedExec.contextName = "eks'prod"
         let safeKubeCmd = ContainerWorkloadClient.buildSafeExecCommand(
             protocolType: .KUBERNETES_POD,
