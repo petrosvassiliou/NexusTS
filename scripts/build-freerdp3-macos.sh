@@ -104,9 +104,11 @@ for ARCH in "${TARGET_ARCHS[@]}"; do
     arm64)
       OPENSSL_TARGET="darwin64-arm64-cc"
       OPENH264_ASM_FLAG="Yes"
+      FREERDP_AVX2_FLAG="OFF"
       ;;
     x86_64)
       OPENSSL_TARGET="darwin64-x86_64-cc"
+      FREERDP_AVX2_FLAG="ON"
       if command -v nasm >/dev/null 2>&1; then
         OPENH264_ASM_FLAG="Yes"
       else
@@ -169,6 +171,8 @@ for ARCH in "${TARGET_ARCHS[@]}"; do
   cmake -S "$WORK_DIR/src/freerdp-${FREERDP_VERSION}" \
     -B "$ARCH_BUILD/freerdp" \
     ${CMAKE_GEN_ARGS[@]+"${CMAKE_GEN_ARGS[@]}"} \
+    -DCMAKE_SYSTEM_NAME=Darwin \
+    -DCMAKE_SYSTEM_PROCESSOR="$ARCH" \
     -DCMAKE_OSX_ARCHITECTURES="$ARCH" \
     -DCMAKE_OSX_DEPLOYMENT_TARGET="${MACOS_MIN_VERSION}" \
     -DCMAKE_BUILD_TYPE=Release \
@@ -181,6 +185,7 @@ for ARCH in "${TARGET_ARCHS[@]}"; do
     -DUSE_VERSION_FROM_GIT_TAG=OFF \
     -DWITH_LIBRARY_VERSIONING=ON \
     -DWITH_SIMD=ON \
+    -DWITH_AVX2="${FREERDP_AVX2_FLAG}" \
     -DWITH_INTERNAL_RC4=ON \
     -DWITH_INTERNAL_MD4=ON \
     -DWITH_INTERNAL_MD5=ON \
