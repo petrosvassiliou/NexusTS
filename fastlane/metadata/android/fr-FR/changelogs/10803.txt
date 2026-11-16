@@ -1,0 +1,1 @@
+• v0.8.3 : Connexion RDP instantanée en résolution native 2x Retina sans délai, synchronisation bidirectionnelle du presse-papiers CLIPRDR et raccourcis Mac Cmd+C / Cmd+V / Cmd+X / Cmd+A / Cmd+Z

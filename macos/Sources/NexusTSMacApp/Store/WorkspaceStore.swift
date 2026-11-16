@@ -1684,24 +1684,53 @@ public final class WorkspaceStore: ObservableObject {
         return created
     }
 
-    public func rdpController(for tab: WorkspaceSessionTab) -> NativeRdpSession {
+    public func existingRdpController(for tab: WorkspaceSessionTab) -> NativeRdpSession? {
+        rdpSessions[tab.id]
+    }
+
+    public func rdpController(
+        for tab: WorkspaceSessionTab,
+        initialViewportSize: CGSize? = nil,
+        backingScaleFactor: CGFloat? = nil,
+        useRetinaOverride: Bool? = nil
+    ) -> NativeRdpSession {
         if let existing = rdpSessions[tab.id] {
             return existing
         }
-        return buildAndConnectRdpSession(for: tab)
+        return buildAndConnectRdpSession(
+            for: tab,
+            initialViewportSize: initialViewportSize,
+            backingScaleFactor: backingScaleFactor,
+            useRetinaOverride: useRetinaOverride
+        )
     }
 
     @discardableResult
-    public func reconnectRdpSession(for tab: WorkspaceSessionTab) -> NativeRdpSession {
+    public func reconnectRdpSession(
+        for tab: WorkspaceSessionTab,
+        initialViewportSize: CGSize? = nil,
+        backingScaleFactor: CGFloat? = nil,
+        useRetinaOverride: Bool? = nil
+    ) -> NativeRdpSession {
         if let old = rdpSessions.removeValue(forKey: tab.id) {
             Task.detached(priority: .utility) {
                 old.destroy()
             }
         }
-        return buildAndConnectRdpSession(for: tab)
+        return buildAndConnectRdpSession(
+            for: tab,
+            initialViewportSize: initialViewportSize,
+            backingScaleFactor: backingScaleFactor,
+            useRetinaOverride: useRetinaOverride
+        )
     }
 
-    private func buildAndConnectRdpSession(for tab: WorkspaceSessionTab) -> NativeRdpSession {
+    private func buildAndConnectRdpSession(
+        for tab: WorkspaceSessionTab,
+        initialViewportSize: CGSize? = nil,
+        backingScaleFactor: CGFloat? = nil,
+        useRetinaOverride: Bool? = nil
+    ) -> NativeRdpSession {
         let latestConnection = activeConnections.first(where: { $0.id == tab.connection.id }) ?? tab.connection
         let resolved = PropertyInheritanceResolver.resolve(connection: latestConnection, in: document)
         let rdpSettings: RdpProtocolSettings = {
@@ -1712,15 +1741,53 @@ public final class WorkspaceStore: ObservableObject {
         let pass = tab.adHocPasswordOverride ?? resolved.effectiveCredential?.secretPassword ?? ""
         let dom = tab.adHocDomainOverride ?? resolved.effectiveCredential?.domain ?? ""
 
+        let effectiveBackingScale = max(1.0, backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0)
+        let defaultRetina = rdpSettings.hiDpiEnabled && (effectiveBackingScale >= 1.5 || rdpSettings.desktopScaleFactorPercent >= 150)
+        let useRetina = useRetinaOverride ?? defaultRetina
+
+        var effectiveSettings = rdpSettings
+        if !useRetina {
+            effectiveSettings.hiDpiEnabled = false
+        }
+
+        let (initWidth, initHeight): (Int, Int) = {
+            guard rdpSettings.resizeBehavior == .DYNAMIC_DISP_DVC else {
+                return (max(640, rdpSettings.customDesktopWidth) & ~1, max(480, rdpSettings.customDesktopHeight) & ~1)
+            }
+            let viewportPoints: CGSize = {
+                if let vp = initialViewportSize, vp.width >= 320, vp.height >= 240 {
+                    return vp
+                }
+                if let winRect = NSApp.keyWindow?.contentLayoutRect.size, winRect.width >= 480, winRect.height >= 360 {
+                    let sidebarDeduction: CGFloat = (!isFullScreenSessionMode && columnVisibility != .detailOnly) ? 260.0 : 0.0
+                    let inspectorDeduction: CGFloat = (!isFullScreenSessionMode && isInspectorPresented) ? 280.0 : 0.0
+                    let estW = max(640.0, winRect.width - sidebarDeduction - inspectorDeduction)
+                    let estH = max(480.0, winRect.height - 72.0)
+                    return CGSize(width: estW, height: estH)
+                }
+                return CGSize(width: 1280.0, height: 800.0)
+            }()
+            let factor = useRetina ? effectiveBackingScale : 1.0
+            let pxW = max(640, Int((viewportPoints.width * factor).rounded())) & ~1
+            let pxH = max(480, Int((viewportPoints.height * factor).rounded())) & ~1
+            return (pxW, pxH)
+        }()
+
         let session = NativeRdpSession(
             host: latestConnection.host,
             username: user,
             password: pass,
             domain: dom,
-            settings: rdpSettings,
-            initialWidth: rdpSettings.customDesktopWidth,
-            initialHeight: rdpSettings.customDesktopHeight
+            settings: effectiveSettings,
+            initialWidth: initWidth,
+            initialHeight: initHeight,
+            backingScaleFactor: Double(effectiveBackingScale)
         )
+        if effectiveSettings.redirectClipboard,
+           let initialClip = NSPasteboard.general.string(forType: .string),
+           !initialClip.isEmpty {
+            session.pushLocalClipboard(initialClip)
+        }
         session.setConnecting(true)
         rdpSessions[tab.id] = session
         Task.detached(priority: .userInitiated) {

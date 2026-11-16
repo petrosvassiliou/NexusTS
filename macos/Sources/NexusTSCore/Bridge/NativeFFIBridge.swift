@@ -1687,6 +1687,9 @@ public final class NativeRdpSession: @unchecked Sendable {
     private let callbackBox: RdpFrameCallbackBox
     private var callbackBoxUnmanaged: Unmanaged<RdpFrameCallbackBox>?
     public let initialHiDpiActive: Bool
+    public let initialPixelWidth: Int
+    public let initialPixelHeight: Int
+    public let initialScalePercent: Int
 
     private let frameLock = NSLock()
     private var persistentContext: CGContext?
@@ -1702,7 +1705,8 @@ public final class NativeRdpSession: @unchecked Sendable {
         domain: String,
         settings: RdpProtocolSettings,
         initialWidth: Int = 1920,
-        initialHeight: Int = 1080
+        initialHeight: Int = 1080,
+        backingScaleFactor: Double = 2.0
     ) {
         let box = RdpFrameCallbackBox()
         self.callbackBox = box
@@ -1711,9 +1715,29 @@ public final class NativeRdpSession: @unchecked Sendable {
         let runtimeHomeDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
             .appendingPathComponent("NexusTS/freerdp_runtime", isDirectory: true)
             .path ?? ""
-        // Match Royal TSX default: use crisp 1x logical resolution unless explicit HiDPI scale >= 150% is configured
-        let effectiveInitialHiDpi = settings.hiDpiEnabled && settings.desktopScaleFactorPercent >= 150
+        let resolvedScalePercent: Int = {
+            guard settings.hiDpiEnabled else { return 100 }
+            if settings.desktopScaleFactorPercent > 100 {
+                return min(500, max(100, settings.desktopScaleFactorPercent))
+            }
+            return min(500, max(100, Int((max(1.0, backingScaleFactor) * 100.0).rounded())))
+        }()
+        let effectiveInitialHiDpi = settings.hiDpiEnabled && resolvedScalePercent >= 125
+        let resolvedDeviceScalePercent: Int = {
+            guard effectiveInitialHiDpi else { return 100 }
+            if settings.deviceScaleFactorPercent > 100 {
+                return settings.deviceScaleFactorPercent
+            }
+            if resolvedScalePercent >= 180 { return 180 }
+            if resolvedScalePercent >= 140 { return 140 }
+            return 100
+        }()
+        let alignedInitW = max(640, initialWidth) & ~1
+        let alignedInitH = max(480, initialHeight) & ~1
         self.initialHiDpiActive = effectiveInitialHiDpi
+        self.initialPixelWidth = alignedInitW
+        self.initialPixelHeight = alignedInitH
+        self.initialScalePercent = effectiveInitialHiDpi ? resolvedScalePercent : 100
         self.handle = host.withCString { hostPtr in
             username.withCString { userPtr in
                 password.withCString { passPtr in
@@ -1732,13 +1756,13 @@ public final class NativeRdpSession: @unchecked Sendable {
                                                 cfg.domain = domPtr
                                                 cfg.rd_gateway_host = gwPtr
                                                 cfg.rd_gateway_port = UInt16(clamping: settings.rdGatewayPort)
-                                                cfg.initial_width = UInt32(max(640, initialWidth))
-                                                cfg.initial_height = UInt32(max(480, initialHeight))
-                                                cfg.desktop_dpi = effectiveInitialHiDpi ? 192 : 96
+                                                cfg.initial_width = UInt32(alignedInitW)
+                                                cfg.initial_height = UInt32(alignedInitH)
+                                                cfg.desktop_dpi = UInt32((96 * self.initialScalePercent) / 100)
                                                 cfg.connect_to_console = settings.connectToConsoleAdmin
                                                 cfg.hidpi_enabled = effectiveInitialHiDpi
-                                                cfg.desktop_scale_factor = UInt32(effectiveInitialHiDpi ? max(100, settings.desktopScaleFactorPercent) : 100)
-                                                cfg.device_scale_factor = UInt32(effectiveInitialHiDpi ? max(100, settings.deviceScaleFactorPercent) : 100)
+                                                cfg.desktop_scale_factor = UInt32(self.initialScalePercent)
+                                                cfg.device_scale_factor = UInt32(resolvedDeviceScalePercent)
                                                 cfg.color_depth_bits = UInt32(settings.colorDepthBits)
                                                 cfg.enable_gfx_pipeline = settings.enableGfxPipeline
                                                 cfg.enable_h264_avc444 = settings.enableH264Avc444
@@ -2360,6 +2384,84 @@ public enum MacRdpScancodeMapper {
         let px = min(max(0, Int((normX * rw).rounded(.down))), maxX)
         let py = min(max(0, Int((normY * rh).rounded(.down))), maxY)
         return (px, py)
+    }
+
+    /// Standard macOS Command (`⌘`) editing shortcuts translated to Windows `Ctrl+<Key>` scancodes
+    /// inside an active RDP session (matching Royal TSX macOS keyboard behavior).
+    public enum MacCommandRemoteShortcut: Equatable, Sendable {
+        case copy
+        case paste
+        case cut
+        case selectAll
+        case undo
+        case redo
+        case find
+        case save
+
+        /// PC XT Set-1 scancode to combine with Left Ctrl (`0x1D`) on the remote Windows session.
+        public var windowsCtrlScancode: UInt16 {
+            switch self {
+            case .copy:      return 0x2E // Ctrl+C
+            case .paste:     return 0x2F // Ctrl+V
+            case .cut:       return 0x2D // Ctrl+X
+            case .selectAll: return 0x1E // Ctrl+A
+            case .undo:      return 0x2C // Ctrl+Z
+            case .redo:      return 0x15 // Ctrl+Y
+            case .find:      return 0x21 // Ctrl+F
+            case .save:      return 0x1F // Ctrl+S
+            }
+        }
+    }
+
+    /// Maps a macOS `⌘` key event to a Windows `Ctrl+<Key>` remote editing shortcut without
+    /// colliding with NexusTS workspace shortcuts (`⌃⌘S`, `⇧⌘S`, `⇧⌘F`, `⌥⌘I`, `⌘K`, `⌘T`, `⌘N`).
+    public static func mapMacCommandShortcut(
+        keyCode: UInt16,
+        charactersIgnoringModifiers: String?,
+        hasCommand: Bool,
+        hasShift: Bool = false,
+        hasControl: Bool = false,
+        hasOption: Bool = false
+    ) -> MacCommandRemoteShortcut? {
+        guard hasCommand, !hasControl, !hasOption else { return nil }
+
+        let normalizedAscii: Character? = {
+            guard let raw = charactersIgnoringModifiers?.lowercased(),
+                  raw.count == 1,
+                  let ch = raw.first,
+                  ch.isASCII,
+                  ch.isLetter else {
+                return nil
+            }
+            return ch
+        }()
+
+        let effectiveKey: Character? = normalizedAscii ?? {
+            switch keyCode {
+            case 0x08: return "c"
+            case 0x09: return "v"
+            case 0x07: return "x"
+            case 0x00: return "a"
+            case 0x06: return "z"
+            case 0x10: return "y"
+            case 0x03: return "f"
+            case 0x01: return "s"
+            default:   return nil
+            }
+        }()
+
+        guard let key = effectiveKey else { return nil }
+        switch key {
+        case "c" where !hasShift: return .copy
+        case "v" where !hasShift: return .paste
+        case "x" where !hasShift: return .cut
+        case "a" where !hasShift: return .selectAll
+        case "z":                 return hasShift ? .redo : .undo
+        case "y" where !hasShift: return .redo
+        case "f" where !hasShift: return .find
+        case "s" where !hasShift: return .save
+        default:                  return nil
+        }
     }
 }
 

@@ -1,0 +1,1 @@
+• v0.8.3: Sofortiger RDP-Verbindungsaufbau in nativer 2x-Retina-Auflösung ohne Verzögerung, bidirektionale CLIPRDR-Zwischenablage und Mac-Tastenkürzel Cmd+C / Cmd+V / Cmd+X / Cmd+A / Cmd+Z

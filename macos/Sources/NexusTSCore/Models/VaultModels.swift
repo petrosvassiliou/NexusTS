@@ -354,7 +354,7 @@ public struct RdpProtocolSettings: Codable, Equatable, Hashable, Sendable {
     public var redirectedDriveSafUris: [String] = []
     public var redirectPrinters: Bool = false
     public var redirectPorts: Bool = false
-    public var redirectSmartcardYubiKey: Bool = true
+    public var redirectSmartcardYubiKey: Bool = false
     public var enableFontSmoothing: Bool = true
     public var enableDesktopComposition: Bool = true
     public var enableWallpaper: Bool = false
@@ -410,7 +410,7 @@ public struct RdpProtocolSettings: Codable, Equatable, Hashable, Sendable {
         self.redirectedDriveSafUris = try c.decodeIfPresent([String].self, forKey: .redirectedDriveSafUris) ?? []
         self.redirectPrinters = try c.decodeIfPresent(Bool.self, forKey: .redirectPrinters) ?? false
         self.redirectPorts = try c.decodeIfPresent(Bool.self, forKey: .redirectPorts) ?? false
-        self.redirectSmartcardYubiKey = try c.decodeIfPresent(Bool.self, forKey: .redirectSmartcardYubiKey) ?? true
+        self.redirectSmartcardYubiKey = try c.decodeIfPresent(Bool.self, forKey: .redirectSmartcardYubiKey) ?? false
         self.enableFontSmoothing = try c.decodeIfPresent(Bool.self, forKey: .enableFontSmoothing) ?? true
         self.enableDesktopComposition = try c.decodeIfPresent(Bool.self, forKey: .enableDesktopComposition) ?? true
         self.enableWallpaper = try c.decodeIfPresent(Bool.self, forKey: .enableWallpaper) ?? false

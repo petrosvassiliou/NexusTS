@@ -277,6 +277,7 @@ public:
     void on_surface_bound();
     void set_disp_context(void* disp_context) noexcept;
     void set_cliprdr_context(void* cliprdr_context);
+    void set_cliprdr_ready(bool ready) noexcept;
     void announce_local_clipboard_to_remote();
 
     /**
@@ -378,6 +379,7 @@ private:
     [[maybe_unused]] bool has_pending_monitors_{false};
     [[maybe_unused]] bool pending_clipboard_announce_{false};
     std::atomic<void*> disp_context_{nullptr};
+    std::atomic<bool> cliprdr_ready_{false};
     void* cliprdr_context_{nullptr};
 };
 

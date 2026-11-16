@@ -350,10 +350,11 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
     }
 
     func testV118LocalizationUpgradeVersionAndVaultReplacementCompatibility() throws {
-        XCTAssertEqual(MacGitHubReleaseUpdater.currentVersion, "0.8.2")
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.2", isNewerThan: "0.8.1"))
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.2", isNewerThan: "0.8.0"))
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.2", isNewerThan: "0.3.0-beta.6"))
+        XCTAssertEqual(MacGitHubReleaseUpdater.currentVersion, "0.8.3")
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.3", isNewerThan: "0.8.2"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.3", isNewerThan: "0.8.1"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.3", isNewerThan: "0.8.0"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.3", isNewerThan: "0.3.0-beta.6"))
         XCTAssertEqual(LocalizedWorkspaceStrings.catalog(for: .en).studios, "Manage")
 
         for lang in NexusAppLanguage.allCases {
@@ -599,39 +600,117 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
 
     func testRdpMetalDirtyRegionAndRemoteCursorParityDefaults() {
         let defaultSettings = RdpProtocolSettings()
-        let session = NativeRdpSession(
-            host: "10.2.200.11",
-            username: "admin",
-            password: "",
-            domain: "",
-            settings: defaultSettings
-        )
-        // Royal TSX parity: default 100% desktopScaleFactorPercent uses fast 1x logical desktop sizing
-        XCTAssertFalse(session.initialHiDpiActive)
-        XCTAssertFalse(session.hasValidFrame)
-        XCTAssertEqual(session.cursorSequence, 0)
-        if case .systemDefault = session.copyRemoteCursor() {
-            // Expected default OS cursor state prior to connection
-        } else {
-            XCTFail("Expected .systemDefault remote cursor before connect")
-        }
-        let consumed = session.consumeDirtyRegion(forceFull: false) { _ in }
-        XCTAssertFalse(consumed)
+        XCTAssertFalse(defaultSettings.redirectSmartcardYubiKey)
 
-        session.setFrameReadyHandler {}
-        session.setFrameReadyHandler(nil)
-
-        // Explicit 200% scale factor enables 2x Retina desktop resolution at connect time
-        var retinaSettings = RdpProtocolSettings()
-        retinaSettings.desktopScaleFactorPercent = 200
-        retinaSettings.hiDpiEnabled = true
+        // Retina Macs (backingScaleFactor = 2.0) negotiate crisp 2x Retina (200% scale) directly in TS_UD_CS_CORE
         let retinaSession = NativeRdpSession(
             host: "10.2.200.11",
             username: "admin",
             password: "",
             domain: "",
-            settings: retinaSettings
+            settings: defaultSettings,
+            initialWidth: 2368,
+            initialHeight: 1624,
+            backingScaleFactor: 2.0
         )
         XCTAssertTrue(retinaSession.initialHiDpiActive)
+        XCTAssertEqual(retinaSession.initialScalePercent, 200)
+        XCTAssertEqual(retinaSession.initialPixelWidth, 2368)
+        XCTAssertEqual(retinaSession.initialPixelHeight, 1624)
+        XCTAssertFalse(retinaSession.hasValidFrame)
+        XCTAssertEqual(retinaSession.cursorSequence, 0)
+        if case .systemDefault = retinaSession.copyRemoteCursor() {
+            // Expected default OS cursor state prior to connection
+        } else {
+            XCTFail("Expected .systemDefault remote cursor before connect")
+        }
+        let consumed = retinaSession.consumeDirtyRegion(forceFull: false) { _ in }
+        XCTAssertFalse(consumed)
+
+        retinaSession.pushLocalClipboard("Hello from macOS Command+C")
+        retinaSession.setFrameReadyHandler {}
+        retinaSession.setFrameReadyHandler(nil)
+
+        // 1x non-Retina displays keep 100% scale without forcing 2x
+        let nonRetinaSession = NativeRdpSession(
+            host: "10.2.200.11",
+            username: "admin",
+            password: "",
+            domain: "",
+            settings: defaultSettings,
+            backingScaleFactor: 1.0
+        )
+        XCTAssertFalse(nonRetinaSession.initialHiDpiActive)
+        XCTAssertEqual(nonRetinaSession.initialScalePercent, 100)
+
+        // Disabling HiDPI forces 1x even on 2x Retina displays
+        var oneXSettings = RdpProtocolSettings()
+        oneXSettings.hiDpiEnabled = false
+        let oneXSession = NativeRdpSession(
+            host: "10.2.200.11",
+            username: "admin",
+            password: "",
+            domain: "",
+            settings: oneXSettings,
+            backingScaleFactor: 2.0
+        )
+        XCTAssertFalse(oneXSession.initialHiDpiActive)
+        XCTAssertEqual(oneXSession.initialScalePercent, 100)
+
+        // Verify Mac Command (⌘C / ⌘V / ⌘X / ⌘A / ⌘Z / ⇧⌘Z / ⌘Y / ⌘F / ⌘S) -> Windows Ctrl scancode mapping
+        XCTAssertEqual(
+            MacRdpScancodeMapper.mapMacCommandShortcut(keyCode: 0x08, charactersIgnoringModifiers: "c", hasCommand: true),
+            .copy
+        )
+        XCTAssertEqual(MacRdpScancodeMapper.MacCommandRemoteShortcut.copy.windowsCtrlScancode, 0x2E)
+        XCTAssertEqual(
+            MacRdpScancodeMapper.mapMacCommandShortcut(keyCode: 0x09, charactersIgnoringModifiers: "v", hasCommand: true),
+            .paste
+        )
+        XCTAssertEqual(MacRdpScancodeMapper.MacCommandRemoteShortcut.paste.windowsCtrlScancode, 0x2F)
+        XCTAssertEqual(
+            MacRdpScancodeMapper.mapMacCommandShortcut(keyCode: 0x07, charactersIgnoringModifiers: "x", hasCommand: true),
+            .cut
+        )
+        XCTAssertEqual(
+            MacRdpScancodeMapper.mapMacCommandShortcut(keyCode: 0x00, charactersIgnoringModifiers: "a", hasCommand: true),
+            .selectAll
+        )
+        XCTAssertEqual(
+            MacRdpScancodeMapper.mapMacCommandShortcut(keyCode: 0x06, charactersIgnoringModifiers: "z", hasCommand: true),
+            .undo
+        )
+        XCTAssertEqual(
+            MacRdpScancodeMapper.mapMacCommandShortcut(keyCode: 0x06, charactersIgnoringModifiers: "Z", hasCommand: true, hasShift: true),
+            .redo
+        )
+        // German QWERTZ layout: Z is on physical keyCode 0x10 with charactersIgnoringModifiers == "z"
+        XCTAssertEqual(
+            MacRdpScancodeMapper.mapMacCommandShortcut(keyCode: 0x10, charactersIgnoringModifiers: "z", hasCommand: true),
+            .undo
+        )
+        // Greek / non-Latin layout fallback: physical keyCode 0x08 ('Ψ') still maps ⌘C -> Copy
+        XCTAssertEqual(
+            MacRdpScancodeMapper.mapMacCommandShortcut(keyCode: 0x08, charactersIgnoringModifiers: "ψ", hasCommand: true),
+            .copy
+        )
+        // Plain ⌘F / ⌘S map to Ctrl+F / Ctrl+S, while ⇧⌘F, ⌃⌘S, and ⇧⌘S preserve NexusTS app shortcuts
+        XCTAssertEqual(
+            MacRdpScancodeMapper.mapMacCommandShortcut(keyCode: 0x03, charactersIgnoringModifiers: "f", hasCommand: true),
+            .find
+        )
+        XCTAssertNil(
+            MacRdpScancodeMapper.mapMacCommandShortcut(keyCode: 0x03, charactersIgnoringModifiers: "F", hasCommand: true, hasShift: true)
+        )
+        XCTAssertEqual(
+            MacRdpScancodeMapper.mapMacCommandShortcut(keyCode: 0x01, charactersIgnoringModifiers: "s", hasCommand: true),
+            .save
+        )
+        XCTAssertNil(
+            MacRdpScancodeMapper.mapMacCommandShortcut(keyCode: 0x01, charactersIgnoringModifiers: "s", hasCommand: true, hasControl: true)
+        )
+        XCTAssertNil(
+            MacRdpScancodeMapper.mapMacCommandShortcut(keyCode: 0x01, charactersIgnoringModifiers: "S", hasCommand: true, hasShift: true)
+        )
     }
 }

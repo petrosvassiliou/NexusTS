@@ -15,12 +15,13 @@ public struct RdpSessionView: View {
     @State private var hasPresentedFrame: Bool = false
     @State private var lastNativeError: String = ""
     @State private var scaleToFit: Bool = true
-    @State private var retina2xEnabled: Bool = false
+    @State private var retina2xEnabled: Bool = true
     @State private var didInitializeRetinaPref: Bool = false
     @State private var showHudBar: Bool = true
     @State private var frameDimensionsText: String = "1920×1080"
     @State private var sessionGeneration: Int = 0
     @State private var lastViewportSize: CGSize = .zero
+    @State private var lastSentResizeSpec: (w: Int, h: Int, scale: Int)? = nil
     @State private var resizeDebounceTask: Task<Void, Never>? = nil
 
     public init(tab: WorkspaceSessionTab) {
@@ -37,9 +38,8 @@ public struct RdpSessionView: View {
     }
 
     public var body: some View {
-        let session = store.rdpController(for: tab)
-        let effectiveConnected = isConnected || session.isConnected
-        let effectiveHasFrame = hasPresentedFrame || session.hasValidFrame
+        let existingSession = store.existingRdpController(for: tab)
+        let hudConnected = isConnected || (existingSession?.isConnected ?? false)
 
         VStack(spacing: 0) {
             // External Remote Desktop Control & Telemetry Bar (strictly outside/above the RDP viewport)
@@ -47,7 +47,7 @@ public struct RdpSessionView: View {
                 HStack(spacing: 10) {
                     Circle()
                         .fill(
-                            effectiveConnected
+                            hudConnected
                                 ? Color(nsColor: .systemGreen)
                                 : ((isConnecting || lastNativeError.isEmpty)
                                     ? Color(nsColor: .systemOrange)
@@ -72,7 +72,7 @@ public struct RdpSessionView: View {
                     }
 
                     if rdpSettings.redirectClipboard {
-                        Label("Clipboard Sync", systemImage: "arrow.left.arrow.right.circle")
+                        Label("Clipboard Sync (⌘C / ⌘V)", systemImage: "arrow.left.arrow.right.circle")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
@@ -80,10 +80,10 @@ public struct RdpSessionView: View {
                     Spacer(minLength: 8)
 
                     Button("Ctrl+Alt+Del") {
-                        session.sendCtrlAltDel()
+                        existingSession?.sendCtrlAltDel()
                     }
                     .controlSize(.small)
-                    .disabled(!effectiveConnected)
+                    .disabled(!hudConnected)
 
                     Button {
                         let panel = NSOpenPanel()
@@ -112,7 +112,7 @@ public struct RdpSessionView: View {
                     Toggle("2× Retina", isOn: $retina2xEnabled)
                         .toggleStyle(.checkbox)
                         .font(.caption)
-                        .help("Toggle between fast 1× native logical resolution (Royal TSX default) and 2× Retina HiDPI scaling")
+                        .help("Render remote Windows desktop in crisp 2× Retina HiDPI (200% scale) or 1× logical resolution")
 
                     Button {
                         if store.isFullScreenSessionMode {
@@ -165,6 +165,19 @@ public struct RdpSessionView: View {
             }
 
             GeometryReader { geo in
+                let backingScale = NSScreen.main?.backingScaleFactor ?? 2.0
+                let desiredRetina = didInitializeRetinaPref
+                    ? retina2xEnabled
+                    : (rdpSettings.hiDpiEnabled && (backingScale >= 1.5 || rdpSettings.desktopScaleFactorPercent >= 150))
+                let session = store.rdpController(
+                    for: tab,
+                    initialViewportSize: geo.size,
+                    backingScaleFactor: backingScale,
+                    useRetinaOverride: desiredRetina
+                )
+                let effectiveConnected = isConnected || session.isConnected
+                let effectiveHasFrame = hasPresentedFrame || session.hasValidFrame
+
                 ZStack {
                     Color(red: 0.06, green: 0.07, blue: 0.09)
 
@@ -173,7 +186,7 @@ public struct RdpSessionView: View {
                         session: session,
                         generation: sessionGeneration,
                         scaleToFit: scaleToFit,
-                        retina2xEnabled: retina2xEnabled,
+                        retina2xEnabled: desiredRetina,
                         redirectClipboard: rdpSettings.redirectClipboard,
                         captureRemoteShortcuts: store.remoteKeyCaptureEnabled,
                         onTelemetryChange: { connected, connecting, hasFrame, dimsText, errorText in
@@ -299,13 +312,19 @@ public struct RdpSessionView: View {
                 .onAppear {
                     if !didInitializeRetinaPref {
                         didInitializeRetinaPref = true
-                        retina2xEnabled = rdpSettings.hiDpiEnabled && rdpSettings.desktopScaleFactorPercent >= 150
+                        retina2xEnabled = session.initialHiDpiActive
                     }
                     isConnected = session.isConnected
                     isConnecting = session.isConnecting
                     hasPresentedFrame = session.hasValidFrame
                     lastNativeError = session.lastErrorMessage()
+                    if !session.hasValidFrame {
+                        frameDimensionsText = "\(session.initialPixelWidth)×\(session.initialPixelHeight)"
+                    }
                     lastViewportSize = geo.size
+                    if lastSentResizeSpec == nil {
+                        lastSentResizeSpec = (session.initialPixelWidth, session.initialPixelHeight, session.initialScalePercent)
+                    }
                     scheduleDynamicResize(for: geo.size, session: session)
                 }
                 .onDisappear {
@@ -332,20 +351,29 @@ public struct RdpSessionView: View {
         guard rdpSettings.resizeBehavior == .DYNAMIC_DISP_DVC else { return }
         guard viewportSize.width >= 320, viewportSize.height >= 240 else { return }
         let useRetina = retina2xEnabled
+        let backingScale = NSScreen.main?.backingScaleFactor ?? 2.0
+        let factor = useRetina ? backingScale : 1.0
+        let pixelW = max(640, Int((viewportSize.width * factor).rounded())) & ~1
+        let pixelH = max(480, Int((viewportSize.height * factor).rounded())) & ~1
+        let scalePercent = useRetina ? Int((max(1.0, backingScale) * 100.0).rounded()) : 100
+
+        if let prev = lastSentResizeSpec,
+           abs(pixelW - prev.w) <= 2,
+           abs(pixelH - prev.h) <= 2,
+           scalePercent == prev.scale {
+            return
+        }
+
         resizeDebounceTask = Task { @MainActor in
             if !immediate {
-                try? await Task.sleep(nanoseconds: 180_000_000)
+                try? await Task.sleep(nanoseconds: 120_000_000)
             }
             guard !Task.isCancelled else { return }
-            let backingScale = NSScreen.main?.backingScaleFactor ?? 2.0
-            let factor = useRetina ? backingScale : 1.0
-            let pixelW = Int((viewportSize.width * factor).rounded())
-            let pixelH = Int((viewportSize.height * factor).rounded())
-            guard pixelW >= 320, pixelH >= 240 else { return }
+            lastSentResizeSpec = (pixelW, pixelH, scalePercent)
             _ = session.requestDynamicResize(
                 width: pixelW,
                 height: pixelH,
-                scalePercent: useRetina ? 200 : 100
+                scalePercent: scalePercent
             )
         }
     }
@@ -355,7 +383,14 @@ public struct RdpSessionView: View {
         hasPresentedFrame = false
         isConnecting = true
         sessionGeneration &+= 1
-        _ = store.reconnectRdpSession(for: tab)
+        let reconnected = store.reconnectRdpSession(
+            for: tab,
+            initialViewportSize: lastViewportSize,
+            backingScaleFactor: NSScreen.main?.backingScaleFactor ?? 2.0,
+            useRetinaOverride: retina2xEnabled
+        )
+        lastSentResizeSpec = (reconnected.initialPixelWidth, reconnected.initialPixelHeight, reconnected.initialScalePercent)
+        frameDimensionsText = "\(reconnected.initialPixelWidth)×\(reconnected.initialPixelHeight)"
     }
 
     public static func makeCGImage(rgba: Data, width: Int, height: Int) -> CGImage? {
@@ -552,9 +587,10 @@ final class RdpPointerAndKeyNSView: NSView {
     private var cachedNativeError: String = ""
     private var lastReportedError: String = ""
 
-    private var lastPasteboardChangeCount: Int = NSPasteboard.general.changeCount
+    private var lastPasteboardChangeCount: Int = -1
     private var lastRemoteClipboardSeq: UInt64 = 0
     private var lastSyncedClipboardText: String = ""
+    private var appDidBecomeActiveObserver: NSObjectProtocol?
 
     private var heldModifierKeyCodes: Set<UInt16> = []
 
@@ -569,6 +605,12 @@ final class RdpPointerAndKeyNSView: NSView {
     required init?(coder: NSCoder) {
         super.init(coder: coder)
         setupBackingLayer()
+    }
+
+    deinit {
+        if let obs = appDidBecomeActiveObserver {
+            NotificationCenter.default.removeObserver(obs)
+        }
     }
 
     private func setupBackingLayer() {
@@ -651,8 +693,13 @@ final class RdpPointerAndKeyNSView: NSView {
             lastReportedDims = ""
             lastReportedError = ""
             layer?.contents = nil
-            lastPasteboardChangeCount = NSPasteboard.general.changeCount
-            lastRemoteClipboardSeq = session.remoteClipboardSequence
+            lastPasteboardChangeCount = -1
+            lastSyncedClipboardText = ""
+            lastRemoteClipboardSeq = 0
+
+            if redirectClipboard {
+                _ = syncLocalClipboardToRemoteIfNeeded(session: session, forceCheck: true)
+            }
 
             let signal = frameWakeSignal
             session.setFrameReadyHandler { [weak signal] in
@@ -691,10 +738,18 @@ final class RdpPointerAndKeyNSView: NSView {
                     signal?.signalFromAnyThread()
                 }
             }
+            startAppActivationObserverIfNeeded()
             startHousekeepingTimerIfNeeded()
             updateMetalDrawableSizeAndRedrawIfNeeded()
             refreshFrameCursorAndTelemetry(forceFullUpload: !hasPresentedFrame, runSlowHousekeeping: true)
+            DispatchQueue.main.async { [weak self, weak win] in
+                guard let self, let win, self.window === win else { return }
+                if !(win.firstResponder is NSText), win.firstResponder !== self {
+                    win.makeFirstResponder(self)
+                }
+            }
         } else {
+            stopAppActivationObserver()
             stopHousekeepingTimer()
         }
     }
@@ -703,10 +758,30 @@ final class RdpPointerAndKeyNSView: NSView {
         if newWindow == nil {
             releaseAllHeldModifiers()
             cancelPendingMouseMove()
+            stopAppActivationObserver()
             stopHousekeepingTimer()
             session?.setFrameReadyHandler(nil)
         }
         super.viewWillMove(toWindow: newWindow)
+    }
+
+    private func startAppActivationObserverIfNeeded() {
+        guard appDidBecomeActiveObserver == nil else { return }
+        appDidBecomeActiveObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self, self.redirectClipboard, let session = self.session else { return }
+            _ = self.syncLocalClipboardToRemoteIfNeeded(session: session, forceCheck: false)
+        }
+    }
+
+    private func stopAppActivationObserver() {
+        if let obs = appDidBecomeActiveObserver {
+            NotificationCenter.default.removeObserver(obs)
+            appDidBecomeActiveObserver = nil
+        }
     }
 
     override func viewDidChangeBackingProperties() {
@@ -745,11 +820,22 @@ final class RdpPointerAndKeyNSView: NSView {
     override func mouseEntered(with event: NSEvent) {
         isPointerInsideView = true
         activeRemoteCursor.set()
+        if redirectClipboard, let session {
+            _ = syncLocalClipboardToRemoteIfNeeded(session: session, forceCheck: false)
+        }
     }
 
     override func mouseExited(with event: NSEvent) {
         isPointerInsideView = false
         NSCursor.arrow.set()
+    }
+
+    override func becomeFirstResponder() -> Bool {
+        let accepted = super.becomeFirstResponder()
+        if accepted, redirectClipboard, let session {
+            _ = syncLocalClipboardToRemoteIfNeeded(session: session, forceCheck: false)
+        }
+        return accepted
     }
 
     override func resignFirstResponder() -> Bool {
@@ -909,10 +995,16 @@ final class RdpPointerAndKeyNSView: NSView {
         let connecting = session.isConnecting
         let stateTransitioned = (connected != lastReportedConnected) || (connecting != lastReportedConnecting)
 
+        // Pull remote clipboard immediately on event-driven wakeup (<1ms after Windows Ctrl+C / Cmd+C)
+        if connected && redirectClipboard {
+            pullRemoteClipboardIfUpdated(session: session)
+        }
+
         if runSlowHousekeeping || stateTransitioned {
             cachedNativeError = session.lastErrorMessage()
             if connected && redirectClipboard {
-                syncClipboard(session: session)
+                _ = syncLocalClipboardToRemoteIfNeeded(session: session, forceCheck: stateTransitioned)
+                pullRemoteClipboardIfUpdated(session: session)
             }
         }
 
@@ -1001,29 +1093,42 @@ final class RdpPointerAndKeyNSView: NSView {
         cmdBuf.commit()
     }
 
-    private func syncClipboard(session: NativeRdpSession) {
-        let pbCount = NSPasteboard.general.changeCount
-        if pbCount != lastPasteboardChangeCount {
-            lastPasteboardChangeCount = pbCount
-            if let localText = NSPasteboard.general.string(forType: .string),
-               !localText.isEmpty,
-               localText != lastSyncedClipboardText {
-                lastSyncedClipboardText = localText
-                session.pushLocalClipboard(localText)
-            }
+    @discardableResult
+    private func syncLocalClipboardToRemoteIfNeeded(
+        session: NativeRdpSession,
+        forceCheck: Bool
+    ) -> Bool {
+        let pb = NSPasteboard.general
+        let pbCount = pb.changeCount
+        guard forceCheck || pbCount != lastPasteboardChangeCount else {
+            return false
         }
+        let changeCountAdvanced = pbCount != lastPasteboardChangeCount
+        lastPasteboardChangeCount = pbCount
+        guard let localText = pb.string(forType: .string), !localText.isEmpty else {
+            return false
+        }
+        if changeCountAdvanced || localText != lastSyncedClipboardText {
+            lastSyncedClipboardText = localText
+            session.pushLocalClipboard(localText)
+            return true
+        }
+        return false
+    }
 
+    private func pullRemoteClipboardIfUpdated(session: NativeRdpSession) {
         let remoteSeq = session.remoteClipboardSequence
-        if remoteSeq != lastRemoteClipboardSeq {
-            lastRemoteClipboardSeq = remoteSeq
-            let remoteText = session.pullRemoteClipboard()
-            if !remoteText.isEmpty && remoteText != lastSyncedClipboardText {
-                lastSyncedClipboardText = remoteText
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(remoteText, forType: .string)
-                lastPasteboardChangeCount = NSPasteboard.general.changeCount
-            }
+        guard remoteSeq != lastRemoteClipboardSeq else { return }
+        lastRemoteClipboardSeq = remoteSeq
+        let remoteText = session.pullRemoteClipboard()
+        guard !remoteText.isEmpty else { return }
+        lastSyncedClipboardText = remoteText
+        let pb = NSPasteboard.general
+        if pb.string(forType: .string) != remoteText {
+            pb.clearContents()
+            pb.setString(remoteText, forType: .string)
         }
+        lastPasteboardChangeCount = pb.changeCount
     }
 
     // MARK: - Aspect-Aware Coordinate Mapping & Coalesced Mouse Input (~125 Hz)
@@ -1082,6 +1187,9 @@ final class RdpPointerAndKeyNSView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
+        if redirectClipboard, let session {
+            _ = syncLocalClipboardToRemoteIfNeeded(session: session, forceCheck: false)
+        }
         cancelPendingMouseMove()
         let (x, y) = scaledPoint(for: event)
         session?.sendPointerEvent(flags: 0x8000 | 0x1000, x: x, y: y)
@@ -1100,6 +1208,9 @@ final class RdpPointerAndKeyNSView: NSView {
 
     override func rightMouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
+        if redirectClipboard, let session {
+            _ = syncLocalClipboardToRemoteIfNeeded(session: session, forceCheck: false)
+        }
         cancelPendingMouseMove()
         let (x, y) = scaledPoint(for: event)
         session?.sendPointerEvent(flags: 0x8000 | 0x2000, x: x, y: y)
@@ -1167,9 +1278,97 @@ final class RdpPointerAndKeyNSView: NSView {
         }
     }
 
+    // MARK: - macOS Command (⌘C / ⌘V / ⌘X / ⌘A / ⌘Z) -> Windows Ctrl Chord & Edit Menu Actions
+
+    private func resolveMacCommandShortcut(for event: NSEvent) -> MacRdpScancodeMapper.MacCommandRemoteShortcut? {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        return MacRdpScancodeMapper.mapMacCommandShortcut(
+            keyCode: event.keyCode,
+            charactersIgnoringModifiers: event.charactersIgnoringModifiers,
+            hasCommand: flags.contains(.command),
+            hasShift: flags.contains(.shift),
+            hasControl: flags.contains(.control),
+            hasOption: flags.contains(.option)
+        )
+    }
+
+    private func sendRemoteCtrlChord(scancode: UInt16) {
+        guard let session else { return }
+        // Ensure held Command (Win) or Shift modifiers don't turn Ctrl+C/V/Y into Win+Ctrl+C or Ctrl+Shift+Y
+        for code: UInt16 in [0x37, 0x36, 0x38, 0x3C] where heldModifierKeyCodes.remove(code) != nil {
+            if let rel = MacRdpScancodeMapper.mapModifierKeyCode(code, captureRemoteShortcuts: true) {
+                session.sendScancode(rel.scancode, keyDown: false, extended: rel.extended)
+            }
+        }
+        let physicalCtrlHeld = heldModifierKeyCodes.contains(0x3B) || heldModifierKeyCodes.contains(0x3E)
+        if !physicalCtrlHeld {
+            session.sendScancode(0x1D, keyDown: true, extended: false) // Left Ctrl down
+        }
+        session.sendScancode(scancode, keyDown: true, extended: false)
+        session.sendScancode(scancode, keyDown: false, extended: false)
+        if !physicalCtrlHeld {
+            session.sendScancode(0x1D, keyDown: false, extended: false) // Left Ctrl up
+        }
+    }
+
+    private func executeRemoteCommandShortcut(_ shortcut: MacRdpScancodeMapper.MacCommandRemoteShortcut) {
+        guard let session else { return }
+        if shortcut == .paste && redirectClipboard {
+            let newlyAnnounced = syncLocalClipboardToRemoteIfNeeded(session: session, forceCheck: true)
+            if newlyAnnounced {
+                // Allow CLIPRDR CB_FORMAT_LIST to reach Windows rdpclip.exe before synthetic Ctrl+V arrives
+                let code = shortcut.windowsCtrlScancode
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.04) { [weak self] in
+                    self?.sendRemoteCtrlChord(scancode: code)
+                }
+                return
+            }
+        }
+        sendRemoteCtrlChord(scancode: shortcut.windowsCtrlScancode)
+    }
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        guard window?.firstResponder === self else {
+            return super.performKeyEquivalent(with: event)
+        }
+        if let shortcut = resolveMacCommandShortcut(for: event) {
+            executeRemoteCommandShortcut(shortcut)
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
+
+    @objc func copy(_ sender: Any?) {
+        executeRemoteCommandShortcut(.copy)
+    }
+
+    @objc func paste(_ sender: Any?) {
+        executeRemoteCommandShortcut(.paste)
+    }
+
+    @objc func cut(_ sender: Any?) {
+        executeRemoteCommandShortcut(.cut)
+    }
+
+    @objc func selectAll(_ sender: Any?) {
+        executeRemoteCommandShortcut(.selectAll)
+    }
+
+    @objc func undo(_ sender: Any?) {
+        executeRemoteCommandShortcut(.undo)
+    }
+
+    @objc func redo(_ sender: Any?) {
+        executeRemoteCommandShortcut(.redo)
+    }
+
     // MARK: - PC XT Set-1 Scancode & Modifier Translation
 
     override func keyDown(with event: NSEvent) {
+        if let shortcut = resolveMacCommandShortcut(for: event) {
+            executeRemoteCommandShortcut(shortcut)
+            return
+        }
         if !captureRemoteShortcuts && event.modifierFlags.contains(.command) {
             super.keyDown(with: event)
             return
@@ -1184,6 +1383,9 @@ final class RdpPointerAndKeyNSView: NSView {
     }
 
     override func keyUp(with event: NSEvent) {
+        if resolveMacCommandShortcut(for: event) != nil {
+            return
+        }
         if !captureRemoteShortcuts && event.modifierFlags.contains(.command) {
             super.keyUp(with: event)
             return

@@ -379,7 +379,7 @@ FreeRdpCallbackState lookup_freerdp_callbacks(freerdp* instance) {
     return (it != g_freerdp_callbacks.end()) ? it->second : FreeRdpCallbackState{};
 }
 
-UINT cliprdr_send_client_format_list(CliprdrClientContext* cliprdr) {
+UINT cliprdr_send_client_format_list(CliprdrClientContext* cliprdr, bool has_text) {
     if (!cliprdr || !cliprdr->ClientFormatList) {
         return CHANNEL_RC_OK;
     }
@@ -392,8 +392,8 @@ UINT cliprdr_send_client_format_list(CliprdrClientContext* cliprdr) {
     CLIPRDR_FORMAT_LIST format_list{};
     format_list.common.msgType = CB_FORMAT_LIST;
     format_list.common.msgFlags = 0;
-    format_list.numFormats = 2u;
-    format_list.formats = formats;
+    format_list.numFormats = has_text ? 2u : 0u;
+    format_list.formats = has_text ? formats : nullptr;
     return cliprdr->ClientFormatList(cliprdr, &format_list);
 }
 
@@ -415,10 +415,14 @@ UINT cliprdr_on_monitor_ready(CliprdrClientContext* cliprdr, const CLIPRDR_MONIT
         cliprdr->ClientCapabilities(cliprdr, &caps);
     }
     auto* owner = static_cast<RdpSessionContext*>(cliprdr->custom);
-    if (owner && !owner->channels().local_clipboard_text().empty()) {
-        return cliprdr_send_client_format_list(cliprdr);
+    const bool has_local_text = owner && !owner->channels().local_clipboard_text().empty();
+    // Per [MS-RDPECLIP] 1.3.1.1, ClientFormatList MUST always be sent in response to MonitorReady
+    // (even with 0 formats when the local clipboard is initially empty) so rdpclip.exe activates CLIPRDR.
+    const UINT rc = cliprdr_send_client_format_list(cliprdr, has_local_text);
+    if (owner) {
+        owner->set_cliprdr_ready(true);
     }
-    return CHANNEL_RC_OK;
+    return rc;
 }
 
 UINT cliprdr_on_server_capabilities(CliprdrClientContext* /*cliprdr*/, const CLIPRDR_CAPABILITIES* /*caps*/) {
@@ -478,14 +482,15 @@ UINT cliprdr_on_server_format_data_request(
     CLIPRDR_FORMAT_DATA_RESPONSE resp{};
     resp.common.msgType = CB_FORMAT_DATA_RESPONSE;
 
-    if (request->requestedFormatId == kWinCfUnicodeText) {
+    if (!local_utf8.empty() && request->requestedFormatId == kWinCfUnicodeText) {
         const std::vector<BYTE> utf16 = encode_utf8_to_utf16le_crlf(local_utf8);
         resp.common.msgFlags = CB_RESPONSE_OK;
         resp.common.dataLen = static_cast<UINT32>(utf16.size());
         resp.requestedFormatData = utf16.data();
         return cliprdr->ClientFormatDataResponse(cliprdr, &resp);
     }
-    if (request->requestedFormatId == kWinCfText || request->requestedFormatId == kWinCfOemText) {
+    if (!local_utf8.empty() &&
+        (request->requestedFormatId == kWinCfText || request->requestedFormatId == kWinCfOemText)) {
         std::vector<BYTE> ansi;
         ansi.reserve(local_utf8.size() + 8u);
         for (size_t i = 0; i < local_utf8.size(); ++i) {
@@ -541,6 +546,7 @@ UINT cliprdr_on_server_format_data_response(
     }
     if (!decoded.empty()) {
         owner->channels().on_remote_clipboard_text(decoded);
+        owner->presenter().notify_frame_ready();
     }
     return CHANNEL_RC_OK;
 }
@@ -883,17 +889,6 @@ BOOL freerdp_on_post_connect(freerdp* instance) {
         instance->context->update->EndPaint = &freerdp_on_end_paint;
         instance->context->update->DesktopResize = &freerdp_on_desktop_resize;
     }
-    if (instance->context->gdi && instance->context->gdi->primary_buffer) {
-        const auto cb = lookup_freerdp_callbacks(instance);
-        if (cb.owner && instance->context->gdi->width > 0 && instance->context->gdi->height > 0) {
-            const uint32_t w = static_cast<uint32_t>(instance->context->gdi->width);
-            const uint32_t h = static_cast<uint32_t>(instance->context->gdi->height);
-            const uint32_t stride = instance->context->gdi->stride > 0
-                ? instance->context->gdi->stride
-                : (w * 4u);
-            cb.owner->presenter().present_frame(instance->context->gdi->primary_buffer, w, h, stride);
-        }
-    }
     return TRUE;
 }
 
@@ -906,6 +901,7 @@ void freerdp_on_post_disconnect(freerdp* instance) {
         const auto cb = lookup_freerdp_callbacks(instance);
         if (cb.owner) {
             cb.owner->set_disp_context(nullptr);
+            cb.owner->set_cliprdr_ready(false);
             cb.owner->set_cliprdr_context(nullptr);
         }
         gdi_free(instance);
@@ -1092,12 +1088,22 @@ void RdpSessionContext::set_disp_context(void* disp_context) noexcept {
 }
 
 void RdpSessionContext::set_cliprdr_context(void* cliprdr_context) {
+    if (!cliprdr_context) {
+        cliprdr_ready_.store(false, std::memory_order_release);
+    }
     std::lock_guard<std::mutex> lock(cliprdr_mutex_);
     cliprdr_context_ = cliprdr_context;
 }
 
+void RdpSessionContext::set_cliprdr_ready(bool ready) noexcept {
+    cliprdr_ready_.store(ready, std::memory_order_release);
+    if (ready) {
+        signal_event_loop_wakeup();
+    }
+}
+
 void RdpSessionContext::announce_local_clipboard_to_remote() {
-    if (!params_.redirect_clipboard || !connected_.load(std::memory_order_acquire)) {
+    if (!params_.redirect_clipboard) {
         return;
     }
 #if defined(NEXUSTS_HAS_FREERDP3_BINARY) && NEXUSTS_HAS_FREERDP3_BINARY == 1
@@ -1122,6 +1128,7 @@ void RdpSessionContext::drain_queued_commands_on_event_thread(void* raw_instance
     bool send_monitors = false;
     bool send_clipboard = false;
     void* raw_disp = disp_context_.load(std::memory_order_acquire);
+    const bool clip_ready = cliprdr_ready_.load(std::memory_order_acquire);
 
     {
         std::lock_guard<std::mutex> lock(input_mutex_);
@@ -1136,9 +1143,19 @@ void RdpSessionContext::drain_queued_commands_on_event_thread(void* raw_instance
             has_pending_monitors_ = false;
             send_monitors = true;
         }
-        if (pending_clipboard_announce_) {
+        if (pending_clipboard_announce_ && clip_ready) {
             pending_clipboard_announce_ = false;
             send_clipboard = true;
+        }
+    }
+
+    // Transmit CB_FORMAT_LIST BEFORE synthetic Ctrl+V scancodes so rdpclip.exe sees new local text first
+    if (send_clipboard) {
+        const bool has_local_text = !channels_.local_clipboard_text().empty();
+        std::lock_guard<std::mutex> clip_lock(cliprdr_mutex_);
+        if (cliprdr_context_) {
+            auto* cliprdr = static_cast<CliprdrClientContext*>(cliprdr_context_);
+            cliprdr_send_client_format_list(cliprdr, has_local_text);
         }
     }
 
@@ -1182,18 +1199,20 @@ void RdpSessionContext::drain_queued_commands_on_event_thread(void* raw_instance
                     DISPLAY_CONTROL_MIN_MONITOR_HEIGHT,
                     DISPLAY_CONTROL_MAX_MONITOR_HEIGHT
                 );
+                const uint32_t desk_scale = std::clamp(m.desktop_scale_factor, 100u, 500u);
+                const uint32_t dev_scale = map_device_scale_factor(desk_scale);
+                const uint32_t effective_dpi = (96u * desk_scale) / 100u;
+                const uint32_t dpi_x10 = std::max<uint32_t>(960u, effective_dpi * 10u);
                 const uint32_t phys_w = std::clamp<uint32_t>(
-                    m.physical_width_mm > 0 ? m.physical_width_mm : ((w * 254u) / 960u),
+                    m.physical_width_mm > 0 ? m.physical_width_mm : ((w * 254u) / dpi_x10),
                     DISPLAY_CONTROL_MIN_PHYSICAL_MONITOR_WIDTH,
                     DISPLAY_CONTROL_MAX_PHYSICAL_MONITOR_WIDTH
                 );
                 const uint32_t phys_h = std::clamp<uint32_t>(
-                    m.physical_height_mm > 0 ? m.physical_height_mm : ((h * 254u) / 960u),
+                    m.physical_height_mm > 0 ? m.physical_height_mm : ((h * 254u) / dpi_x10),
                     DISPLAY_CONTROL_MIN_PHYSICAL_MONITOR_HEIGHT,
                     DISPLAY_CONTROL_MAX_PHYSICAL_MONITOR_HEIGHT
                 );
-                const uint32_t desk_scale = std::clamp(m.desktop_scale_factor, 100u, 500u);
-                const uint32_t dev_scale = map_device_scale_factor(desk_scale);
 
                 DISPLAY_CONTROL_MONITOR_LAYOUT layout{};
                 layout.Flags = m.is_primary ? DISPLAY_CONTROL_MONITOR_PRIMARY : 0u;
@@ -1219,14 +1238,6 @@ void RdpSessionContext::drain_queued_commands_on_event_thread(void* raw_instance
                 NX_RDP_LOGI("DISP_DVC monitor layout transmitted: %zu monitor(s), primary=%ux%u @ %u%%",
                             layouts.size(), layouts[0].Width, layouts[0].Height, layouts[0].DesktopScaleFactor);
             }
-        }
-    }
-
-    if (send_clipboard) {
-        std::lock_guard<std::mutex> clip_lock(cliprdr_mutex_);
-        if (cliprdr_context_) {
-            auto* cliprdr = static_cast<CliprdrClientContext*>(cliprdr_context_);
-            cliprdr_send_client_format_list(cliprdr);
         }
     }
 #else
@@ -1420,7 +1431,7 @@ bool RdpSessionContext::connect() {
     freerdp_settings_set_bool(settings, FreeRDP_SoftwareGdi, TRUE);
     freerdp_settings_set_bool(settings, FreeRDP_UseCommonStdioCallbacks, FALSE);
     freerdp_settings_set_uint32(settings, FreeRDP_TlsSecLevel, 0u);
-    freerdp_settings_set_uint32(settings, FreeRDP_TcpConnectTimeout, 15000u);
+    freerdp_settings_set_uint32(settings, FreeRDP_TcpConnectTimeout, 8000u);
     if (effective_gateway_host.empty()) {
         // Prevent FreeRDP proxy_prepare() from hijacking direct LAN RDP sockets via OS HTTPS_PROXY env vars
         freerdp_settings_set_uint32(settings, FreeRDP_ProxyType, PROXY_TYPE_IGNORE);
@@ -1436,6 +1447,13 @@ bool RdpSessionContext::connect() {
     if (params_.hidpi_enabled && params_.desktop_scale_factor > 100) {
         const uint32_t scale = std::clamp(params_.desktop_scale_factor, 100u, 500u);
         const uint32_t dev_scale = map_device_scale_factor(scale);
+        const uint32_t effective_dpi = (96u * scale) / 100u;
+        const uint32_t dpi_x10 = std::max<uint32_t>(960u, effective_dpi * 10u);
+        const uint32_t phys_w = std::clamp<uint32_t>((w * 254u) / dpi_x10, 10u, 10000u);
+        const uint32_t phys_h = std::clamp<uint32_t>((h * 254u) / dpi_x10, 10u, 10000u);
+        // Per [MS-RDPBCGR] 2.2.1.3.2, Windows ignores DesktopScaleFactor unless DesktopPhysicalWidth/Height are [10..10000] mm
+        freerdp_settings_set_uint32(settings, FreeRDP_DesktopPhysicalWidth, phys_w);
+        freerdp_settings_set_uint32(settings, FreeRDP_DesktopPhysicalHeight, phys_h);
         freerdp_settings_set_uint32(settings, FreeRDP_DesktopScaleFactor, scale);
         freerdp_settings_set_uint32(settings, FreeRDP_DeviceScaleFactor, dev_scale);
     }
@@ -1476,7 +1494,13 @@ bool RdpSessionContext::connect() {
     freerdp_settings_set_bool(settings, FreeRDP_UseMultimon, params_.multi_monitor_spanning);
 
     freerdp_settings_set_bool(settings, FreeRDP_RedirectClipboard, params_.redirect_clipboard);
+#ifdef __APPLE__
+    // macOS Universal2 static SDK builds with -DWITH_PCSC=OFF and -DWITH_MACAUDIO=OFF; advertising
+    // virtual SmartCard or RDPSND without backends stalls Windows Winlogon/SCardSvr by ~1.5-2.0s.
+    freerdp_settings_set_bool(settings, FreeRDP_RedirectSmartCards, FALSE);
+#else
     freerdp_settings_set_bool(settings, FreeRDP_RedirectSmartCards, params_.redirect_smartcard);
+#endif
     freerdp_settings_set_bool(settings, FreeRDP_RedirectDrives, params_.redirect_drives);
     if (params_.redirect_drives && !params_.shared_drive_local_path.empty()) {
         const std::string drive_name =
@@ -1498,9 +1522,16 @@ bool RdpSessionContext::connect() {
     }
     freerdp_settings_set_bool(settings, FreeRDP_RedirectPrinters, params_.redirect_printers);
     freerdp_settings_set_bool(settings, FreeRDP_RedirectSerialPorts, params_.redirect_serial_ports);
+#ifdef __APPLE__
+    (void)local_audio_out;
+    freerdp_settings_set_bool(settings, FreeRDP_AudioPlayback, FALSE);
+    freerdp_settings_set_bool(settings, FreeRDP_RemoteConsoleAudio, params_.audio_redirection_mode == 1);
+    freerdp_settings_set_bool(settings, FreeRDP_AudioCapture, FALSE);
+#else
     freerdp_settings_set_bool(settings, FreeRDP_AudioPlayback, local_audio_out);
     freerdp_settings_set_bool(settings, FreeRDP_RemoteConsoleAudio, params_.audio_redirection_mode == 1);
     freerdp_settings_set_bool(settings, FreeRDP_AudioCapture, params_.redirect_mic_in);
+#endif
 
     freerdp_settings_set_bool(settings, FreeRDP_AllowFontSmoothing, params_.enable_font_smoothing);
     freerdp_settings_set_bool(settings, FreeRDP_AllowDesktopComposition, params_.enable_desktop_composition);
@@ -1752,11 +1783,14 @@ bool RdpSessionContext::request_dynamic_display_resize(
     const uint32_t clamped_scale = std::clamp(desktop_scale_percent, 100u, 500u);
 
 #if defined(NEXUSTS_HAS_FREERDP3_BINARY) && NEXUSTS_HAS_FREERDP3_BINARY == 1
-    const bool disp_ready = disp_context_.load(std::memory_order_acquire) != nullptr;
-    if (disp_ready &&
-        aligned_w == last_requested_width_.load(std::memory_order_relaxed) &&
-        aligned_h == last_requested_height_.load(std::memory_order_relaxed) &&
-        clamped_scale == active_scale_percent_.load(std::memory_order_relaxed)) {
+    const uint32_t prev_w = last_requested_width_.load(std::memory_order_relaxed);
+    const uint32_t prev_h = last_requested_height_.load(std::memory_order_relaxed);
+    const uint32_t prev_scale = active_scale_percent_.load(std::memory_order_relaxed);
+    const int diff_w = static_cast<int>(aligned_w) - static_cast<int>(prev_w);
+    const int diff_h = static_cast<int>(aligned_h) - static_cast<int>(prev_h);
+    if (diff_w >= -2 && diff_w <= 2 &&
+        diff_h >= -2 && diff_h <= 2 &&
+        clamped_scale == prev_scale) {
         return true;
     }
     last_requested_width_.store(aligned_w, std::memory_order_relaxed);

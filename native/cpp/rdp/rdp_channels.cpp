@@ -92,9 +92,6 @@ void RdpVirtualChannelHub::on_local_clipboard_text(const std::string& utf8_text)
     std::function<void(const std::string&)> announce_cb;
     {
         std::lock_guard<std::mutex> lock(channel_mutex_);
-        if (local_clipboard_utf8_ == utf8_text) {
-            return;
-        }
         local_clipboard_utf8_ = utf8_text;
         announce_cb = clipboard_announce_callback_;
     }
@@ -108,9 +105,6 @@ void RdpVirtualChannelHub::on_remote_clipboard_text(const std::string& utf8_text
         return;
     }
     std::lock_guard<std::mutex> lock(channel_mutex_);
-    if (remote_clipboard_utf8_ == utf8_text) {
-        return;
-    }
     remote_clipboard_utf8_ = utf8_text;
     // Mirror into local_clipboard_utf8_ so pasting back without a new local copy never overwrites remote text
     local_clipboard_utf8_ = utf8_text;

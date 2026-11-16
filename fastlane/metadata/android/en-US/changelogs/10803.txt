@@ -1,0 +1,1 @@
+• v0.8.3: Instant RDP startup with native 2x Retina HiDPI negotiation (zero post-connect surface reset delay), full bidirectional CLIPRDR clipboard sync, and Mac Cmd+C / Cmd+V / Cmd+X / Cmd+A / Cmd+Z translation

@@ -91,11 +91,7 @@ int64_t nexusts_rdp_create_session(const NexusRdpConfig* config) {
 
 bool nexusts_rdp_connect(int64_t handle) {
     if (auto ctx = lookup_session(handle)) {
-        const bool ok = ctx->connect();
-        if (ok) {
-            ctx->on_surface_bound();
-        }
-        return ok;
+        return ctx->connect();
     }
     return false;
 }
