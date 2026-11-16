@@ -655,7 +655,7 @@ final class RdpPointerAndKeyNSView: NSView {
             lastRemoteClipboardSeq = session.remoteClipboardSequence
 
             let signal = frameWakeSignal
-            session.setFrameReadyHandler {
+            session.setFrameReadyHandler { [weak signal] in
                 signal?.signalFromAnyThread()
             }
             refreshFrameCursorAndTelemetry(forceFullUpload: true, runSlowHousekeeping: true)
@@ -687,7 +687,7 @@ final class RdpPointerAndKeyNSView: NSView {
             layer?.contentsScale = scale
             metalSublayer?.contentsScale = scale
             if let session, let signal = frameWakeSignal {
-                session.setFrameReadyHandler {
+                session.setFrameReadyHandler { [weak signal] in
                     signal?.signalFromAnyThread()
                 }
             }
