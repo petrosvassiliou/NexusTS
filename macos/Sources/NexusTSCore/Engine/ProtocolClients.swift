@@ -1121,13 +1121,14 @@ private final class FtpsTlsSocketStream {
             _ = SSLSetSessionOption(ctx, .breakOnServerAuth, true)
         }
 
+        let peerAuthCompleted: OSStatus = errSSLPeerAuthCompleted // -9841
         repeat {
             status = SSLHandshake(ctx)
-            if status == errSSLServerAuthCompleted && !verifyTls {
+            if status == peerAuthCompleted && !verifyTls {
                 // Continue past server trust break when certificate verification is disabled
                 continue
             }
-        } while status == errSSLWouldBlock || (status == errSSLServerAuthCompleted && !verifyTls)
+        } while status == errSSLWouldBlock || (status == peerAuthCompleted && !verifyTls)
 
         guard status == noErr else {
             throw NativeBridgeError.ftpsError("FTPS TLS handshake failed (OSStatus \(status))")

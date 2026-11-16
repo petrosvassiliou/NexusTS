@@ -538,16 +538,17 @@ public struct NetworkDiagnosticsSessionView: View {
                 let candidatePorts: [UInt16] = [443, 80, 22, 3389]
                 for seq in 1...count {
                     var matchedPort: UInt16? = nil
-                    var matchedRtt: Double = -1
+                    var matchedRtt: Int64 = -1
                     for p in candidatePorts {
-                        if let rtt = NativeNetworkDiagnostics.tcpPingMs(host: host, port: p, timeoutMs: 750) {
+                        let rtt = NativeNetworkDiagnostics.tcpPingMs(host: host, port: p, timeoutMs: 750)
+                        if rtt >= 0 {
                             matchedPort = p
                             matchedRtt = rtt
                             break
                         }
                     }
                     if let p = matchedPort {
-                        results.append(String(format: "seq=%d  host=%@:%d  rtt=%.2f ms  status=OPEN", seq, host, p, matchedRtt))
+                        results.append("seq=\(seq)  host=\(host):\(p)  rtt=\(matchedRtt) ms  status=OPEN")
                     } else {
                         results.append("seq=\(seq)  host=\(host)  timeout")
                     }

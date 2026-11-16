@@ -320,8 +320,8 @@ private:
     std::vector<QueuedKeyEvent> pending_keys_;
     std::vector<QueuedPointerEvent> pending_pointer_events_;
     std::vector<RdpMonitorLayout> pending_monitors_;
-    bool has_pending_monitors_{false};
-    bool pending_clipboard_announce_{false};
+    [[maybe_unused]] bool has_pending_monitors_{false};
+    [[maybe_unused]] bool pending_clipboard_announce_{false};
     std::atomic<void*> disp_context_{nullptr};
     void* cliprdr_context_{nullptr};
 };

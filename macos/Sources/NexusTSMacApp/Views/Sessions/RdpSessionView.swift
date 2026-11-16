@@ -682,7 +682,10 @@ final class RdpPointerAndKeyNSView: NSView {
             super.keyDown(with: event)
             return
         }
-        guard let mapped = MacRdpScancodeMapper.mapCarbonKeyCode(event.keyCode) else {
+        guard let mapped = MacRdpScancodeMapper.mapKeyCode(
+            event.keyCode,
+            captureRemoteShortcuts: captureRemoteShortcuts
+        ) else {
             return
         }
         session?.sendScancode(mapped.scancode, keyDown: true, extended: mapped.extended)
@@ -693,7 +696,10 @@ final class RdpPointerAndKeyNSView: NSView {
             super.keyUp(with: event)
             return
         }
-        guard let mapped = MacRdpScancodeMapper.mapCarbonKeyCode(event.keyCode) else {
+        guard let mapped = MacRdpScancodeMapper.mapKeyCode(
+            event.keyCode,
+            captureRemoteShortcuts: captureRemoteShortcuts
+        ) else {
             return
         }
         session?.sendScancode(mapped.scancode, keyDown: false, extended: mapped.extended)
@@ -709,7 +715,7 @@ final class RdpPointerAndKeyNSView: NSView {
             return
         }
 
-        if mapped.isTapOnly {
+        if mapped.isCapsLock {
             session?.sendScancode(mapped.scancode, keyDown: true, extended: mapped.extended)
             session?.sendScancode(mapped.scancode, keyDown: false, extended: mapped.extended)
             return
