@@ -54,10 +54,10 @@ jobs:
           bash -n scripts/package-macos-app.sh
           ./scripts/build-freerdp3-macos.sh --dry-run
 
-      - name: Cache Prebuilt Universal2 OpenSSL 3.4 + OpenH264 2.5 + FreeRDP 3.12 macOS SDK
+      - name: Restore Cached Universal2 OpenSSL 3.4 + OpenH264 2.5 + FreeRDP 3.12 macOS SDK
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.compile_full_freerdp3 == true }}
         id: freerdp-macos-cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: native/third_party/freerdp3/macos
           key: freerdp3-macos-static-universal2-v2-${{ hashFiles('scripts/build-freerdp3-macos.sh') }}
@@ -69,6 +69,13 @@ jobs:
             command -v "$pkg" >/dev/null 2>&1 || brew install "$pkg"
           done
           ./scripts/build-freerdp3-macos.sh --archs arm64,x86_64
+
+      - name: Save Prebuilt Universal2 OpenSSL 3.4 + OpenH264 2.5 + FreeRDP 3.12 macOS SDK Cache
+        if: ${{ (github.event_name != 'workflow_dispatch' || inputs.compile_full_freerdp3 == true) && steps.freerdp-macos-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: native/third_party/freerdp3/macos
+          key: ${{ steps.freerdp-macos-cache.outputs.cache-primary-key }}
 
       - name: Install Rust toolchain & Universal2 Apple targets
         uses: dtolnay/rust-toolchain@stable

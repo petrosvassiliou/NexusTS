@@ -607,20 +607,24 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
             settings: defaultSettings
         )
         // Royal TSX parity: default 100% desktopScaleFactorPercent uses fast 1x logical desktop sizing
-        XCTAssertFalse(session.hiDpiEnabled)
+        XCTAssertFalse(session.initialHiDpiActive)
         XCTAssertFalse(session.hasValidFrame)
         XCTAssertEqual(session.cursorSequence, 0)
-        XCTAssertNil(session.copyRemoteCursor())
-        let consumed = session.consumeDirtyRegion(forceFull: false) { _ in true }
+        if case .systemDefault = session.copyRemoteCursor() {
+            // Expected default OS cursor state prior to connection
+        } else {
+            XCTFail("Expected .systemDefault remote cursor before connect")
+        }
+        let consumed = session.consumeDirtyRegion(forceFull: false) { _ in }
         XCTAssertFalse(consumed)
 
-        var invoked = false
-        session.setFrameReadyHandler { invoked = true }
+        session.setFrameReadyHandler {}
         session.setFrameReadyHandler(nil)
-        XCTAssertFalse(invoked)
 
         // Explicit 200% scale factor enables 2x Retina desktop resolution at connect time
-        let retinaSettings = RdpProtocolSettings(desktopScaleFactorPercent: 200, hiDpiEnabled: true)
+        var retinaSettings = RdpProtocolSettings()
+        retinaSettings.desktopScaleFactorPercent = 200
+        retinaSettings.hiDpiEnabled = true
         let retinaSession = NativeRdpSession(
             host: "10.2.200.11",
             username: "admin",
@@ -628,6 +632,6 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
             domain: "",
             settings: retinaSettings
         )
-        XCTAssertTrue(retinaSession.hiDpiEnabled)
+        XCTAssertTrue(retinaSession.initialHiDpiActive)
     }
 }

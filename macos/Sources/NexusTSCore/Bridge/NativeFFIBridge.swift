@@ -1686,6 +1686,7 @@ public final class NativeRdpSession: @unchecked Sendable {
     private var connectingFlag: Bool = false
     private let callbackBox: RdpFrameCallbackBox
     private var callbackBoxUnmanaged: Unmanaged<RdpFrameCallbackBox>?
+    public let initialHiDpiActive: Bool
 
     private let frameLock = NSLock()
     private var persistentContext: CGContext?
@@ -1712,6 +1713,7 @@ public final class NativeRdpSession: @unchecked Sendable {
             .path ?? ""
         // Match Royal TSX default: use crisp 1x logical resolution unless explicit HiDPI scale >= 150% is configured
         let effectiveInitialHiDpi = settings.hiDpiEnabled && settings.desktopScaleFactorPercent >= 150
+        self.initialHiDpiActive = effectiveInitialHiDpi
         self.handle = host.withCString { hostPtr in
             username.withCString { userPtr in
                 password.withCString { passPtr in
