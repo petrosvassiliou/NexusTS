@@ -1,0 +1,3 @@
+• v0.8.1: RDP-Verbindungsaktivierung (0x0002000D) behoben bei vollem Dirty-Rect-Rendering & minimaler Eingabelatenz
+• Live-Prüfung aller Protokolle (SSH, SFTP, SCP, FTP/FTPS, VNC/ARD, Telnet, Seriell, Cloud & NetUtils)
+• Menü „Studios“ in „Verwalten“ umbenannt & Symbolabstände optimiert

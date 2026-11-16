@@ -1314,10 +1314,6 @@ bool RdpSessionContext::connect() {
     freerdp_settings_set_bool(settings, FreeRDP_UseCommonStdioCallbacks, FALSE);
     freerdp_settings_set_uint32(settings, FreeRDP_TlsSecLevel, 0u);
     freerdp_settings_set_uint32(settings, FreeRDP_TcpConnectTimeout, 15000u);
-    freerdp_settings_set_bool(settings, FreeRDP_TcpKeepAlive, TRUE);
-    freerdp_settings_set_uint32(settings, FreeRDP_TcpKeepAliveDelay, 15u);
-    freerdp_settings_set_uint32(settings, FreeRDP_TcpKeepAliveInterval, 5u);
-    freerdp_settings_set_uint32(settings, FreeRDP_TcpKeepAliveRetries, 3u);
     if (effective_gateway_host.empty()) {
         // Prevent FreeRDP proxy_prepare() from hijacking direct LAN RDP sockets via OS HTTPS_PROXY env vars
         freerdp_settings_set_uint32(settings, FreeRDP_ProxyType, PROXY_TYPE_IGNORE);
@@ -1329,19 +1325,6 @@ bool RdpSessionContext::connect() {
     freerdp_settings_set_uint32(settings, FreeRDP_DesktopHeight, h);
     freerdp_settings_set_uint32(settings, FreeRDP_ColorDepth, params_.color_depth_bits);
     freerdp_settings_set_bool(settings, FreeRDP_ConsoleSession, params_.connect_to_console);
-
-    // High-throughput FastPath PDU framing, SurfaceFrameMarkers, & RTT auto-tuning
-    freerdp_settings_set_bool(settings, FreeRDP_FastPathInput, TRUE);
-    freerdp_settings_set_bool(settings, FreeRDP_FastPathOutput, TRUE);
-    freerdp_settings_set_bool(settings, FreeRDP_FrameMarkerCommandEnabled, TRUE);
-    freerdp_settings_set_bool(settings, FreeRDP_SurfaceFrameMarkerEnabled, TRUE);
-    freerdp_settings_set_bool(settings, FreeRDP_SurfaceCommandsEnabled, TRUE);
-    freerdp_settings_set_bool(settings, FreeRDP_NetworkAutoDetect, TRUE);
-    freerdp_settings_set_uint32(
-        settings,
-        FreeRDP_ConnectionType,
-        params_.enable_wallpaper ? CONNECTION_TYPE_LAN : CONNECTION_TYPE_BROADBAND_HIGH
-    );
 
     if (params_.hidpi_enabled && params_.desktop_scale_factor > 100) {
         const uint32_t scale = std::clamp(params_.desktop_scale_factor, 100u, 500u);
@@ -1364,9 +1347,13 @@ bool RdpSessionContext::connect() {
     }
 #endif
 
+    // Preserve FreeRDP 3.12's freerdp_settings_new() defaults for FastPathInput/Output (TRUE),
+    // FrameMarkerCommandEnabled (TRUE), SurfaceCommandsSupported (TRUE), ConnectionType
+    // (CONNECTION_TYPE_AUTODETECT), GfxSmallCache (TRUE), BitmapCacheEnabled (FALSE), and
+    // OffscreenSupportLevel (0). Setting BitmapCacheEnabled or OffscreenSupportLevel directly on
+    // raw rdpSettings without OrderSupport[NEG_MEMBLT_INDEX] or prior to PostConnect gdi_init()
+    // causes rdp_client_wait_for_activation() to abort with FREERDP_ERROR_CONNECT_TRANSPORT_FAILED (0x0002000D).
     freerdp_settings_set_bool(settings, FreeRDP_SupportGraphicsPipeline, params_.enable_gfx_pipeline);
-    freerdp_settings_set_bool(settings, FreeRDP_GfxThinClient, FALSE);
-    freerdp_settings_set_bool(settings, FreeRDP_GfxSmallCache, FALSE);
     freerdp_settings_set_bool(settings, FreeRDP_GfxH264, h264_runtime_supported);
     freerdp_settings_set_bool(settings, FreeRDP_GfxAVC444, FALSE);
     freerdp_settings_set_bool(settings, FreeRDP_GfxAVC444v2, FALSE);
@@ -1374,8 +1361,6 @@ bool RdpSessionContext::connect() {
     freerdp_settings_set_bool(settings, FreeRDP_GfxProgressiveV2, params_.enable_gfx_pipeline);
     freerdp_settings_set_bool(settings, FreeRDP_RemoteFxCodec, params_.enable_remotefx);
     freerdp_settings_set_bool(settings, FreeRDP_NSCodec, TRUE);
-    freerdp_settings_set_bool(settings, FreeRDP_BitmapCacheEnabled, TRUE);
-    freerdp_settings_set_uint32(settings, FreeRDP_OffscreenSupportLevel, 1u);
 
     const bool enable_disp_channel =
         params_.enable_dynamic_resize || params_.hidpi_enabled || params_.multi_monitor_spanning;

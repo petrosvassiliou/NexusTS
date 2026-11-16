@@ -21,7 +21,7 @@ on:
       release_tag:
         description: "Tag name when publishing via workflow_dispatch"
         required: false
-        default: "v0.8.0"
+        default: "v0.8.1"
         type: string
 
 permissions:
@@ -319,7 +319,7 @@ jobs:
           set -euo pipefail
           TAG_NAME="${GITHUB_REF_NAME}"
           if [[ "${TAG_NAME}" != v* ]]; then
-            TAG_NAME="${{ inputs.release_tag || 'v0.8.0' }}"
+            TAG_NAME="${{ inputs.release_tag || 'v0.8.1' }}"
           fi
           echo "tag_name=${TAG_NAME}" >> "${GITHUB_OUTPUT}"
 
@@ -346,7 +346,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.stage.outputs.tag_name }}
-          name: "NexusTS ${{ steps.stage.outputs.tag_name }} — High-Performance RDP Engine, Full Multi-Protocol Verification & \"Manage\" Workspace"
+          name: "NexusTS ${{ steps.stage.outputs.tag_name }} — RDP Capability Activation Fix, High-Throughput Dirty-Rect Engine & Multi-Protocol Suite"
           draft: false
           prerelease: ${{ contains(steps.stage.outputs.tag_name, '-') }}
           generate_release_notes: true
@@ -354,19 +354,21 @@ jobs:
             ## NexusTS ${{ steps.stage.outputs.tag_name }} (`com.nexusts.app` / `com.nexusts.app.macos`)
             **Native Remote Management & Connection Manager for Googlebook OS, Android Tablets & macOS**
 
-            > **Milestone Release (`0.8.0` / `versionCode = 10800`)**: Seamless in-place upgrade over `v0.3.0-beta.5` and earlier builds while preserving all local `.nxts` v2 vaults & Android Keystore / macOS Keychain secrets.
+            > **Hotfix & Milestone Release (`0.8.1` / `versionCode = 10801`)**: Resolves the `v0.8.0` RDP capability activation regression (`ERRCONNECT_CONNECT_TRANSPORT_FAILED` / `0x0002000D`) while retaining all zero-swizzle dirty-rectangle rendering and lock-minimal input latency optimizations. Supports one-click DMG-free macOS in-app auto-update and seamless Android APK upgrade over `v0.8.0` and earlier releases.
 
             ### Signed Deliverables (100% In-Place Upgrade Compatible)
-            - **`NexusTS-${{ steps.stage.outputs.tag_name }}-googlebook-android-release.apk`**: Cryptographically signed (APK Signature Scheme v2/v3/v4, RSA-4096) universal `arm64-v8a` + `x86_64` APK with 16 KB ELF page alignment (`0x4000`) and 100% Google Play Protect compliance (`versionCode = 10800`).
+            - **`NexusTS-${{ steps.stage.outputs.tag_name }}-googlebook-android-release.apk`**: Cryptographically signed (APK Signature Scheme v2/v3/v4, RSA-4096) universal `arm64-v8a` + `x86_64` APK with 16 KB ELF page alignment (`0x4000`) and 100% Google Play Protect compliance (`versionCode = 10801`).
             - **`NexusTS-${{ steps.stage.outputs.tag_name }}-playstore-release.aab`**: Signed Android App Bundle for optional Managed Google Play / internal distribution.
             - **`NexusTS-${{ steps.stage.outputs.tag_name }}-macOS-Universal.zip` & `.dmg`**: Self-contained Universal2 (`arm64` + `x86_64`) macOS application bundle statically linking OpenSSL 3.4 + FreeRDP 3.12 (`.zip` powers one-click in-app updates without downloading a `.dmg`).
             - **`nexusts-upload-certificate.pem` & `oauth-and-mdm-registration.json`**: Public X.509 upload certificate (`SHA-1: A6:AF:15:A9:BF:0B:FE:38:D4:66:46:3E:3E:72:A6:5B:4F:9C:4D:F6`, `SHA-256: 4A:BD:80:F1:20:14:B9:88:09:1C:97:92:2F:87:02:D1:BF:B7:93:9C:73:B6:9A:DB:1A:9B:76:30:6A:30:27:82`) and Managed Google Play `app_restrictions` template.
 
             ### Highlights in ${{ steps.stage.outputs.tag_name }}
+            - **Fixed RDP Transport & Capability Activation (`0x0002000D`)**:
+              - Restored FreeRDP 3.12 capability negotiation invariants (`BitmapCacheEnabled = FALSE`, `OffscreenSupportLevel = 0`, `ConnectionType = CONNECTION_TYPE_AUTODETECT`, `GfxSmallCache = TRUE`), eliminating pre-`PostConnect` GDI secondary/altsec order rejection during `rdp_client_wait_for_activation()`.
             - **High-Throughput FreeRDP 3.12 Engine (Googlebook/Android & macOS)**:
               - Dedicated WinPR wakeup event & lock-minimal input/resize/clipboard queue on the FreeRDP transport thread with O(1) pointer-move coalescing (eliminates UI-thread stalls and transport races).
               - Zero-swizzle opaque native pixel formats (`WINDOW_FORMAT_RGBX_8888` / `PIXEL_FORMAT_RGBX32` with partial dirty-rect `ANativeWindow_lock` blits on Android; `PIXEL_FORMAT_BGRX32` dirty-scanline copy + 60 Hz AppKit `CALayer` renderer on macOS).
-              - Enabled Fast-Path Input/Output, Frame Markers, Network Auto-Detect, Heartbeat Keep-Alive, Multi-Touch, and debounced `DISP_DVC` dynamic display resizing, plus full macOS RDP scancode/modifier/drag/wheel mapping.
+              - RDPGFX H.264 / ProgressiveV2 + RemoteFX + NSCodec, debounced `DISP_DVC` dynamic display resizing, and full macOS PC XT Set-1 scancode/modifier/drag/wheel mapping.
             - **End-to-End Multi-Protocol Verification & Wire Engines**:
               - **SSH, Telnet & Local Shell**: Live `russh` SSH with PAM `keyboard-interactive` fallback & `-L`/`-D` SOCKS5 cleanup, stateful RFC 854/855/1073/1091 Telnet (`NAWS`, `TTYPE`, `SGA`, split-chunk `IAC`), `DECCKM` Application Cursor Keys, and clean PTY lifecycle.
               - **SFTP, SCP & FTP/FTPS**: Full `russh-sftp` (`pwd`, `chmod`, `rename`), wire-level `scp -t`/`-f` over SSH, RFC 959/2428/3659 FTP (`EPSV`/`PASV`, `MLSD`/`LIST`), Explicit (`AUTH TLS`) & Implicit (`:990`) FTPS with TLS data-channel session reuse, and persistent transfer sessions across tab switches.

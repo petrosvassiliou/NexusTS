@@ -1,0 +1,3 @@
+• v0.8.1 : Correction de l'activation RDP (0x0002000D) tout en conservant le rendu dirty-rect haute performance
+• Vérification complète de SSH, SFTP, SCP, FTP/FTPS, VNC/ARD, Telnet, Série, Cloud et outils réseau
+• Menu « Studios » renommé en « Gérer » et espacement des icônes affiné

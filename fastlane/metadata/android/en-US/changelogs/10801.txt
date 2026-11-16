@@ -1,0 +1,3 @@
+• v0.8.1: Fixed RDP transport capability activation (0x0002000D) while preserving zero-swizzle dirty-rect rendering & low-latency input
+• Verified live SSH, SFTP, SCP, FTP/FTPS, VNC/ARD, Telnet, Serial UART, Containers, Cloud & Network Utilities
+• Renamed "Studios" menu to "Manage" & refined menu icon spacing

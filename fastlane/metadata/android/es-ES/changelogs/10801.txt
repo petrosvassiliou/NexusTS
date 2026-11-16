@@ -1,0 +1,3 @@
+• v0.8.1: Corregida la activación de transporte RDP (0x0002000D) manteniendo el renderizado dirty-rect de baja latencia
+• Verificación completa de SSH, SFTP, SCP, FTP/FTPS, VNC/ARD, Telnet, Serie, Nube y utilidades de red
+• Menú "Studios" renombrado a "Gestionar" y espaciado mejorado
