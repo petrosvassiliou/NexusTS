@@ -1,0 +1,1 @@
+• v0.8.4: Scala Retina HiDPI predefinita al 150% per connessioni RDP nuove ed esistenti, Dynamic Retina Resize (DISP_DVC) predefinito, avvio diretto Metal senza banner e limite H.264 >4K

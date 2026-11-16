@@ -1698,6 +1698,43 @@ public final class NativeRdpSession: @unchecked Sendable {
     private var lastRenderedSequence: UInt64 = 0
     private var lastRenderedImage: CGImage?
 
+    public static let defaultHiDpiScalePercent: Int = 150
+
+    public static func resolveEffectiveHiDpiScalePercent(
+        settings: RdpProtocolSettings,
+        backingScaleFactor: Double
+    ) -> Int {
+        guard settings.hiDpiEnabled else { return 100 }
+        let isRetinaDisplay = backingScaleFactor >= 1.5
+        if settings.desktopScaleFactorPercent > 100 {
+            if !isRetinaDisplay && settings.desktopScaleFactorPercent == defaultHiDpiScalePercent {
+                return 100
+            }
+            return min(500, max(100, settings.desktopScaleFactorPercent))
+        }
+        // Connections saved with legacy desktopScaleFactorPercent == 100 + hiDpiEnabled == true default to 150% HiDPI
+        return isRetinaDisplay ? defaultHiDpiScalePercent : 100
+    }
+
+    public static func clampSurfacePixelDimensions(
+        width: Int,
+        height: Int,
+        h264Enabled: Bool
+    ) -> (width: Int, height: Int) {
+        let maxW: Double = h264Enabled ? 3840.0 : 8192.0
+        let maxH: Double = h264Enabled ? 2160.0 : 8192.0
+        var w = Double(max(640, width))
+        var h = Double(max(480, height))
+        if w > maxW || h > maxH {
+            let scale = min(maxW / w, maxH / h)
+            w = max(640.0, (w * scale).rounded())
+            h = max(480.0, (h * scale).rounded())
+        }
+        let alignedW = min(Int(maxW), max(640, Int(w))) & ~1
+        let alignedH = min(Int(maxH), max(480, Int(h))) & ~1
+        return (alignedW, alignedH)
+    }
+
     public init(
         host: String,
         username: String,
@@ -1715,13 +1752,10 @@ public final class NativeRdpSession: @unchecked Sendable {
         let runtimeHomeDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
             .appendingPathComponent("NexusTS/freerdp_runtime", isDirectory: true)
             .path ?? ""
-        let resolvedScalePercent: Int = {
-            guard settings.hiDpiEnabled else { return 100 }
-            if settings.desktopScaleFactorPercent > 100 {
-                return min(500, max(100, settings.desktopScaleFactorPercent))
-            }
-            return min(500, max(100, Int((max(1.0, backingScaleFactor) * 100.0).rounded())))
-        }()
+        let resolvedScalePercent = Self.resolveEffectiveHiDpiScalePercent(
+            settings: settings,
+            backingScaleFactor: backingScaleFactor
+        )
         let effectiveInitialHiDpi = settings.hiDpiEnabled && resolvedScalePercent >= 125
         let resolvedDeviceScalePercent: Int = {
             guard effectiveInitialHiDpi else { return 100 }
@@ -1732,8 +1766,12 @@ public final class NativeRdpSession: @unchecked Sendable {
             if resolvedScalePercent >= 140 { return 140 }
             return 100
         }()
-        let alignedInitW = max(640, initialWidth) & ~1
-        let alignedInitH = max(480, initialHeight) & ~1
+        let h264Cap = settings.enableGfxPipeline && settings.enableH264Avc444
+        let (alignedInitW, alignedInitH) = Self.clampSurfacePixelDimensions(
+            width: initialWidth,
+            height: initialHeight,
+            h264Enabled: h264Cap
+        )
         self.initialHiDpiActive = effectiveInitialHiDpi
         self.initialPixelWidth = alignedInitW
         self.initialPixelHeight = alignedInitH

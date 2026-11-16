@@ -2,12 +2,14 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <system_error>
 #include <unordered_map>
+#include <utility>
 
 #ifdef __ANDROID__
 #include <android/log.h>
@@ -51,6 +53,41 @@ namespace {
 constexpr uint32_t align_even_h264_dimension(uint32_t raw, uint32_t min_val, uint32_t max_val) {
     const uint32_t clamped = std::clamp(raw, min_val, max_val);
     return (clamped & ~1u);
+}
+
+inline std::pair<uint32_t, uint32_t> clamp_rdp_surface_dimensions(
+    uint32_t raw_w,
+    uint32_t raw_h,
+    uint32_t min_w,
+    uint32_t min_h,
+    uint32_t max_w,
+    uint32_t max_h,
+    bool h264_enabled
+) {
+#ifndef __ANDROID__
+    // Cisco OpenH264 v2.5.0 & Windows MF H.264 RDPGFX surfaces max out at 3840x2160 (32,400 <= 36,864 macroblocks).
+    // Proportionally scale down >4K Retina viewports while preserving exact aspect ratio so RDPGFX never stalls.
+    const uint32_t effective_max_w = h264_enabled ? std::min<uint32_t>(max_w, 3840u) : max_w;
+    const uint32_t effective_max_h = h264_enabled ? std::min<uint32_t>(max_h, 2160u) : max_h;
+#else
+    (void)h264_enabled;
+    const uint32_t effective_max_w = max_w;
+    const uint32_t effective_max_h = max_h;
+#endif
+    double w = static_cast<double>(std::max(raw_w, min_w));
+    double h = static_cast<double>(std::max(raw_h, min_h));
+    if (w > static_cast<double>(effective_max_w) || h > static_cast<double>(effective_max_h)) {
+        const double scale = std::min(
+            static_cast<double>(effective_max_w) / w,
+            static_cast<double>(effective_max_h) / h
+        );
+        w = std::max(static_cast<double>(min_w), std::round(w * scale));
+        h = std::max(static_cast<double>(min_h), std::round(h * scale));
+    }
+    return {
+        align_even_h264_dimension(static_cast<uint32_t>(w), min_w, effective_max_w),
+        align_even_h264_dimension(static_cast<uint32_t>(h), min_h, effective_max_h)
+    };
 }
 
 #if defined(NEXUSTS_HAS_FREERDP3_BINARY) && NEXUSTS_HAS_FREERDP3_BINARY == 1
@@ -1039,8 +1076,16 @@ RdpSessionContext::RdpSessionContext(RdpConnectParams params)
     : params_(std::move(params)),
       active_scale_percent_(std::clamp(params_.desktop_scale_factor, 100u, 500u)),
       gdi_presenter_(std::make_unique<RdpGdiSurfacePresenter>()) {
-    const uint32_t w = align_even_h264_dimension(params_.initial_width, 320, 8192);
-    const uint32_t h = align_even_h264_dimension(params_.initial_height, 240, 8192);
+    const bool h264_cap = params_.enable_gfx_pipeline && params_.enable_h264_avc444;
+    const auto [w, h] = clamp_rdp_surface_dimensions(
+        params_.initial_width,
+        params_.initial_height,
+        320u,
+        240u,
+        8192u,
+        8192u,
+        h264_cap
+    );
     last_requested_width_.store(w, std::memory_order_relaxed);
     last_requested_height_.store(h, std::memory_order_relaxed);
     gdi_presenter_->resize_shadow_framebuffer(w, h);
@@ -1186,18 +1231,18 @@ void RdpSessionContext::drain_queued_commands_on_event_thread(void* raw_instance
                     FreeRDP_DesktopOrientation
                 );
             }
+            const bool h264_cap = params_.enable_gfx_pipeline && params_.enable_h264_avc444;
             std::vector<DISPLAY_CONTROL_MONITOR_LAYOUT> layouts;
             layouts.reserve(monitors.size());
             for (const auto& m : monitors) {
-                const uint32_t w = align_even_h264_dimension(
+                const auto [w, h] = clamp_rdp_surface_dimensions(
                     m.width,
-                    DISPLAY_CONTROL_MIN_MONITOR_WIDTH,
-                    DISPLAY_CONTROL_MAX_MONITOR_WIDTH
-                );
-                const uint32_t h = align_even_h264_dimension(
                     m.height,
+                    DISPLAY_CONTROL_MIN_MONITOR_WIDTH,
                     DISPLAY_CONTROL_MIN_MONITOR_HEIGHT,
-                    DISPLAY_CONTROL_MAX_MONITOR_HEIGHT
+                    DISPLAY_CONTROL_MAX_MONITOR_WIDTH,
+                    DISPLAY_CONTROL_MAX_MONITOR_HEIGHT,
+                    h264_cap
                 );
                 const uint32_t desk_scale = std::clamp(m.desktop_scale_factor, 100u, 500u);
                 const uint32_t dev_scale = map_device_scale_factor(desk_scale);
@@ -1778,8 +1823,16 @@ bool RdpSessionContext::request_dynamic_display_resize(
     uint32_t new_height,
     uint32_t desktop_scale_percent
 ) {
-    const uint32_t aligned_w = align_even_h264_dimension(new_width, 320, 8192);
-    const uint32_t aligned_h = align_even_h264_dimension(new_height, 240, 8192);
+    const bool h264_cap = params_.enable_gfx_pipeline && params_.enable_h264_avc444;
+    const auto [aligned_w, aligned_h] = clamp_rdp_surface_dimensions(
+        new_width,
+        new_height,
+        320u,
+        240u,
+        8192u,
+        8192u,
+        h264_cap
+    );
     const uint32_t clamped_scale = std::clamp(desktop_scale_percent, 100u, 500u);
 
 #if defined(NEXUSTS_HAS_FREERDP3_BINARY) && NEXUSTS_HAS_FREERDP3_BINARY == 1

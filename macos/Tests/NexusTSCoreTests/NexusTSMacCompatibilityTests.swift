@@ -350,11 +350,11 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
     }
 
     func testV118LocalizationUpgradeVersionAndVaultReplacementCompatibility() throws {
-        XCTAssertEqual(MacGitHubReleaseUpdater.currentVersion, "0.8.3")
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.3", isNewerThan: "0.8.2"))
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.3", isNewerThan: "0.8.1"))
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.3", isNewerThan: "0.8.0"))
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.3", isNewerThan: "0.3.0-beta.6"))
+        XCTAssertEqual(MacGitHubReleaseUpdater.currentVersion, "0.8.4")
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.4", isNewerThan: "0.8.3"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.4", isNewerThan: "0.8.2"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.4", isNewerThan: "0.8.0"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.4", isNewerThan: "0.3.0-beta.6"))
         XCTAssertEqual(LocalizedWorkspaceStrings.catalog(for: .en).studios, "Manage")
 
         for lang in NexusAppLanguage.allCases {
@@ -601,8 +601,11 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
     func testRdpMetalDirtyRegionAndRemoteCursorParityDefaults() {
         let defaultSettings = RdpProtocolSettings()
         XCTAssertFalse(defaultSettings.redirectSmartcardYubiKey)
+        XCTAssertEqual(defaultSettings.resizeBehavior, .DYNAMIC_DISP_DVC)
+        XCTAssertTrue(defaultSettings.hiDpiEnabled)
+        XCTAssertEqual(defaultSettings.desktopScaleFactorPercent, 150)
 
-        // Retina Macs (backingScaleFactor = 2.0) negotiate crisp 2x Retina (200% scale) directly in TS_UD_CS_CORE
+        // Retina Macs (backingScaleFactor = 2.0) negotiate crisp 150% HiDPI by default in TS_UD_CS_CORE
         let retinaSession = NativeRdpSession(
             host: "10.2.200.11",
             username: "admin",
@@ -614,7 +617,7 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
             backingScaleFactor: 2.0
         )
         XCTAssertTrue(retinaSession.initialHiDpiActive)
-        XCTAssertEqual(retinaSession.initialScalePercent, 200)
+        XCTAssertEqual(retinaSession.initialScalePercent, 150)
         XCTAssertEqual(retinaSession.initialPixelWidth, 2368)
         XCTAssertEqual(retinaSession.initialPixelHeight, 1624)
         XCTAssertFalse(retinaSession.hasValidFrame)
@@ -631,7 +634,29 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
         retinaSession.setFrameReadyHandler {}
         retinaSession.setFrameReadyHandler(nil)
 
-        // 1x non-Retina displays keep 100% scale without forcing 2x
+        // Existing vault connections saved with legacy desktopScaleFactorPercent == 100 + hiDpiEnabled == true also resolve to 150%
+        var legacySavedSettings = RdpProtocolSettings()
+        legacySavedSettings.desktopScaleFactorPercent = 100
+        legacySavedSettings.hiDpiEnabled = true
+        XCTAssertEqual(
+            NativeRdpSession.resolveEffectiveHiDpiScalePercent(settings: legacySavedSettings, backingScaleFactor: 2.0),
+            150
+        )
+
+        // Explicit 200% override is honored when selected
+        var explicit200 = RdpProtocolSettings()
+        explicit200.desktopScaleFactorPercent = 200
+        XCTAssertEqual(
+            NativeRdpSession.resolveEffectiveHiDpiScalePercent(settings: explicit200, backingScaleFactor: 2.0),
+            200
+        )
+
+        // >4K Retina viewports (e.g. 5K Studio Display 5120x2880) clamp proportionally to 3840x2160 when H.264/AVC444 is enabled
+        let clamped5k = NativeRdpSession.clampSurfacePixelDimensions(width: 5120, height: 2880, h264Enabled: true)
+        XCTAssertEqual(clamped5k.width, 3840)
+        XCTAssertEqual(clamped5k.height, 2160)
+
+        // 1x non-Retina displays keep 100% scale without forcing HiDPI
         let nonRetinaSession = NativeRdpSession(
             host: "10.2.200.11",
             username: "admin",

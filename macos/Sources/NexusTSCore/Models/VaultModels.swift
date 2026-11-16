@@ -335,7 +335,7 @@ public struct RdpProtocolSettings: Codable, Equatable, Hashable, Sendable {
     public var port: Int = 3389
     public var connectToConsoleAdmin: Bool = false
     public var hiDpiEnabled: Bool = true
-    public var desktopScaleFactorPercent: Int = 100
+    public var desktopScaleFactorPercent: Int = 150
     public var deviceScaleFactorPercent: Int = 100
     public var enableGfxPipeline: Bool = true
     public var enableH264Avc444: Bool = true
@@ -391,7 +391,7 @@ public struct RdpProtocolSettings: Codable, Equatable, Hashable, Sendable {
         self.port = try c.decodeIfPresent(Int.self, forKey: .port) ?? 3389
         self.connectToConsoleAdmin = try c.decodeIfPresent(Bool.self, forKey: .connectToConsoleAdmin) ?? false
         self.hiDpiEnabled = try c.decodeIfPresent(Bool.self, forKey: .hiDpiEnabled) ?? true
-        self.desktopScaleFactorPercent = try c.decodeIfPresent(Int.self, forKey: .desktopScaleFactorPercent) ?? 100
+        self.desktopScaleFactorPercent = try c.decodeIfPresent(Int.self, forKey: .desktopScaleFactorPercent) ?? 150
         self.deviceScaleFactorPercent = try c.decodeIfPresent(Int.self, forKey: .deviceScaleFactorPercent) ?? 100
         self.enableGfxPipeline = try c.decodeIfPresent(Bool.self, forKey: .enableGfxPipeline) ?? true
         self.enableH264Avc444 = try c.decodeIfPresent(Bool.self, forKey: .enableH264Avc444) ?? true

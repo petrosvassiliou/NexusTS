@@ -1742,7 +1742,7 @@ public final class WorkspaceStore: ObservableObject {
         let dom = tab.adHocDomainOverride ?? resolved.effectiveCredential?.domain ?? ""
 
         let effectiveBackingScale = max(1.0, backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0)
-        let defaultRetina = rdpSettings.hiDpiEnabled && (effectiveBackingScale >= 1.5 || rdpSettings.desktopScaleFactorPercent >= 150)
+        let defaultRetina = rdpSettings.hiDpiEnabled && (effectiveBackingScale >= 1.5 || rdpSettings.desktopScaleFactorPercent > 100)
         let useRetina = useRetinaOverride ?? defaultRetina
 
         var effectiveSettings = rdpSettings
@@ -1750,9 +1750,14 @@ public final class WorkspaceStore: ObservableObject {
             effectiveSettings.hiDpiEnabled = false
         }
 
+        let h264Cap = effectiveSettings.enableGfxPipeline && effectiveSettings.enableH264Avc444
         let (initWidth, initHeight): (Int, Int) = {
             guard rdpSettings.resizeBehavior == .DYNAMIC_DISP_DVC else {
-                return (max(640, rdpSettings.customDesktopWidth) & ~1, max(480, rdpSettings.customDesktopHeight) & ~1)
+                return NativeRdpSession.clampSurfacePixelDimensions(
+                    width: rdpSettings.customDesktopWidth,
+                    height: rdpSettings.customDesktopHeight,
+                    h264Enabled: h264Cap
+                )
             }
             let viewportPoints: CGSize = {
                 if let vp = initialViewportSize, vp.width >= 320, vp.height >= 240 {
@@ -1768,9 +1773,13 @@ public final class WorkspaceStore: ObservableObject {
                 return CGSize(width: 1280.0, height: 800.0)
             }()
             let factor = useRetina ? effectiveBackingScale : 1.0
-            let pxW = max(640, Int((viewportPoints.width * factor).rounded())) & ~1
-            let pxH = max(480, Int((viewportPoints.height * factor).rounded())) & ~1
-            return (pxW, pxH)
+            let rawW = max(640, Int((viewportPoints.width * factor).rounded()))
+            let rawH = max(480, Int((viewportPoints.height * factor).rounded()))
+            return NativeRdpSession.clampSurfacePixelDimensions(
+                width: rawW,
+                height: rawH,
+                h264Enabled: h264Cap
+            )
         }()
 
         let session = NativeRdpSession(

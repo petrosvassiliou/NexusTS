@@ -17,12 +17,15 @@ public struct RdpSessionView: View {
     @State private var scaleToFit: Bool = true
     @State private var retina2xEnabled: Bool = true
     @State private var didInitializeRetinaPref: Bool = false
+    @State private var syncedGeneration: Int = -1
     @State private var showHudBar: Bool = true
     @State private var frameDimensionsText: String = "1920×1080"
     @State private var sessionGeneration: Int = 0
     @State private var lastViewportSize: CGSize = .zero
     @State private var lastSentResizeSpec: (w: Int, h: Int, scale: Int)? = nil
     @State private var resizeDebounceTask: Task<Void, Never>? = nil
+    @State private var showDelayedSpinner: Bool = false
+    @State private var showStalledReconnect: Bool = false
 
     public init(tab: WorkspaceSessionTab) {
         self.tab = tab
@@ -35,6 +38,12 @@ public struct RdpSessionView: View {
     private var rdpSettings: RdpProtocolSettings {
         if case .rdp(let s) = latestConnection.settings { return s }
         return RdpProtocolSettings()
+    }
+
+    private var configuredHiDpiPercent: Int {
+        rdpSettings.desktopScaleFactorPercent > 100
+            ? rdpSettings.desktopScaleFactorPercent
+            : NativeRdpSession.defaultHiDpiScalePercent
     }
 
     public var body: some View {
@@ -109,10 +118,10 @@ public struct RdpSessionView: View {
                         .toggleStyle(.checkbox)
                         .font(.caption)
 
-                    Toggle("2× Retina", isOn: $retina2xEnabled)
+                    Toggle("HiDPI (\(configuredHiDpiPercent)%)", isOn: $retina2xEnabled)
                         .toggleStyle(.checkbox)
                         .font(.caption)
-                        .help("Render remote Windows desktop in crisp 2× Retina HiDPI (200% scale) or 1× logical resolution")
+                        .help("Render remote Windows desktop in crisp Retina HiDPI (\(configuredHiDpiPercent)% scale) or 1× logical resolution")
 
                     Button {
                         if store.isFullScreenSessionMode {
@@ -168,41 +177,47 @@ public struct RdpSessionView: View {
                 let backingScale = NSScreen.main?.backingScaleFactor ?? 2.0
                 let desiredRetina = didInitializeRetinaPref
                     ? retina2xEnabled
-                    : (rdpSettings.hiDpiEnabled && (backingScale >= 1.5 || rdpSettings.desktopScaleFactorPercent >= 150))
-                let session = store.rdpController(
-                    for: tab,
-                    initialViewportSize: geo.size,
-                    backingScaleFactor: backingScale,
-                    useRetinaOverride: desiredRetina
+                    : (rdpSettings.hiDpiEnabled && (backingScale >= 1.5 || rdpSettings.desktopScaleFactorPercent > 100))
+                let viewportReady = geo.size.width >= 320 && geo.size.height >= 240
+                let session: NativeRdpSession? = store.existingRdpController(for: tab) ?? (
+                    viewportReady
+                        ? store.rdpController(
+                            for: tab,
+                            initialViewportSize: geo.size,
+                            backingScaleFactor: backingScale,
+                            useRetinaOverride: desiredRetina
+                        )
+                        : nil
                 )
-                let effectiveConnected = isConnected || session.isConnected
-                let effectiveHasFrame = hasPresentedFrame || session.hasValidFrame
+                let effectiveConnected = isConnected || (session?.isConnected ?? false)
+                let effectiveHasFrame = hasPresentedFrame || (session?.hasValidFrame ?? false)
 
                 ZStack {
                     Color(red: 0.06, green: 0.07, blue: 0.09)
 
-                    // Direct Metal CAMetalLayer surface — partial dirty-rect GPU upload + 120 Hz event-driven push
-                    RdpInteractiveSurfaceNSViewRepresentable(
-                        session: session,
-                        generation: sessionGeneration,
-                        scaleToFit: scaleToFit,
-                        retina2xEnabled: desiredRetina,
-                        redirectClipboard: rdpSettings.redirectClipboard,
-                        captureRemoteShortcuts: store.remoteKeyCaptureEnabled,
-                        onTelemetryChange: { connected, connecting, hasFrame, dimsText, errorText in
-                            if isConnected != connected { isConnected = connected }
-                            if isConnecting != connecting { isConnecting = connecting }
-                            if hasPresentedFrame != hasFrame { hasPresentedFrame = hasFrame }
-                            if !dimsText.isEmpty && frameDimensionsText != dimsText {
-                                frameDimensionsText = dimsText
+                    if let session {
+                        // Direct Metal CAMetalLayer surface — always live at opacity 1.0 for zero-latency first frame presentation
+                        RdpInteractiveSurfaceNSViewRepresentable(
+                            session: session,
+                            generation: sessionGeneration,
+                            scaleToFit: scaleToFit,
+                            retina2xEnabled: desiredRetina,
+                            redirectClipboard: rdpSettings.redirectClipboard,
+                            captureRemoteShortcuts: store.remoteKeyCaptureEnabled,
+                            onTelemetryChange: { connected, connecting, hasFrame, dimsText, errorText in
+                                if isConnected != connected { isConnected = connected }
+                                if isConnecting != connecting { isConnecting = connecting }
+                                if hasPresentedFrame != hasFrame { hasPresentedFrame = hasFrame }
+                                if !dimsText.isEmpty && frameDimensionsText != dimsText {
+                                    frameDimensionsText = dimsText
+                                }
+                                if lastNativeError != errorText {
+                                    lastNativeError = errorText
+                                }
                             }
-                            if lastNativeError != errorText {
-                                lastNativeError = errorText
-                            }
-                        }
-                    )
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .opacity(effectiveHasFrame && (effectiveConnected || lastNativeError.isEmpty) ? 1.0 : 0.0)
+                        )
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
 
                     if !effectiveConnected && !isConnecting && !lastNativeError.isEmpty {
                         let diag = NexusErrorClassifier.classifyRdpError(
@@ -272,60 +287,57 @@ public struct RdpSessionView: View {
                         )
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .padding(28)
-                    } else if !effectiveHasFrame {
-                        VStack(spacing: 14) {
-                            ProtocolSquircleIcon(protocolType: latestConnection.protocolType, size: 52)
-                            Text(verbatim: "FreeRDP 3.x Native Engine • \(latestConnection.host):\(String(rdpSettings.port))")
-                                .font(.headline)
-                                .foregroundStyle(.white)
-
+                    } else if !effectiveHasFrame && showDelayedSpinner {
+                        let showActions = showStalledReconnect || (!isConnecting && !effectiveConnected)
+                        VStack(spacing: 12) {
                             HStack(spacing: 8) {
-                                if isConnecting || effectiveConnected {
-                                    ProgressView()
-                                        .controlSize(.small)
-                                }
-                                Text(
-                                    effectiveConnected
-                                        ? "Negotiating RDPGFX Desktop Surface…"
-                                        : "Connecting with NLA / CredSSP + TLS 1.3…"
-                                )
-                                .font(.subheadline)
-                                .foregroundStyle(.white.opacity(0.68))
+                                ProgressView()
+                                    .controlSize(.small)
+                                Text("Connecting to \(latestConnection.name)…")
+                                    .font(.callout)
+                                    .foregroundStyle(.white.opacity(0.72))
                             }
 
-                            HStack(spacing: 10) {
-                                Button("Reconnect") {
-                                    triggerReconnect()
-                                }
-                                .buttonStyle(.borderedProminent)
-                                .disabled(isConnecting)
+                            if showActions {
+                                HStack(spacing: 10) {
+                                    Button("Reconnect") {
+                                        triggerReconnect()
+                                    }
+                                    .controlSize(.small)
+                                    .buttonStyle(.borderedProminent)
 
-                                Button("Edit RDP Settings…") {
-                                    store.editingConnection = latestConnection
+                                    Button("Edit RDP Settings…") {
+                                        store.editingConnection = latestConnection
+                                    }
+                                    .controlSize(.small)
                                 }
                             }
                         }
+                        .allowsHitTesting(showActions)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .padding(28)
                     }
                 }
+                .task(id: "\(sessionGeneration)-\(effectiveHasFrame)") {
+                    if effectiveHasFrame {
+                        showDelayedSpinner = false
+                        showStalledReconnect = false
+                        return
+                    }
+                    showDelayedSpinner = false
+                    showStalledReconnect = false
+                    try? await Task.sleep(nanoseconds: 350_000_000)
+                    guard !Task.isCancelled, !effectiveHasFrame else { return }
+                    showDelayedSpinner = true
+                    try? await Task.sleep(nanoseconds: 7_650_000_000)
+                    guard !Task.isCancelled, !effectiveHasFrame else { return }
+                    showStalledReconnect = true
+                }
                 .onAppear {
-                    if !didInitializeRetinaPref {
-                        didInitializeRetinaPref = true
-                        retina2xEnabled = session.initialHiDpiActive
-                    }
-                    isConnected = session.isConnected
-                    isConnecting = session.isConnecting
-                    hasPresentedFrame = session.hasValidFrame
-                    lastNativeError = session.lastErrorMessage()
-                    if !session.hasValidFrame {
-                        frameDimensionsText = "\(session.initialPixelWidth)×\(session.initialPixelHeight)"
-                    }
                     lastViewportSize = geo.size
-                    if lastSentResizeSpec == nil {
-                        lastSentResizeSpec = (session.initialPixelWidth, session.initialPixelHeight, session.initialScalePercent)
+                    if let session {
+                        syncSessionInitialStateIfNeeded(session: session)
+                        scheduleDynamicResize(for: geo.size, session: session)
                     }
-                    scheduleDynamicResize(for: geo.size, session: session)
                 }
                 .onDisappear {
                     resizeDebounceTask?.cancel()
@@ -333,12 +345,36 @@ public struct RdpSessionView: View {
                 }
                 .onChange(of: geo.size) { _, newSize in
                     lastViewportSize = newSize
-                    scheduleDynamicResize(for: newSize, session: session)
+                    if let session {
+                        syncSessionInitialStateIfNeeded(session: session)
+                        scheduleDynamicResize(for: newSize, session: session)
+                    }
                 }
                 .onChange(of: retina2xEnabled) { _, _ in
-                    scheduleDynamicResize(for: lastViewportSize, session: session, immediate: true)
+                    if let session {
+                        scheduleDynamicResize(for: lastViewportSize, session: session, immediate: true)
+                    }
                 }
             }
+        }
+    }
+
+    private func syncSessionInitialStateIfNeeded(session: NativeRdpSession) {
+        guard syncedGeneration != sessionGeneration else { return }
+        syncedGeneration = sessionGeneration
+        if !didInitializeRetinaPref {
+            didInitializeRetinaPref = true
+            retina2xEnabled = session.initialHiDpiActive
+        }
+        isConnected = session.isConnected
+        isConnecting = session.isConnecting
+        hasPresentedFrame = session.hasValidFrame
+        lastNativeError = session.lastErrorMessage()
+        if !session.hasValidFrame {
+            frameDimensionsText = "\(session.initialPixelWidth)×\(session.initialPixelHeight)"
+        }
+        if lastSentResizeSpec == nil {
+            lastSentResizeSpec = (session.initialPixelWidth, session.initialPixelHeight, session.initialScalePercent)
         }
     }
 
@@ -353,9 +389,25 @@ public struct RdpSessionView: View {
         let useRetina = retina2xEnabled
         let backingScale = NSScreen.main?.backingScaleFactor ?? 2.0
         let factor = useRetina ? backingScale : 1.0
-        let pixelW = max(640, Int((viewportSize.width * factor).rounded())) & ~1
-        let pixelH = max(480, Int((viewportSize.height * factor).rounded())) & ~1
-        let scalePercent = useRetina ? Int((max(1.0, backingScale) * 100.0).rounded()) : 100
+        let rawW = max(640, Int((viewportSize.width * factor).rounded()))
+        let rawH = max(480, Int((viewportSize.height * factor).rounded()))
+        let (pixelW, pixelH) = NativeRdpSession.clampSurfacePixelDimensions(
+            width: rawW,
+            height: rawH,
+            h264Enabled: rdpSettings.enableGfxPipeline && rdpSettings.enableH264Avc444
+        )
+        let scalePercent: Int = {
+            guard useRetina else { return 100 }
+            var effective = rdpSettings
+            effective.hiDpiEnabled = true
+            if effective.desktopScaleFactorPercent <= 100 {
+                effective.desktopScaleFactorPercent = NativeRdpSession.defaultHiDpiScalePercent
+            }
+            return NativeRdpSession.resolveEffectiveHiDpiScalePercent(
+                settings: effective,
+                backingScaleFactor: max(2.0, Double(backingScale))
+            )
+        }()
 
         if let prev = lastSentResizeSpec,
            abs(pixelW - prev.w) <= 2,
@@ -382,6 +434,8 @@ public struct RdpSessionView: View {
         lastNativeError = ""
         hasPresentedFrame = false
         isConnecting = true
+        showDelayedSpinner = false
+        showStalledReconnect = false
         sessionGeneration &+= 1
         let reconnected = store.reconnectRdpSession(
             for: tab,
@@ -389,6 +443,7 @@ public struct RdpSessionView: View {
             backingScaleFactor: NSScreen.main?.backingScaleFactor ?? 2.0,
             useRetinaOverride: retina2xEnabled
         )
+        syncedGeneration = sessionGeneration
         lastSentResizeSpec = (reconnected.initialPixelWidth, reconnected.initialPixelHeight, reconnected.initialScalePercent)
         frameDimensionsText = "\(reconnected.initialPixelWidth)×\(reconnected.initialPixelHeight)"
     }
@@ -876,6 +931,8 @@ final class RdpPointerAndKeyNSView: NSView {
             mLayer.drawableSize = targetSize
             if desktopTexture != nil {
                 renderMetalDrawable()
+            } else if let session, session.hasValidFrame {
+                refreshFrameCursorAndTelemetry(forceFullUpload: true, runSlowHousekeeping: false)
             }
         }
     }
@@ -891,7 +948,9 @@ final class RdpPointerAndKeyNSView: NSView {
         case .systemDefault:
             activeRemoteCursor = .arrow
         case .custom(let cgImage, let w, let h, let hotX, let hotY):
-            let divisor: CGFloat = retina2xEnabled ? 2.0 : 1.0
+            let divisor: CGFloat = (bounds.width >= 64.0 && remoteWidth > 0)
+                ? max(1.0, CGFloat(remoteWidth) / bounds.width)
+                : (retina2xEnabled ? 2.0 : 1.0)
             let pointSize = NSSize(
                 width: max(1.0, CGFloat(w) / divisor),
                 height: max(1.0, CGFloat(h) / divisor)

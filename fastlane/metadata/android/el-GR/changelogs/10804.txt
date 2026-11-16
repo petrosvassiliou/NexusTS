@@ -1,0 +1,1 @@
+• v0.8.4: Προεπιλεγμένη κλίμακα 150% Retina HiDPI σε νέες και υπάρχουσες συνδέσεις RDP, Dynamic Retina Resize (DISP_DVC) ως προεπιλογή, άμεση έναρξη Metal χωρίς banner και όριο >4K H.264

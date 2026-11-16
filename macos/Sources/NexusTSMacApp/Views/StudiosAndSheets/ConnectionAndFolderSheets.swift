@@ -175,6 +175,26 @@ public struct ConnectionEditorSheet: View {
                     Text("Fixed Server Resolution").tag(RdpResizeBehavior.FIXED_SERVER_RESOLUTION)
                 }
                 Toggle("Retina HiDPI Scaling", isOn: $rdpSettings.hiDpiEnabled)
+                if rdpSettings.hiDpiEnabled {
+                    Picker(
+                        "HiDPI Scale",
+                        selection: Binding(
+                            get: {
+                                let raw = rdpSettings.desktopScaleFactorPercent
+                                return [125, 150, 175, 200].contains(raw) ? raw : 150
+                            },
+                            set: { newScale in
+                                rdpSettings.desktopScaleFactorPercent = newScale
+                                rdpSettings.deviceScaleFactorPercent = newScale >= 180 ? 180 : 140
+                            }
+                        )
+                    ) {
+                        Text("125%").tag(125)
+                        Text("150% (Default)").tag(150)
+                        Text("175%").tag(175)
+                        Text("200%").tag(200)
+                    }
+                }
                 Toggle("RDPGFX + H.264 AVC444 Hardware Pipeline", isOn: $rdpSettings.enableH264Avc444)
                 Toggle("Multi-Monitor Spanning", isOn: $rdpSettings.multiMonitorSpanning)
                 Toggle("Connect to Admin / Console Session (/admin)", isOn: $rdpSettings.connectToConsoleAdmin)

@@ -179,8 +179,7 @@ fun RdpSessionSurfaceView(
         when {
             !session.settings.hiDpiEnabled -> 100
             session.settings.desktopScaleFactorPercent > 100 -> session.settings.desktopScaleFactorPercent
-            density >= 2.25f -> 200
-            density >= 1.6f -> 150
+            density >= 1.5f -> 150
             density >= 1.25f -> 125
             else -> 100
         }

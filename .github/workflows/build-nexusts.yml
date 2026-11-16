@@ -21,7 +21,7 @@ on:
       release_tag:
         description: "Tag name when publishing via workflow_dispatch"
         required: false
-        default: "v0.8.3"
+        default: "v0.8.4"
         type: string
 
 permissions:
@@ -319,7 +319,7 @@ jobs:
           set -euo pipefail
           TAG_NAME="${GITHUB_REF_NAME}"
           if [[ "${TAG_NAME}" != v* ]]; then
-            TAG_NAME="${{ inputs.release_tag || 'v0.8.3' }}"
+            TAG_NAME="${{ inputs.release_tag || 'v0.8.4' }}"
           fi
           echo "tag_name=${TAG_NAME}" >> "${GITHUB_OUTPUT}"
 
@@ -346,7 +346,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.stage.outputs.tag_name }}
-          name: "NexusTS ${{ steps.stage.outputs.tag_name }} — Instant 2× Retina RDP Startup, Bidirectional CLIPRDR Sync & Mac ⌘C / ⌘V Translation"
+          name: "NexusTS ${{ steps.stage.outputs.tag_name }} — Default 150% Retina HiDPI, Silent Instant RDP Presentation & 4K H.264 Ceiling Fix"
           draft: false
           prerelease: ${{ contains(steps.stage.outputs.tag_name, '-') }}
           generate_release_notes: true
@@ -354,21 +354,19 @@ jobs:
             ## NexusTS ${{ steps.stage.outputs.tag_name }} (`com.nexusts.app` / `com.nexusts.app.macos`)
             **Native Remote Management & Connection Manager for Googlebook OS, Android Tablets & macOS**
 
-            > **RDP Speed, Retina & Clipboard Release (`0.8.3` / `versionCode = 10803`)**: Eliminates the 3–4 second RDP connection startup delay on macOS by negotiating the exact workspace pane `2×` Retina pixel dimensions + `[MS-RDPBCGR]` `DesktopPhysicalWidth`/`Height` (`200%` `DesktopScaleFactor`) directly in the initial `TS_UD_CS_CORE` handshake (zero post-connect `DISP_DVC` surface teardown/re-layout and zero PCSC/RDPSND Winlogon probe stalls), fixes `[MS-RDPECLIP]` `CLIPRDR` initialization for instant bidirectional clipboard sync, and maps macOS `⌘C` / `⌘V` / `⌘X` / `⌘A` / `⌘Z` / `⇧⌘Z` + Edit menu actions to Windows `Ctrl+<Key>` chords.
+            > **RDP HiDPI & Instant Surface Release (`0.8.4` / `versionCode = 10804`)**: Defaults Retina HiDPI scaling to **150%** (`deviceScaleFactor = 140`) across both new and existing saved `.nxts` connections (with selectable 125% / 150% / 175% / 200% picker), preserves **Dynamic Retina Resize (`DISP_DVC`)** as default, removes the intrusive `"FreeRDP 3.x Native Engine • Negotiating RDPGFX Desktop Surface…"` splash banner in favor of silent direct Metal presentation, and proportionally clamps >4K Retina H.264 surfaces within Cisco OpenH264's `3840 × 2160` hardware limit so 4K/5K/6K displays never stall on `RDPGFX` decode.
 
             ### Signed Deliverables (100% In-Place Upgrade Compatible)
-            - **`NexusTS-${{ steps.stage.outputs.tag_name }}-googlebook-android-release.apk`**: Cryptographically signed (APK Signature Scheme v2/v3/v4, RSA-4096) universal `arm64-v8a` + `x86_64` APK with 16 KB ELF page alignment (`0x4000`) and 100% Google Play Protect compliance (`versionCode = 10803`).
+            - **`NexusTS-${{ steps.stage.outputs.tag_name }}-googlebook-android-release.apk`**: Cryptographically signed (APK Signature Scheme v2/v3/v4, RSA-4096) universal `arm64-v8a` + `x86_64` APK with 16 KB ELF page alignment (`0x4000`) and 100% Google Play Protect compliance (`versionCode = 10804`).
             - **`NexusTS-${{ steps.stage.outputs.tag_name }}-playstore-release.aab`**: Signed Android App Bundle for optional Managed Google Play / internal distribution.
             - **`NexusTS-${{ steps.stage.outputs.tag_name }}-macOS-Universal.zip` & `.dmg`**: Self-contained Universal2 (`arm64` + `x86_64`) macOS application bundle statically linking OpenSSL 3.4 + Cisco OpenH264 2.5.0 + FreeRDP 3.12 (`.zip` powers one-click in-app updates without downloading a `.dmg`).
             - **`nexusts-upload-certificate.pem` & `oauth-and-mdm-registration.json`**: Public X.509 upload certificate (`SHA-1: A6:AF:15:A9:BF:0B:FE:38:D4:66:46:3E:3E:72:A6:5B:4F:9C:4D:F6`, `SHA-256: 4A:BD:80:F1:20:14:B9:88:09:1C:97:92:2F:87:02:D1:BF:B7:93:9C:73:B6:9A:DB:1A:9B:76:30:6A:30:27:82`) and Managed Google Play `app_restrictions` template.
 
             ### Highlights in ${{ steps.stage.outputs.tag_name }}
-            - **Instant RDP Startup & Crisp `2×` Retina HiDPI by Default**:
-              - Connects directly at the measured `GeometryReader` workspace viewport × `backingScaleFactor` (`2×` Retina, `DesktopScaleFactor = 200`, `DeviceScaleFactor = 180`, plus compliant millimeter `DesktopPhysicalWidth`/`DesktopPhysicalHeight` in `TS_UD_CS_CORE`) so Windows creates the H.264/RDPGFX desktop surface once at full Retina clarity without triggering a 2–3s post-connect `DISP_DVC` surface reset.
-              - Disabled unsupported virtual SmartCard (`FreeRDP_RedirectSmartCards`) and dummy `RDPSND` startup advertisements on macOS (`-DWITH_PCSC=OFF` / `-DWITH_MACAUDIO=OFF`), eliminating the 1.5–2s Windows `Winlogon` / `SCardSvr` channel probe delay, and removed premature blank `PostConnect` zero-frame presentation.
-            - **Bidirectional `CLIPRDR` Clipboard Sync + Native Mac `⌘C` / `⌘V` Translation**:
-              - Fixed `[MS-RDPECLIP]` handshake in `cliprdr_on_monitor_ready` to unconditionally send `CB_FORMAT_LIST` on `MonitorReady` so Windows `rdpclip.exe` activates immediately, pre-seeded macOS `NSPasteboard.general` on connect/app-activation/pointer-entry, and added `<1ms` event-driven UI wakeups on remote clipboard arrival.
-              - Translated macOS `⌘C`, `⌘V`, `⌘X`, `⌘A`, `⌘Z`, `⇧⌘Z` / `⌘Y`, `⌘F`, `⌘S` (plus macOS `Edit` menu `Copy`/`Paste`/`Cut`/`Select All`/`Undo`/`Redo` responder actions) to clean Windows `Ctrl+<Key>` chords across QWERTY, QWERTZ, AZERTY, and non-Latin keyboard layouts.
+            - **Default `150%` Retina HiDPI Scaling + `Dynamic Retina Resize (DISP_DVC)`**:
+              - Negotiates `DesktopScaleFactor = 150` (`DeviceScaleFactor = 140`) by default on Retina displays for both newly created and previously saved `.nxts` connections, with a configurable `HiDPI Scale` picker (`125%`, `150% (Default)`, `175%`, `200%`) in Connection Settings and live `HiDPI (150%)` session HUD toggle while keeping `Dynamic Retina Resize (DISP_DVC)` active by default.
+            - **Zero-Banner Direct Metal Presentation & >4K OpenH264 Surface Guard**:
+              - Removed the `"FreeRDP 3.x Native Engine • Negotiating RDPGFX Desktop Surface…"` splash screen, kept `CAMetalLayer` live at `opacity = 1.0` after `GeometryReader` layout settles, and proportionally clamped H.264/AVC444 `RDPGFX` surfaces within `3840 × 2160` (`32,400 <= 36,864` macroblocks) so 4K/5K/6K Retina monitors render frame #1 instantaneously without decoder rejection.
           files: release-assets/*
 
       - name: Check Optional Google Play Service Account Secret

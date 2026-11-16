@@ -1,0 +1,1 @@
+• v0.8.4: Default 150% Retina HiDPI scaling across new and existing RDP connections (with 125%–200% picker), Dynamic Retina Resize (DISP_DVC) by default, silent direct Metal startup without the negotiating banner, and >4K H.264 OpenH264 ceiling clamp
