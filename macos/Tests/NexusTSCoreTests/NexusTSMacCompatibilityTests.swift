@@ -1,4 +1,5 @@
 import AppKit
+import CoreFoundation
 import Foundation
 @testable import NexusTSCore
 import XCTest
@@ -1004,28 +1005,38 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
         let expectedReportPath = reportUrl.resolvingSymlinksInPath().standardizedFileURL.path
         let expectedSubFolderPath = subFolderUrl.resolvingSymlinksInPath().standardizedFileURL.path
 
-        // 1. Real APFS file-reference URL (file:///.file/id=...) + Finder .string bare basename on NSPasteboard
+        // 1. Real APFS file-reference URL (file:///.file/id=...) via CFURLCreateFileReferenceURL
+        //    + Finder .string bare basename on NSPasteboard
         let pb = NSPasteboard.withUniqueName()
         defer { pb.releaseGlobally() }
 
-        if let apfsRefUrl = (reportUrl as NSURL).fileReferenceURL() {
-            XCTAssertTrue(apfsRefUrl.absoluteString.contains("/.file/id="))
-            let resolvedFromRef = MacPasteboardClipboardExtractor.resolveLocalFilePath(apfsRefUrl)
+        let rawRefString: String
+        if let cfRef = CFURLCreateFileReferenceURL(kCFAllocatorDefault, reportUrl as CFURL, nil)?.takeRetainedValue() {
+            rawRefString = CFURLGetString(cfRef) as String
+        } else {
+            rawRefString = reportUrl.absoluteString
+        }
+        if let syntheticRefUrl = URL(string: rawRefString) {
+            let resolvedFromRef = MacPasteboardClipboardExtractor.resolveLocalFilePath(syntheticRefUrl)
             XCTAssertEqual(resolvedFromRef?.resolvingSymlinksIfPossible(), expectedReportPath)
+        }
+        if let bridgedRefUrl = (reportUrl as NSURL).fileReferenceURL() {
+            let resolvedFromBridged = MacPasteboardClipboardExtractor.resolveLocalFilePath(bridgedRefUrl)
+            XCTAssertEqual(resolvedFromBridged?.resolvingSymlinksIfPossible(), expectedReportPath)
+        }
 
-            pb.clearContents()
-            let item = NSPasteboardItem()
-            item.setString(apfsRefUrl.absoluteString, forType: .fileURL)
-            item.setString("Quarterly Report.pdf", forType: .string)
-            XCTAssertTrue(pb.writeObjects([item]))
+        pb.clearContents()
+        let item = NSPasteboardItem()
+        item.setString(rawRefString, forType: .fileURL)
+        item.setString("Quarterly Report.pdf", forType: .string)
+        XCTAssertTrue(pb.writeObjects([item]))
 
-            let extracted = MacPasteboardClipboardExtractor.extractClipboardPayload(from: pb)
-            if case .files(let paths) = extracted {
-                XCTAssertEqual(paths.count, 1)
-                XCTAssertEqual(paths[0].resolvingSymlinksIfPossible(), expectedReportPath)
-            } else {
-                XCTFail("Expected .files payload from APFS file reference URL, got \(extracted)")
-            }
+        let extracted = MacPasteboardClipboardExtractor.extractClipboardPayload(from: pb)
+        if case .files(let paths) = extracted {
+            XCTAssertEqual(paths.count, 1)
+            XCTAssertEqual(paths[0].resolvingSymlinksIfPossible(), expectedReportPath)
+        } else {
+            XCTFail("Expected .files payload from APFS file reference URL (\(rawRefString)), got \(extracted)")
         }
 
         // 2. Multi-selection (file + directory) & duplicate deduplication

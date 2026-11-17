@@ -2,6 +2,7 @@
 import AppKit
 #endif
 import CNexusTSNative
+import CoreFoundation
 import CoreGraphics
 import Foundation
 
@@ -2452,8 +2453,9 @@ public enum MacPasteboardClipboardExtractor {
 
     public static func resolveLocalFilePath(_ url: URL) -> String? {
         guard url.isFileURL else { return nil }
+        let cfPathUrl: URL? = CFURLCreateFilePathURL(kCFAllocatorDefault, url as CFURL, nil)?.takeRetainedValue() as URL?
         let nsUrl = url as NSURL
-        let pathUrl = nsUrl.filePathURL ?? url
+        let pathUrl = cfPathUrl ?? nsUrl.filePathURL ?? url
         var resolvedPath = pathUrl.standardizedFileURL.path
         if resolvedPath.isEmpty || resolvedPath.hasPrefix("/.file/") {
             if let canonical = try? url.resourceValues(forKeys: [.canonicalPathKey]).canonicalPath,
