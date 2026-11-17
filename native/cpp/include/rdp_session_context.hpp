@@ -2,12 +2,14 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 #ifdef __ANDROID__
@@ -27,6 +29,31 @@ constexpr uint32_t map_device_scale_factor(uint32_t desktop_scale_percent) noexc
     }
     return 100u;
 }
+
+enum class RdpClipboardContentKind : uint8_t {
+    None = 0,
+    Text = 1,
+    Files = 2
+};
+
+struct RdpClipboardFileEntry {
+    std::string relative_win_path;
+    std::string local_posix_path;
+    uint64_t file_size{0};
+    uint64_t last_write_filetime{0};
+    bool is_directory{false};
+    bool has_known_size{true};
+};
+
+std::vector<uint8_t> serialize_cliprdr_file_list(const std::vector<RdpClipboardFileEntry>& entries);
+bool parse_and_sanitize_cliprdr_file_list(
+    const uint8_t* data,
+    size_t data_len,
+    std::vector<RdpClipboardFileEntry>& out_entries
+);
+std::vector<RdpClipboardFileEntry> build_local_clipboard_file_entries(
+    const std::vector<std::string>& root_paths
+);
 
 struct RdpMonitorLayout {
     int32_t monitor_id{0};
@@ -143,9 +170,17 @@ public:
     void push_pcm_playback(const int16_t* pcm_frames, size_t frame_count);
 
     void on_local_clipboard_text(const std::string& utf8_text);
+    void on_local_clipboard_files(const std::vector<std::string>& root_paths);
     void on_remote_clipboard_text(const std::string& utf8_text);
+    void on_remote_clipboard_files(const std::vector<std::string>& staged_root_paths);
+    void mark_remote_clipboard_owner_changed();
+
+    RdpClipboardContentKind local_clipboard_kind() const;
+    RdpClipboardContentKind remote_clipboard_kind() const;
     std::string local_clipboard_text() const;
+    std::shared_ptr<const std::vector<RdpClipboardFileEntry>> local_clipboard_files() const;
     std::string latest_remote_clipboard_text() const;
+    std::vector<std::string> latest_remote_clipboard_files() const;
     uint64_t remote_clipboard_sequence() const noexcept {
         return remote_clipboard_seq_.load(std::memory_order_acquire);
     }
@@ -158,8 +193,12 @@ public:
 
 private:
     mutable std::mutex channel_mutex_;
+    RdpClipboardContentKind local_kind_{RdpClipboardContentKind::None};
+    RdpClipboardContentKind remote_kind_{RdpClipboardContentKind::None};
     std::string local_clipboard_utf8_;
+    std::shared_ptr<const std::vector<RdpClipboardFileEntry>> local_clipboard_files_;
     std::string remote_clipboard_utf8_;
+    std::vector<std::string> remote_clipboard_files_;
     std::atomic<uint64_t> remote_clipboard_seq_{0};
     [[maybe_unused]] void* aaudio_out_stream_{nullptr};
     [[maybe_unused]] void* aaudio_in_stream_{nullptr};
@@ -314,6 +353,7 @@ public:
 
     bool connect();
     void disconnect();
+    void logoff_remote_session();
     bool is_connected() const noexcept { return connected_.load(std::memory_order_acquire); }
     bool is_reconnecting() const noexcept { return reconnecting_.load(std::memory_order_acquire); }
     uint32_t reconnect_attempt() const noexcept { return reconnect_attempt_.load(std::memory_order_acquire); }
@@ -325,6 +365,36 @@ public:
     void set_cliprdr_context(void* cliprdr_context);
     void set_cliprdr_ready(bool ready) noexcept;
     void announce_local_clipboard_to_remote();
+    void request_synchronized_paste();
+
+    void on_cliprdr_monitor_ready_sent();
+    void on_cliprdr_server_capabilities(uint32_t general_flags) noexcept;
+    uint32_t cliprdr_server_capabilities() const noexcept {
+        return server_clip_caps_.load(std::memory_order_acquire);
+    }
+    void on_cliprdr_server_format_list_response(bool ok);
+    void lock_local_clipboard_files(uint32_t clip_data_id);
+    void unlock_local_clipboard_files(uint32_t clip_data_id);
+    std::shared_ptr<const std::vector<RdpClipboardFileEntry>> resolve_local_clipboard_files(
+        bool has_clip_data_id,
+        uint32_t clip_data_id
+    );
+    void begin_remote_file_list_fetch(void* cliprdr_ctx, uint32_t format_id);
+    uint32_t server_file_group_format_id() const noexcept {
+        return server_fgd_format_id_.load(std::memory_order_acquire);
+    }
+    void handle_remote_file_group_descriptor_response(
+        void* cliprdr_ctx,
+        const uint8_t* data,
+        size_t data_len
+    );
+    void handle_remote_file_contents_response(
+        void* cliprdr_ctx,
+        uint32_t stream_id,
+        bool ok,
+        const uint8_t* data,
+        size_t data_len
+    );
 
     /**
      * Sends MS-RDPEDI (`DISP_DVC`) Display Control PDU to dynamically resize remote desktop
@@ -398,15 +468,35 @@ private:
         bool is_extended{false};
     };
 
+    struct RemoteFileTransferState {
+        bool active{false};
+        bool has_lock{false};
+        uint32_t clip_data_id{0};
+        uint64_t batch_id{0};
+        std::string batch_root_dir;
+        std::vector<RdpClipboardFileEntry> entries;
+        std::vector<std::string> top_level_staged_paths;
+        size_t current_index{0};
+        bool awaiting_size{false};
+        uint32_t active_stream_id{0};
+        uint64_t current_offset{0};
+        uint64_t total_bytes_written{0};
+    };
+
     void render_diagnostic_surface_frame(uint32_t width, uint32_t height);
     void signal_event_loop_wakeup() noexcept;
     void drain_queued_commands_on_event_thread(void* raw_instance);
+    void enqueue_ctrl_v_locked();
+    void advance_remote_file_transfer_locked(void* cliprdr_ctx);
+    void abort_remote_file_transfer_locked(void* cliprdr_ctx);
 
     RdpConnectParams params_;
+    std::string resolved_runtime_home_;
     std::atomic<bool> connected_{false};
     std::atomic<bool> reconnecting_{false};
     std::atomic<uint32_t> reconnect_attempt_{0};
     std::atomic<bool> stop_requested_{false};
+    std::atomic<bool> logoff_requested_{false};
     std::atomic<bool> wakeup_signaled_{false};
     std::atomic<uint32_t> active_scale_percent_{100};
     std::atomic<uint32_t> last_requested_width_{0};
@@ -437,9 +527,21 @@ private:
     std::vector<RdpMonitorLayout> pending_monitors_;
     [[maybe_unused]] bool has_pending_monitors_{false};
     [[maybe_unused]] bool pending_clipboard_announce_{false};
+    [[maybe_unused]] bool awaiting_format_list_response_{false};
+    [[maybe_unused]] bool pending_synchronized_paste_{false};
+    [[maybe_unused]] bool pending_logoff_command_{false};
+    std::chrono::steady_clock::time_point format_list_sent_tp_{};
+    std::chrono::steady_clock::time_point logoff_command_due_tp_{};
     std::atomic<void*> disp_context_{nullptr};
     std::atomic<bool> cliprdr_ready_{false};
+    std::atomic<uint32_t> server_clip_caps_{0};
+    std::atomic<uint32_t> server_fgd_format_id_{0};
     void* cliprdr_context_{nullptr};
+    uint32_t next_client_clip_data_id_{1};
+    uint32_t next_client_stream_id_{1};
+    uint64_t next_remote_clip_batch_id_{1};
+    std::unordered_map<uint32_t, std::shared_ptr<const std::vector<RdpClipboardFileEntry>>> locked_local_file_snapshots_;
+    RemoteFileTransferState remote_file_transfer_{};
 };
 
 } // namespace nexusts::rdp

@@ -181,18 +181,19 @@ public struct ConnectionEditorSheet: View {
                         selection: Binding(
                             get: {
                                 let raw = rdpSettings.desktopScaleFactorPercent
-                                return [125, 150, 175, 200].contains(raw) ? raw : 150
+                                return [125, 150, 175, 200].contains(raw) ? raw : 200
                             },
                             set: { newScale in
                                 rdpSettings.desktopScaleFactorPercent = newScale
-                                rdpSettings.deviceScaleFactorPercent = newScale >= 180 ? 180 : 140
+                                rdpSettings.deviceScaleFactorPercent = newScale >= 175 ? 180 : 140
+                                rdpSettings.hiDpiScaleCustomized = true
                             }
                         )
                     ) {
                         Text("125%").tag(125)
-                        Text("150% (Default)").tag(150)
+                        Text("150%").tag(150)
                         Text("175%").tag(175)
-                        Text("200%").tag(200)
+                        Text("200% (Default)").tag(200)
                     }
                 }
                 Picker(
@@ -359,7 +360,9 @@ public struct ConnectionEditorSheet: View {
     private func assembledSettings() -> ProtocolSpecificSettings {
         switch protocolType {
         case .RDP, .WINDOWS_TERMINAL_SERVICES:
-            return .rdp(rdpSettings)
+            var savedRdp = rdpSettings
+            savedRdp.hiDpiScaleCustomized = true
+            return .rdp(savedRdp)
         case .SSH, .TELNET:
             return .ssh(sshSettings)
         case .SFTP, .FTP, .FTPS, .SCP:

@@ -1,0 +1,1 @@
+• v0.8.6: Synchronisiertes RDP-Text- & bidirektionales Datei-/Ordner-Kopieren/Einfügen (CLIPRDR), Retina-HiDPI-Standard zurück auf 200 % sowie „Trennen“ und „Sitzung abmelden“ in Seitenleisten- & Tab-Kontextmenüs

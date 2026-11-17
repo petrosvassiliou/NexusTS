@@ -1006,6 +1006,22 @@ struct SidebarConnectionRow: View {
                 Label("Connect", systemImage: "play.fill")
             }
 
+            if liveCount > 0 {
+                Button {
+                    store.disconnectConnection(connection.id)
+                } label: {
+                    Label(store.strings.disconnectSession, systemImage: "xmark.circle")
+                }
+
+                if store.hasActiveRdpSession(forConnectionId: connection.id) {
+                    Button(role: .destructive) {
+                        store.logOffConnectionSessions(connection.id)
+                    } label: {
+                        Label(store.strings.logOffSession, systemImage: "rectangle.portrait.and.arrow.right")
+                    }
+                }
+            }
+
             Button {
                 store.selectedConnectionId = connection.id
                 store.editingConnection = connection

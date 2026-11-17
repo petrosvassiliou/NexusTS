@@ -282,6 +282,30 @@ struct NexusMenuBarCommands: Commands {
 
             Divider()
 
+            let focusedTab = store.focusedOrFirstActiveTab
+            let focusedTabIsRdp = focusedTab.map {
+                !$0.isLocalShell && (
+                    $0.connection.protocolType == .RDP ||
+                    $0.connection.protocolType == .WINDOWS_TERMINAL_SERVICES
+                )
+            } ?? false
+
+            Button(store.strings.disconnectSession) {
+                if let tab = store.focusedOrFirstActiveTab {
+                    store.closeTab(tab.id)
+                }
+            }
+            .disabled(store.isVaultLocked || focusedTab == nil)
+
+            Button(store.strings.logOffSession) {
+                if let tab = store.focusedOrFirstActiveTab {
+                    store.logOffTabSession(tab.id)
+                }
+            }
+            .disabled(store.isVaultLocked || !focusedTabIsRdp)
+
+            Divider()
+
             Button(MacWorkspaceShortcut.syncNow.title(in: store.strings)) {
                 Task { await store.syncCloudNow(reportErrors: true) }
             }

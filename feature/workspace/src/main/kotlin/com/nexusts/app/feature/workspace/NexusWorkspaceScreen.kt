@@ -38,6 +38,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.automirrored.outlined.Logout
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.filled.Folder as FilledFolderIcon
 import androidx.compose.material.icons.filled.FolderOpen as FilledFolderOpenIcon
@@ -386,6 +387,8 @@ fun NexusWorkspaceScreen(
             detachToDisplayPrefix = strings.detachToDisplayPrefix,
             toggleBroadcastLabel = strings.toggleBroadcast,
             reconnectTabLabel = strings.actionReconnectTab,
+            disconnectTabLabel = strings.actionDisconnectSession,
+            logOffSessionLabel = strings.actionLogOffSession,
             closeTabLabel = strings.closeTab,
             emptyWorkspaceTitle = strings.emptyWorkspaceTitle,
             emptyWorkspaceSubtitle = strings.emptyWorkspaceSubtitle
@@ -421,6 +424,7 @@ fun NexusWorkspaceScreen(
                     onForwardRawKeyToActiveSession = viewModel::forwardRawKeyToFocusedSession,
                     onSelectTab = viewModel::selectTabGlobally,
                     onCloseTab = viewModel::closeSessionTab,
+                    onLogOffTab = viewModel::logOffTabSession,
                     onExitFullScreen = viewModel::exitFullScreenSessionMode,
                     onOpenQuickConnect = {
                         viewModel.handleShortcut(NexusShortcutAction.QUICK_CONNECT_PALETTE) {}
@@ -561,6 +565,9 @@ fun NexusWorkspaceScreen(
                     onDeleteConnection = viewModel::deleteConnection,
                     onDisconnectConnection = { connId ->
                         viewModel.disconnectConnectionSessions(connId)
+                    },
+                    onLogOffConnection = { connId ->
+                        viewModel.logOffConnectionSessions(connId)
                     },
                     onOpenMoveConnectionDialog = viewModel::openMoveConnectionDialog,
                     onMoveConnectionToFolder = { connId, targetFolderId ->
@@ -707,6 +714,7 @@ fun NexusWorkspaceScreen(
                         onFocusPane = viewModel.tilingController::focusPane,
                         onSelectTab = viewModel.tilingController::selectTab,
                         onCloseTab = viewModel::closeSessionTab,
+                        onLogOffTab = { tab -> viewModel.logOffTabSession(tab.tabId) },
                         onSplitPane = { paneId, orientation ->
                             viewModel.tilingController.splitPane(paneId, orientation)
                         },
@@ -784,6 +792,9 @@ fun NexusWorkspaceScreen(
                                 onDeleteConnection = viewModel::deleteConnection,
                                 onDisconnectConnection = { connId ->
                                     viewModel.disconnectConnectionSessions(connId)
+                                },
+                                onLogOffConnection = { connId ->
+                                    viewModel.logOffConnectionSessions(connId)
                                 },
                                 onMoveConnectionToFolder = viewModel::openMoveConnectionDialog,
                                 onLaunchLocalShell = viewModel::launchLocalShellTab,
@@ -1075,6 +1086,7 @@ private fun FullScreenSessionWorkspace(
     onForwardRawKeyToActiveSession: (com.nexusts.app.core.ui.input.RawHardwareKeyPacket) -> Boolean,
     onSelectTab: (String) -> Unit,
     onCloseTab: (String) -> Unit,
+    onLogOffTab: (String) -> Unit = {},
     onExitFullScreen: () -> Unit,
     onOpenQuickConnect: () -> Unit,
     onNewConnection: () -> Unit,
@@ -1249,78 +1261,134 @@ private fun FullScreenSessionWorkspace(
                             ) {
                                 allActiveTabs.forEach { tab ->
                                     key(tab.tabId) {
+                                        var fsTabMenuOpen by remember { mutableStateOf(false) }
                                         val isCurrent = tab.tabId == activeTab.tabId
                                         val accent = parseHexColorOrNull(tab.customColorHex)
                                             ?: protocolAccentColor(tab.protocol)
                                         val chipShape = RoundedCornerShape(8.dp)
-                                        Row(
-                                            modifier = Modifier
-                                                .height(28.dp)
-                                                .clip(chipShape)
-                                                .background(
-                                                    if (isCurrent) {
-                                                        accent.copy(alpha = 0.22f)
-                                                    } else {
-                                                        Color(0xFF162032)
-                                                    },
-                                                    chipShape
-                                                )
-                                                .border(
-                                                    width = if (isCurrent) 1.dp else 0.7.dp,
-                                                    color = if (isCurrent) accent else Color(0xFF293548),
-                                                    shape = chipShape
-                                                )
-                                                .padding(end = 4.dp),
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(3.dp)
-                                        ) {
+                                        Box {
                                             Row(
                                                 modifier = Modifier
-                                                    .fillMaxHeight()
-                                                    .clickable {
-                                                        isFolderBrowserOpen = false
-                                                        onSelectTab(tab.tabId)
-                                                    }
-                                                    .padding(start = 8.dp, end = 4.dp),
+                                                    .height(28.dp)
+                                                    .clip(chipShape)
+                                                    .background(
+                                                        if (isCurrent) {
+                                                            accent.copy(alpha = 0.22f)
+                                                        } else {
+                                                            Color(0xFF162032)
+                                                        },
+                                                        chipShape
+                                                    )
+                                                    .border(
+                                                        width = if (isCurrent) 1.dp else 0.7.dp,
+                                                        color = if (isCurrent) accent else Color(0xFF293548),
+                                                        shape = chipShape
+                                                    )
+                                                    .padding(end = 4.dp),
                                                 verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                                horizontalArrangement = Arrangement.spacedBy(3.dp)
                                             ) {
-                                                Icon(
-                                                    imageVector = protocolIcon(tab.protocol),
-                                                    contentDescription = null,
-                                                    tint = accent,
-                                                    modifier = Modifier.size(13.dp)
-                                                )
-                                                Text(
-                                                    text = tab.title,
-                                                    style = MaterialTheme.typography.labelMedium,
-                                                    color = if (isCurrent) Color.White else Color(0xFFCBD5E1),
-                                                    maxLines = 1,
-                                                    overflow = TextOverflow.Ellipsis,
-                                                    modifier = Modifier.widthIn(max = 160.dp)
-                                                )
-                                            }
-                                            Box(
-                                                modifier = Modifier
-                                                    .size(18.dp)
-                                                    .clip(CircleShape)
-                                                    .semantics(mergeDescendants = true) {
-                                                        onClick {
-                                                            onCloseTab(tab.tabId)
-                                                            true
+                                                Row(
+                                                    modifier = Modifier
+                                                        .fillMaxHeight()
+                                                        .combinedClickable(
+                                                            onClick = {
+                                                                isFolderBrowserOpen = false
+                                                                onSelectTab(tab.tabId)
+                                                            },
+                                                            onLongClick = { fsTabMenuOpen = true }
+                                                        )
+                                                        .pointerInput(tab.tabId) {
+                                                            awaitPointerEventScope {
+                                                                while (true) {
+                                                                    val ev = awaitPointerEvent()
+                                                                    if (ev.type == PointerEventType.Press && ev.buttons.isSecondaryPressed) {
+                                                                        ev.changes.forEach { it.consume() }
+                                                                        fsTabMenuOpen = true
+                                                                    }
+                                                                }
+                                                            }
                                                         }
-                                                    }
-                                                    .pointerInput(tab.tabId) {
-                                                        detectTapGestures { onCloseTab(tab.tabId) }
-                                                    },
-                                                contentAlignment = Alignment.Center
+                                                        .padding(start = 8.dp, end = 4.dp),
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                                ) {
+                                                    Icon(
+                                                        imageVector = protocolIcon(tab.protocol),
+                                                        contentDescription = null,
+                                                        tint = accent,
+                                                        modifier = Modifier.size(13.dp)
+                                                    )
+                                                    Text(
+                                                        text = tab.title,
+                                                        style = MaterialTheme.typography.labelMedium,
+                                                        color = if (isCurrent) Color.White else Color(0xFFCBD5E1),
+                                                        maxLines = 1,
+                                                        overflow = TextOverflow.Ellipsis,
+                                                        modifier = Modifier.widthIn(max = 160.dp)
+                                                    )
+                                                }
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(18.dp)
+                                                        .clip(CircleShape)
+                                                        .semantics(mergeDescendants = true) {
+                                                            onClick {
+                                                                onCloseTab(tab.tabId)
+                                                                true
+                                                            }
+                                                        }
+                                                        .pointerInput(tab.tabId) {
+                                                            detectTapGestures { onCloseTab(tab.tabId) }
+                                                        },
+                                                    contentAlignment = Alignment.Center
+                                                ) {
+                                                    Icon(
+                                                        imageVector = Icons.Outlined.Close,
+                                                        contentDescription = "${strings.closeTab}: ${tab.title}",
+                                                        tint = Color(0xFF94A3B8),
+                                                        modifier = Modifier.size(11.dp)
+                                                    )
+                                                }
+                                            }
+                                            DropdownMenu(
+                                                expanded = fsTabMenuOpen,
+                                                onDismissRequest = { fsTabMenuOpen = false },
+                                                shape = NexusDropdownMenuShape
                                             ) {
-                                                Icon(
-                                                    imageVector = Icons.Outlined.Close,
-                                                    contentDescription = "${strings.closeTab}: ${tab.title}",
-                                                    tint = Color(0xFF94A3B8),
-                                                    modifier = Modifier.size(11.dp)
+                                                NexusSpacedDropdownMenuItem(
+                                                    text = { Text(strings.actionDisconnectSession) },
+                                                    leadingIcon = {
+                                                        Icon(Icons.Outlined.PowerSettingsNew, contentDescription = null)
+                                                    },
+                                                    onClick = {
+                                                        fsTabMenuOpen = false
+                                                        onCloseTab(tab.tabId)
+                                                    }
                                                 )
+                                                if (tab.protocol == SessionProtocolKind.RDP ||
+                                                    tab.protocol == SessionProtocolKind.WINDOWS_TS
+                                                ) {
+                                                    NexusSpacedDropdownMenuItem(
+                                                        text = {
+                                                            Text(
+                                                                strings.actionLogOffSession,
+                                                                color = MaterialTheme.colorScheme.error
+                                                            )
+                                                        },
+                                                        leadingIcon = {
+                                                            Icon(
+                                                                Icons.AutoMirrored.Outlined.Logout,
+                                                                contentDescription = null,
+                                                                tint = MaterialTheme.colorScheme.error
+                                                            )
+                                                        },
+                                                        onClick = {
+                                                            fsTabMenuOpen = false
+                                                            onLogOffTab(tab.tabId)
+                                                        }
+                                                    )
+                                                }
                                             }
                                         }
                                     }
@@ -3122,6 +3190,7 @@ private fun VaultHierarchySidebarTree(
     onDuplicateConnection: (VaultConnection) -> Unit,
     onDeleteConnection: (String) -> Unit,
     onDisconnectConnection: (String) -> Unit = {},
+    onLogOffConnection: (String) -> Unit = {},
     onOpenMoveConnectionDialog: (VaultConnection) -> Unit = {},
     onMoveConnectionToFolder: (String, String?) -> Unit = { _, _ -> },
     canMoveFolderToParent: (String, String?) -> Boolean = { _, _ -> false },
@@ -3568,6 +3637,7 @@ private fun VaultHierarchySidebarTree(
                                         onDuplicate = { onDuplicateConnection(conn) },
                                         onDelete = { onDeleteConnection(conn.id) },
                                         onDisconnect = { onDisconnectConnection(conn.id) },
+                                        onLogOff = { onLogOffConnection(conn.id) },
                                         onOpenMoveDialog = { onOpenMoveConnectionDialog(conn) },
                                         onMoveToFolder = { targetFolderId -> onMoveConnectionToFolder(conn.id, targetFolderId) },
                                         onLaunch = { placement -> onLaunchConnection(conn, placement) },
@@ -3617,6 +3687,7 @@ private fun VaultHierarchySidebarTree(
                                         onDuplicate = { onDuplicateConnection(conn) },
                                         onDelete = { onDeleteConnection(conn.id) },
                                         onDisconnect = { onDisconnectConnection(conn.id) },
+                                        onLogOff = { onLogOffConnection(conn.id) },
                                         onOpenMoveDialog = { onOpenMoveConnectionDialog(conn) },
                                         onMoveToFolder = { targetFolderId -> onMoveConnectionToFolder(conn.id, targetFolderId) },
                                         onLaunch = { placement -> onLaunchConnection(conn, placement) },
@@ -3770,6 +3841,7 @@ private fun VaultHierarchySidebarTree(
                                             onDuplicate = { onDuplicateConnection(conn) },
                                             onDelete = { onDeleteConnection(conn.id) },
                                             onDisconnect = { onDisconnectConnection(conn.id) },
+                                        onLogOff = { onLogOffConnection(conn.id) },
                                             onOpenMoveDialog = { onOpenMoveConnectionDialog(conn) },
                                             onMoveToFolder = { targetFolderId -> onMoveConnectionToFolder(conn.id, targetFolderId) },
                                             onReorderRelativeTo = { targetConnId, placeAfter ->
@@ -3812,6 +3884,7 @@ private fun VaultHierarchySidebarTree(
                                     onDuplicate = { onDuplicateConnection(conn) },
                                     onDelete = { onDeleteConnection(conn.id) },
                                     onDisconnect = { onDisconnectConnection(conn.id) },
+                                    onLogOff = { onLogOffConnection(conn.id) },
                                     onOpenMoveDialog = { onOpenMoveConnectionDialog(conn) },
                                     onMoveToFolder = { targetFolderId -> onMoveConnectionToFolder(conn.id, targetFolderId) },
                                     onReorderRelativeTo = { targetConnId, placeAfter ->
@@ -3947,6 +4020,7 @@ private fun VaultHierarchySidebarTree(
                                             onDuplicate = { onDuplicateConnection(conn) },
                                             onDelete = { onDeleteConnection(conn.id) },
                                             onDisconnect = { onDisconnectConnection(conn.id) },
+                                        onLogOff = { onLogOffConnection(conn.id) },
                                             onOpenMoveDialog = { onOpenMoveConnectionDialog(conn) },
                                             onLaunch = { placement -> onLaunchConnection(conn, placement) },
                                             onLaunchSplitDown = { onLaunchConnectionInSplitDown(conn) }
@@ -5463,6 +5537,7 @@ private fun ConnectionTreeRow(
     onLaunch: (QuickLaunchPlacement) -> Unit,
     onLaunchSplitDown: () -> Unit = {},
     onDisconnect: () -> Unit = {},
+    onLogOff: () -> Unit = {},
     onOpenMoveDialog: () -> Unit = {},
     onMoveToFolder: (String?) -> Unit = {},
     onReorderRelativeTo: (String, Boolean) -> Unit = { _, _ -> },
@@ -5796,6 +5871,29 @@ private fun ConnectionTreeRow(
                         onDisconnect()
                     }
                 )
+                if (connection.protocol == VaultProtocolType.RDP ||
+                    connection.protocol == VaultProtocolType.WINDOWS_TERMINAL_SERVICES
+                ) {
+                    NexusSpacedDropdownMenuItem(
+                        text = {
+                            Text(
+                                "${strings.actionLogOffSession} ($activeSessionCount)",
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        },
+                        leadingIcon = {
+                            Icon(
+                                Icons.AutoMirrored.Outlined.Logout,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.error
+                            )
+                        },
+                        onClick = {
+                            contextMenuOpen = false
+                            onLogOff()
+                        }
+                    )
+                }
             }
             NexusMenuDivider()
             NexusSpacedDropdownMenuItem(
@@ -7486,7 +7584,7 @@ private fun PlayProtectAutoUpdateDialog(
                                     ).trim()
                                     else -> String.format(
                                         strings.autoUpdateUpToDateFormat,
-                                        uiState.updateCurrentVersion.ifBlank { "0.8.5" }
+                                        uiState.updateCurrentVersion.ifBlank { "0.8.6" }
                                     )
                                 },
                                 style = MaterialTheme.typography.titleSmall,
@@ -7501,7 +7599,7 @@ private fun PlayProtectAutoUpdateDialog(
                                 ""
                             }
                             Text(
-                                text = "Installed: v${uiState.updateCurrentVersion.ifBlank { "0.8.5" }}  →  Latest: ${uiState.updateLatestTag.ifBlank { "current" }}$sizeMb",
+                                text = "Installed: v${uiState.updateCurrentVersion.ifBlank { "0.8.6" }}  →  Latest: ${uiState.updateLatestTag.ifBlank { "current" }}$sizeMb",
                                 style = NexusTheme.monospace.keycapShortcut,
                                 color = MaterialTheme.colorScheme.secondary
                             )

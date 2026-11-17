@@ -393,6 +393,48 @@ Java_com_nexusts_app_protocols_rdp_bridge_FreeRdpNativeBridge_nativeSyncClipboar
     }
 }
 
+JNIEXPORT void JNICALL
+Java_com_nexusts_app_protocols_rdp_bridge_FreeRdpNativeBridge_nativeSyncClipboardFiles(
+    JNIEnv* env,
+    jclass /*clazz*/,
+    jlong handle,
+    jobjectArray local_paths
+) {
+    if (!env || !local_paths) {
+        return;
+    }
+    const jsize len = env->GetArrayLength(local_paths);
+    std::vector<std::string> paths;
+    paths.reserve(static_cast<size_t>(std::max<jsize>(0, len)));
+    for (jsize i = 0; i < len; ++i) {
+        auto* elem = static_cast<jstring>(env->GetObjectArrayElement(local_paths, i));
+        if (elem) {
+            std::string p = jstring_to_utf8(env, elem);
+            env->DeleteLocalRef(elem);
+            if (!p.empty()) {
+                paths.push_back(std::move(p));
+            }
+        }
+    }
+    if (!paths.empty()) {
+        if (const auto session = lookup_session_shared(handle)) {
+            session->channels().on_local_clipboard_files(paths);
+        }
+    }
+}
+
+JNIEXPORT jint JNICALL
+Java_com_nexusts_app_protocols_rdp_bridge_FreeRdpNativeBridge_nativeGetRemoteClipboardKind(
+    JNIEnv* /*env*/,
+    jclass /*clazz*/,
+    jlong handle
+) {
+    if (const auto session = lookup_session_shared(handle)) {
+        return static_cast<jint>(session->channels().remote_clipboard_kind());
+    }
+    return 0;
+}
+
 JNIEXPORT jstring JNICALL
 Java_com_nexusts_app_protocols_rdp_bridge_FreeRdpNativeBridge_nativePullRemoteClipboardText(
     JNIEnv* env,
@@ -404,6 +446,48 @@ Java_com_nexusts_app_protocols_rdp_bridge_FreeRdpNativeBridge_nativePullRemoteCl
         return utf8_to_jstring(env, text);
     }
     return utf8_to_jstring(env, "");
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_nexusts_app_protocols_rdp_bridge_FreeRdpNativeBridge_nativePullRemoteClipboardFiles(
+    JNIEnv* env,
+    jclass /*clazz*/,
+    jlong handle
+) {
+    if (const auto session = lookup_session_shared(handle)) {
+        const std::vector<std::string> files = session->channels().latest_remote_clipboard_files();
+        std::string joined;
+        for (size_t i = 0u; i < files.size(); ++i) {
+            if (i > 0u) {
+                joined.push_back('\n');
+            }
+            joined += files[i];
+        }
+        return utf8_to_jstring(env, joined);
+    }
+    return utf8_to_jstring(env, "");
+}
+
+JNIEXPORT void JNICALL
+Java_com_nexusts_app_protocols_rdp_bridge_FreeRdpNativeBridge_nativeRequestSynchronizedPaste(
+    JNIEnv* /*env*/,
+    jclass /*clazz*/,
+    jlong handle
+) {
+    if (const auto session = lookup_session_shared(handle)) {
+        session->request_synchronized_paste();
+    }
+}
+
+JNIEXPORT void JNICALL
+Java_com_nexusts_app_protocols_rdp_bridge_FreeRdpNativeBridge_nativeLogOffSession(
+    JNIEnv* /*env*/,
+    jclass /*clazz*/,
+    jlong handle
+) {
+    if (const auto session = lookup_session_shared(handle)) {
+        session->logoff_remote_session();
+    }
 }
 
 JNIEXPORT jlong JNICALL

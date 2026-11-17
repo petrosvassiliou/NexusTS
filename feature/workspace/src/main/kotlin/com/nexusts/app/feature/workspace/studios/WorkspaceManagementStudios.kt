@@ -868,7 +868,7 @@ fun NewOrEditConnectionDialog(
                                 NexusChoiceChip(
                                     selected = desktopScalePercent == scale,
                                     onClick = { desktopScalePercent = scale },
-                                    label = "$scale%"
+                                    label = if (scale == 200) "200% (Default)" else "$scale%"
                                 )
                             }
                         }
@@ -1467,6 +1467,7 @@ fun NewOrEditConnectionDialog(
                             hiDpiEnabled = hiDpiEnabled,
                             desktopScaleFactorPercent = desktopScalePercent,
                             deviceScaleFactorPercent = if (desktopScalePercent >= 175) 180 else if (desktopScalePercent >= 125) 140 else 100,
+                            hiDpiScaleCustomized = true,
                             gfxCodecProfile = gfxCodecProfile,
                             enableH264Avc444 = gfxCodecProfile == RdpGfxCodecProfile.AVC444_CHROMA,
                             resizeBehavior = resizeBehavior,

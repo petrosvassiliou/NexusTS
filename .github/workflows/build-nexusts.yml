@@ -21,7 +21,7 @@ on:
       release_tag:
         description: "Tag name when publishing via workflow_dispatch"
         required: false
-        default: "v0.8.5"
+        default: "v0.8.6"
         type: string
 
 permissions:
@@ -319,7 +319,7 @@ jobs:
           set -euo pipefail
           TAG_NAME="${GITHUB_REF_NAME}"
           if [[ "${TAG_NAME}" != v* ]]; then
-            TAG_NAME="${{ inputs.release_tag || 'v0.8.5' }}"
+            TAG_NAME="${{ inputs.release_tag || 'v0.8.6' }}"
           fi
           echo "tag_name=${TAG_NAME}" >> "${GITHUB_OUTPUT}"
 
@@ -346,7 +346,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.stage.outputs.tag_name }}
-          name: "NexusTS ${{ steps.stage.outputs.tag_name }} — Adaptive SIMD RDPGFX 10.4, Off-Main-Thread Multi-Rect Metal & Seamless Auto-Reconnect"
+          name: "NexusTS ${{ steps.stage.outputs.tag_name }} — Bidirectional RDP File & Text Copy/Paste, Crisp 200% Retina Default & Session Log Off"
           draft: false
           prerelease: ${{ contains(steps.stage.outputs.tag_name, '-') }}
           generate_release_notes: true
@@ -354,22 +354,22 @@ jobs:
             ## NexusTS ${{ steps.stage.outputs.tag_name }} (`com.nexusts.app` / `com.nexusts.app.macos`)
             **Native Remote Management & Connection Manager for Googlebook OS, Android Tablets & macOS**
 
-            > **Royal TSX–Grade RDP Speed & Resilience Overhaul (`0.8.5` / `versionCode = 10805`)**: Switches the default RDP graphics codec to **Adaptive SIMD `RDPGFX 10.4` (Progressive / ClearCodec / Planar)** for sub-millisecond tile decode without software `AVC444` dual-stream stalls (while offering selectable `H.264 AVC420` and `H.264 AVC444` profiles), unlocks native >4K up to `8192 × 8192` Retina viewports, introduces an **off-main-thread `.userInteractive` multi-rect `CAMetalLayer` presenter** with exact 1:1 `tex.read` pixel sharpness, coalesces input wakeup pipe syscalls with zero-timer mouse tracking + fractional trackpad scrolling + Mouse 4/5 (`Back`/`Forward`) + focus-loss modifier release, and adds **in-place automatic RDP reconnection** (`freerdp_reconnect`) with instant tab-close cancellation.
+            > **RDP Clipboard, Retina Scaling & Session Lifecycle Release (`0.8.6` / `versionCode = 10806`)**: Introduces **synchronized RDP text copy/paste** (eliminating `CB_FORMAT_LIST_RESPONSE` / Fast-Path `Ctrl+V` races and `Left Win` Start-Menu key-ups) plus full **bidirectional `[MS-RDPECLIP]` file & folder copy/paste** (`FileGroupDescriptorW` + streamed `FileContents` chunks integrated directly with macOS Finder `NSPasteboard` and Android `FileProvider` `ClipboardManager`), restores the **Retina HiDPI default back to `200%`** (`deviceScaleFactor = 180`, automatically upgrading non-customized pre-`v0.8.6` connections while preserving explicit user overrides), and adds **Disconnect** and **Log Off Session** to sidebar & tab context menus across macOS and Android.
 
             ### Signed Deliverables (100% In-Place Upgrade Compatible)
-            - **`NexusTS-${{ steps.stage.outputs.tag_name }}-googlebook-android-release.apk`**: Cryptographically signed (APK Signature Scheme v2/v3/v4, RSA-4096) universal `arm64-v8a` + `x86_64` APK with 16 KB ELF page alignment (`0x4000`) and 100% Google Play Protect compliance (`versionCode = 10805`).
+            - **`NexusTS-${{ steps.stage.outputs.tag_name }}-googlebook-android-release.apk`**: Cryptographically signed (APK Signature Scheme v2/v3/v4, RSA-4096) universal `arm64-v8a` + `x86_64` APK with 16 KB ELF page alignment (`0x4000`) and 100% Google Play Protect compliance (`versionCode = 10806`).
             - **`NexusTS-${{ steps.stage.outputs.tag_name }}-playstore-release.aab`**: Signed Android App Bundle for optional Managed Google Play / internal distribution.
             - **`NexusTS-${{ steps.stage.outputs.tag_name }}-macOS-Universal.zip` & `.dmg`**: Self-contained Universal2 (`arm64` + `x86_64`) macOS application bundle statically linking OpenSSL 3.4 + Cisco OpenH264 2.5.0 + FreeRDP 3.12 (`.zip` powers one-click in-app updates without downloading a `.dmg`).
             - **`nexusts-upload-certificate.pem` & `oauth-and-mdm-registration.json`**: Public X.509 upload certificate (`SHA-1: A6:AF:15:A9:BF:0B:FE:38:D4:66:46:3E:3E:72:A6:5B:4F:9C:4D:F6`, `SHA-256: 4A:BD:80:F1:20:14:B9:88:09:1C:97:92:2F:87:02:D1:BF:B7:93:9C:73:B6:9A:DB:1A:9B:76:30:6A:30:27:82`) and Managed Google Play `app_restrictions` template.
 
             ### Highlights in ${{ steps.stage.outputs.tag_name }}
-            - **Adaptive SIMD `RDPGFX 10.4` Codec Profiles & Native 5K/6K/8K Viewports**:
-              - Defaults to `Adaptive Progressive (Fastest UI & Text)` (`Progressive` + `ClearCodec` + `Planar` + `ZGFX` + full `100 MB` surface cache + `QoE` frame acks) with optional `H.264 AVC420 (Smooth Video & WAN)` and `H.264 AVC444 (Full Chroma Video)` profiles across Connection Settings, `.nxts`, and Royal TS `.rtsz` import/export.
-              - Unlocks full native Retina pixel dimensions up to `8192 × 8192` under `Adaptive Progressive` while retaining the `3840 × 2160` ceiling when H.264 profiles are selected.
-            - **Off-Main-Thread Multi-Rect Metal Presenter & Wire Tuning**:
-              - Uploads only disjoint `cinvalid[0..ninvalid-1]` dirty sub-rectangles on a dedicated `.userInteractive` queue (`maximumDrawableCount = 2`, 1:1 `tex.read` ClearType sharpness), packs `freerdp_performance_flags_make()` properly into `FreeRDP_PerformanceFlags`, disables wasted UDP 3389 multitransport probes (`SupportMultitransport = FALSE`), and guarantees initial `DISP_DVC` viewport synchronization on connect.
-            - **Zero-Jitter Input & Royal TSX–Style Seamless Auto-Reconnection**:
-              - Atomic `wakeup_signaled_` pipe coalescing, direct zero-timer mouse dispatch, fractional Precision Trackpad scroll accumulators, Mouse Button 4/5 (`Back`/`Forward`) extended pointer events, automatic modifier/key release on focus loss, and up to 8-attempt in-place `freerdp_reconnect` with a non-blocking `"Reconnecting…"` pill and instant `freerdp_abort_connect_context` teardown.
+            - **Synchronized RDP Text Copy/Paste & Bidirectional File/Folder Copy/Paste (`[MS-RDPECLIP]`)**:
+              - Gates remote `Ctrl+V` / `⌘V` scancode injection on `CB_FORMAT_LIST_RESPONSE` acknowledgement, suppresses `Left Win` Start-Menu triggers during `⌘C`/`⌘V`/`⌘X`/`⌘A`/`⌘Z`, deduplicates `MonitorReady` format announcements, and restores `RdpPointerAndKeyNSView` first-responder focus on tab switches.
+              - Supports copying files and folders **Local -> Remote** (`FileGroupDescriptorW` 592-byte records + `FILECONTENTS_SIZE` / `FILECONTENTS_RANGE` + `CB_LOCK_CLIPDATA`) and **Remote -> Local** (256 KB streamed range transfers with strict path-traversal rejection, publishing native file URLs to macOS `NSPasteboard` for Finder/Desktop `⌘V` and `FileProvider` `content://` URIs on Android).
+            - **Retina HiDPI Default Restored to `200%` (`deviceScaleFactor = 180`)**:
+              - New RDP connections default to crisp `200%` Retina scaling, and existing non-customized `150%`/`100%` vault entries automatically migrate to `200%` while preserving explicit Connection Editor or `.rtsz` scale overrides.
+            - **Sidebar & Session Tab `Disconnect` + `Log Off Session` Context Actions**:
+              - Right-clicking or long-pressing active connections in the sidebar or session tabs now offers **Disconnect** (keeps remote programs running) and **Log Off Session** (cleanly logs off the remote Windows RDP/WTS user session before closing the tab).
           files: release-assets/*
 
       - name: Check Optional Google Play Service Account Secret

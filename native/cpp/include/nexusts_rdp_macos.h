@@ -81,6 +81,7 @@ typedef struct NexusRdpDirtyRect {
 int64_t nexusts_rdp_create_session(const NexusRdpConfig* config);
 bool nexusts_rdp_connect(int64_t handle);
 void nexusts_rdp_disconnect(int64_t handle);
+void nexusts_rdp_logoff_session(int64_t handle);
 bool nexusts_rdp_is_connected(int64_t handle);
 bool nexusts_rdp_is_reconnecting(int64_t handle);
 uint32_t nexusts_rdp_reconnect_attempt(int64_t handle);
@@ -107,6 +108,7 @@ void nexusts_rdp_send_key_scancode(
 );
 
 void nexusts_rdp_release_all_keys(int64_t handle);
+void nexusts_rdp_request_synchronized_paste(int64_t handle);
 
 void nexusts_rdp_send_pointer_event(
     int64_t handle,
@@ -123,7 +125,10 @@ void nexusts_rdp_send_extended_pointer_event(
 );
 
 void nexusts_rdp_set_local_clipboard(int64_t handle, const char* utf8_text);
+void nexusts_rdp_set_local_clipboard_files(int64_t handle, const char* newline_joined_utf8_paths);
+uint32_t nexusts_rdp_remote_clipboard_kind(int64_t handle);
 char* nexusts_rdp_copy_remote_clipboard(int64_t handle);
+char* nexusts_rdp_copy_remote_clipboard_files(int64_t handle);
 uint64_t nexusts_rdp_remote_clipboard_sequence(int64_t handle);
 char* nexusts_rdp_copy_last_error(int64_t handle);
 void nexusts_rdp_free_cstr(char* ptr);

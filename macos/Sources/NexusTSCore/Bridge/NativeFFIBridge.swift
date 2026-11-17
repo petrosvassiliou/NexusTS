@@ -1740,7 +1740,7 @@ public final class NativeRdpSession: @unchecked Sendable {
     private var lastRenderedSequence: UInt64 = 0
     private var lastRenderedImage: CGImage?
 
-    public static let defaultHiDpiScalePercent: Int = 150
+    public static let defaultHiDpiScalePercent: Int = 200
 
     public static func usesH264Cap(settings: RdpProtocolSettings) -> Bool {
         settings.enableGfxPipeline && settings.gfxCodecProfile != .ADAPTIVE_PROGRESSIVE
@@ -1753,12 +1753,12 @@ public final class NativeRdpSession: @unchecked Sendable {
         guard settings.hiDpiEnabled else { return 100 }
         let isRetinaDisplay = backingScaleFactor >= 1.5
         if settings.desktopScaleFactorPercent > 100 {
-            if !isRetinaDisplay && settings.desktopScaleFactorPercent == defaultHiDpiScalePercent {
+            if !isRetinaDisplay && settings.desktopScaleFactorPercent == defaultHiDpiScalePercent && !settings.hiDpiScaleCustomized {
                 return 100
             }
             return min(500, max(100, settings.desktopScaleFactorPercent))
         }
-        // Connections saved with legacy desktopScaleFactorPercent == 100 + hiDpiEnabled == true default to 150% HiDPI
+        // Connections saved with legacy desktopScaleFactorPercent == 100 + hiDpiEnabled == true default to 200% HiDPI
         return isRetinaDisplay ? defaultHiDpiScalePercent : 100
     }
 
@@ -1808,8 +1808,8 @@ public final class NativeRdpSession: @unchecked Sendable {
             if settings.deviceScaleFactorPercent > 100 {
                 return settings.deviceScaleFactorPercent
             }
-            if resolvedScalePercent >= 180 { return 180 }
-            if resolvedScalePercent >= 140 { return 140 }
+            if resolvedScalePercent >= 175 { return 180 }
+            if resolvedScalePercent >= 125 { return 140 }
             return 100
         }()
         let h264Cap = Self.usesH264Cap(settings: settings)
@@ -2010,12 +2010,39 @@ public final class NativeRdpSession: @unchecked Sendable {
         )
     }
 
+    public enum RemoteClipboardKind: UInt32, Sendable {
+        case none = 0
+        case text = 1
+        case files = 2
+    }
+
     public func pushLocalClipboard(_ text: String) {
         stateLock.lock()
         let h = handle
         stateLock.unlock()
         guard h > 0 else { return }
         text.withCString { nexusts_rdp_set_local_clipboard(h, $0) }
+    }
+
+    public func pushLocalClipboardFiles(_ paths: [String]) {
+        let cleaned = paths
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard !cleaned.isEmpty else { return }
+        stateLock.lock()
+        let h = handle
+        stateLock.unlock()
+        guard h > 0 else { return }
+        let joined = cleaned.joined(separator: "\n")
+        joined.withCString { nexusts_rdp_set_local_clipboard_files(h, $0) }
+    }
+
+    public var remoteClipboardKind: RemoteClipboardKind {
+        stateLock.lock()
+        let h = handle
+        stateLock.unlock()
+        guard h > 0 else { return .none }
+        return RemoteClipboardKind(rawValue: nexusts_rdp_remote_clipboard_kind(h)) ?? .none
     }
 
     public func pullRemoteClipboard() -> String {
@@ -2025,6 +2052,35 @@ public final class NativeRdpSession: @unchecked Sendable {
         guard h > 0, let ptr = nexusts_rdp_copy_remote_clipboard(h) else { return "" }
         defer { nexusts_rdp_free_cstr(ptr) }
         return String(cString: ptr)
+    }
+
+    public func pullRemoteClipboardFiles() -> [String] {
+        stateLock.lock()
+        let h = handle
+        stateLock.unlock()
+        guard h > 0, let ptr = nexusts_rdp_copy_remote_clipboard_files(h) else { return [] }
+        defer { nexusts_rdp_free_cstr(ptr) }
+        let raw = String(cString: ptr)
+        return raw
+            .split(whereSeparator: \.isNewline)
+            .map(String.init)
+            .filter { !$0.isEmpty }
+    }
+
+    public func requestSynchronizedPaste() {
+        stateLock.lock()
+        let h = handle
+        stateLock.unlock()
+        guard h > 0 else { return }
+        nexusts_rdp_request_synchronized_paste(h)
+    }
+
+    public func logOffRemoteSession() {
+        stateLock.lock()
+        let h = handle
+        stateLock.unlock()
+        guard h > 0 else { return }
+        nexusts_rdp_logoff_session(h)
     }
 
     public func lastErrorMessage() -> String {

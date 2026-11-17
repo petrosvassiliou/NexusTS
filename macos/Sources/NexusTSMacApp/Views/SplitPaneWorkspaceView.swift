@@ -123,9 +123,15 @@ private struct LeafPaneContainerView: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 4) {
                         ForEach(tabs) { tab in
+                            let isRdpTab = !tab.isLocalShell && (
+                                tab.connection.protocolType == .RDP ||
+                                tab.connection.protocolType == .WINDOWS_TERMINAL_SERVICES
+                            )
                             MacTabPillView(
                                 tab: tab,
                                 isActive: tab.id == activeTab?.id,
+                                disconnectLabel: store.strings.disconnectSession,
+                                logOffLabel: store.strings.logOffSession,
                                 onSelect: {
                                     store.focusedPaneId = paneId
                                     store.paneTree = store.paneTree.activatingTab(tab.id, in: paneId)
@@ -136,6 +142,9 @@ private struct LeafPaneContainerView: View {
                                 onClose: {
                                     store.closeTab(tab.id)
                                 },
+                                onLogOff: isRdpTab ? {
+                                    store.logOffTabSession(tab.id)
+                                } : nil,
                                 onDetachWindow: {
                                     if let detachedId = store.stageTabForDetachedWindow(tab.id) {
                                         openWindow(id: "detached-session", value: detachedId)
@@ -255,8 +264,11 @@ private struct LeafPaneContainerView: View {
 private struct MacTabPillView: View {
     let tab: WorkspaceSessionTab
     let isActive: Bool
+    let disconnectLabel: String
+    let logOffLabel: String
     let onSelect: () -> Void
     let onClose: () -> Void
+    let onLogOff: (() -> Void)?
     let onDetachWindow: () -> Void
     let onEnterFullScreen: () -> Void
     let onDropTabPayload: (String) -> Void
@@ -319,7 +331,18 @@ private struct MacTabPillView: View {
             Button("Full Screen Session") { onEnterFullScreen() }
             Button("Move Tab to New Window") { onDetachWindow() }
             Divider()
-            Button("Close Tab", role: .destructive) { onClose() }
+            Button {
+                onClose()
+            } label: {
+                Label(disconnectLabel, systemImage: "xmark.circle")
+            }
+            if let onLogOff {
+                Button(role: .destructive) {
+                    onLogOff()
+                } label: {
+                    Label(logOffLabel, systemImage: "rectangle.portrait.and.arrow.right")
+                }
+            }
         }
     }
 }

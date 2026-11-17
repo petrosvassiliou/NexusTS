@@ -199,6 +199,18 @@ void nexusts_rdp_release_all_keys(int64_t handle) {
     }
 }
 
+void nexusts_rdp_logoff_session(int64_t handle) {
+    if (auto ctx = lookup_session(handle)) {
+        ctx->logoff_remote_session();
+    }
+}
+
+void nexusts_rdp_request_synchronized_paste(int64_t handle) {
+    if (auto ctx = lookup_session(handle)) {
+        ctx->request_synchronized_paste();
+    }
+}
+
 void nexusts_rdp_send_pointer_event(
     int64_t handle,
     uint16_t pointer_flags,
@@ -227,6 +239,40 @@ void nexusts_rdp_set_local_clipboard(int64_t handle, const char* utf8_text) {
     }
 }
 
+void nexusts_rdp_set_local_clipboard_files(int64_t handle, const char* newline_joined_utf8_paths) {
+    if (auto ctx = lookup_session(handle)) {
+        const std::string joined = safe_cstr(newline_joined_utf8_paths);
+        std::vector<std::string> paths;
+        size_t pos = 0u;
+        while (pos < joined.size()) {
+            const size_t nl = joined.find('\n', pos);
+            std::string seg = (nl == std::string::npos)
+                ? joined.substr(pos)
+                : joined.substr(pos, nl - pos);
+            if (!seg.empty() && seg.back() == '\r') {
+                seg.pop_back();
+            }
+            if (!seg.empty()) {
+                paths.push_back(std::move(seg));
+            }
+            if (nl == std::string::npos) {
+                break;
+            }
+            pos = nl + 1u;
+        }
+        if (!paths.empty()) {
+            ctx->channels().on_local_clipboard_files(paths);
+        }
+    }
+}
+
+uint32_t nexusts_rdp_remote_clipboard_kind(int64_t handle) {
+    if (auto ctx = lookup_session(handle)) {
+        return static_cast<uint32_t>(ctx->channels().remote_clipboard_kind());
+    }
+    return 0u;
+}
+
 char* nexusts_rdp_copy_remote_clipboard(int64_t handle) {
     if (auto ctx = lookup_session(handle)) {
         const std::string clip = ctx->channels().latest_remote_clipboard_text();
@@ -234,6 +280,26 @@ char* nexusts_rdp_copy_remote_clipboard(int64_t handle) {
         if (dup) {
             std::memcpy(dup, clip.data(), clip.size());
             dup[clip.size()] = '\0';
+        }
+        return dup;
+    }
+    return nullptr;
+}
+
+char* nexusts_rdp_copy_remote_clipboard_files(int64_t handle) {
+    if (auto ctx = lookup_session(handle)) {
+        const std::vector<std::string> files = ctx->channels().latest_remote_clipboard_files();
+        std::string joined;
+        for (size_t i = 0u; i < files.size(); ++i) {
+            if (i > 0u) {
+                joined.push_back('\n');
+            }
+            joined += files[i];
+        }
+        auto* dup = static_cast<char*>(std::malloc(joined.size() + 1u));
+        if (dup) {
+            std::memcpy(dup, joined.data(), joined.size());
+            dup[joined.size()] = '\0';
         }
         return dup;
     }

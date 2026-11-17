@@ -1602,10 +1602,70 @@ public final class WorkspaceStore: ObservableObject {
         return result
     }
 
-    public func activeSessionCount(forConnectionId connId: String) -> Int {
-        let docked = paneTree.allTabs.filter { $0.connection.id == connId }.count
-        let detached = detachedWindowTabs.values.filter { $0.connection.id == connId }.count
+    public func activeTabs(forConnectionId connId: String) -> [WorkspaceSessionTab] {
+        let docked = paneTree.allTabs.filter { !$0.isLocalShell && $0.connection.id == connId }
+        let detached = detachedWindowTabs.values.filter { !$0.isLocalShell && $0.connection.id == connId }
         return docked + detached
+    }
+
+    public func activeSessionCount(forConnectionId connId: String) -> Int {
+        activeTabs(forConnectionId: connId).count
+    }
+
+    public func hasActiveRdpSession(forConnectionId connId: String) -> Bool {
+        activeTabs(forConnectionId: connId).contains {
+            $0.connection.protocolType == .RDP || $0.connection.protocolType == .WINDOWS_TERMINAL_SERVICES
+        }
+    }
+
+    public func disconnectConnection(_ connId: String) {
+        let tabs = activeTabs(forConnectionId: connId)
+        guard !tabs.isEmpty else { return }
+        let connName = tabs.first?.title ?? connId
+        for tab in tabs {
+            closeTab(tab.id, destroyRuntime: true)
+        }
+        appendAudit("Session", "Disconnected \(tabs.count) session(s) for '\(connName)'.")
+    }
+
+    public func logOffTabSession(_ tabId: UUID) {
+        let tab = paneTree.findTab(id: tabId) ?? detachedWindowTabs[tabId]
+        let isRdp = tab.map {
+            !$0.isLocalShell && ($0.connection.protocolType == .RDP || $0.connection.protocolType == .WINDOWS_TERMINAL_SERVICES)
+        } ?? false
+
+        guard isRdp, let rdp = rdpSessions[tabId], rdp.isConnected else {
+            closeTab(tabId, destroyRuntime: true)
+            return
+        }
+
+        let title = tab?.title ?? "RDP Session"
+        rdp.logOffRemoteSession()
+        appendAudit("Session", "Sent Windows session logoff to '\(title)'.")
+
+        Task { @MainActor [weak self] in
+            for _ in 0..<14 {
+                if !rdp.isConnected {
+                    break
+                }
+                try? await Task.sleep(nanoseconds: 150_000_000)
+            }
+            guard let self else { return }
+            if self.paneTree.findTab(id: tabId) != nil || self.detachedWindowTabs[tabId] != nil {
+                self.closeTab(tabId, destroyRuntime: true)
+            }
+        }
+    }
+
+    public func logOffConnectionSessions(_ connId: String) {
+        let tabs = activeTabs(forConnectionId: connId)
+        for tab in tabs {
+            if tab.connection.protocolType == .RDP || tab.connection.protocolType == .WINDOWS_TERMINAL_SERVICES {
+                logOffTabSession(tab.id)
+            } else {
+                closeTab(tab.id, destroyRuntime: true)
+            }
+        }
     }
 
     private func resolveEffectiveCredential(

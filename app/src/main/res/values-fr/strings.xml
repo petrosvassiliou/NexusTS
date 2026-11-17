@@ -181,6 +181,7 @@
     <!-- v1.1.5 Modern UI, Folder Disconnect, Drag & Drop, Flags & Play Protect Auto-Update -->
     <string name="action_disconnect_all_folder">Tout déconnecter dans le dossier</string>
     <string name="action_disconnect_session">Déconnecter</string>
+    <string name="action_log_off_session">Fermer la session</string>
     <string name="action_move_to_folder">Déplacer vers le dossier…</string>
     <string name="move_to_root_folder">Niveau supérieur (Aucun dossier)</string>
     <string name="dialog_language_title">Choisir la langue</string>

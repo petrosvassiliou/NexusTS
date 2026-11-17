@@ -370,6 +370,7 @@ class VaultDocumentExporter {
                 appendXmlTag("AutoAdjustRetinaDisplay", settings.hiDpiEnabled.toString(), indent)
                 appendXmlTag("DesktopScaleFactor", settings.desktopScaleFactorPercent.toString(), indent)
                 appendXmlTag("DeviceScaleFactor", settings.deviceScaleFactorPercent.toString(), indent)
+                appendXmlTag("HiDpiScaleCustomized", settings.hiDpiScaleCustomized.toString(), indent)
                 appendXmlTag("EnableGfxPipeline", settings.enableGfxPipeline.toString(), indent)
                 appendXmlTag("GfxCodecProfile", settings.gfxCodecProfile.name, indent)
                 appendXmlTag("EnableH264Avc444", settings.enableH264Avc444.toString(), indent)

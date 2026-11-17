@@ -1039,6 +1039,7 @@ final class RdpPointerAndKeyNSView: NSView {
     private var lastPasteboardChangeCount: Int = -1
     private var lastRemoteClipboardSeq: UInt64 = 0
     private var lastSyncedClipboardText: String = ""
+    private var lastSyncedClipboardFiles: [String] = []
     private var appDidBecomeActiveObserver: NSObjectProtocol?
     private var appDidResignActiveObserver: NSObjectProtocol?
     private var windowDidResignKeyObserver: NSObjectProtocol?
@@ -1161,6 +1162,7 @@ final class RdpPointerAndKeyNSView: NSView {
             layer?.contents = nil
             lastPasteboardChangeCount = -1
             lastSyncedClipboardText = ""
+            lastSyncedClipboardFiles = []
             lastRemoteClipboardSeq = 0
 
             if redirectClipboard {
@@ -1184,6 +1186,14 @@ final class RdpPointerAndKeyNSView: NSView {
                 }
             }
             refreshFrameCursorAndTelemetry(forceFullUpload: true, runSlowHousekeeping: true)
+            if let win = window, !(win.firstResponder is NSText), win.firstResponder !== self {
+                DispatchQueue.main.async { [weak self, weak win] in
+                    guard let self, let win, self.window === win else { return }
+                    if !(win.firstResponder is NSText), win.firstResponder !== self {
+                        win.makeFirstResponder(self)
+                    }
+                }
+            }
         } else {
             if retinaChanged {
                 lastAppliedCursorSeq = 0
@@ -1534,10 +1544,32 @@ final class RdpPointerAndKeyNSView: NSView {
         }
         let changeCountAdvanced = pbCount != lastPasteboardChangeCount
         lastPasteboardChangeCount = pbCount
+
+        // Check file URLs FIRST because macOS Finder writes both .fileURL and .string (basename) to NSPasteboard.general
+        if let urls = pb.readObjects(
+            forClasses: [NSURL.self],
+            options: [.urlReadingFileURLsOnly: true]
+        ) as? [URL] {
+            let filePaths = urls
+                .filter { $0.isFileURL }
+                .map { $0.standardizedFileURL.path }
+                .filter { !$0.isEmpty }
+            if !filePaths.isEmpty {
+                if changeCountAdvanced || filePaths != lastSyncedClipboardFiles {
+                    lastSyncedClipboardFiles = filePaths
+                    lastSyncedClipboardText = ""
+                    session.pushLocalClipboardFiles(filePaths)
+                    return true
+                }
+                return false
+            }
+        }
+
         guard let localText = pb.string(forType: .string), !localText.isEmpty else {
             return false
         }
-        if changeCountAdvanced || localText != lastSyncedClipboardText {
+        if changeCountAdvanced || localText != lastSyncedClipboardText || !lastSyncedClipboardFiles.isEmpty {
+            lastSyncedClipboardFiles = []
             lastSyncedClipboardText = localText
             session.pushLocalClipboard(localText)
             return true
@@ -1549,15 +1581,37 @@ final class RdpPointerAndKeyNSView: NSView {
         let remoteSeq = session.remoteClipboardSequence
         guard remoteSeq != lastRemoteClipboardSeq else { return }
         lastRemoteClipboardSeq = remoteSeq
-        let remoteText = session.pullRemoteClipboard()
-        guard !remoteText.isEmpty else { return }
-        lastSyncedClipboardText = remoteText
-        let pb = NSPasteboard.general
-        if pb.string(forType: .string) != remoteText {
+
+        switch session.remoteClipboardKind {
+        case .files:
+            let stagedPaths = session.pullRemoteClipboardFiles()
+            guard !stagedPaths.isEmpty else { return }
+            let existingUrls = stagedPaths
+                .filter { FileManager.default.fileExists(atPath: $0) }
+                .map { NSURL(fileURLWithPath: $0) }
+            guard !existingUrls.isEmpty else { return }
+            lastSyncedClipboardFiles = stagedPaths
+            lastSyncedClipboardText = ""
+            let pb = NSPasteboard.general
             pb.clearContents()
-            pb.setString(remoteText, forType: .string)
+            pb.writeObjects(existingUrls)
+            lastPasteboardChangeCount = pb.changeCount
+        case .text:
+            let remoteText = session.pullRemoteClipboard()
+            guard !remoteText.isEmpty else { return }
+            lastSyncedClipboardFiles = []
+            lastSyncedClipboardText = remoteText
+            let pb = NSPasteboard.general
+            if pb.string(forType: .string) != remoteText {
+                pb.clearContents()
+                pb.setString(remoteText, forType: .string)
+            }
+            lastPasteboardChangeCount = pb.changeCount
+        case .none:
+            // Remote clipboard changed ownership; clear local mirror caches so re-copying the same local item re-announces CB_FORMAT_LIST
+            lastSyncedClipboardText = ""
+            lastSyncedClipboardFiles = []
         }
-        lastPasteboardChangeCount = pb.changeCount
     }
 
     // MARK: - Aspect-Aware Coordinate Mapping & Zero-Jitter Native Coalesced Pointer Input
@@ -1717,35 +1771,32 @@ final class RdpPointerAndKeyNSView: NSView {
 
     private func sendRemoteCtrlChord(scancode: UInt16) {
         guard let session else { return }
-        // Ensure held Command (Win) or Shift modifiers don't turn Ctrl+C/V/Y into Win+Ctrl+C or Ctrl+Shift+Y
+        let physicalCtrlHeld = heldModifierKeyCodes.contains(0x3B) || heldModifierKeyCodes.contains(0x3E)
+        if !physicalCtrlHeld {
+            // Press Left Ctrl BEFORE releasing Left/Right Win so Windows never opens the Start Menu during ⌘C/⌘X/⌘A/⌘Z
+            session.sendScancode(0x1D, keyDown: true, extended: false)
+        }
         for code: UInt16 in [0x37, 0x36, 0x38, 0x3C] where heldModifierKeyCodes.remove(code) != nil {
             if let rel = MacRdpScancodeMapper.mapModifierKeyCode(code, captureRemoteShortcuts: true) {
                 session.sendScancode(rel.scancode, keyDown: false, extended: rel.extended)
             }
         }
-        let physicalCtrlHeld = heldModifierKeyCodes.contains(0x3B) || heldModifierKeyCodes.contains(0x3E)
-        if !physicalCtrlHeld {
-            session.sendScancode(0x1D, keyDown: true, extended: false) // Left Ctrl down
-        }
         session.sendScancode(scancode, keyDown: true, extended: false)
         session.sendScancode(scancode, keyDown: false, extended: false)
         if !physicalCtrlHeld {
-            session.sendScancode(0x1D, keyDown: false, extended: false) // Left Ctrl up
+            session.sendScancode(0x1D, keyDown: false, extended: false)
         }
     }
 
     private func executeRemoteCommandShortcut(_ shortcut: MacRdpScancodeMapper.MacCommandRemoteShortcut) {
         guard let session else { return }
         if shortcut == .paste && redirectClipboard {
-            let newlyAnnounced = syncLocalClipboardToRemoteIfNeeded(session: session, forceCheck: true)
-            if newlyAnnounced {
-                // Allow CLIPRDR CB_FORMAT_LIST to reach Windows rdpclip.exe before synthetic Ctrl+V arrives
-                let code = shortcut.windowsCtrlScancode
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.04) { [weak self] in
-                    self?.sendRemoteCtrlChord(scancode: code)
-                }
-                return
+            _ = syncLocalClipboardToRemoteIfNeeded(session: session, forceCheck: true)
+            for code: UInt16 in [0x37, 0x36, 0x38, 0x3C] {
+                heldModifierKeyCodes.remove(code)
             }
+            session.requestSynchronizedPaste()
+            return
         }
         sendRemoteCtrlChord(scancode: shortcut.windowsCtrlScancode)
     }

@@ -1,0 +1,1 @@
+• v0.8.6: Synchronized RDP text & bidirectional file/folder copy-paste (CLIPRDR FileGroupDescriptorW + FileContents), Retina HiDPI default restored to crisp 200%, and Disconnect + Log Off Session actions added to sidebar & tab context menus

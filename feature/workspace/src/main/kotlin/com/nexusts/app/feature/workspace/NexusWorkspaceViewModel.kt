@@ -1146,6 +1146,66 @@ class NexusWorkspaceViewModel @Inject constructor(
         return totalClosed
     }
 
+    /**
+     * Sends a remote Windows logoff command (`shutdown.exe /l /f`) to an active RDP/WTS tab
+     * and closes the session tab cleanly after flushing over Fast-Path.
+     */
+    fun logOffTabSession(tabId: String) {
+        if (_uiState.value.isVaultLocked) return
+        val tab = tilingController.allActiveTabs().firstOrNull { it.tabId == tabId }
+        val rdp = rdpSessions[tabId]
+        val label = tab?.title ?: tabId
+        if (rdp != null) {
+            viewModelScope.launch(Dispatchers.IO) {
+                rdp.logOffRemoteSession()
+                delay(450L)
+                withContext(Dispatchers.Main) {
+                    closeSessionTab(tabId)
+                    _uiState.update { it.copy(userSnackbarMessage = "Logged off '$label'") }
+                    appendLog("[Log Off] Sent Windows session logoff for '$label'")
+                }
+            }
+        } else {
+            closeSessionTab(tabId)
+            _uiState.update { it.copy(userSnackbarMessage = "Logged off '$label'") }
+            appendLog("[Log Off] Closed session '$label'")
+        }
+    }
+
+    /**
+     * Logs off all active RDP / Windows Terminal Services sessions for [connectionId] and disconnects them.
+     */
+    fun logOffConnectionSessions(connectionId: String): Int {
+        if (_uiState.value.isVaultLocked) return 0
+        val doc = _uiState.value.vaultDocument
+        val connName = doc.connections.firstOrNull { it.id == connectionId }?.name ?: connectionId
+        val matchingTabs = tilingController.allActiveTabs().filter { it.connectionId == connectionId }
+        val matchingLiveRdp = rdpSessions.entries
+            .filter { (tid, sess) -> sess.connection.id == connectionId || matchingTabs.any { it.tabId == tid } }
+            .map { it.value }
+            .distinct()
+
+        if (matchingLiveRdp.isNotEmpty()) {
+            viewModelScope.launch(Dispatchers.IO) {
+                matchingLiveRdp.forEach { it.logOffRemoteSession() }
+                delay(450L)
+                withContext(Dispatchers.Main) {
+                    matchingTabs.forEach { tab -> closeSessionTab(tab.tabId) }
+                    activeVaultStore.evictSessionsForConnectionIds(setOf(connectionId))
+                    _uiState.update { it.copy(userSnackbarMessage = "Logged off '$connName'") }
+                    appendLog("[Log Off] Logged off ${matchingLiveRdp.size} remote session(s) for '$connName'")
+                }
+            }
+            return matchingLiveRdp.size
+        }
+
+        val closed = disconnectConnectionSessions(connectionId)
+        if (closed > 0) {
+            _uiState.update { it.copy(userSnackbarMessage = "Logged off '$connName'") }
+        }
+        return closed
+    }
+
     fun openMoveConnectionDialog(connection: VaultConnection) {
         if (_uiState.value.isVaultLocked) return
         _uiState.update { it.copy(movingConnectionTarget = connection) }

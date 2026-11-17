@@ -161,6 +161,7 @@ data class WorkspaceLocalizedStrings(
     val actionConnectAllFolder: String = "Connect All in Folder",
     val actionDisconnectAllFolder: String = "Disconnect All in Folder",
     val actionDisconnectSession: String = "Disconnect",
+    val actionLogOffSession: String = "Log Off Session",
     val actionMoveToFolder: String = "Move to Folder…",
     val moveToRootFolder: String = "Top Level (No Folder)",
     val dialogLanguageTitle: String = "Select Language",

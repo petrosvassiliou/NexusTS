@@ -181,6 +181,7 @@
     <!-- v1.1.5 Modern UI, Folder Disconnect, Drag & Drop, Flags & Play Protect Auto-Update -->
     <string name="action_disconnect_all_folder">Αποσύνδεση όλων στον φάκελο</string>
     <string name="action_disconnect_session">Αποσύνδεση</string>
+    <string name="action_log_off_session">Αποσύνδεση χρήστη (Log Off)</string>
     <string name="action_move_to_folder">Μετακίνηση σε φάκελο…</string>
     <string name="move_to_root_folder">Κύριο επίπεδο (Χωρίς φάκελο)</string>
     <string name="dialog_language_title">Επιλογή γλώσσας</string>

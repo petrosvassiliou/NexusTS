@@ -880,6 +880,23 @@ private struct FullScreenSessionMacWorkspaceView: View {
                                 .padding(.horizontal, 10)
                                 .padding(.vertical, 4)
                                 .liquidGlassCapsule(tint: accent, isSelected: isSelected, isHovered: false)
+                                .contextMenu {
+                                    Button {
+                                        store.closeTab(tab.id)
+                                    } label: {
+                                        Label(store.strings.disconnectSession, systemImage: "xmark.circle")
+                                    }
+                                    if !tab.isLocalShell && (
+                                        tab.connection.protocolType == .RDP ||
+                                        tab.connection.protocolType == .WINDOWS_TERMINAL_SERVICES
+                                    ) {
+                                        Button(role: .destructive) {
+                                            store.logOffTabSession(tab.id)
+                                        } label: {
+                                            Label(store.strings.logOffSession, systemImage: "rectangle.portrait.and.arrow.right")
+                                        }
+                                    }
+                                }
                             }
                         }
                     }

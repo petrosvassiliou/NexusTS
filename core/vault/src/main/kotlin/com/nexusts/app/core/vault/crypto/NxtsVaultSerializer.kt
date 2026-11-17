@@ -115,14 +115,41 @@ class NxtsVaultSerializer(
             } else {
                 openJvmCompatible(nxtsContainer, passphraseBytes)
             }
-            return json.decodeFromString(
+            val decoded = json.decodeFromString(
                 NxtsVaultDocument.serializer(),
                 plaintext.decodeToString()
             )
+            return migrateLegacyDefaultRdpScale(decoded)
         } finally {
             Arrays.fill(passphraseBytes, 0)
             if (plaintext != null) Arrays.fill(plaintext, 0)
         }
+    }
+
+    private fun migrateLegacyDefaultRdpScale(doc: NxtsVaultDocument): NxtsVaultDocument {
+        fun migrateSettings(settings: com.nexusts.app.core.vault.model.ProtocolSpecificSettings): com.nexusts.app.core.vault.model.ProtocolSpecificSettings {
+            if (settings is com.nexusts.app.core.vault.model.ProtocolSpecificSettings.Rdp &&
+                !settings.hiDpiScaleCustomized &&
+                settings.hiDpiEnabled &&
+                (settings.desktopScaleFactorPercent == 150 || settings.desktopScaleFactorPercent == 100)
+            ) {
+                return settings.copy(
+                    desktopScaleFactorPercent = 200,
+                    deviceScaleFactorPercent = 180
+                )
+            }
+            return settings
+        }
+        return doc.copy(
+            connections = doc.connections.map { conn ->
+                val migrated = migrateSettings(conn.settings)
+                if (migrated === conn.settings) conn else conn.copy(settings = migrated)
+            },
+            templates = doc.templates.map { tpl ->
+                val migrated = migrateSettings(tpl.settings)
+                if (migrated === tpl.settings) tpl else tpl.copy(settings = migrated)
+            }
+        )
     }
 
     fun inspectUnencryptedRevisionHeader(nxtsContainer: ByteArray): Long? {

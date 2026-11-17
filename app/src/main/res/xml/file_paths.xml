@@ -3,6 +3,9 @@
     <files-path
         name="vaults"
         path="vaults/" />
+    <files-path
+        name="cliprdr_recv"
+        path="freerdp_runtime/tmp/cliprdr_recv/" />
     <cache-path
         name="vault_exports"
         path="exports/" />

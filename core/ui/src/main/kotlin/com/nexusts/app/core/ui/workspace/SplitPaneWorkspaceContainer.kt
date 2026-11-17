@@ -31,6 +31,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.outlined.Logout
 import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.CloudQueue
@@ -39,6 +40,7 @@ import androidx.compose.material.icons.outlined.FolderShared
 import androidx.compose.material.icons.outlined.Fullscreen
 import androidx.compose.material.icons.outlined.Language
 import androidx.compose.material.icons.outlined.Podcasts
+import androidx.compose.material.icons.outlined.PowerSettingsNew
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.SmartDisplay
 import androidx.compose.material.icons.outlined.Terminal
@@ -106,6 +108,8 @@ data class SplitWorkspaceLabels(
     val toggleBroadcastLabel: String,
     val fullScreenLabel: String = "Full Screen",
     val reconnectTabLabel: String = "Reconnect",
+    val disconnectTabLabel: String = "Disconnect",
+    val logOffSessionLabel: String = "Log Off Session",
     val moveTabLeftLabel: String = "Move Tab Left",
     val moveTabRightLabel: String = "Move Tab Right",
     val closeOtherTabsLabel: String = "Close Other Tabs",
@@ -191,6 +195,7 @@ fun SplitPaneWorkspaceContainer(
     onToggleTabBroadcast: (tab: WorkspaceSessionTab) -> Unit,
     onEnterFullScreen: ((tab: WorkspaceSessionTab) -> Unit)? = null,
     onReconnectTab: ((tab: WorkspaceSessionTab) -> Unit)? = null,
+    onLogOffTab: ((tab: WorkspaceSessionTab) -> Unit)? = null,
     onCloseEmptyPane: ((paneId: String) -> Unit)? = null,
     onReorderTab: ((paneId: String, fromIndex: Int, toIndex: Int) -> Unit)? = null,
     onMoveTabToPane: ((tabId: String, targetPaneId: String, targetIndex: Int?) -> Unit)? = null,
@@ -279,6 +284,7 @@ fun SplitPaneWorkspaceContainer(
                         onToggleBroadcast = onToggleTabBroadcast,
                         onEnterFullScreen = onEnterFullScreen,
                         onReconnectTab = onReconnectTab,
+                        onLogOffTab = onLogOffTab,
                         onReorderTab = onReorderTab,
                         onMoveTabToPane = onMoveTabToPane,
                         sessionRenderer = sessionRenderer,
@@ -308,6 +314,7 @@ fun SplitPaneWorkspaceContainer(
                                 onToggleTabBroadcast = onToggleTabBroadcast,
                                 onEnterFullScreen = onEnterFullScreen,
                                 onReconnectTab = onReconnectTab,
+                                onLogOffTab = onLogOffTab,
                                 onCloseEmptyPane = onCloseEmptyPane,
                                 onReorderTab = onReorderTab,
                                 onMoveTabToPane = onMoveTabToPane,
@@ -342,6 +349,7 @@ fun SplitPaneWorkspaceContainer(
                                 onToggleTabBroadcast = onToggleTabBroadcast,
                                 onEnterFullScreen = onEnterFullScreen,
                                 onReconnectTab = onReconnectTab,
+                                onLogOffTab = onLogOffTab,
                                 onCloseEmptyPane = onCloseEmptyPane,
                                 onReorderTab = onReorderTab,
                                 onMoveTabToPane = onMoveTabToPane,
@@ -369,6 +377,7 @@ fun SplitPaneWorkspaceContainer(
                                 onToggleTabBroadcast = onToggleTabBroadcast,
                                 onEnterFullScreen = onEnterFullScreen,
                                 onReconnectTab = onReconnectTab,
+                                onLogOffTab = onLogOffTab,
                                 onCloseEmptyPane = onCloseEmptyPane,
                                 onReorderTab = onReorderTab,
                                 onMoveTabToPane = onMoveTabToPane,
@@ -403,6 +412,7 @@ fun SplitPaneWorkspaceContainer(
                                 onToggleTabBroadcast = onToggleTabBroadcast,
                                 onEnterFullScreen = onEnterFullScreen,
                                 onReconnectTab = onReconnectTab,
+                                onLogOffTab = onLogOffTab,
                                 onCloseEmptyPane = onCloseEmptyPane,
                                 onReorderTab = onReorderTab,
                                 onMoveTabToPane = onMoveTabToPane,
@@ -507,6 +517,7 @@ private fun LeafSessionPane(
     onToggleBroadcast: (WorkspaceSessionTab) -> Unit,
     onEnterFullScreen: ((WorkspaceSessionTab) -> Unit)? = null,
     onReconnectTab: ((WorkspaceSessionTab) -> Unit)? = null,
+    onLogOffTab: ((WorkspaceSessionTab) -> Unit)? = null,
     onReorderTab: ((String, Int, Int) -> Unit)? = null,
     onMoveTabToPane: ((String, String, Int?) -> Unit)? = null,
     sessionRenderer: @Composable (WorkspaceSessionTab, Boolean) -> Unit,
@@ -650,7 +661,8 @@ private fun LeafSessionPane(
                                     cb(tab)
                                 }
                             },
-                            onReconnect = onReconnectTab?.let { cb -> { cb(tab) } }
+                            onReconnect = onReconnectTab?.let { cb -> { cb(tab) } },
+                            onLogOff = onLogOffTab?.let { cb -> { cb(tab) } }
                         )
                     }
                 }
@@ -811,7 +823,8 @@ private fun ExpressiveSessionTabChip(
     onDetachToWindow: (Int?) -> Unit,
     onToggleBroadcast: () -> Unit,
     onEnterFullScreen: (() -> Unit)? = null,
-    onReconnect: (() -> Unit)? = null
+    onReconnect: (() -> Unit)? = null,
+    onLogOff: (() -> Unit)? = null
 ) {
     @Suppress("UNUSED_PARAMETER")
     val ignoredTotalTabs = totalTabs
@@ -1165,6 +1178,33 @@ private fun ExpressiveSessionTabChip(
                     onClick = {
                         contextMenuOpen = false
                         onToggleBroadcast()
+                    }
+                )
+            }
+            HorizontalDivider()
+            DropdownMenuItem(
+                text = { Text(labels.disconnectTabLabel) },
+                leadingIcon = { Icon(Icons.Outlined.PowerSettingsNew, contentDescription = null) },
+                onClick = {
+                    contextMenuOpen = false
+                    onClose()
+                }
+            )
+            if (onLogOff != null &&
+                (tab.protocol == SessionProtocolKind.RDP || tab.protocol == SessionProtocolKind.WINDOWS_TS)
+            ) {
+                DropdownMenuItem(
+                    text = { Text(labels.logOffSessionLabel, color = MaterialTheme.colorScheme.error) },
+                    leadingIcon = {
+                        Icon(
+                            Icons.AutoMirrored.Outlined.Logout,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.error
+                        )
+                    },
+                    onClick = {
+                        contextMenuOpen = false
+                        onLogOff()
                     }
                 )
             }

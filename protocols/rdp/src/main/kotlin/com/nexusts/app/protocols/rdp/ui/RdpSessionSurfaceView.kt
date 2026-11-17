@@ -86,7 +86,10 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import android.net.Uri
+import android.provider.OpenableColumns
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import com.nexusts.app.core.ui.components.NexusActionChip
 import com.nexusts.app.core.ui.input.isSystemPassThroughKeyEvent
 import com.nexusts.app.core.ui.input.nexusMouseWheelHandler
@@ -97,6 +100,8 @@ import com.nexusts.app.core.vault.model.RdpGfxCodecProfile
 import com.nexusts.app.core.vault.model.RdpResizeBehavior
 import com.nexusts.app.protocols.rdp.bridge.FreeRdpNativeBridge
 import com.nexusts.app.protocols.rdp.bridge.RdpManagedSession
+import com.nexusts.app.protocols.rdp.bridge.RemoteClipboardKind
+import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
@@ -129,6 +134,121 @@ private fun transformViewportToRemoteDesktop(
     return mappedX to mappedY
 }
 
+private fun readHostClipboardUris(manager: ClipboardManager?): List<Uri> {
+    val clip = runCatching { manager?.primaryClip }.getOrNull() ?: return emptyList()
+    if (clip.itemCount <= 0) return emptyList()
+    val result = mutableListOf<Uri>()
+    for (idx in 0 until clip.itemCount) {
+        val uri = runCatching { clip.getItemAt(idx)?.uri }.getOrNull() ?: continue
+        val scheme = uri.scheme?.lowercase().orEmpty()
+        if (scheme == "content" || scheme == "file") {
+            result += uri
+        }
+    }
+    return result
+}
+
+private fun sanitizeStagedDisplayName(rawName: String, fallbackIndex: Int): String {
+    val cleaned = rawName
+        .substringAfterLast('/')
+        .substringAfterLast('\\')
+        .replace(':', '_')
+        .trim()
+    if (cleaned.isEmpty() || cleaned == "." || cleaned == "..") {
+        return "clipboard_file_${fallbackIndex + 1}"
+    }
+    return cleaned
+}
+
+private fun stageHostClipboardUrisToLocalFiles(context: Context, uris: List<Uri>): List<String> {
+    if (uris.isEmpty()) return emptyList()
+    val sendRoot = File(context.cacheDir, "cliprdr_send")
+    // Prune older staging directories cleanly before creating a fresh batch
+    runCatching {
+        sendRoot.listFiles()?.sortedByDescending { it.lastModified() }?.drop(2)?.forEach { it.deleteRecursively() }
+    }
+    val batchDir = File(sendRoot, "batch_${System.currentTimeMillis()}").apply { mkdirs() }
+    val stagedPaths = mutableListOf<String>()
+    val usedNames = mutableSetOf<String>()
+
+    uris.forEachIndexed { idx, uri ->
+        if (uri.scheme.equals("file", ignoreCase = true)) {
+            val directFile = uri.path?.let(::File)
+            if (directFile != null && directFile.exists() && directFile.canRead()) {
+                stagedPaths += directFile.absolutePath
+                return@forEachIndexed
+            }
+        }
+        val queriedName = runCatching {
+            context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val col = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if (col >= 0) cursor.getString(col) else null
+                } else {
+                    null
+                }
+            }
+        }.getOrNull() ?: uri.lastPathSegment.orEmpty()
+
+        var fileName = sanitizeStagedDisplayName(queriedName, idx)
+        var dedup = 2
+        while (!usedNames.add(fileName.lowercase())) {
+            val dot = fileName.lastIndexOf('.')
+            fileName = if (dot > 0) {
+                "${fileName.substring(0, dot)} ($dedup)${fileName.substring(dot)}"
+            } else {
+                "$fileName ($dedup)"
+            }
+            dedup++
+        }
+        val destFile = File(batchDir, fileName)
+        val copied = runCatching {
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                destFile.outputStream().use { output ->
+                    input.copyTo(output, bufferSize = 64 * 1024)
+                }
+                true
+            } ?: false
+        }.getOrDefault(false)
+        if (copied && destFile.exists()) {
+            stagedPaths += destFile.absolutePath
+        }
+    }
+    return stagedPaths
+}
+
+private fun publishRemoteFilesToHostClipboard(
+    context: Context,
+    manager: ClipboardManager?,
+    localPaths: List<String>
+): String? {
+    if (manager == null || localPaths.isEmpty()) return null
+    val authority = "${context.packageName}.fileprovider"
+    val exportedUris = localPaths.mapNotNull { rawPath ->
+        val file = File(rawPath)
+        if (!file.exists()) return@mapNotNull null
+        if (file.isDirectory) {
+            // FileProvider serves concrete files; collect top-level files when a single small folder was copied
+            file.walkTopDown().filter { it.isFile }.take(32).mapNotNull { child ->
+                runCatching { FileProvider.getUriForFile(context, authority, child) }.getOrNull()
+            }.toList()
+        } else {
+            listOfNotNull(runCatching { FileProvider.getUriForFile(context, authority, file) }.getOrNull())
+        }
+    }.flatten()
+
+    if (exportedUris.isEmpty()) return null
+    val clipData = ClipData.newUri(context.contentResolver, "NexusTS RDP Files", exportedUris.first())
+    for (idx in 1 until exportedUris.size) {
+        clipData.addItem(ClipData.Item(exportedUris[idx]))
+    }
+    val applied = runCatching {
+        manager.setPrimaryClip(clipData)
+        true
+    }.getOrDefault(false)
+    return if (applied) exportedUris.joinToString("\n") { it.toString() } else null
+}
+
 private fun readHostPlainClipboard(context: Context, manager: ClipboardManager?): String {
     val clip = runCatching { manager?.primaryClip }.getOrNull() ?: return ""
     if (clip.itemCount <= 0) return ""
@@ -144,8 +264,8 @@ private fun readHostPlainClipboard(context: Context, manager: ClipboardManager?)
  *   clipped Compose panes AND standard Android / Googlebook OS screenshots capture pixels reliably.
  * - Places the RDP telemetry & control toolbar strictly OUTSIDE (above) the RDP desktop viewport so it
  *   never covers remote windows or intercepts mouse clicks.
- * - Performs automatic bidirectional clipboard sync via FreeRDP `CLIPRDR` whenever enabled in connection
- *   properties (`session.settings.redirectClipboard`).
+ * - Performs automatic bidirectional clipboard sync (text & files) via FreeRDP `CLIPRDR` whenever enabled
+ *   in connection properties (`session.settings.redirectClipboard`).
  */
 @Composable
 fun RdpSessionSurfaceView(
@@ -183,7 +303,7 @@ fun RdpSessionSurfaceView(
         when {
             !session.settings.hiDpiEnabled -> 100
             session.settings.desktopScaleFactorPercent > 100 -> session.settings.desktopScaleFactorPercent
-            density >= 1.5f -> 150
+            density >= 1.5f -> 200
             density >= 1.25f -> 125
             else -> 100
         }
@@ -206,6 +326,7 @@ fun RdpSessionSurfaceView(
 
     // Automated Bidirectional Clipboard Sync loop-prevention trackers
     var lastSyncedClipText by remember(session) { mutableStateOf<String?>(null) }
+    var lastSyncedClipFilesSig by remember(session) { mutableStateOf<String?>(null) }
     var lastObservedRemoteClipSeq by remember(session) { mutableLongStateOf(0L) }
 
     val isConnecting by session.isConnecting.collectAsState()
@@ -229,11 +350,27 @@ fun RdpSessionSurfaceView(
     val syncHostClipboardToRemote: () -> Unit = remember(session, context, systemClipboardManager) {
         {
             if (session.settings.redirectClipboard && session.isConnected.value) {
-                val hostText = readHostPlainClipboard(context, systemClipboardManager)
-                if (hostText.isNotEmpty() && hostText != lastSyncedClipText) {
-                    lastSyncedClipText = hostText
-                    coroutineScope.launch(Dispatchers.IO) {
-                        session.syncClipboardToRemote(hostText)
+                val hostUris = readHostClipboardUris(systemClipboardManager)
+                if (hostUris.isNotEmpty()) {
+                    val uriSig = hostUris.joinToString("\n") { it.toString() }
+                    if (uriSig != lastSyncedClipFilesSig) {
+                        lastSyncedClipFilesSig = uriSig
+                        lastSyncedClipText = null
+                        coroutineScope.launch(Dispatchers.IO) {
+                            val staged = stageHostClipboardUrisToLocalFiles(context, hostUris)
+                            if (staged.isNotEmpty()) {
+                                session.syncClipboardFilesToRemote(staged)
+                            }
+                        }
+                    }
+                } else {
+                    val hostText = readHostPlainClipboard(context, systemClipboardManager)
+                    if (hostText.isNotEmpty() && hostText != lastSyncedClipText) {
+                        lastSyncedClipText = hostText
+                        lastSyncedClipFilesSig = null
+                        coroutineScope.launch(Dispatchers.IO) {
+                            session.syncClipboardToRemote(hostText)
+                        }
                     }
                 }
             }
@@ -293,9 +430,12 @@ fun RdpSessionSurfaceView(
     LaunchedEffect(session, isConnected, isReconnecting) {
         var tick = 0
         while (isConnected || isReconnecting) {
-            delay(if (isReconnecting) 250L else 450L)
+            delay(if (isReconnecting) 250L else 380L)
             tick++
-            val pulledRemoteClip = withContext(Dispatchers.IO) {
+            var pulledKind: RemoteClipboardKind? = null
+            var pulledText: String? = null
+            var pulledFiles: List<String> = emptyList()
+            withContext(Dispatchers.IO) {
                 if (isReconnecting || tick % 2 == 0) {
                     session.pollSessionHealth()
                 } else {
@@ -305,21 +445,48 @@ fun RdpSessionSurfaceView(
                     val seq = session.remoteClipboardSequence()
                     if (seq > lastObservedRemoteClipSeq) {
                         lastObservedRemoteClipSeq = seq
-                        session.pullRemoteClipboardText()
-                    } else {
-                        null
+                        val kind = session.remoteClipboardKind()
+                        pulledKind = kind
+                        when (kind) {
+                            RemoteClipboardKind.FILES -> pulledFiles = session.pullRemoteClipboardFiles()
+                            RemoteClipboardKind.TEXT -> pulledText = session.pullRemoteClipboardText()
+                            RemoteClipboardKind.NONE -> Unit
+                        }
                     }
-                } else {
-                    null
                 }
             }
-            if (!pulledRemoteClip.isNullOrEmpty() && pulledRemoteClip != lastSyncedClipText) {
-                lastSyncedClipText = pulledRemoteClip
-                runCatching {
-                    systemClipboardManager?.setPrimaryClip(
-                        ClipData.newPlainText("NexusTS RDP", pulledRemoteClip)
-                    )
+            when (pulledKind) {
+                RemoteClipboardKind.FILES -> {
+                    if (pulledFiles.isNotEmpty()) {
+                        val publishedSig = publishRemoteFilesToHostClipboard(
+                            context = context,
+                            manager = systemClipboardManager,
+                            localPaths = pulledFiles
+                        )
+                        if (publishedSig != null) {
+                            lastSyncedClipFilesSig = publishedSig
+                            lastSyncedClipText = null
+                        }
+                    }
                 }
+                RemoteClipboardKind.TEXT -> {
+                    if (!pulledText.isNullOrEmpty() && pulledText != lastSyncedClipText) {
+                        lastSyncedClipText = pulledText
+                        lastSyncedClipFilesSig = null
+                        runCatching {
+                            systemClipboardManager?.setPrimaryClip(
+                                ClipData.newPlainText("NexusTS RDP", pulledText)
+                            )
+                        }
+                    }
+                }
+                RemoteClipboardKind.NONE -> {
+                    // Remote clipboard took ownership with a non-pulled format or fresh sequence:
+                    // clear local mirror caches so re-copying identical local data later re-announces CB_FORMAT_LIST.
+                    lastSyncedClipText = null
+                    lastSyncedClipFilesSig = null
+                }
+                null -> Unit
             }
         }
     }
@@ -655,12 +822,18 @@ fun RdpSessionSurfaceView(
                         KeyEvent.ACTION_DOWN -> session.sendAndroidKeyEvent(
                             keyCode = nativeEv.keyCode,
                             scanCode = nativeEv.scanCode,
-                            isKeyDown = true
+                            isKeyDown = true,
+                            ctrlPressed = nativeEv.isCtrlPressed,
+                            altPressed = nativeEv.isAltPressed,
+                            metaPressed = nativeEv.isMetaPressed
                         )
                         KeyEvent.ACTION_UP -> session.sendAndroidKeyEvent(
                             keyCode = nativeEv.keyCode,
                             scanCode = nativeEv.scanCode,
-                            isKeyDown = false
+                            isKeyDown = false,
+                            ctrlPressed = nativeEv.isCtrlPressed,
+                            altPressed = nativeEv.isAltPressed,
+                            metaPressed = nativeEv.isMetaPressed
                         )
                         else -> false
                     }

@@ -181,6 +181,7 @@
     <!-- v1.1.5 Modern UI, Folder Disconnect, Drag & Drop, Flags & Play Protect Auto-Update -->
     <string name="action_disconnect_all_folder">Alle im Ordner trennen</string>
     <string name="action_disconnect_session">Trennen</string>
+    <string name="action_log_off_session">Sitzung abmelden</string>
     <string name="action_move_to_folder">In Ordner verschieben…</string>
     <string name="move_to_root_folder">Oberste Ebene (Kein Ordner)</string>
     <string name="dialog_language_title">Sprache auswählen</string>

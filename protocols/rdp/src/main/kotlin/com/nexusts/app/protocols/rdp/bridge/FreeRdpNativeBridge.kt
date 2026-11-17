@@ -159,7 +159,22 @@ object FreeRdpNativeBridge {
     external fun nativeSyncClipboardText(handle: Long, utf8Text: String)
 
     @JvmStatic
+    external fun nativeSyncClipboardFiles(handle: Long, localPaths: Array<String>)
+
+    @JvmStatic
+    external fun nativeGetRemoteClipboardKind(handle: Long): Int
+
+    @JvmStatic
     external fun nativePullRemoteClipboardText(handle: Long): String
+
+    @JvmStatic
+    external fun nativePullRemoteClipboardFiles(handle: Long): String
+
+    @JvmStatic
+    external fun nativeRequestSynchronizedPaste(handle: Long)
+
+    @JvmStatic
+    external fun nativeLogOffSession(handle: Long)
 
     @JvmStatic
     external fun nativeGetRemoteClipboardSequence(handle: Long): Long
@@ -181,6 +196,20 @@ object FreeRdpNativeBridge {
 
     @JvmStatic
     external fun nativeDestroySession(handle: Long)
+}
+
+enum class RemoteClipboardKind {
+    NONE,
+    TEXT,
+    FILES;
+
+    companion object {
+        fun fromNativeCode(code: Int): RemoteClipboardKind = when (code) {
+            1 -> TEXT
+            2 -> FILES
+            else -> NONE
+        }
+    }
 }
 
 /**
@@ -862,11 +891,22 @@ class RdpManagedSession(
         }
     }
 
+    @Volatile
+    private var swallowNextPasteKeyUp: Boolean = false
+
     fun syncClipboardToRemote(utf8Text: String) {
         if (!settings.redirectClipboard || utf8Text.isEmpty()) return
         val handle = nativeHandle
         if (handle != 0L && FreeRdpNativeBridge.isNativeLoaded) {
             FreeRdpNativeBridge.nativeSyncClipboardText(handle, utf8Text)
+        }
+    }
+
+    fun syncClipboardFilesToRemote(localPaths: List<String>) {
+        if (!settings.redirectClipboard || localPaths.isEmpty()) return
+        val handle = nativeHandle
+        if (handle != 0L && FreeRdpNativeBridge.isNativeLoaded) {
+            FreeRdpNativeBridge.nativeSyncClipboardFiles(handle, localPaths.toTypedArray())
         }
     }
 
@@ -879,6 +919,16 @@ class RdpManagedSession(
         return 0L
     }
 
+    fun remoteClipboardKind(): RemoteClipboardKind {
+        if (!settings.redirectClipboard) return RemoteClipboardKind.NONE
+        val handle = nativeHandle
+        if (handle != 0L && FreeRdpNativeBridge.isNativeLoaded) {
+            val code = runCatching { FreeRdpNativeBridge.nativeGetRemoteClipboardKind(handle) }.getOrDefault(0)
+            return RemoteClipboardKind.fromNativeCode(code)
+        }
+        return RemoteClipboardKind.NONE
+    }
+
     fun pullRemoteClipboardText(): String {
         if (!settings.redirectClipboard) return ""
         val handle = nativeHandle
@@ -888,7 +938,70 @@ class RdpManagedSession(
         return ""
     }
 
+    fun pullRemoteClipboardFiles(): List<String> {
+        if (!settings.redirectClipboard) return emptyList()
+        val handle = nativeHandle
+        if (handle != 0L && FreeRdpNativeBridge.isNativeLoaded) {
+            val raw = runCatching { FreeRdpNativeBridge.nativePullRemoteClipboardFiles(handle) }.getOrDefault("")
+            return raw.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.toList()
+        }
+        return emptyList()
+    }
+
+    fun requestSynchronizedPaste() {
+        val handle = nativeHandle
+        if (handle != 0L && FreeRdpNativeBridge.isNativeLoaded) {
+            FreeRdpNativeBridge.nativeRequestSynchronizedPaste(handle)
+        }
+    }
+
+    fun logOffRemoteSession() {
+        val handle = nativeHandle
+        if (handle != 0L && FreeRdpNativeBridge.isNativeLoaded) {
+            runCatching { FreeRdpNativeBridge.nativeLogOffSession(handle) }
+        }
+    }
+
+    private fun interceptSynchronizedPasteKey(
+        keyCode: Int,
+        isKeyDown: Boolean,
+        ctrlPressed: Boolean,
+        altPressed: Boolean,
+        metaPressed: Boolean
+    ): Boolean {
+        if (!settings.redirectClipboard || keyCode != KeyEvent.KEYCODE_V) return false
+        if (!isKeyDown && swallowNextPasteKeyUp) {
+            swallowNextPasteKeyUp = false
+            return true
+        }
+        if (isKeyDown && !altPressed && (ctrlPressed || metaPressed)) {
+            val handle = nativeHandle
+            if (handle != 0L && FreeRdpNativeBridge.isNativeLoaded) {
+                swallowNextPasteKeyUp = true
+                if (metaPressed && !ctrlPressed) {
+                    // Press Left Ctrl BEFORE releasing Left/Right Win so Windows never opens Start Menu
+                    FreeRdpNativeBridge.nativeSendKeyScancode(handle, 0x1D, true, false)
+                    FreeRdpNativeBridge.nativeSendKeyScancode(handle, 0x5B, false, true)
+                    FreeRdpNativeBridge.nativeSendKeyScancode(handle, 0x5C, false, true)
+                }
+                FreeRdpNativeBridge.nativeRequestSynchronizedPaste(handle)
+                return true
+            }
+        }
+        return false
+    }
+
     fun sendHardwareKey(packet: RawHardwareKeyPacket): Boolean {
+        if (interceptSynchronizedPasteKey(
+                keyCode = packet.keyCode,
+                isKeyDown = packet.isKeyDown,
+                ctrlPressed = packet.ctrlPressed,
+                altPressed = packet.altPressed,
+                metaPressed = packet.metaWinCmdPressed
+            )
+        ) {
+            return true
+        }
         val mapped = RdpScanCodeMapper.mapKeyPacket(packet) ?: return false
         val handle = nativeHandle
         if (handle != 0L && FreeRdpNativeBridge.isNativeLoaded) {
@@ -902,7 +1015,24 @@ class RdpManagedSession(
         return true
     }
 
-    fun sendAndroidKeyEvent(keyCode: Int, scanCode: Int = 0, isKeyDown: Boolean): Boolean {
+    fun sendAndroidKeyEvent(
+        keyCode: Int,
+        scanCode: Int = 0,
+        isKeyDown: Boolean,
+        ctrlPressed: Boolean = false,
+        altPressed: Boolean = false,
+        metaPressed: Boolean = false
+    ): Boolean {
+        if (interceptSynchronizedPasteKey(
+                keyCode = keyCode,
+                isKeyDown = isKeyDown,
+                ctrlPressed = ctrlPressed,
+                altPressed = altPressed,
+                metaPressed = metaPressed
+            )
+        ) {
+            return true
+        }
         val mapped = RdpScanCodeMapper.mapAndroidKeyCode(keyCode, scanCode) ?: return false
         val handle = nativeHandle
         if (handle != 0L && FreeRdpNativeBridge.isNativeLoaded) {

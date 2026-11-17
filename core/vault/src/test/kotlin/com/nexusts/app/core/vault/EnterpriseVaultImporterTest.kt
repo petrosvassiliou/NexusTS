@@ -1310,6 +1310,82 @@ class EnterpriseVaultImporterTest {
         assertEquals(com.nexusts.app.core.vault.model.RdpGfxCodecProfile.ADAPTIVE_PROGRESSIVE, rDefault.gfxCodecProfile)
         assertEquals(com.nexusts.app.core.vault.model.RdpGfxCodecProfile.AVC444_CHROMA, rAvc.gfxCodecProfile)
         assertTrue(rAvc.enableH264Avc444)
+        // Pure Royal TS XML without <ScaleFactor>/<DesktopScaleFactor> defaults to 200% Retina HiDPI
+        assertEquals(200, rDefault.desktopScaleFactorPercent)
+        assertEquals(180, rDefault.deviceScaleFactorPercent)
+        assertFalse(rDefault.hiDpiScaleCustomized)
+    }
+
+    @Test
+    fun retina200DefaultAndLegacyScaleMigrationAcrossNxtsAndRtsz() {
+        val defaultRdp = ProtocolSpecificSettings.Rdp()
+        assertEquals(200, defaultRdp.desktopScaleFactorPercent)
+        assertEquals(180, defaultRdp.deviceScaleFactorPercent)
+        assertFalse(defaultRdp.hiDpiScaleCustomized)
+
+        val fastSerializer = com.nexusts.app.core.vault.crypto.NxtsVaultSerializer(
+            argon2Iterations = 1,
+            argon2MemoryKiB = 4096,
+            argon2Parallelism = 1
+        )
+        val preV086Doc = NxtsVaultDocument(
+            documentId = "doc-hidpi-migration",
+            name = "Pre-v0.8.6 HiDPI Migration",
+            connections = listOf(
+                VaultConnection(
+                    id = "conn-legacy-auto-150",
+                    name = "Legacy Auto 150",
+                    host = "10.30.0.1",
+                    protocol = VaultProtocolType.RDP,
+                    settings = ProtocolSpecificSettings.Rdp(
+                        hiDpiEnabled = true,
+                        desktopScaleFactorPercent = 150,
+                        deviceScaleFactorPercent = 140,
+                        hiDpiScaleCustomized = false
+                    )
+                ),
+                VaultConnection(
+                    id = "conn-explicit-150",
+                    name = "Explicit 150",
+                    host = "10.30.0.2",
+                    protocol = VaultProtocolType.RDP,
+                    settings = ProtocolSpecificSettings.Rdp(
+                        hiDpiEnabled = true,
+                        desktopScaleFactorPercent = 150,
+                        deviceScaleFactorPercent = 140,
+                        hiDpiScaleCustomized = true
+                    )
+                )
+            ),
+            templates = listOf(
+                com.nexusts.app.core.vault.model.ConnectionTemplate(
+                    id = "tpl-legacy-auto-100",
+                    name = "Legacy Auto 100 Template",
+                    protocol = VaultProtocolType.RDP,
+                    settings = ProtocolSpecificSettings.Rdp(
+                        hiDpiEnabled = true,
+                        desktopScaleFactorPercent = 100,
+                        deviceScaleFactorPercent = 100,
+                        hiDpiScaleCustomized = false
+                    )
+                )
+            )
+        )
+
+        val sealed = fastSerializer.sealDocument(preV086Doc, "test-pass".toCharArray())
+        val unsealed = fastSerializer.unsealDocument(sealed, "test-pass".toCharArray())
+        val migratedAuto = unsealed.connections.first { it.id == "conn-legacy-auto-150" }.settings as ProtocolSpecificSettings.Rdp
+        val preservedExplicit = unsealed.connections.first { it.id == "conn-explicit-150" }.settings as ProtocolSpecificSettings.Rdp
+        val migratedTpl = unsealed.templates.single().settings as ProtocolSpecificSettings.Rdp
+
+        assertEquals(200, migratedAuto.desktopScaleFactorPercent)
+        assertEquals(180, migratedAuto.deviceScaleFactorPercent)
+        assertEquals(150, preservedExplicit.desktopScaleFactorPercent)
+        assertEquals(140, preservedExplicit.deviceScaleFactorPercent)
+        assertTrue(preservedExplicit.hiDpiScaleCustomized)
+        assertEquals(200, migratedTpl.desktopScaleFactorPercent)
+        assertEquals(180, migratedTpl.deviceScaleFactorPercent)
     }
 }
+
 

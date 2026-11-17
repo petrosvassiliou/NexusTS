@@ -1,0 +1,1 @@
+• v0.8.6 : Copier-coller RDP synchronisé de texte et bidirectionnel de fichiers/dossiers (CLIPRDR), retour de l'échelle Retina HiDPI par défaut à 200 % et actions Déconnecter & Fermer la Session dans les menus contextuels

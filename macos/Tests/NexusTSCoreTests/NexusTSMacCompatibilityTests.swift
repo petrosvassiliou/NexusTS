@@ -350,12 +350,13 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
     }
 
     func testV118LocalizationUpgradeVersionAndVaultReplacementCompatibility() throws {
-        XCTAssertEqual(MacGitHubReleaseUpdater.currentVersion, "0.8.5")
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.5", isNewerThan: "0.8.4"))
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.5", isNewerThan: "0.8.3"))
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.5", isNewerThan: "0.8.2"))
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.5", isNewerThan: "0.3.0-beta.6"))
+        XCTAssertEqual(MacGitHubReleaseUpdater.currentVersion, "0.8.6")
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.6", isNewerThan: "0.8.5"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.6", isNewerThan: "0.8.4"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.6", isNewerThan: "0.8.3"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.6", isNewerThan: "0.3.0-beta.6"))
         XCTAssertEqual(LocalizedWorkspaceStrings.catalog(for: .en).studios, "Manage")
+        XCTAssertEqual(LocalizedWorkspaceStrings.catalog(for: .en).logOffSession, "Log Off Session")
 
         for lang in NexusAppLanguage.allCases {
             let catalog = LocalizedWorkspaceStrings.catalog(for: lang)
@@ -363,6 +364,7 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
             XCTAssertNotEqual(catalog.studios.lowercased(), "studios")
             XCTAssertFalse(catalog.renameFolder.isEmpty)
             XCTAssertFalse(catalog.startAllRdp.isEmpty)
+            XCTAssertFalse(catalog.logOffSession.isEmpty)
             XCTAssertFalse(catalog.deleteFolderAndContents.isEmpty)
             XCTAssertFalse(catalog.deleteFolderKeepContents.isEmpty)
             XCTAssertFalse(catalog.royalImportTitle.isEmpty)
@@ -603,9 +605,11 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
         XCTAssertFalse(defaultSettings.redirectSmartcardYubiKey)
         XCTAssertEqual(defaultSettings.resizeBehavior, .DYNAMIC_DISP_DVC)
         XCTAssertTrue(defaultSettings.hiDpiEnabled)
-        XCTAssertEqual(defaultSettings.desktopScaleFactorPercent, 150)
+        XCTAssertEqual(defaultSettings.desktopScaleFactorPercent, 200)
+        XCTAssertEqual(defaultSettings.deviceScaleFactorPercent, 180)
+        XCTAssertFalse(defaultSettings.hiDpiScaleCustomized)
 
-        // Retina Macs (backingScaleFactor = 2.0) negotiate crisp 150% HiDPI by default in TS_UD_CS_CORE
+        // Retina Macs (backingScaleFactor = 2.0) negotiate crisp 200% HiDPI by default in TS_UD_CS_CORE
         let retinaSession = NativeRdpSession(
             host: "10.2.200.11",
             username: "admin",
@@ -617,7 +621,7 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
             backingScaleFactor: 2.0
         )
         XCTAssertTrue(retinaSession.initialHiDpiActive)
-        XCTAssertEqual(retinaSession.initialScalePercent, 150)
+        XCTAssertEqual(retinaSession.initialScalePercent, 200)
         XCTAssertEqual(retinaSession.initialPixelWidth, 2368)
         XCTAssertEqual(retinaSession.initialPixelHeight, 1624)
         XCTAssertFalse(retinaSession.hasValidFrame)
@@ -631,24 +635,32 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
         XCTAssertFalse(consumed)
 
         retinaSession.pushLocalClipboard("Hello from macOS Command+C")
+        retinaSession.pushLocalClipboardFiles(["/tmp/example.txt"])
+        XCTAssertEqual(retinaSession.remoteClipboardKind, .none)
+        XCTAssertEqual(retinaSession.pullRemoteClipboard(), "")
+        XCTAssertTrue(retinaSession.pullRemoteClipboardFiles().isEmpty)
+        retinaSession.requestSynchronizedPaste()
+        retinaSession.logOffRemoteSession()
         retinaSession.setFrameReadyHandler {}
         retinaSession.setFrameReadyHandler(nil)
 
-        // Existing vault connections saved with legacy desktopScaleFactorPercent == 100 + hiDpiEnabled == true also resolve to 150%
+        // Existing vault connections saved with legacy desktopScaleFactorPercent == 100 + hiDpiEnabled == true resolve to 200%
         var legacySavedSettings = RdpProtocolSettings()
         legacySavedSettings.desktopScaleFactorPercent = 100
         legacySavedSettings.hiDpiEnabled = true
         XCTAssertEqual(
             NativeRdpSession.resolveEffectiveHiDpiScalePercent(settings: legacySavedSettings, backingScaleFactor: 2.0),
-            150
+            200
         )
 
-        // Explicit 200% override is honored when selected
-        var explicit200 = RdpProtocolSettings()
-        explicit200.desktopScaleFactorPercent = 200
+        // Explicit 150% override is honored when selected
+        var explicit150 = RdpProtocolSettings()
+        explicit150.desktopScaleFactorPercent = 150
+        explicit150.deviceScaleFactorPercent = 140
+        explicit150.hiDpiScaleCustomized = true
         XCTAssertEqual(
-            NativeRdpSession.resolveEffectiveHiDpiScalePercent(settings: explicit200, backingScaleFactor: 2.0),
-            200
+            NativeRdpSession.resolveEffectiveHiDpiScalePercent(settings: explicit150, backingScaleFactor: 2.0),
+            150
         )
 
         // >4K Retina viewports (e.g. 5K Studio Display 5120x2880) clamp proportionally to 3840x2160 when H.264/AVC444 is enabled
@@ -826,5 +838,34 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
         session5k.sendExtendedPointerEvent(xflags: 0x8001, x: 120, y: 240)
         session5k.sendExtendedPointerEvent(xflags: 0x0001, x: 120, y: 240)
     }
+
+    func testV086Retina200MigrationAndExplicitScalePreservation() throws {
+        // Pre-v0.8.6 saved JSON with automatic 150% or 100% (no hiDpiScaleCustomized) migrates cleanly to 200% / 180
+        let legacy150Json = Data(#"{"port":3389,"hiDpiEnabled":true,"desktopScaleFactorPercent":150,"deviceScaleFactorPercent":140}"#.utf8)
+        let migrated150 = try JSONDecoder().decode(RdpProtocolSettings.self, from: legacy150Json)
+        XCTAssertEqual(migrated150.desktopScaleFactorPercent, 200)
+        XCTAssertEqual(migrated150.deviceScaleFactorPercent, 180)
+        XCTAssertFalse(migrated150.hiDpiScaleCustomized)
+
+        let legacy100Json = Data(#"{"port":3389,"hiDpiEnabled":true,"desktopScaleFactorPercent":100,"deviceScaleFactorPercent":100}"#.utf8)
+        let migrated100 = try JSONDecoder().decode(RdpProtocolSettings.self, from: legacy100Json)
+        XCTAssertEqual(migrated100.desktopScaleFactorPercent, 200)
+        XCTAssertEqual(migrated100.deviceScaleFactorPercent, 180)
+        XCTAssertFalse(migrated100.hiDpiScaleCustomized)
+
+        // Explicit 150% user customization (hiDpiScaleCustomized == true) is preserved across JSON round-trip
+        let explicit150Json = Data(#"{"port":3389,"hiDpiEnabled":true,"desktopScaleFactorPercent":150,"deviceScaleFactorPercent":140,"hiDpiScaleCustomized":true}"#.utf8)
+        let preserved150 = try JSONDecoder().decode(RdpProtocolSettings.self, from: explicit150Json)
+        XCTAssertEqual(preserved150.desktopScaleFactorPercent, 150)
+        XCTAssertEqual(preserved150.deviceScaleFactorPercent, 140)
+        XCTAssertTrue(preserved150.hiDpiScaleCustomized)
+
+        let reencoded = try JSONEncoder().encode(preserved150)
+        let roundTripped = try JSONDecoder().decode(RdpProtocolSettings.self, from: reencoded)
+        XCTAssertEqual(roundTripped.desktopScaleFactorPercent, 150)
+        XCTAssertEqual(roundTripped.deviceScaleFactorPercent, 140)
+        XCTAssertTrue(roundTripped.hiDpiScaleCustomized)
+    }
 }
+
 

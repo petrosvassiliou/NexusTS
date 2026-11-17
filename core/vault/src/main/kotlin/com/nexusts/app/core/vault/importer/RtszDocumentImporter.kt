@@ -861,12 +861,14 @@ class RtszDocumentImporter {
                 else ->
                     RdpAudioRedirectionMode.PLAY_ON_THIS_DEVICE
             }
-            val scaleRaw = elem.childText("DesktopScaleFactor")
+            val explicitScale = elem.childText("DesktopScaleFactor")
                 .ifBlank { elem.childText("ScaleFactor") }
                 .toIntOrNull()
-                ?.coerceIn(100, 400) ?: 100
+                ?.coerceIn(100, 400)
+            val scaleRaw = explicitScale ?: 200
             val deviceScale = elem.childText("DeviceScaleFactor").toIntOrNull()
                 ?: if (scaleRaw >= 175) 180 else if (scaleRaw >= 125) 140 else 100
+            val scaleCustomized = elem.childBoolean("HiDpiScaleCustomized", default = explicitScale != null)
             val resizeModeRaw = elem.childText("ResizeMode")
             val resizeBehavior = when {
                 resizeModeRaw.contains("SmartSizing", true) || resizeModeRaw == "1" ->
@@ -902,6 +904,7 @@ class RtszDocumentImporter {
                 hiDpiEnabled = elem.childBoolean("AutoAdjustRetinaDisplay", "AutomaticallyCalculateScaleFactor", "UseRetinaResolution", default = true),
                 desktopScaleFactorPercent = scaleRaw,
                 deviceScaleFactorPercent = deviceScale,
+                hiDpiScaleCustomized = scaleCustomized,
                 enableGfxPipeline = elem.childBoolean("EnableGfxPipeline", "EnableGraphicsPipeline", default = true),
                 gfxCodecProfile = gfxCodecProfile,
                 enableH264Avc444 = elem.childBoolean("EnableH264Avc444", default = gfxCodecProfile == RdpGfxCodecProfile.AVC444_CHROMA),

@@ -120,6 +120,7 @@ fun rememberLocalizedWorkspaceStrings(): WorkspaceLocalizedStrings {
         actionConnectAllFolder = stringResource(R.string.action_connect_all_folder),
         actionDisconnectAllFolder = stringResource(R.string.action_disconnect_all_folder),
         actionDisconnectSession = stringResource(R.string.action_disconnect_session),
+        actionLogOffSession = stringResource(R.string.action_log_off_session),
         actionMoveToFolder = stringResource(R.string.action_move_to_folder),
         moveToRootFolder = stringResource(R.string.move_to_root_folder),
         dialogLanguageTitle = stringResource(R.string.dialog_language_title),

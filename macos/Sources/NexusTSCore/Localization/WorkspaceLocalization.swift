@@ -90,6 +90,8 @@ public struct LocalizedWorkspaceStrings: Equatable, Sendable {
     public let workspaceShortcutsTitle: String
     public let toggleSidebar: String
     public let fullScreenSession: String
+    public let disconnectSession: String
+    public let logOffSession: String
 
     public static func catalog(for language: NexusAppLanguage) -> LocalizedWorkspaceStrings {
         switch language.resolvedCode {
@@ -146,7 +148,9 @@ public struct LocalizedWorkspaceStrings: Equatable, Sendable {
                 quickConnectTitle: "Schnellverbindung",
                 workspaceShortcutsTitle: "macOS-Tastaturkurzbefehle",
                 toggleSidebar: "Seitenleiste",
-                fullScreenSession: "Vollbild-Sitzung"
+                fullScreenSession: "Vollbild-Sitzung",
+                disconnectSession: "Trennen",
+                logOffSession: "Sitzung abmelden"
             )
         case "it":
             return LocalizedWorkspaceStrings(
@@ -201,7 +205,9 @@ public struct LocalizedWorkspaceStrings: Equatable, Sendable {
                 quickConnectTitle: "Connessione Rapida",
                 workspaceShortcutsTitle: "Scorciatoie Area di Lavoro macOS",
                 toggleSidebar: "Barra Laterale",
-                fullScreenSession: "Sessione a Schermo Intero"
+                fullScreenSession: "Sessione a Schermo Intero",
+                disconnectSession: "Disconnetti",
+                logOffSession: "Chiudi Sessione (Log Off)"
             )
         case "es":
             return LocalizedWorkspaceStrings(
@@ -256,7 +262,9 @@ public struct LocalizedWorkspaceStrings: Equatable, Sendable {
                 quickConnectTitle: "Conexión Rápida",
                 workspaceShortcutsTitle: "Atajos de Espacio de Trabajo macOS",
                 toggleSidebar: "Barra Lateral",
-                fullScreenSession: "Sesión a Pantalla Completa"
+                fullScreenSession: "Sesión a Pantalla Completa",
+                disconnectSession: "Desconectar",
+                logOffSession: "Cerrar Sesión Remota"
             )
         case "el":
             return LocalizedWorkspaceStrings(
@@ -311,7 +319,9 @@ public struct LocalizedWorkspaceStrings: Equatable, Sendable {
                 quickConnectTitle: "Ταχεία Σύνδεση",
                 workspaceShortcutsTitle: "Συντομεύσεις Χώρου Εργασίας macOS",
                 toggleSidebar: "Πλαϊνή Στήλη",
-                fullScreenSession: "Συνεδρία Πλήρους Οθόνης"
+                fullScreenSession: "Συνεδρία Πλήρους Οθόνης",
+                disconnectSession: "Αποσύνδεση",
+                logOffSession: "Αποσύνδεση Χρήστη (Log Off)"
             )
         case "fr":
             return LocalizedWorkspaceStrings(
@@ -366,7 +376,9 @@ public struct LocalizedWorkspaceStrings: Equatable, Sendable {
                 quickConnectTitle: "Connexion Rapide",
                 workspaceShortcutsTitle: "Raccourcis de l’Espace de Travail macOS",
                 toggleSidebar: "Barre Latérale",
-                fullScreenSession: "Session Plein Écran"
+                fullScreenSession: "Session Plein Écran",
+                disconnectSession: "Déconnecter",
+                logOffSession: "Fermer la Session (Log Off)"
             )
         default:
             return LocalizedWorkspaceStrings(
@@ -421,7 +433,9 @@ public struct LocalizedWorkspaceStrings: Equatable, Sendable {
                 quickConnectTitle: "Quick Connect",
                 workspaceShortcutsTitle: "macOS Workspace Shortcuts",
                 toggleSidebar: "Sidebar",
-                fullScreenSession: "Full-Screen Session"
+                fullScreenSession: "Full-Screen Session",
+                disconnectSession: "Disconnect",
+                logOffSession: "Log Off Session"
             )
         }
     }

@@ -773,6 +773,13 @@ private final class RoyalTsXmlSAXParser: NSObject, XMLParserDelegate {
                 var rdp = RdpProtocolSettings()
                 rdp.port = Int(node.fields["RDPPort"] ?? node.fields["Port"] ?? "3389") ?? 3389
                 rdp.connectToConsoleAdmin = (node.fields["ConnectToAdministerOrConsole"] ?? "").lowercased() == "true"
+                if let explicitScaleStr = node.fields["DesktopScaleFactor"] ?? node.fields["ScaleFactor"],
+                   let explicitScale = Int(explicitScaleStr.trimmingCharacters(in: .whitespacesAndNewlines)),
+                   (100...500).contains(explicitScale) {
+                    rdp.desktopScaleFactorPercent = explicitScale
+                    rdp.deviceScaleFactorPercent = explicitScale >= 175 ? 180 : (explicitScale >= 125 ? 140 : 100)
+                    rdp.hiDpiScaleCustomized = true
+                }
                 conns.append(VaultConnection(
                     id: id,
                     parentFolderId: parentFolderId,

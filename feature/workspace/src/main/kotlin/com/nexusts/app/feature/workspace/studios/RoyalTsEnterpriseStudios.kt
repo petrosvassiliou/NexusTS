@@ -28,6 +28,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.Logout
 import androidx.compose.material.icons.filled.Folder as FilledFolderIcon
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.AutoAwesome
@@ -345,6 +346,7 @@ fun ExpressiveVaultOverviewDashboard(
     onToggleFavorite: (String) -> Unit = {},
     onDeleteConnection: (String) -> Unit = {},
     onDisconnectConnection: (String) -> Unit = {},
+    onLogOffConnection: (String) -> Unit = {},
     onMoveConnectionToFolder: (VaultConnection) -> Unit = {},
     onLaunchLocalShell: () -> Unit = {},
     activeConnectionIds: Set<String> = emptySet(),
@@ -871,6 +873,25 @@ fun ExpressiveVaultOverviewDashboard(
                                                 onDisconnectConnection(fav.id)
                                             }
                                         )
+                                        if (fav.protocol == VaultProtocolType.RDP ||
+                                            fav.protocol == VaultProtocolType.WINDOWS_TERMINAL_SERVICES
+                                        ) {
+                                            DropdownMenuItem(
+                                                text = { Text(strings.actionLogOffSession, color = MaterialTheme.colorScheme.error) },
+                                                leadingIcon = {
+                                                    Icon(
+                                                        Icons.AutoMirrored.Outlined.Logout,
+                                                        contentDescription = null,
+                                                        tint = MaterialTheme.colorScheme.error,
+                                                        modifier = Modifier.size(18.dp)
+                                                    )
+                                                },
+                                                onClick = {
+                                                    favMenuOpen = false
+                                                    onLogOffConnection(fav.id)
+                                                }
+                                            )
+                                        }
                                     }
                                     DropdownMenuItem(
                                         text = { Text(strings.splitRight) },
@@ -1505,7 +1526,7 @@ fun NewTemplateDialog(
     var protocol by remember(editingTemplate) { mutableStateOf(editingTemplate?.protocol ?: VaultProtocolType.RDP) }
     var colorHex by remember(editingTemplate) { mutableStateOf<String?>(editingTemplate?.colorAccentHex ?: "#5B9BFF") }
     var rdpAdminConsole by remember(editingTemplate) { mutableStateOf(existingRdp?.connectToConsoleAdmin ?: true) }
-    var rdpScalePercent by remember(editingTemplate) { mutableIntStateOf(existingRdp?.desktopScaleFactorPercent ?: 150) }
+    var rdpScalePercent by remember(editingTemplate) { mutableIntStateOf(existingRdp?.desktopScaleFactorPercent ?: 200) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -1557,7 +1578,7 @@ fun NewTemplateDialog(
                             NexusChoiceChip(
                                 selected = rdpScalePercent == pct,
                                 onClick = { rdpScalePercent = pct },
-                                label = "$pct%"
+                                label = if (pct == 200) "200% (Default)" else "$pct%"
                             )
                         }
                     }
@@ -1572,7 +1593,9 @@ fun NewTemplateDialog(
                         VaultProtocolType.RDP -> ProtocolSpecificSettings.Rdp(
                             connectToConsoleAdmin = rdpAdminConsole,
                             hiDpiEnabled = rdpScalePercent > 100,
-                            desktopScaleFactorPercent = rdpScalePercent
+                            desktopScaleFactorPercent = rdpScalePercent,
+                            deviceScaleFactorPercent = if (rdpScalePercent >= 175) 180 else if (rdpScalePercent >= 125) 140 else 100,
+                            hiDpiScaleCustomized = true
                         )
                         VaultProtocolType.SSH -> ProtocolSpecificSettings.Ssh()
                         VaultProtocolType.TELNET -> ProtocolSpecificSettings.Ssh(port = 23)

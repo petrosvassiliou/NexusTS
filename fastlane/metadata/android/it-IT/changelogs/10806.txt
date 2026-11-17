@@ -1,0 +1,1 @@
+• v0.8.6: Copia-incolla RDP sincronizzato per testo e bidirezionale per file/cartelle (CLIPRDR), scala Retina HiDPI predefinita riportata al 200% e azioni Disconnetti e Chiudi Sessione (Log Off) nei menu contestuali

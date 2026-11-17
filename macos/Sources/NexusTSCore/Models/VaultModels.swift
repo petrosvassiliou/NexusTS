@@ -349,8 +349,9 @@ public struct RdpProtocolSettings: Codable, Equatable, Hashable, Sendable {
     public var port: Int = 3389
     public var connectToConsoleAdmin: Bool = false
     public var hiDpiEnabled: Bool = true
-    public var desktopScaleFactorPercent: Int = 150
-    public var deviceScaleFactorPercent: Int = 100
+    public var desktopScaleFactorPercent: Int = 200
+    public var deviceScaleFactorPercent: Int = 180
+    public var hiDpiScaleCustomized: Bool = false
     public var enableGfxPipeline: Bool = true
     public var gfxCodecProfile: RdpGfxCodecProfile = .ADAPTIVE_PROGRESSIVE
     public var enableH264Avc444: Bool = false
@@ -390,7 +391,7 @@ public struct RdpProtocolSettings: Codable, Equatable, Hashable, Sendable {
     public init() {}
 
     enum CodingKeys: String, CodingKey {
-        case port, connectToConsoleAdmin, hiDpiEnabled, desktopScaleFactorPercent, deviceScaleFactorPercent
+        case port, connectToConsoleAdmin, hiDpiEnabled, desktopScaleFactorPercent, deviceScaleFactorPercent, hiDpiScaleCustomized
         case enableGfxPipeline, gfxCodecProfile, enableH264Avc444, enableRemoteFx, resizeBehavior
         case customDesktopWidth, customDesktopHeight, multiMonitorSpanning, selectedMonitorIds
         case colorDepthBits, redirectClipboard, audioRedirectionMode, redirectAudioPlayback, redirectMicrophone
@@ -405,9 +406,20 @@ public struct RdpProtocolSettings: Codable, Equatable, Hashable, Sendable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.port = try c.decodeIfPresent(Int.self, forKey: .port) ?? 3389
         self.connectToConsoleAdmin = try c.decodeIfPresent(Bool.self, forKey: .connectToConsoleAdmin) ?? false
-        self.hiDpiEnabled = try c.decodeIfPresent(Bool.self, forKey: .hiDpiEnabled) ?? true
-        self.desktopScaleFactorPercent = try c.decodeIfPresent(Int.self, forKey: .desktopScaleFactorPercent) ?? 150
-        self.deviceScaleFactorPercent = try c.decodeIfPresent(Int.self, forKey: .deviceScaleFactorPercent) ?? 100
+        let hiDpi = try c.decodeIfPresent(Bool.self, forKey: .hiDpiEnabled) ?? true
+        self.hiDpiEnabled = hiDpi
+        let customized = try c.decodeIfPresent(Bool.self, forKey: .hiDpiScaleCustomized) ?? false
+        self.hiDpiScaleCustomized = customized
+        let decodedDesktopScale = try c.decodeIfPresent(Int.self, forKey: .desktopScaleFactorPercent)
+        let decodedDeviceScale = try c.decodeIfPresent(Int.self, forKey: .deviceScaleFactorPercent)
+        if !customized && hiDpi && (decodedDesktopScale == nil || decodedDesktopScale == 150 || decodedDesktopScale == 100) {
+            self.desktopScaleFactorPercent = 200
+            self.deviceScaleFactorPercent = 180
+        } else {
+            let resolvedDesktop = decodedDesktopScale ?? 200
+            self.desktopScaleFactorPercent = resolvedDesktop
+            self.deviceScaleFactorPercent = decodedDeviceScale ?? (resolvedDesktop >= 175 ? 180 : (resolvedDesktop >= 125 ? 140 : 100))
+        }
         self.enableGfxPipeline = try c.decodeIfPresent(Bool.self, forKey: .enableGfxPipeline) ?? true
         if let explicitProfile = try c.decodeIfPresent(RdpGfxCodecProfile.self, forKey: .gfxCodecProfile) {
             self.gfxCodecProfile = explicitProfile
