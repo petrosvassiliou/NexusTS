@@ -252,6 +252,35 @@ int64_t nexusts_net_tcp_ping_ms(const char* host_cstr, uint16_t port, uint64_t t
 char* nexusts_ffi_net_traceroute_json(const char* host_cstr, uint16_t probe_port, uint8_t max_hops, uint64_t timeout_ms);
 char* nexusts_ffi_net_grab_banner(const char* host_cstr, uint16_t port, uint64_t timeout_ms);
 
+/* --- WinRM WSMan NTLMv2 + [MS-WSMV] SPNEGO Session Encryption & One-Shot SSH Exec --- */
+
+char* nexusts_ffi_winrm_wsman_post(
+    const char* host_cstr,
+    uint16_t port,
+    const char* path_cstr,
+    const char* username_cstr,
+    const char* password_cstr,
+    const char* domain_cstr,
+    const char* soap_xml_cstr,
+    uint64_t timeout_ms,
+    char** out_error
+);
+char* nexusts_ffi_ntlm_build_negotiate(void);
+char* nexusts_ffi_ntlm_build_authenticate(
+    const char* challenge_b64_cstr,
+    const char* username_cstr,
+    const char* password_cstr,
+    const char* domain_cstr,
+    const char* spn_host_cstr,
+    char** out_error
+);
+char* nexusts_ffi_ssh_exec_command(
+    const char* connect_spec_json_cstr,
+    const char* command_cstr,
+    uint64_t timeout_secs,
+    char** out_error
+);
+
 #ifdef __cplusplus
 }
 #endif

@@ -90,6 +90,15 @@ public struct ConnectionEditorSheet: View {
                                 osFamily = "Windows"
                             }
                         }
+                        if newProto == .HYPER_V {
+                            cloudSettings.apiEndpointUrl = CloudHypervisorClient.sanitizedHyperVEndpoint(
+                                rawEndpoint: cloudSettings.apiEndpointUrl,
+                                connectionHost: host
+                            )
+                        } else if newProto == .PROXMOX_VE && cloudSettings.apiEndpointUrl.isEmpty {
+                            let h = host.trimmingCharacters(in: .whitespacesAndNewlines)
+                            cloudSettings.apiEndpointUrl = "https://\(h.isEmpty ? "localhost" : h):8006"
+                        }
                     }
                     TextField(protocolType == .SERIAL ? "Device Hint (/dev/cu.*)" : "Hostname / IP / URI", text: $host)
 
@@ -221,6 +230,29 @@ public struct ConnectionEditorSheet: View {
                 Toggle("Ignore Self-Signed TLS Certificate Warnings", isOn: $rdpSettings.ignoreCertificateWarnings)
                 TextField("RD Gateway Host (Optional)", text: $rdpSettings.rdGatewayHostname)
             }
+            Section("Hyper-V VM Console (VMConnect — Optional)") {
+                TextField(
+                    "Hyper-V VM ID (GUID — Connects via Host TCP 2179)",
+                    text: Binding(
+                        get: { rdpSettings.hyperVVmId },
+                        set: { newGuid in
+                            let wasEmpty = rdpSettings.hyperVVmId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            let nowEmpty = newGuid.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            rdpSettings.hyperVVmId = newGuid
+                            if wasEmpty && !nowEmpty {
+                                if rdpSettings.port == 3389 {
+                                    rdpSettings.port = 2179
+                                }
+                                rdpSettings.ignoreCertificateWarnings = true
+                            } else if !wasEmpty && nowEmpty && rdpSettings.port == 2179 {
+                                rdpSettings.port = 3389
+                            }
+                        }
+                    )
+                )
+                Toggle("Enhanced Session Mode (VMBus)", isOn: $rdpSettings.hyperVEnhancedSession)
+                    .disabled(rdpSettings.hyperVVmId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
 
         case .SSH, .TELNET:
             Section("SSHv2 / Terminal Engine") {
@@ -299,7 +331,14 @@ public struct ConnectionEditorSheet: View {
                 }
             }
 
-        case .VMWARE_VSPHERE, .PROXMOX_VE, .HYPER_V, .AWS_EC2, .AZURE_VM:
+        case .HYPER_V:
+            Section("Microsoft Hyper-V (WinRM 5985 / 5986 / SSH 22 & VMConnect 2179)") {
+                TextField("WinRM Override URL (Blank = Auto 5985 / 5986 / SSH 22)", text: $cloudSettings.apiEndpointUrl)
+                TextField("Active Directory Domain (Optional, e.g. CORP)", text: $cloudSettings.realmOrDomain)
+                Toggle("Verify WinRM HTTPS Certificate", isOn: $cloudSettings.verifyTls)
+            }
+
+        case .VMWARE_VSPHERE, .PROXMOX_VE, .AWS_EC2, .AZURE_VM:
             Section("Cloud / Hypervisor API") {
                 TextField("API Endpoint URL", text: $cloudSettings.apiEndpointUrl)
                 TextField("Region or Cluster (e.g. eu-central-1)", text: $cloudSettings.regionOrCluster)
@@ -338,7 +377,15 @@ public struct ConnectionEditorSheet: View {
             case .webPage(let s): webSettings = s
             case .serialUart(let s): serialSettings = s
             case .containerExec(let s): containerSettings = s
-            case .cloudVirtualization(let s): cloudSettings = s
+            case .cloudVirtualization(let s):
+                var cleaned = s
+                if conn.protocolType == .HYPER_V {
+                    cleaned.apiEndpointUrl = CloudHypervisorClient.sanitizedHyperVEndpoint(
+                        rawEndpoint: s.apiEndpointUrl,
+                        connectionHost: conn.host
+                    )
+                }
+                cloudSettings = cleaned
             case .netUtility(let s): netSettings = s
             }
         } else {
@@ -353,6 +400,9 @@ public struct ConnectionEditorSheet: View {
             transferSettings.ftpsImplicitTls = initialProtocol == .FTPS
             if initialProtocol == .APPLE_SCREEN_SHARING {
                 vncSettings.appleArdDiffieHellmanAuth = true
+            }
+            if initialProtocol == .PROXMOX_VE {
+                cloudSettings.apiEndpointUrl = "https://localhost:8006"
             }
         }
     }
@@ -379,8 +429,23 @@ public struct ConnectionEditorSheet: View {
             return .serialUart(serialSettings)
         case .KUBERNETES_POD, .DOCKER_CONTAINER:
             return .containerExec(containerSettings)
-        case .VMWARE_VSPHERE, .PROXMOX_VE, .HYPER_V, .AWS_EC2, .AZURE_VM:
-            return .cloudVirtualization(cloudSettings)
+        case .HYPER_V:
+            var savedCloud = cloudSettings
+            savedCloud.apiEndpointUrl = CloudHypervisorClient.sanitizedHyperVEndpoint(
+                rawEndpoint: savedCloud.apiEndpointUrl,
+                connectionHost: host
+            )
+            return .cloudVirtualization(savedCloud)
+        case .VMWARE_VSPHERE, .PROXMOX_VE, .AWS_EC2, .AZURE_VM:
+            var savedCloud = cloudSettings
+            if savedCloud.apiEndpointUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !host.isEmpty {
+                if protocolType == .PROXMOX_VE {
+                    savedCloud.apiEndpointUrl = host.hasPrefix("http") ? host : "https://\(host):8006"
+                } else if protocolType == .VMWARE_VSPHERE {
+                    savedCloud.apiEndpointUrl = host.hasPrefix("http") ? host : "https://\(host)"
+                }
+            }
+            return .cloudVirtualization(savedCloud)
         case .UTILITY_PING, .UTILITY_TRACEROUTE, .UTILITY_PORT_SCANNER, .UTILITY_WAKE_ON_LAN:
             return .netUtility(netSettings)
         }

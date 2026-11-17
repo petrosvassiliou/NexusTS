@@ -1,0 +1,1 @@
+• v0.8.7: Πλήρης υποστήριξη Microsoft Hyper-V (WinRM HTTP 5985 NTLMv2 + SPNEGO sealing, WinRM HTTPS 5986, OpenSSH 22 PowerShell), εγγενής κονσόλα FreeRDP 3.12 VMConnect στη θύρα TCP 2179 (Basic & Enhanced Session Mode), διαγνωστικά θυρών και εισαγωγή/εξαγωγή Royal TS .rtsz/.rtsx Hyper-V

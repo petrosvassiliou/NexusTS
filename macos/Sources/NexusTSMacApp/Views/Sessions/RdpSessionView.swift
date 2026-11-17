@@ -86,6 +86,14 @@ public struct RdpSessionView: View {
                         .font(.caption2.monospacedDigit())
                         .foregroundStyle(.secondary)
 
+                    if !rdpSettings.effectivePreconnectionBlob.isEmpty {
+                        Text(rdpSettings.hyperVEnhancedSession ? "VMConnect • Enhanced" : "VMConnect • \(rdpSettings.effectiveRdpPort)")
+                            .font(.caption2.weight(.bold))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Capsule().fill(Color.cyan.opacity(0.22)))
+                    }
+
                     if rdpSettings.connectToConsoleAdmin {
                         Text("/admin")
                             .font(.caption2.weight(.bold))
@@ -268,7 +276,7 @@ public struct RdpSessionView: View {
                     } else if !effectiveConnected && !isConnecting && !lastNativeError.isEmpty {
                         let diag = NexusErrorClassifier.classifyRdpError(
                             host: latestConnection.host,
-                            port: rdpSettings.port,
+                            port: rdpSettings.effectiveRdpPort,
                             rawNativeError: lastNativeError,
                             connectionId: latestConnection.id
                         )

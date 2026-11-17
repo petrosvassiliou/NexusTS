@@ -574,6 +574,8 @@ fun NewOrEditConnectionDialog(
     var restrictedAdminMode by remember(initialConnection) { mutableStateOf(initialRdp.restrictedAdminMode) }
     var ignoreCertWarnings by remember(initialConnection) { mutableStateOf(initialRdp.ignoreCertificateWarnings) }
     var rdGatewayHost by remember(initialConnection) { mutableStateOf(initialRdp.rdGatewayHostname) }
+    var hyperVVmId by remember(initialConnection) { mutableStateOf(initialRdp.hyperVVmId) }
+    var hyperVEnhancedSession by remember(initialConnection) { mutableStateOf(initialRdp.hyperVEnhancedSession) }
 
     val (inheritedFolderCred, inheritedFolderSource) = remember(selectedFolderId, folders, credentials) {
         resolveFolderPreview(selectedFolderId)
@@ -849,6 +851,30 @@ fun NewOrEditConnectionDialog(
                             checked = connectToConsole,
                             onCheckedChange = { connectToConsole = it }
                         )
+                        OutlinedTextField(
+                            value = hyperVVmId,
+                            onValueChange = { newGuid ->
+                                val wasBlank = hyperVVmId.isBlank()
+                                val nowBlank = newGuid.isBlank()
+                                hyperVVmId = newGuid
+                                if (wasBlank && !nowBlank) {
+                                    if (rdpPortText == "3389") rdpPortText = "2179"
+                                    ignoreCertWarnings = true
+                                } else if (!wasBlank && nowBlank && rdpPortText == "2179") {
+                                    rdpPortText = "3389"
+                                }
+                            },
+                            label = { Text("Hyper-V VM ID (GUID — Optional TCP 2179)") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        if (hyperVVmId.isNotBlank()) {
+                            RdpOptionSwitchRow(
+                                label = "Hyper-V Enhanced Session Mode (VMBus)",
+                                checked = hyperVEnhancedSession,
+                                onCheckedChange = { hyperVEnhancedSession = it }
+                            )
+                        }
                     }
                 }
 
@@ -1461,37 +1487,44 @@ fun NewOrEditConnectionDialog(
                 onClick = {
                     val configuredSettings: ProtocolSpecificSettings = when (selectedProto) {
                         VaultProtocolType.RDP,
-                        VaultProtocolType.WINDOWS_TERMINAL_SERVICES -> initialRdp.copy(
-                            port = rdpPortText.toIntOrNull()?.takeIf { it in 1..65535 } ?: 3389,
-                            connectToConsoleAdmin = connectToConsole,
-                            hiDpiEnabled = hiDpiEnabled,
-                            desktopScaleFactorPercent = desktopScalePercent,
-                            deviceScaleFactorPercent = if (desktopScalePercent >= 175) 180 else if (desktopScalePercent >= 125) 140 else 100,
-                            hiDpiScaleCustomized = true,
-                            gfxCodecProfile = gfxCodecProfile,
-                            enableH264Avc444 = gfxCodecProfile == RdpGfxCodecProfile.AVC444_CHROMA,
-                            resizeBehavior = resizeBehavior,
-                            customDesktopWidth = customWidthText.toIntOrNull()?.coerceIn(640, 8192) ?: 1920,
-                            customDesktopHeight = customHeightText.toIntOrNull()?.coerceIn(480, 8192) ?: 1080,
-                            multiMonitorSpanning = multiMonitorSpanning,
-                            colorDepthBits = colorDepthBits,
-                            redirectClipboard = redirectClipboard,
-                            audioRedirectionMode = audioRedirectionMode,
-                            redirectAudioPlayback = audioRedirectionMode == RdpAudioRedirectionMode.PLAY_ON_THIS_DEVICE,
-                            redirectMicrophone = redirectMicrophone,
-                            redirectDrives = redirectDrives || redirectedDriveSafUris.isNotEmpty(),
-                            redirectedDriveSafUris = if (redirectDrives) redirectedDriveSafUris else emptyList(),
-                            redirectPrinters = redirectPrinters,
-                            redirectPorts = redirectPorts,
-                            redirectSmartcardYubiKey = redirectSmartcard,
-                            enableFontSmoothing = enableFontSmoothing,
-                            enableDesktopComposition = enableDesktopComposition,
-                            enableWallpaper = enableWallpaper,
-                            nlaSecurityRequired = nlaSecurityRequired,
-                            restrictedAdminMode = restrictedAdminMode,
-                            ignoreCertificateWarnings = ignoreCertWarnings,
-                            rdGatewayHostname = rdGatewayHost.trim()
-                        )
+                        VaultProtocolType.WINDOWS_TERMINAL_SERVICES -> {
+                            val trimmedVmId = hyperVVmId.trim().trim('{', '}')
+                            val parsedPort = rdpPortText.toIntOrNull()?.takeIf { it in 1..65535 } ?: 3389
+                            val effectivePort = if (trimmedVmId.isNotBlank() && parsedPort == 3389) 2179 else parsedPort
+                            initialRdp.copy(
+                                port = effectivePort,
+                                connectToConsoleAdmin = connectToConsole,
+                                hiDpiEnabled = hiDpiEnabled,
+                                desktopScaleFactorPercent = desktopScalePercent,
+                                deviceScaleFactorPercent = if (desktopScalePercent >= 175) 180 else if (desktopScalePercent >= 125) 140 else 100,
+                                hiDpiScaleCustomized = true,
+                                gfxCodecProfile = gfxCodecProfile,
+                                enableH264Avc444 = gfxCodecProfile == RdpGfxCodecProfile.AVC444_CHROMA,
+                                resizeBehavior = resizeBehavior,
+                                customDesktopWidth = customWidthText.toIntOrNull()?.coerceIn(640, 8192) ?: 1920,
+                                customDesktopHeight = customHeightText.toIntOrNull()?.coerceIn(480, 8192) ?: 1080,
+                                multiMonitorSpanning = multiMonitorSpanning,
+                                colorDepthBits = colorDepthBits,
+                                redirectClipboard = redirectClipboard,
+                                audioRedirectionMode = audioRedirectionMode,
+                                redirectAudioPlayback = audioRedirectionMode == RdpAudioRedirectionMode.PLAY_ON_THIS_DEVICE,
+                                redirectMicrophone = redirectMicrophone,
+                                redirectDrives = redirectDrives || redirectedDriveSafUris.isNotEmpty(),
+                                redirectedDriveSafUris = if (redirectDrives) redirectedDriveSafUris else emptyList(),
+                                redirectPrinters = redirectPrinters,
+                                redirectPorts = redirectPorts,
+                                redirectSmartcardYubiKey = redirectSmartcard,
+                                enableFontSmoothing = enableFontSmoothing,
+                                enableDesktopComposition = enableDesktopComposition,
+                                enableWallpaper = enableWallpaper,
+                                nlaSecurityRequired = nlaSecurityRequired,
+                                restrictedAdminMode = restrictedAdminMode,
+                                ignoreCertificateWarnings = ignoreCertWarnings,
+                                rdGatewayHostname = rdGatewayHost.trim(),
+                                hyperVVmId = trimmedVmId,
+                                hyperVEnhancedSession = hyperVEnhancedSession && trimmedVmId.isNotBlank()
+                            )
+                        }
 
                         VaultProtocolType.SSH -> initialSsh.copy(
                             port = sshPortText.toIntOrNull()?.takeIf { it in 1..65535 } ?: 22,
@@ -1551,8 +1584,36 @@ fun NewOrEditConnectionDialog(
                                 .copy(url = normalizedUrl)
                         }
 
-                        VaultProtocolType.VMWARE_VSPHERE, VaultProtocolType.PROXMOX_VE,
-                        VaultProtocolType.HYPER_V, VaultProtocolType.AWS_EC2,
+                        VaultProtocolType.HYPER_V -> {
+                            val trimmedHost = host.trim()
+                            val existingCloud = initialConnection?.settings as? ProtocolSpecificSettings.CloudVirtualization
+                            val customUrl = when {
+                                trimmedHost.startsWith("http://", ignoreCase = true) ||
+                                    trimmedHost.startsWith("https://", ignoreCase = true) -> trimmedHost
+                                existingCloud != null -> {
+                                    val existing = existingCloud.apiEndpointUrl.trim()
+                                    if (existing.contains(":5985") || existing.contains(":5986")) existing else ""
+                                }
+                                else -> ""
+                            }
+                            (existingCloud ?: ProtocolSpecificSettings.CloudVirtualization(apiEndpointUrl = customUrl))
+                                .copy(apiEndpointUrl = customUrl)
+                        }
+
+                        VaultProtocolType.PROXMOX_VE -> {
+                            val trimmedHost = host.trim()
+                            val normalizedUrl = when {
+                                trimmedHost.startsWith("http://", ignoreCase = true) ||
+                                    trimmedHost.startsWith("https://", ignoreCase = true) -> trimmedHost
+                                ':' in trimmedHost -> "https://$trimmedHost"
+                                else -> "https://$trimmedHost:8006"
+                            }
+                            ((initialConnection?.settings as? ProtocolSpecificSettings.CloudVirtualization)
+                                ?: ProtocolSpecificSettings.CloudVirtualization(apiEndpointUrl = normalizedUrl))
+                                .copy(apiEndpointUrl = normalizedUrl)
+                        }
+
+                        VaultProtocolType.VMWARE_VSPHERE, VaultProtocolType.AWS_EC2,
                         VaultProtocolType.AZURE_VM -> {
                             val normalizedUrl = if (host.startsWith("http")) host.trim() else "https://${host.trim()}"
                             ((initialConnection?.settings as? ProtocolSpecificSettings.CloudVirtualization)
@@ -1594,7 +1655,14 @@ fun NewOrEditConnectionDialog(
                         name = name.trim(),
                         host = host.trim(),
                         protocol = selectedProto,
-                        osFamily = if (selectedProto == VaultProtocolType.RDP || selectedProto == VaultProtocolType.WINDOWS_TERMINAL_SERVICES) "Windows" else "Linux",
+                        osFamily = if (selectedProto == VaultProtocolType.RDP ||
+                            selectedProto == VaultProtocolType.WINDOWS_TERMINAL_SERVICES ||
+                            selectedProto == VaultProtocolType.HYPER_V
+                        ) {
+                            "Windows"
+                        } else {
+                            "Linux"
+                        },
                         inheritable = resolvedInheritable,
                         settings = configuredSettings
                     ))

@@ -91,6 +91,7 @@ import com.nexusts.app.protocols.vnc.bridge.VncNativeBridge
 import com.nexusts.app.protocols.vnc.bridge.VncRfbSessionClient
 import com.nexusts.app.protocols.vnc.cloud.CloudManagedResource
 import com.nexusts.app.protocols.vnc.cloud.CloudVirtualizationHubClient
+import com.nexusts.app.protocols.vnc.cloud.HyperVPortStatus
 import com.nexusts.app.protocols.vnc.cloud.VmPowerAction
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -922,27 +923,53 @@ fun CloudHypervisorConsoleView(
     settings: ProtocolSpecificSettings.CloudVirtualization,
     openConsoleCallback: (vmName: String, vmHost: String, vmProto: VaultProtocolType) -> Unit,
     modifier: Modifier = Modifier,
-    secret: ResolvedSessionSecret = ResolvedSessionSecret(username = "")
+    secret: ResolvedSessionSecret = ResolvedSessionSecret(username = ""),
+    openHyperVVmConsoleCallback: ((vmId: String, vmName: String, enhancedSession: Boolean) -> Unit)? = null,
+    openHostRdpCallback: (() -> Unit)? = null
 ) {
     val scope = rememberCoroutineScope()
+    val isHyperV = protocol == VaultProtocolType.HYPER_V
+    val sanitizedEndpoint = remember(protocol, endpointHost, settings.apiEndpointUrl) {
+        if (isHyperV) {
+            CloudVirtualizationHubClient.sanitizedHyperVEndpoint(settings.apiEndpointUrl, endpointHost)
+        } else {
+            settings.apiEndpointUrl
+        }
+    }
     var statusBanner by remember { mutableStateOf("") }
     var isErrorBanner by remember { mutableStateOf(false) }
     var isSyncing by remember { mutableStateOf(false) }
+    var hyperVEnhancedSession by remember { mutableStateOf(false) }
+    var directVmGuidInput by remember { mutableStateOf("") }
 
     val instances = remember(protocol, endpointHost) {
         mutableStateListOf<CloudManagedResource>()
+    }
+    val hyperVPorts = remember(protocol, endpointHost) {
+        mutableStateListOf<HyperVPortStatus>()
     }
 
     val refreshLiveInventory: () -> Unit = {
         scope.launch {
             isSyncing = true
             isErrorBanner = false
+            if (isHyperV && endpointHost.isNotBlank()) {
+                val probed = CloudVirtualizationHubClient.diagnoseHyperVPorts(endpointHost)
+                hyperVPorts.clear()
+                hyperVPorts.addAll(probed)
+            }
+            val effectiveSettings = if (isHyperV && sanitizedEndpoint != settings.apiEndpointUrl) {
+                settings.copy(apiEndpointUrl = sanitizedEndpoint)
+            } else {
+                settings
+            }
             CloudVirtualizationHubClient
-                .listInventory(protocol, endpointHost, settings, secret)
+                .listInventory(protocol, endpointHost, effectiveSettings, secret)
                 .onSuccess { liveList ->
                     instances.clear()
                     instances.addAll(liveList)
-                    statusBanner = "${liveList.size} live resources synced from ${endpointHost.ifBlank { settings.apiEndpointUrl }}"
+                    val sourceLabel = endpointHost.ifBlank { sanitizedEndpoint.ifBlank { "hypervisor" } }
+                    statusBanner = "${liveList.size} live resources synced from $sourceLabel"
                     isErrorBanner = false
                 }
                 .onFailure { err ->
@@ -953,8 +980,8 @@ fun CloudHypervisorConsoleView(
         }
     }
 
-    LaunchedEffect(protocol, endpointHost, settings.apiEndpointUrl, settings.subscriptionOrAccountId) {
-        if (endpointHost.isNotBlank() || settings.apiEndpointUrl.isNotBlank() || settings.subscriptionOrAccountId.isNotBlank()) {
+    LaunchedEffect(protocol, endpointHost, sanitizedEndpoint, settings.subscriptionOrAccountId, secret.username, secret.password) {
+        if (endpointHost.isNotBlank() || sanitizedEndpoint.isNotBlank() || settings.subscriptionOrAccountId.isNotBlank()) {
             refreshLiveInventory()
         }
     }
@@ -984,22 +1011,120 @@ fun CloudHypervisorConsoleView(
                 Spacer(modifier = Modifier.width(10.dp))
                 Column {
                     Text(
-                        text = "${protocol.name.replace('_', ' ')} • ${endpointHost.ifBlank { settings.apiEndpointUrl }}",
+                        text = "${protocol.displayName} • ${endpointHost.ifBlank { sanitizedEndpoint }}",
                         style = MaterialTheme.typography.titleMedium
                     )
+                    val transportLabel = if (isHyperV) {
+                        sanitizedEndpoint.ifBlank { "WinRM 5985/5986 • OpenSSH 22 • VMConnect 2179" }
+                    } else {
+                        "${settings.regionOrCluster.ifBlank { "default" }} • ${sanitizedEndpoint.ifBlank { endpointHost }}"
+                    }
                     Text(
-                        text = "${settings.regionOrCluster.ifBlank { "default" }} • ${settings.apiEndpointUrl.ifBlank { endpointHost }}" +
-                            if (statusBanner.isNotBlank()) " • $statusBanner" else "",
+                        text = transportLabel + if (statusBanner.isNotBlank()) " • $statusBanner" else "",
                         style = MaterialTheme.typography.bodySmall,
                         color = if (isErrorBanner) Color(0xFFFFB86B) else MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
-            NexusActionChip(
-                onClick = refreshLiveInventory,
-                leadingIcon = Icons.Outlined.Refresh,
-                label = if (isSyncing) "Syncing…" else "Sync"
-            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                if (isHyperV) {
+                    NexusChoiceChip(
+                        selected = hyperVEnhancedSession,
+                        onClick = { hyperVEnhancedSession = !hyperVEnhancedSession },
+                        label = "Enhanced Session",
+                        showCheckmarkWhenSelected = true
+                    )
+                    if (openHostRdpCallback != null && endpointHost.isNotBlank()) {
+                        NexusActionChip(
+                            onClick = openHostRdpCallback,
+                            leadingIcon = Icons.Outlined.SmartDisplay,
+                            label = "Host RDP (3389)"
+                        )
+                    }
+                }
+                NexusActionChip(
+                    onClick = refreshLiveInventory,
+                    leadingIcon = Icons.Outlined.Refresh,
+                    label = if (isSyncing) "Syncing…" else "Sync"
+                )
+            }
+        }
+
+        if (isHyperV) {
+            if (hyperVPorts.isNotEmpty()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    hyperVPorts.forEach { portInfo ->
+                        val pillColor = if (portInfo.open) {
+                            NexusTheme.extendedColors.statusConnected
+                        } else {
+                            NexusTheme.extendedColors.statusDisconnected
+                        }
+                        Surface(
+                            shape = RoundedCornerShape(999.dp),
+                            color = pillColor.copy(alpha = 0.14f)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(7.dp)
+                                        .background(pillColor, CircleShape)
+                                )
+                                Text(
+                                    text = "${portInfo.label} :${portInfo.port}" +
+                                        if (portInfo.open && portInfo.latencyMs > 0) " (${portInfo.latencyMs}ms)" else "",
+                                    style = NexusTheme.monospace.keycapShortcut,
+                                    color = pillColor
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (openHyperVVmConsoleCallback != null) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedTextField(
+                        value = directVmGuidInput,
+                        onValueChange = { directVmGuidInput = it },
+                        label = { Text("Connect VM directly by Hyper-V VM ID (GUID) on TCP 2179") },
+                        placeholder = { Text("xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f)
+                    )
+                    val trimmedGuid = directVmGuidInput.trim().trim('{', '}')
+                    FilledTonalButton(
+                        enabled = trimmedGuid.isNotBlank() && endpointHost.isNotBlank(),
+                        onClick = {
+                            openHyperVVmConsoleCallback(
+                                trimmedGuid,
+                                "VM ${trimmedGuid.take(8)}",
+                                hyperVEnhancedSession
+                            )
+                        }
+                    ) {
+                        Icon(Icons.Outlined.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("VMConnect 2179")
+                    }
+                }
+            }
         }
 
         HorizontalDivider()
@@ -1014,7 +1139,7 @@ fun CloudHypervisorConsoleView(
                     text = when {
                         isSyncing -> "Querying live ${protocol.displayName} inventory…"
                         isErrorBanner -> statusBanner
-                        else -> "No virtual machines or active resources returned from ${endpointHost.ifBlank { settings.apiEndpointUrl.ifBlank { "configured endpoint" } }}."
+                        else -> "No virtual machines or active resources returned from ${endpointHost.ifBlank { sanitizedEndpoint.ifBlank { "configured endpoint" } }}."
                     },
                     style = NexusTheme.monospace.keycapShortcut,
                     color = if (isErrorBanner) Color(0xFFFFB86B) else MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1025,6 +1150,39 @@ fun CloudHypervisorConsoleView(
             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(instances, key = { it.id }) { vm ->
                     val isRunning = vm.powerState == "RUNNING" || vm.powerState == "ACTIVE"
+                    val isSaved = vm.powerState == "SAVED" || vm.powerState == "PAUSED"
+                    val invokePowerAction: (VmPowerAction) -> Unit = { desired ->
+                        scope.launch {
+                            val effectiveSettings = if (isHyperV && sanitizedEndpoint != settings.apiEndpointUrl) {
+                                settings.copy(apiEndpointUrl = sanitizedEndpoint)
+                            } else {
+                                settings
+                            }
+                            CloudVirtualizationHubClient
+                                .executePowerOrSessionAction(protocol, endpointHost, effectiveSettings, secret, vm, desired)
+                                .onSuccess { msg ->
+                                    statusBanner = msg
+                                    isErrorBanner = false
+                                    val idx = instances.indexOfFirst { it.id == vm.id }
+                                    if (idx >= 0) {
+                                        instances[idx] = instances[idx].copy(
+                                            powerState = when {
+                                                vm.isTerminalServicesSession && desired == VmPowerAction.STOP -> "LOGGED OFF"
+                                                vm.isTerminalServicesSession -> "DISCONNECTED"
+                                                desired == VmPowerAction.START || desired == VmPowerAction.REBOOT -> "RUNNING"
+                                                desired == VmPowerAction.SAVE -> "SAVED"
+                                                else -> "STOPPED"
+                                            }
+                                        )
+                                    }
+                                }
+                                .onFailure { err ->
+                                    statusBanner = "Action failed: ${err.message ?: "API error"}"
+                                    isErrorBanner = true
+                                }
+                        }
+                    }
+
                     Surface(
                         shape = MaterialTheme.shapes.medium,
                         color = MaterialTheme.colorScheme.surfaceContainer,
@@ -1048,10 +1206,10 @@ fun CloudHypervisorConsoleView(
                             Text(
                                 text = vm.powerState,
                                 style = NexusTheme.monospace.keycapShortcut,
-                                color = if (isRunning) {
-                                    NexusTheme.extendedColors.statusConnected
-                                } else {
-                                    NexusTheme.extendedColors.statusDisconnected
+                                color = when {
+                                    isRunning -> NexusTheme.extendedColors.statusConnected
+                                    isSaved -> Color(0xFFFFB86B)
+                                    else -> NexusTheme.extendedColors.statusDisconnected
                                 },
                                 modifier = Modifier.padding(end = 12.dp)
                             )
@@ -1061,47 +1219,39 @@ fun CloudHypervisorConsoleView(
                             ) {
                                 IconButton(
                                     onClick = {
-                                        val desired = if (isRunning) VmPowerAction.STOP else VmPowerAction.START
-                                        scope.launch {
-                                            CloudVirtualizationHubClient
-                                                .executePowerOrSessionAction(protocol, endpointHost, settings, secret, vm, desired)
-                                                .onSuccess { msg ->
-                                                    statusBanner = msg
-                                                    isErrorBanner = false
-                                                    val idx = instances.indexOfFirst { it.id == vm.id }
-                                                    if (idx >= 0) {
-                                                        instances[idx] = instances[idx].copy(
-                                                            powerState = when {
-                                                                vm.isTerminalServicesSession && desired == VmPowerAction.STOP -> "LOGGED OFF"
-                                                                vm.isTerminalServicesSession -> "DISCONNECTED"
-                                                                desired == VmPowerAction.START -> "RUNNING"
-                                                                else -> "STOPPED"
-                                                            }
-                                                        )
-                                                    }
-                                                }
-                                                .onFailure { err ->
-                                                    statusBanner = "Action failed: ${err.message ?: "API error"}"
-                                                    isErrorBanner = true
-                                                }
-                                        }
+                                        invokePowerAction(if (isRunning) VmPowerAction.STOP else VmPowerAction.START)
                                     },
                                     modifier = Modifier.size(32.dp)
                                 ) {
                                     Icon(
                                         imageVector = Icons.Outlined.PowerSettingsNew,
-                                        contentDescription = "Toggle Power",
+                                        contentDescription = if (isRunning) "Stop / Turn Off" else "Start",
                                         modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                                if (isHyperV && isRunning) {
+                                    NexusActionChip(
+                                        onClick = { invokePowerAction(VmPowerAction.SAVE) },
+                                        label = "Save"
+                                    )
+                                    NexusActionChip(
+                                        onClick = { invokePowerAction(VmPowerAction.REBOOT) },
+                                        leadingIcon = Icons.Outlined.Refresh,
+                                        label = "Restart"
                                     )
                                 }
                                 FilledTonalButton(
                                     onClick = {
-                                        openConsoleCallback(vm.name, vm.addressOrSessionHost, vm.preferredConsoleProtocol)
+                                        if (isHyperV && openHyperVVmConsoleCallback != null) {
+                                            openHyperVVmConsoleCallback(vm.id, vm.name, hyperVEnhancedSession)
+                                        } else {
+                                            openConsoleCallback(vm.name, vm.addressOrSessionHost, vm.preferredConsoleProtocol)
+                                        }
                                     }
                                 ) {
                                     Icon(Icons.Outlined.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
                                     Spacer(modifier = Modifier.width(4.dp))
-                                    Text(vm.preferredConsoleProtocol.name)
+                                    Text(if (isHyperV && openHyperVVmConsoleCallback != null) "VMConnect" else vm.preferredConsoleProtocol.name)
                                 }
                             }
                         }

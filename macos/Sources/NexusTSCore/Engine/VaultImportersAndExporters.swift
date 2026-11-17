@@ -602,7 +602,9 @@ private final class RoyalTsXmlSAXParser: NSObject, XMLParserDelegate {
     private static let objectTags: Set<String> = [
         "RoyalDocument", "RoyalFolder", "RoyalSmartFolder", "RoyalDynamicFolder", "RoyalTrash",
         "RoyalRDSConnection", "RoyalSSHConnection", "RoyalVNCConnection",
-        "RoyalFileTransferConnection", "RoyalWebPageConnection", "RoyalCredential"
+        "RoyalFileTransferConnection", "RoyalWebPageConnection", "RoyalCredential",
+        "RoyalHyperVConnection", "RoyalVMwareConnection", "RoyalProxmoxConnection",
+        "RoyalWindowsTerminalServicesConnection", "RoyalTerminalServicesConnection"
     ]
 
     private var stack: [RawNode] = []
@@ -701,7 +703,7 @@ private final class RoyalTsXmlSAXParser: NSObject, XMLParserDelegate {
                 }
                 return InheritableProperties(
                     credentialMode: mode,
-                    explicitCredentialId: node.fields["CredentialId"],
+                    explicitCredentialId: node.fields["CredentialId"] ?? node.fields["CredentialID"],
                     environmentBadge: node.fields["Environment"],
                     displayColorAccentHex: node.fields["Color"],
                     customProperties: custom
@@ -769,31 +771,124 @@ private final class RoyalTsXmlSAXParser: NSObject, XMLParserDelegate {
                     secretPassword: node.fields["Password"] ?? "",
                     privateKeyPem: node.fields["KeyFileContent"] ?? ""
                 ))
-            case "RoyalRDSConnection":
-                var rdp = RdpProtocolSettings()
-                rdp.port = Int(node.fields["RDPPort"] ?? node.fields["Port"] ?? "3389") ?? 3389
-                rdp.connectToConsoleAdmin = (node.fields["ConnectToAdministerOrConsole"] ?? "").lowercased() == "true"
-                if let explicitScaleStr = node.fields["DesktopScaleFactor"] ?? node.fields["ScaleFactor"],
-                   let explicitScale = Int(explicitScaleStr.trimmingCharacters(in: .whitespacesAndNewlines)),
-                   (100...500).contains(explicitScale) {
-                    rdp.desktopScaleFactorPercent = explicitScale
-                    rdp.deviceScaleFactorPercent = explicitScale >= 175 ? 180 : (explicitScale >= 125 ? 140 : 100)
-                    rdp.hiDpiScaleCustomized = true
+            case "RoyalHyperVConnection":
+                let rawUri = node.fields["URI"] ?? ""
+                let apiUrl: String = {
+                    if let explicit = node.fields["ApiEndpointUrl"] { return explicit }
+                    if rawUri.lowercased().hasPrefix("http://") || rawUri.lowercased().hasPrefix("https://") { return rawUri }
+                    return ""
+                }()
+                var hvSettings = CloudVirtualizationProtocolSettings(apiEndpointUrl: apiUrl)
+                hvSettings.regionOrCluster = node.fields["RegionOrCluster"] ?? ""
+                hvSettings.subscriptionOrAccountId = node.fields["SubscriptionOrAccountId"] ?? ""
+                hvSettings.realmOrDomain = node.fields["RealmOrDomain"] ?? "pam"
+                if let autoSync = node.fields["AutoSyncDynamicInventory"] {
+                    hvSettings.autoSyncDynamicInventory = autoSync.lowercased() == "true"
                 }
                 conns.append(VaultConnection(
                     id: id,
                     parentFolderId: parentFolderId,
                     name: name,
-                    host: node.fields["URI"] ?? "",
-                    protocolType: .RDP,
+                    host: rawUri,
+                    protocolType: .HYPER_V,
                     osFamily: "Windows",
                     tags: parsedTags,
                     notes: node.fields["Description"] ?? "",
                     favorite: (node.fields["Favorite"] ?? "").lowercased() == "true",
                     sortOrder: sortOrder,
                     inheritable: parseInheritable(),
-                    settings: .rdp(rdp)
+                    settings: .cloudVirtualization(hvSettings)
                 ))
+            case "RoyalVMwareConnection", "RoyalProxmoxConnection":
+                let isPve = node.elementType == "RoyalProxmoxConnection" || (node.fields["NexusProtocolType"] ?? "").uppercased() == "PROXMOX_VE"
+                let proto: VaultProtocolType = isPve ? .PROXMOX_VE : .VMWARE_VSPHERE
+                let rawUri = node.fields["URI"] ?? ""
+                let apiUrl = node.fields["ApiEndpointUrl"]
+                    ?? ((rawUri.lowercased().hasPrefix("http://") || rawUri.lowercased().hasPrefix("https://"))
+                        ? rawUri
+                        : (rawUri.isEmpty ? "" : "https://\(rawUri):\(proto.defaultPort)"))
+                var virt = CloudVirtualizationProtocolSettings(apiEndpointUrl: apiUrl)
+                virt.regionOrCluster = node.fields["RegionOrCluster"] ?? ""
+                virt.realmOrDomain = node.fields["RealmOrDomain"] ?? "pam"
+                conns.append(VaultConnection(
+                    id: id,
+                    parentFolderId: parentFolderId,
+                    name: name,
+                    host: rawUri,
+                    protocolType: proto,
+                    osFamily: "Linux",
+                    tags: parsedTags,
+                    notes: node.fields["Description"] ?? "",
+                    favorite: (node.fields["Favorite"] ?? "").lowercased() == "true",
+                    sortOrder: sortOrder,
+                    inheritable: parseInheritable(),
+                    settings: .cloudVirtualization(virt)
+                ))
+            case "RoyalRDSConnection", "RoyalWindowsTerminalServicesConnection", "RoyalTerminalServicesConnection":
+                let hyperVMode = (node.fields["HyperVMode"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                let vmGuid = (node.fields["HyperVInstance"] ?? node.fields["VMId"] ?? node.fields["InstanceID"] ?? "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let rawUri = node.fields["URI"] ?? ""
+
+                if hyperVMode == "1" || (hyperVMode.lowercased() == "true" && vmGuid.isEmpty) {
+                    let apiUrl = node.fields["ApiEndpointUrl"]
+                        ?? ((rawUri.lowercased().hasPrefix("http://") || rawUri.lowercased().hasPrefix("https://")) ? rawUri : "")
+                    conns.append(VaultConnection(
+                        id: id,
+                        parentFolderId: parentFolderId,
+                        name: name,
+                        host: rawUri,
+                        protocolType: .HYPER_V,
+                        osFamily: "Windows",
+                        tags: parsedTags,
+                        notes: node.fields["Description"] ?? "",
+                        favorite: (node.fields["Favorite"] ?? "").lowercased() == "true",
+                        sortOrder: sortOrder,
+                        inheritable: parseInheritable(),
+                        settings: .cloudVirtualization(CloudVirtualizationProtocolSettings(apiEndpointUrl: apiUrl))
+                    ))
+                } else {
+                    var rdp = RdpProtocolSettings()
+                    let isHyperVVm = hyperVMode == "2" || !vmGuid.isEmpty
+                    if isHyperVVm {
+                        rdp.hyperVVmId = vmGuid
+                        let enhRaw = (node.fields["HyperVEnhancedSessionMode"] ?? node.fields["EnhancedSessionMode"] ?? "").lowercased()
+                        rdp.hyperVEnhancedSession = enhRaw == "true" || enhRaw == "1"
+                        rdp.port = Int(node.fields["HyperVPort"] ?? node.fields["RDPPort"] ?? node.fields["Port"] ?? "2179") ?? 2179
+                        let explicitIgnore = node.fields["IgnoreCertificateWarning"] ?? node.fields["IgnoreCertificate"]
+                        rdp.ignoreCertificateWarnings = explicitIgnore == nil
+                            ? true
+                            : ["true", "1"].contains(explicitIgnore!.lowercased())
+                    } else {
+                        rdp.port = Int(node.fields["RDPPort"] ?? node.fields["Port"] ?? "3389") ?? 3389
+                        if let explicitIgnore = node.fields["IgnoreCertificateWarning"] ?? node.fields["IgnoreCertificate"] {
+                            rdp.ignoreCertificateWarnings = ["true", "1"].contains(explicitIgnore.lowercased())
+                        }
+                    }
+                    rdp.connectToConsoleAdmin = (node.fields["ConnectToAdministerOrConsole"] ?? "").lowercased() == "true"
+                    if let explicitScaleStr = node.fields["DesktopScaleFactor"] ?? node.fields["ScaleFactor"],
+                       let explicitScale = Int(explicitScaleStr.trimmingCharacters(in: .whitespacesAndNewlines)),
+                       (100...500).contains(explicitScale) {
+                        rdp.desktopScaleFactorPercent = explicitScale
+                        rdp.deviceScaleFactorPercent = explicitScale >= 175 ? 180 : (explicitScale >= 125 ? 140 : 100)
+                        rdp.hiDpiScaleCustomized = true
+                    }
+                    let isWts = node.elementType != "RoyalRDSConnection"
+                    conns.append(VaultConnection(
+                        id: id,
+                        parentFolderId: parentFolderId,
+                        name: name,
+                        host: rawUri,
+                        protocolType: isWts ? .WINDOWS_TERMINAL_SERVICES : .RDP,
+                        osFamily: "Windows",
+                        tags: parsedTags,
+                        notes: node.fields["Description"] ?? "",
+                        favorite: (node.fields["Favorite"] ?? "").lowercased() == "true",
+                        sortOrder: sortOrder,
+                        inheritable: parseInheritable(),
+                        settings: .rdp(rdp)
+                    ))
+                }
             case "RoyalSSHConnection":
                 let isTelnet = (node.fields["IsTelnetConnection"] ?? "").lowercased() == "true"
                 var ssh = SshProtocolSettings(port: Int(node.fields["Port"] ?? (isTelnet ? "23" : "22")) ?? 22)
@@ -1087,10 +1182,14 @@ public enum VaultDocumentExporter {
             let parent = conn.parentFolderId ?? document.documentId
             let tag: String = {
                 switch conn.protocolType {
-                case .RDP, .WINDOWS_TERMINAL_SERVICES: return "RoyalRDSConnection"
+                case .RDP: return "RoyalRDSConnection"
+                case .WINDOWS_TERMINAL_SERVICES: return "RoyalWindowsTerminalServicesConnection"
                 case .VNC, .APPLE_SCREEN_SHARING: return "RoyalVNCConnection"
                 case .SFTP, .FTP, .FTPS, .SCP: return "RoyalFileTransferConnection"
                 case .WEB_PAGE: return "RoyalWebPageConnection"
+                case .HYPER_V: return "RoyalHyperVConnection"
+                case .PROXMOX_VE: return "RoyalProxmoxConnection"
+                case .VMWARE_VSPHERE, .AWS_EC2, .AZURE_VM: return "RoyalVMwareConnection"
                 default: return "RoyalSSHConnection"
                 }
             }()
@@ -1100,6 +1199,22 @@ public enum VaultDocumentExporter {
             lines.append("      <Name>\(esc(conn.name))</Name>")
             lines.append("      <URI>\(esc(conn.host))</URI>")
             lines.append("      <Port>\(conn.settings.effectivePort)</Port>")
+            if conn.inheritable.credentialMode == .OVERRIDE_EXPLICIT,
+               let credId = conn.inheritable.explicitCredentialId, !credId.isEmpty {
+                lines.append("      <CredentialMode>2</CredentialMode>")
+                lines.append("      <CredentialId>\(esc(credId))</CredentialId>")
+            }
+            if case .rdp(let rdp) = conn.settings {
+                lines.append("      <RDPPort>\(rdp.effectiveRdpPort)</RDPPort>")
+                if !rdp.hyperVVmId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    lines.append("      <HyperVMode>2</HyperVMode>")
+                    lines.append("      <HyperVInstance>\(esc(rdp.hyperVVmId.trimmingCharacters(in: .whitespacesAndNewlines)))</HyperVInstance>")
+                    lines.append("      <HyperVPort>\(rdp.effectiveRdpPort)</HyperVPort>")
+                    lines.append("      <HyperVEnhancedSessionMode>\(rdp.hyperVEnhancedSession ? "True" : "False")</HyperVEnhancedSessionMode>")
+                }
+            } else if case .cloudVirtualization(let cv) = conn.settings, !cv.apiEndpointUrl.isEmpty {
+                lines.append("      <ApiEndpointUrl>\(esc(cv.apiEndpointUrl))</ApiEndpointUrl>")
+            }
             lines.append("      <Description>\(esc(conn.notes))</Description>")
             lines.append("      <SortOrder>\(conn.sortOrder)</SortOrder>")
             lines.append("      <Favorite>\(conn.favorite ? "True" : "False")</Favorite>")

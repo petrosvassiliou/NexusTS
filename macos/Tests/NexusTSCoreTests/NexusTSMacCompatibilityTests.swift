@@ -350,11 +350,11 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
     }
 
     func testV118LocalizationUpgradeVersionAndVaultReplacementCompatibility() throws {
-        XCTAssertEqual(MacGitHubReleaseUpdater.currentVersion, "0.8.6")
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.6", isNewerThan: "0.8.5"))
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.6", isNewerThan: "0.8.4"))
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.6", isNewerThan: "0.8.3"))
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.6", isNewerThan: "0.3.0-beta.6"))
+        XCTAssertEqual(MacGitHubReleaseUpdater.currentVersion, "0.8.7")
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.7", isNewerThan: "0.8.6"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.7", isNewerThan: "0.8.5"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.7", isNewerThan: "0.8.4"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.7", isNewerThan: "0.3.0-beta.6"))
         XCTAssertEqual(LocalizedWorkspaceStrings.catalog(for: .en).studios, "Manage")
         XCTAssertEqual(LocalizedWorkspaceStrings.catalog(for: .en).logOffSession, "Log Off Session")
 
@@ -866,6 +866,127 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
         XCTAssertEqual(roundTripped.deviceScaleFactorPercent, 140)
         XCTAssertTrue(roundTripped.hiDpiScaleCustomized)
     }
+
+    func testV087HyperVMultiTransportParsersVmConnectPcbAndRoyalTsRoundTrip() throws {
+        // 1. Legacy poisoned Proxmox (:8006) & bare HTTPS (:443) Hyper-V endpoints auto-sanitize to ""
+        XCTAssertEqual(
+            CloudHypervisorClient.sanitizedHyperVEndpoint(rawEndpoint: "https://localhost:8006", connectionHost: "hv01.corp.local"),
+            ""
+        )
+        XCTAssertEqual(
+            CloudHypervisorClient.sanitizedHyperVEndpoint(rawEndpoint: "https://hv01.corp.local", connectionHost: "hv01.corp.local"),
+            ""
+        )
+        XCTAssertEqual(
+            CloudHypervisorClient.sanitizedHyperVEndpoint(rawEndpoint: "http://hv01.corp.local:5985/wsman", connectionHost: "hv01.corp.local"),
+            "http://hv01.corp.local:5985/wsman"
+        )
+
+        // 2. VMConnect Preconnection Blob (PCB v2) brace stripping, EnhancedMode=1 suffix, and TCP 2179 port selection
+        let basicVmRdp = RdpProtocolSettings(
+            hyperVVmId: "{A1B2C3D4-1111-2222-3333-444455556666}",
+            hyperVEnhancedSession: false
+        )
+        XCTAssertEqual(basicVmRdp.effectivePreconnectionBlob, "A1B2C3D4-1111-2222-3333-444455556666")
+        XCTAssertEqual(basicVmRdp.effectiveRdpPort, 2179)
+
+        let enhancedVmRdp = RdpProtocolSettings(
+            hyperVVmId: "a1b2c3d4-1111-2222-3333-444455556666",
+            hyperVEnhancedSession: true
+        )
+        XCTAssertEqual(enhancedVmRdp.effectivePreconnectionBlob, "a1b2c3d4-1111-2222-3333-444455556666;EnhancedMode=1")
+        XCTAssertEqual(enhancedVmRdp.effectiveRdpPort, 2179)
+
+        // 3. Msvm_ComputerSystem WS-Man XML parser filters host computer and maps power states
+        let wsmanXml = """
+        <s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:p="http://schemas.microsoft.com/wbem/wsman/1/wmi/root/virtualization/v2/Msvm_ComputerSystem">
+          <s:Body>
+            <p:Msvm_ComputerSystem>
+              <p:Name>HV01</p:Name>
+              <p:ElementName>HV01</p:ElementName>
+              <p:Caption>Hosting Computer System</p:Caption>
+              <p:EnabledState>2</p:EnabledState>
+            </p:Msvm_ComputerSystem>
+            <p:Msvm_ComputerSystem>
+              <p:Name>11111111-2222-3333-4444-555555555555</p:Name>
+              <p:ElementName>Prod-SQL-01</p:ElementName>
+              <p:Caption>Virtual Machine</p:Caption>
+              <p:EnabledState>2</p:EnabledState>
+            </p:Msvm_ComputerSystem>
+            <p:Msvm_ComputerSystem>
+              <p:Name>66666666-7777-8888-9999-000000000000</p:Name>
+              <p:ElementName>Lab-DC-02</p:ElementName>
+              <p:Caption>Virtual Machine</p:Caption>
+              <p:EnabledState>32769</p:EnabledState>
+            </p:Msvm_ComputerSystem>
+          </s:Body>
+        </s:Envelope>
+        """
+        let wsmanItems = CloudHypervisorClient.parseHyperVWsmanXml(wsmanXml, hostLabel: "hv01.corp.local")
+        XCTAssertEqual(wsmanItems.count, 2)
+        XCTAssertEqual(wsmanItems[0].id, "11111111-2222-3333-4444-555555555555")
+        XCTAssertEqual(wsmanItems[0].name, "Prod-SQL-01")
+        XCTAssertEqual(wsmanItems[0].powerState, "RUNNING")
+        XCTAssertEqual(wsmanItems[1].powerState, "SAVED")
+
+        // 4. OpenSSH PowerShell Get-VM JSON parser handles both single object and array outputs
+        let singlePsJson = #"{"Id":"aaaa1111-bbbb-cccc-dddd-eeeeffff0001","Name":"Single-VM","State":"Running","CpuCount":4,"MemAssignedMB":8192,"MemStartupMB":4096}"#
+        let singleItems = try CloudHypervisorClient.parseHyperVPowerShellJson(singlePsJson, hostLabel: "hv01.corp.local")
+        XCTAssertEqual(singleItems.count, 1)
+        XCTAssertEqual(singleItems[0].name, "Single-VM")
+        XCTAssertEqual(singleItems[0].powerState, "RUNNING")
+        XCTAssertEqual(singleItems[0].cpuSummary, "4 vCPU")
+
+        // 5. Royal TS Hyper-V Host (<RoyalHyperVConnection> & HyperVMode=1) and VMConnect (<RoyalRDSConnection> HyperVMode=2) roundtrip
+        let rtsxSample = """
+        <?xml version="1.0" encoding="utf-8"?>
+        <RTSZDocument>
+          <RoyalDocument>
+            <ID>doc-hv</ID>
+            <Name>HyperV Lab</Name>
+            <RoyalHyperVConnection>
+              <ID>hv-host-1</ID>
+              <Name>HV-Cluster-01</Name>
+              <URI>hv01.corp.local</URI>
+            </RoyalHyperVConnection>
+            <RoyalRDSConnection>
+              <ID>hv-vm-1</ID>
+              <Name>SQL-VM-Console</Name>
+              <URI>hv01.corp.local</URI>
+              <HyperVMode>2</HyperVMode>
+              <HyperVInstance>{11111111-2222-3333-4444-555555555555}</HyperVInstance>
+              <HyperVPort>2179</HyperVPort>
+              <HyperVEnhancedSessionMode>true</HyperVEnhancedSessionMode>
+            </RoyalRDSConnection>
+          </RoyalDocument>
+        </RTSZDocument>
+        """
+        let imported = try EnterpriseVaultFormatImporter.importRoyalTsXml(Data(rtsxSample.utf8), vaultName: "HyperV Lab")
+        XCTAssertEqual(imported.document.connections.count, 2)
+        let hvHost = try XCTUnwrap(imported.document.connections.first(where: { $0.id == "hv-host-1" }))
+        XCTAssertEqual(hvHost.protocolType, .HYPER_V)
+        if case .cloudVirtualization(let cloudCfg) = hvHost.settings {
+            XCTAssertEqual(cloudCfg.apiEndpointUrl, "")
+        } else {
+            XCTFail("Expected cloudVirtualization settings for HYPER_V")
+        }
+
+        let vmConsole = try XCTUnwrap(imported.document.connections.first(where: { $0.id == "hv-vm-1" }))
+        XCTAssertEqual(vmConsole.protocolType, .RDP)
+        XCTAssertEqual(vmConsole.effectivePort, 2179)
+        if case .rdp(let rdpCfg) = vmConsole.settings {
+            XCTAssertEqual(rdpCfg.hyperVVmId, "11111111-2222-3333-4444-555555555555")
+            XCTAssertTrue(rdpCfg.hyperVEnhancedSession)
+        } else {
+            XCTFail("Expected RDP settings for HyperVMode=2 VM console")
+        }
+
+        let exportedXml = VaultDocumentExporter.exportRoyalTsXmlString(document: imported.document)
+        XCTAssertTrue(exportedXml.contains("<RoyalHyperVConnection>"))
+        XCTAssertTrue(exportedXml.contains("<HyperVInstance>11111111-2222-3333-4444-555555555555</HyperVInstance>"))
+        XCTAssertTrue(exportedXml.contains("<HyperVEnhancedSessionMode>True</HyperVEnhancedSessionMode>"))
+    }
 }
+
 
 

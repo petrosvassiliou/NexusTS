@@ -919,7 +919,10 @@ dependencies = [
 name = "nexusts-netutils"
 version = "1.0.0"
 dependencies = [
+ "base64",
  "libc",
+ "md5",
+ "rand",
  "serde",
  "serde_json",
  "socket2",

@@ -1,0 +1,1 @@
+• v0.8.7: Vollständiges Microsoft Hyper-V VM-Inventar & Energiesteuerung (WinRM HTTP 5985 NTLMv2 + SPNEGO-Verschlüsselung, WinRM HTTPS 5986, OpenSSH 22 PowerShell), native FreeRDP 3.12 VMConnect-Konsole über TCP 2179 (Standard & Erweiterter Sitzungsmodus) sowie Royal TS .rtsz/.rtsx Hyper-V-Import/Export

@@ -1,0 +1,1 @@
+• v0.8.7: Inventario e gestione alimentazione Microsoft Hyper-V multi-trasporto (WinRM HTTP 5985 NTLMv2 + cifratura SPNEGO, WinRM HTTPS 5986, OpenSSH 22 PowerShell), console nativa FreeRDP 3.12 VMConnect su TCP 2179 (modalità base e sessione avanzata) e import/export Royal TS .rtsz/.rtsx

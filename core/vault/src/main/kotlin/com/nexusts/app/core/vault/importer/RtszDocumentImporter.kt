@@ -774,7 +774,18 @@ class RtszDocumentImporter {
 
         val lowerTag = tag.lowercase()
         return when {
-            lowerTag == "royalrdsconnection" || lowerTag == "royaltemplate" -> VaultProtocolType.RDP
+            lowerTag == "royalrdsconnection" || lowerTag == "royaltemplate" -> {
+                val hvMode = elem.childText("HyperVMode").trim()
+                val hvInstance = elem.childText("HyperVInstance")
+                    .ifBlank { elem.childText("VMId") }
+                    .ifBlank { elem.childText("InstanceID") }
+                    .trim()
+                if (lowerTag == "royalrdsconnection" && (hvMode == "1" || (hvMode.equals("true", ignoreCase = true) && hvInstance.isEmpty()))) {
+                    VaultProtocolType.HYPER_V
+                } else {
+                    VaultProtocolType.RDP
+                }
+            }
 
             lowerTag == "royalsshconnection" || lowerTag == "royalterminalconnection" -> {
                 val termType = listOf(
@@ -851,7 +862,18 @@ class RtszDocumentImporter {
         uriPortFallback: Int?
     ): ProtocolSpecificSettings = when (protocol) {
         VaultProtocolType.RDP, VaultProtocolType.WINDOWS_TERMINAL_SERVICES -> {
-            val port = elem.childInt("RDPPort", "Port", "ServerPort") ?: uriPortFallback ?: 3389
+            val hvMode = elem.childText("HyperVMode").trim()
+            val hvInstance = elem.childText("HyperVInstance")
+                .ifBlank { elem.childText("VMId") }
+                .ifBlank { elem.childText("InstanceID") }
+                .trim()
+            val isHyperVVm = hvMode == "2" || hvInstance.isNotBlank()
+            val port = if (isHyperVVm) {
+                elem.childInt("HyperVPort", "RDPPort", "Port", "ServerPort") ?: uriPortFallback ?: 2179
+            } else {
+                elem.childInt("RDPPort", "Port", "ServerPort") ?: uriPortFallback ?: 3389
+            }
+            val hvEnhancedSession = elem.childBoolean("HyperVEnhancedSessionMode", "EnhancedSessionMode", default = false)
             val audioModeRaw = elem.childText("AudioRedirectionMode").trim()
             val audioMode = when {
                 audioModeRaw == "1" || audioModeRaw.contains("Remote", true) ->
@@ -949,7 +971,13 @@ class RtszDocumentImporter {
                 nlaSecurityRequired = elem.childBoolean("NetworkLevelAuthentication", default = true),
                 tlsSecurity = elem.childBoolean("TlsSecurity", "TLSEncryption", default = true),
                 restrictedAdminMode = elem.childBoolean("RestrictedAdminMode", default = false),
-                ignoreCertificateWarnings = elem.childBoolean("IgnoreCertificateWarning", "IgnoreCertificate", default = false)
+                ignoreCertificateWarnings = elem.childBoolean(
+                    "IgnoreCertificateWarning",
+                    "IgnoreCertificate",
+                    default = isHyperVVm
+                ),
+                hyperVVmId = hvInstance,
+                hyperVEnhancedSession = hvEnhancedSession
             )
         }
 
@@ -1069,6 +1097,8 @@ class RtszDocumentImporter {
                 elem.childText("ApiEndpointUrl")
             } else if (uri.startsWith("http://", true) || uri.startsWith("https://", true)) {
                 uri
+            } else if (protocol == VaultProtocolType.HYPER_V) {
+                ""
             } else if (uri.isNotBlank()) {
                 "https://$uri"
             } else {

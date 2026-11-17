@@ -2052,24 +2052,34 @@ fun ActiveProtocolSessionDispatcher(
         SessionProtocolKind.VMWARE_VSPHERE, SessionProtocolKind.PROXMOX_VE,
         SessionProtocolKind.HYPER_V, SessionProtocolKind.AWS_EC2,
         SessionProtocolKind.AZURE_VM -> {
+            val resolvedCloudProto = conn?.protocol ?: adHocOverride?.adHocProtocolType ?: when (tab.protocol) {
+                SessionProtocolKind.VMWARE_VSPHERE -> VaultProtocolType.VMWARE_VSPHERE
+                SessionProtocolKind.HYPER_V -> VaultProtocolType.HYPER_V
+                SessionProtocolKind.AWS_EC2 -> VaultProtocolType.AWS_EC2
+                SessionProtocolKind.AZURE_VM -> VaultProtocolType.AZURE_VM
+                else -> VaultProtocolType.PROXMOX_VE
+            }
+            val defaultEndpoint = when (resolvedCloudProto) {
+                VaultProtocolType.HYPER_V -> ""
+                VaultProtocolType.PROXMOX_VE -> "https://${tab.subtitleHost}:8006"
+                else -> "https://${tab.subtitleHost}"
+            }
             val cloudSettings = (conn?.settings as? ProtocolSpecificSettings.CloudVirtualization)
-                ?: ProtocolSpecificSettings.CloudVirtualization(apiEndpointUrl = "https://${tab.subtitleHost}")
+                ?: ProtocolSpecificSettings.CloudVirtualization(apiEndpointUrl = defaultEndpoint)
+            val effectiveHost = conn?.host?.ifBlank { tab.subtitleHost } ?: tab.subtitleHost
             CloudHypervisorConsoleView(
-                protocol = conn?.protocol ?: adHocOverride?.adHocProtocolType ?: when (tab.protocol) {
-                    SessionProtocolKind.VMWARE_VSPHERE -> VaultProtocolType.VMWARE_VSPHERE
-                    SessionProtocolKind.HYPER_V -> VaultProtocolType.HYPER_V
-                    SessionProtocolKind.AWS_EC2 -> VaultProtocolType.AWS_EC2
-                    SessionProtocolKind.AZURE_VM -> VaultProtocolType.AZURE_VM
-                    else -> VaultProtocolType.PROXMOX_VE
-                },
-                endpointHost = tab.subtitleHost,
+                protocol = resolvedCloudProto,
+                endpointHost = effectiveHost,
                 settings = cloudSettings,
                 secret = secret,
                 openConsoleCallback = { vmName, vmIp, vmProto ->
                     val dynamicVmConn = VaultConnection(
+                        parentFolderId = conn?.parentFolderId,
                         name = vmName,
-                        host = vmIp,
+                        host = vmIp.ifBlank { effectiveHost },
                         protocol = vmProto,
+                        osFamily = if (vmProto == VaultProtocolType.RDP || vmProto == VaultProtocolType.WINDOWS_TERMINAL_SERVICES) "Windows" else "Linux",
+                        inheritable = conn?.inheritable ?: InheritableProperties(),
                         settings = when (vmProto) {
                             VaultProtocolType.RDP,
                             VaultProtocolType.WINDOWS_TERMINAL_SERVICES -> ProtocolSpecificSettings.Rdp()
@@ -2080,6 +2090,38 @@ fun ActiveProtocolSessionDispatcher(
                         }
                     )
                     viewModel.launchConnection(dynamicVmConn, QuickLaunchPlacement.SPLIT_RIGHT_PANE)
+                },
+                openHyperVVmConsoleCallback = { vmId, vmName, enhancedSession ->
+                    val vmConnectConn = VaultConnection(
+                        parentFolderId = conn?.parentFolderId,
+                        name = vmName,
+                        host = effectiveHost,
+                        protocol = VaultProtocolType.RDP,
+                        osFamily = "Windows",
+                        inheritable = conn?.inheritable ?: InheritableProperties(),
+                        settings = ProtocolSpecificSettings.Rdp(
+                            port = 2179,
+                            ignoreCertificateWarnings = true,
+                            hyperVVmId = vmId,
+                            hyperVEnhancedSession = enhancedSession
+                        )
+                    )
+                    viewModel.launchConnection(vmConnectConn, QuickLaunchPlacement.SPLIT_RIGHT_PANE)
+                },
+                openHostRdpCallback = {
+                    val hostDesktopConn = VaultConnection(
+                        parentFolderId = conn?.parentFolderId,
+                        name = "${conn?.name ?: effectiveHost} (Host Desktop)",
+                        host = effectiveHost,
+                        protocol = VaultProtocolType.RDP,
+                        osFamily = "Windows",
+                        inheritable = conn?.inheritable ?: InheritableProperties(),
+                        settings = ProtocolSpecificSettings.Rdp(
+                            port = 3389,
+                            ignoreCertificateWarnings = true
+                        )
+                    )
+                    viewModel.launchConnection(hostDesktopConn, QuickLaunchPlacement.SPLIT_RIGHT_PANE)
                 }
             )
         }
@@ -7588,7 +7630,7 @@ private fun PlayProtectAutoUpdateDialog(
                                     ).trim()
                                     else -> String.format(
                                         strings.autoUpdateUpToDateFormat,
-                                        uiState.updateCurrentVersion.ifBlank { "0.8.6" }
+                                        uiState.updateCurrentVersion.ifBlank { "0.8.7" }
                                     )
                                 },
                                 style = MaterialTheme.typography.titleSmall,
@@ -7603,7 +7645,7 @@ private fun PlayProtectAutoUpdateDialog(
                                 ""
                             }
                             Text(
-                                text = "Installed: v${uiState.updateCurrentVersion.ifBlank { "0.8.6" }}  →  Latest: ${uiState.updateLatestTag.ifBlank { "current" }}$sizeMb",
+                                text = "Installed: v${uiState.updateCurrentVersion.ifBlank { "0.8.7" }}  →  Latest: ${uiState.updateLatestTag.ifBlank { "current" }}$sizeMb",
                                 style = NexusTheme.monospace.keycapShortcut,
                                 color = MaterialTheme.colorScheme.secondary
                             )

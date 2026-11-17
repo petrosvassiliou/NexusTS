@@ -4,12 +4,18 @@ import android.annotation.SuppressLint
 import com.nexusts.app.core.vault.credentials.ResolvedSessionSecret
 import com.nexusts.app.core.vault.model.ProtocolSpecificSettings
 import com.nexusts.app.core.vault.model.VaultProtocolType
+import com.nexusts.app.protocols.vnc.bridge.VncNativeBridge
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -17,6 +23,9 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import java.net.InetSocketAddress
+import java.net.Socket
+import java.net.URI
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
@@ -39,8 +48,17 @@ import javax.net.ssl.X509TrustManager
 enum class VmPowerAction {
     START,
     STOP,
+    SAVE,
     REBOOT
 }
+
+@Serializable
+data class HyperVPortStatus(
+    val port: Int,
+    val label: String,
+    val open: Boolean,
+    val latencyMs: Long = 0L
+)
 
 @Serializable
 data class CloudManagedResource(
@@ -214,6 +232,7 @@ class ProxmoxVeApiClient(
         val verb = when (action) {
             VmPowerAction.START -> "start"
             VmPowerAction.STOP -> "stop"
+            VmPowerAction.SAVE -> "suspend"
             VmPowerAction.REBOOT -> "reboot"
         }
         val vmPath = if ('/' in resource.id) resource.id else "qemu/${resource.id.removePrefix("vm-")}"
@@ -250,7 +269,7 @@ class ProxmoxVeApiClient(
  * - **VMware vSphere / ESXi** (`/api/session` + `/api/vcenter/vm` + `/power?action=...`)
  * - **AWS EC2** (`DescribeInstances` / `StartInstances` / `StopInstances` / `RebootInstances` signed via **AWS SigV4 `AWS4-HMAC-SHA256`**)
  * - **Microsoft Azure ARM** (`client_credentials` OAuth2 token exchange + `Microsoft.Compute/virtualMachines?api-version=2024-03-01&$expand=instanceView`)
- * - **Microsoft Hyper-V** (WinRM HTTPS `5986` `Msvm_ComputerSystem` CIM enumeration & `RequestStateChange`)
+ * - **Microsoft Hyper-V** (WinRM HTTP `5985` NTLMv2 + `[MS-WSMV]` SPNEGO Sealing, WinRM HTTPS `5986` NTLMv2, and OpenSSH `22` PowerShell)
  * - **Windows Terminal Services / RDS** (WinRM `Win32_TerminalServicesSession` active session listing & `Win32_Process/Create` logoff/disconnect)
  */
 object CloudVirtualizationHubClient {
@@ -417,6 +436,7 @@ object CloudVirtualizationHubClient {
         val act = when (action) {
             VmPowerAction.START -> "start"
             VmPowerAction.STOP -> "stop"
+            VmPowerAction.SAVE -> "suspend"
             VmPowerAction.REBOOT -> "reset"
         }
         val req = Request.Builder()
@@ -458,7 +478,7 @@ object CloudVirtualizationHubClient {
         val region = settings.regionOrCluster.ifBlank { "us-east-1" }
         val ec2Action = when (action) {
             VmPowerAction.START -> "StartInstances"
-            VmPowerAction.STOP -> "StopInstances"
+            VmPowerAction.STOP, VmPowerAction.SAVE -> "StopInstances"
             VmPowerAction.REBOOT -> "RebootInstances"
         }
         executeAwsEc2SignedAction(
@@ -744,6 +764,7 @@ object CloudVirtualizationHubClient {
         val armAction = when (action) {
             VmPowerAction.START -> "start"
             VmPowerAction.STOP -> "powerOff"
+            VmPowerAction.SAVE -> "deallocate"
             VmPowerAction.REBOOT -> "restart"
         }
         val bearer = resolveAzureBearerToken(settings, secret)
@@ -772,8 +793,135 @@ object CloudVirtualizationHubClient {
     }
 
     // =========================================================================
-    // 5. Microsoft Hyper-V & 6. Windows Terminal Services (WinRM HTTPS 5986)
+    // 5. Microsoft Hyper-V Multi-Transport Engine (WinRM 5985 / 5986 / SSH 22)
+    //    & 6. Windows Terminal Services
     // =========================================================================
+
+    fun sanitizedHyperVEndpoint(rawEndpoint: String, connectionHost: String): String {
+        val trimmed = rawEndpoint.trim().trimEnd('/')
+        if (trimmed.isEmpty()) return ""
+        val lower = trimmed.lowercase(Locale.ROOT)
+        val cleanHost = connectionHost.trim().lowercase(Locale.ROOT)
+
+        if (lower.contains(":8006") && !cleanHost.contains(":8006")) {
+            return ""
+        }
+        if ((lower.contains("localhost") || lower.contains("127.0.0.1")) &&
+            cleanHost.isNotEmpty() &&
+            cleanHost != "localhost" &&
+            cleanHost != "127.0.0.1"
+        ) {
+            return ""
+        }
+        val parsed = runCatching { URI(trimmed) }.getOrNull()
+        if (parsed != null && parsed.port == -1) {
+            val path = parsed.path.orEmpty().trim('/')
+            if (path.isEmpty()) {
+                return ""
+            }
+        }
+        return trimmed
+    }
+
+    fun extractBareHyperVHost(rawHost: String): String {
+        var h = rawHost.trim()
+        if (h.startsWith("http://", true) || h.startsWith("https://", true)) {
+            val parsed = runCatching { URI(h) }.getOrNull()
+            if (!parsed?.host.isNullOrBlank()) return parsed!!.host
+        }
+        if ('/' in h) {
+            h = h.substringBefore('/')
+        }
+        if (!h.startsWith('[') && h.count { it == ':' } == 1) {
+            val portPart = h.substringAfter(':')
+            if (portPart.toIntOrNull() != null) {
+                h = h.substringBefore(':')
+            }
+        }
+        return h.trim('[', ']', ' ')
+    }
+
+    suspend fun diagnoseHyperVPorts(host: String): List<HyperVPortStatus> = withContext(Dispatchers.IO) {
+        val bareHost = extractBareHyperVHost(host)
+        if (bareHost.isBlank()) return@withContext emptyList()
+        val targets = listOf(
+            2179 to "VMConnect",
+            5985 to "WinRM HTTP",
+            5986 to "WinRM HTTPS",
+            22 to "OpenSSH",
+            3389 to "Host RDP"
+        )
+        coroutineScope {
+            targets.map { (port, label) ->
+                async {
+                    val nativeResult = runCatching {
+                        val probeJson = VncNativeBridge.nativeProbeTcpPortJson(bareHost, port, 650)
+                        if (probeJson.isNotBlank() && probeJson != "null") {
+                            val obj = json.parseToJsonElement(probeJson).jsonObject
+                            val open = obj["open"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: false
+                            val lat = obj["latency_ms"]?.jsonPrimitive?.contentOrNull?.toLongOrNull() ?: 0L
+                            HyperVPortStatus(port = port, label = label, open = open, latencyMs = lat)
+                        } else {
+                            null
+                        }
+                    }.getOrNull()
+
+                    nativeResult ?: run {
+                        val startNs = System.nanoTime()
+                        val open = runCatching {
+                            Socket().use { sock ->
+                                sock.connect(InetSocketAddress(bareHost, port), 650)
+                                true
+                            }
+                        }.getOrDefault(false)
+                        val latMs = if (open) TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNs) else 0L
+                        HyperVPortStatus(port = port, label = label, open = open, latencyMs = latMs)
+                    }
+                }
+            }.awaitAll()
+        }
+    }
+
+    private data class WindowsIdentity(
+        val username: String,
+        val password: String,
+        val domain: String,
+        val privateKeyPem: String,
+        val keyPassphrase: String
+    )
+
+    private fun resolveWindowsIdentity(
+        secret: ResolvedSessionSecret,
+        fallbackRealmOrDomain: String
+    ): WindowsIdentity {
+        val rawUser = secret.username.trim()
+        val rawDom = secret.domain.trim()
+        val fallbackDom = fallbackRealmOrDomain.trim().takeIf { !it.equals("pam", ignoreCase = true) }.orEmpty()
+        if ('\\' in rawUser) {
+            val domPart = rawUser.substringBefore('\\')
+            val userPart = rawUser.substringAfter('\\')
+            val effectiveDom = if (domPart == ".") "" else rawDom.ifBlank { domPart }
+            return WindowsIdentity(
+                username = userPart,
+                password = secret.password,
+                domain = effectiveDom,
+                privateKeyPem = secret.privateKeyPem.trim(),
+                keyPassphrase = secret.keyPassphrase
+            )
+        }
+        val resolvedDom = when {
+            rawDom.isNotEmpty() -> rawDom
+            '@' in rawUser -> ""
+            else -> fallbackDom
+        }
+        return WindowsIdentity(
+            username = rawUser,
+            password = secret.password,
+            domain = if (resolvedDom == ".") "" else resolvedDom,
+            privateKeyPem = secret.privateKeyPem.trim(),
+            keyPassphrase = secret.keyPassphrase
+        )
+    }
 
     private fun normalizeWinRmUrl(host: String, apiEndpointUrl: String): String {
         val raw = apiEndpointUrl.trim().ifBlank { "https://${host.trim()}:5986/wsman" }
@@ -786,76 +934,454 @@ object CloudVirtualizationHubClient {
         return if (trimmed.endsWith("/wsman", ignoreCase = true)) trimmed else "$trimmed/wsman"
     }
 
+    fun parseHyperVWsmanXml(body: String, hostLabel: String): List<CloudManagedResource> {
+        val systemBlockRegex = Regex(
+            "<(?:\\w+:)?Msvm_ComputerSystem[^>]*>(.*?)</(?:\\w+:)?Msvm_ComputerSystem>",
+            setOf(RegexOption.DOT_MATCHES_ALL)
+        )
+        val elemRegex = Regex("<(?:\\w+:)?ElementName>([^<]+)</(?:\\w+:)?ElementName>")
+        val nameRegex = Regex("<(?:\\w+:)?Name>([^<]+)</(?:\\w+:)?Name>")
+        val captionRegex = Regex("<(?:\\w+:)?Caption>([^<]+)</(?:\\w+:)?Caption>")
+        val stateRegex = Regex("<(?:\\w+:)?EnabledState>(\\d+)</(?:\\w+:)?EnabledState>")
+
+        val blocks = systemBlockRegex.findAll(body).map { it.groupValues[1] }.toList()
+        if (blocks.isNotEmpty()) {
+            return blocks.mapNotNull { block ->
+                val caption = captionRegex.find(block)?.groupValues?.get(1)?.trim().orEmpty()
+                if (caption.contains("Hosting Computer System", ignoreCase = true)) {
+                    return@mapNotNull null
+                }
+                val vmGuid = nameRegex.find(block)?.groupValues?.get(1)?.trim().orEmpty()
+                val vmName = elemRegex.find(block)?.groupValues?.get(1)?.trim()
+                    ?: vmGuid.takeIf { it.isNotEmpty() }
+                    ?: return@mapNotNull null
+                val stateCode = stateRegex.find(block)?.groupValues?.get(1)?.toIntOrNull() ?: 2
+                val power = when (stateCode) {
+                    2 -> "RUNNING"
+                    3, 6 -> "STOPPED"
+                    32768 -> "PAUSED"
+                    32769 -> "SAVED"
+                    else -> "STATE_$stateCode"
+                }
+                val resolvedGuid = unescapeXml(vmGuid.ifBlank { vmName })
+                CloudManagedResource(
+                    id = resolvedGuid,
+                    name = unescapeXml(vmName),
+                    nodeOrZone = hostLabel,
+                    powerState = power,
+                    cpuRamSummary = "VMConnect :2179",
+                    addressOrSessionHost = hostLabel,
+                    preferredConsoleProtocol = VaultProtocolType.RDP
+                )
+            }
+        }
+        return emptyList()
+    }
+
+    fun parseHyperVPowerShellJson(raw: String, hostLabel: String): List<CloudManagedResource> {
+        val trimmed = raw.trim()
+        if (trimmed.isEmpty() || trimmed == "null") return emptyList()
+
+        val jsonSlice: String = run {
+            val arrStart = trimmed.indexOf('[')
+            val arrEnd = trimmed.lastIndexOf(']')
+            val objStart = trimmed.indexOf('{')
+            val objEnd = trimmed.lastIndexOf('}')
+            when {
+                arrStart >= 0 && arrEnd > arrStart && (objStart < 0 || arrStart < objStart) ->
+                    trimmed.substring(arrStart, arrEnd + 1)
+                objStart >= 0 && objEnd > objStart ->
+                    trimmed.substring(objStart, objEnd + 1)
+                else -> error("Unexpected PowerShell output: ${trimmed.take(180)}")
+            }
+        }
+
+        val parsedElem = json.parseToJsonElement(jsonSlice)
+        val objects: List<JsonObject> = when (parsedElem) {
+            is JsonArray -> parsedElem.mapNotNull { it as? JsonObject }
+            is JsonObject -> listOf(parsedElem)
+            else -> emptyList()
+        }
+
+        return objects.map { obj ->
+            val vmId = obj["Id"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+            val vmName = obj["Name"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+            val rawState = obj["State"]?.jsonPrimitive?.contentOrNull?.uppercase(Locale.ROOT).orEmpty()
+            val power = when {
+                "RUN" in rawState -> "RUNNING"
+                "OFF" in rawState || "STOP" in rawState -> "STOPPED"
+                "SAV" in rawState -> "SAVED"
+                "PAUS" in rawState -> "PAUSED"
+                rawState.isNotBlank() -> rawState
+                else -> "UNKNOWN"
+            }
+            val cpus = (obj["CpuCount"]?.jsonPrimitive?.intOrNull ?: 2).coerceAtLeast(1)
+            val memAssigned = obj["MemAssignedMB"]?.jsonPrimitive?.intOrNull ?: 0
+            val memStartup = obj["MemStartupMB"]?.jsonPrimitive?.intOrNull ?: 0
+            val memMb = if (memAssigned > 0) memAssigned else memStartup
+            val memLabel = if (memMb >= 1024) {
+                String.format(Locale.US, "%.1f GiB", memMb / 1024.0)
+            } else if (memMb > 0) {
+                "$memMb MiB"
+            } else {
+                "Dynamic RAM"
+            }
+            val resolvedId = vmId.ifBlank { UUID.randomUUID().toString() }
+            CloudManagedResource(
+                id = resolvedId,
+                name = vmName.ifBlank { resolvedId },
+                nodeOrZone = hostLabel,
+                powerState = power,
+                cpuRamSummary = "$cpus vCPU • $memLabel",
+                addressOrSessionHost = hostLabel,
+                preferredConsoleProtocol = VaultProtocolType.RDP
+            )
+        }
+    }
+
+    private fun extractWsmanEnumerationContext(xml: String): String? {
+        val m = Regex("<(?:\\w+:)?EnumerationContext>([^<]+)</(?:\\w+:)?EnumerationContext>", RegexOption.IGNORE_CASE)
+            .find(xml) ?: return null
+        return m.groupValues[1].trim().takeIf { it.isNotEmpty() }
+    }
+
+    private fun extractWsmanFaultSummary(xml: String): String? {
+        if (!xml.contains(":Fault>", ignoreCase = true) && !xml.contains("<Fault>", ignoreCase = true)) {
+            return null
+        }
+        for (tag in listOf("Text", "Message", "FaultString")) {
+            val m = Regex("<(?:\\w+:)?$tag[^>]*>([^<]+)</(?:\\w+:)?$tag>", RegexOption.IGNORE_CASE).find(xml)
+            val msg = m?.groupValues?.get(1)?.trim()
+            if (!msg.isNullOrEmpty()) return unescapeXml(msg).take(240)
+        }
+        return "WS-Management Fault returned by Hyper-V host"
+    }
+
+    private fun extractWmiReturnValue(xml: String): Int? =
+        Regex("<(?:\\w+:)?ReturnValue>(\\d+)</(?:\\w+:)?ReturnValue>", RegexOption.IGNORE_CASE)
+            .find(xml)?.groupValues?.get(1)?.toIntOrNull()
+
+    private fun buildWinRmPullSoap(toUrl: String, resourceUri: String, enumerationContext: String): String = """
+        <s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"
+                    xmlns:wsa="http://schemas.xmlsoap.org/ws/2004/08/addressing"
+                    xmlns:wsman="http://schemas.dmtf.org/wbem/wsman/1/wsman.xsd"
+                    xmlns:wsen="http://schemas.xmlsoap.org/ws/2004/09/enumeration">
+          <s:Header>
+            <wsa:To>${escapeXml(toUrl)}</wsa:To>
+            <wsman:ResourceURI s:mustUnderstand="true">$resourceUri</wsman:ResourceURI>
+            <wsa:Action s:mustUnderstand="true">http://schemas.xmlsoap.org/ws/2004/09/enumeration/Pull</wsa:Action>
+            <wsman:MaxEnvelopeSize s:mustUnderstand="true">512000</wsman:MaxEnvelopeSize>
+            <wsa:MessageID>uuid:${UUID.randomUUID()}</wsa:MessageID>
+            <wsa:ReplyTo>
+              <wsa:Address s:mustUnderstand="true">http://schemas.xmlsoap.org/ws/2004/08/addressing/role/anonymous</wsa:Address>
+            </wsa:ReplyTo>
+            <wsman:OperationTimeout>PT20.000S</wsman:OperationTimeout>
+          </s:Header>
+          <s:Body>
+            <wsen:Pull>
+              <wsen:EnumerationContext>${escapeXml(enumerationContext)}</wsen:EnumerationContext>
+              <wsen:MaxElements>200</wsen:MaxElements>
+            </wsen:Pull>
+          </s:Body>
+        </s:Envelope>
+    """.trimIndent()
+
+    private fun buildHyperVStateChangeSoap(toUrl: String, vmId: String, stateCode: Int): String {
+        val resourceUri = "http://schemas.microsoft.com/wbem/wsman/1/wmi/root/virtualization/v2/Msvm_ComputerSystem"
+        return """
+            <s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"
+                        xmlns:wsa="http://schemas.xmlsoap.org/ws/2004/08/addressing"
+                        xmlns:wsman="http://schemas.dmtf.org/wbem/wsman/1/wsman.xsd"
+                        xmlns:p="$resourceUri">
+              <s:Header>
+                <wsa:To>${escapeXml(toUrl)}</wsa:To>
+                <wsman:ResourceURI s:mustUnderstand="true">$resourceUri</wsman:ResourceURI>
+                <wsa:Action s:mustUnderstand="true">$resourceUri/RequestStateChange</wsa:Action>
+                <wsman:MaxEnvelopeSize s:mustUnderstand="true">512000</wsman:MaxEnvelopeSize>
+                <wsa:MessageID>uuid:${UUID.randomUUID()}</wsa:MessageID>
+                <wsa:ReplyTo>
+                  <wsa:Address s:mustUnderstand="true">http://schemas.xmlsoap.org/ws/2004/08/addressing/role/anonymous</wsa:Address>
+                </wsa:ReplyTo>
+                <wsman:SelectorSet>
+                  <wsman:Selector Name="CreationClassName">Msvm_ComputerSystem</wsman:Selector>
+                  <wsman:Selector Name="Name">${escapeXml(vmId)}</wsman:Selector>
+                </wsman:SelectorSet>
+                <wsman:OperationTimeout>PT20.000S</wsman:OperationTimeout>
+              </s:Header>
+              <s:Body>
+                <p:RequestStateChange_INPUT>
+                  <p:RequestedState>$stateCode</p:RequestedState>
+                </p:RequestStateChange_INPUT>
+              </s:Body>
+            </s:Envelope>
+        """.trimIndent()
+    }
+
+    private fun postWsmanHttpsNtlmOrBasic(
+        wsmanUrl: String,
+        spnHost: String,
+        soapXml: String,
+        identity: WindowsIdentity,
+        http: OkHttpClient
+    ): String {
+        val soapMediaType = "application/soap+xml;charset=UTF-8".toMediaType()
+
+        // Step 1: NTLMv2 over TLS (`Negotiate` / `NTLM`)
+        if (identity.username.isNotBlank()) {
+            val type1 = runCatching { VncNativeBridge.nativeNtlmBuildNegotiate() }.getOrDefault("")
+            if (type1.isNotBlank()) {
+                val negReq = Request.Builder()
+                    .url(wsmanUrl)
+                    .header("Authorization", "Negotiate $type1")
+                    .header("Connection", "Keep-Alive")
+                    .post("".toRequestBody(soapMediaType))
+                    .build()
+
+                http.newCall(negReq).execute().use { step1 ->
+                    val step1Body = step1.body?.string().orEmpty()
+                    if (step1.isSuccessful && step1Body.isNotBlank()) {
+                        return step1Body
+                    }
+                    if (step1.code == 401) {
+                        val authHeaders = step1.headers("WWW-Authenticate")
+                        val challengePair = extractNtlmChallengeFromHeaders(authHeaders)
+                        if (challengePair != null) {
+                            val (scheme, challengeB64) = challengePair
+                            val type3 = VncNativeBridge.nativeNtlmBuildAuthenticate(
+                                challengeB64 = challengeB64,
+                                username = identity.username,
+                                password = identity.password,
+                                domain = identity.domain,
+                                spnHost = spnHost
+                            )
+                            val authReq = Request.Builder()
+                                .url(wsmanUrl)
+                                .header("Authorization", "$scheme $type3")
+                                .header("Connection", "Keep-Alive")
+                                .post(soapXml.toRequestBody(soapMediaType))
+                                .build()
+                            http.newCall(authReq).execute().use { step2 ->
+                                val step2Body = step2.body?.string().orEmpty()
+                                if (step2.isSuccessful) {
+                                    return step2Body
+                                }
+                                if (step2.code == 401) {
+                                    error("Hyper-V WinRM HTTPS NTLMv2 authentication rejected (HTTP 401)")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Step 2: Basic Auth over TLS fallback
+        val principal = if (identity.domain.isBlank()) identity.username else "${identity.domain}\\${identity.username}"
+        val basic = Base64.getEncoder()
+            .encodeToString("$principal:${identity.password}".toByteArray(StandardCharsets.UTF_8))
+        val basicReq = Request.Builder()
+            .url(wsmanUrl)
+            .apply {
+                if (identity.username.isNotBlank()) {
+                    header("Authorization", "Basic $basic")
+                }
+            }
+            .post(soapXml.toRequestBody(soapMediaType))
+            .build()
+
+        http.newCall(basicReq).execute().use { resp ->
+            if (!resp.isSuccessful) error("Hyper-V WinRM HTTPS HTTP ${resp.code}")
+            return resp.body?.string().orEmpty()
+        }
+    }
+
+    private fun extractNtlmChallengeFromHeaders(headers: List<String>): Pair<String, String>? {
+        for (hdr in headers) {
+            for (part in hdr.split(',')) {
+                val trimmed = part.trim()
+                for (prefix in listOf("Negotiate ", "NTLM ")) {
+                    if (trimmed.startsWith(prefix, ignoreCase = true)) {
+                        val tok = trimmed.substring(prefix.length).trim()
+                        if (tok.isNotEmpty() && ' ' !in tok) {
+                            return prefix.trim() to tok
+                        }
+                    }
+                }
+            }
+        }
+        return null
+    }
+
+    private fun fetchHyperVWinRmHttp(
+        host: String,
+        port: Int,
+        path: String,
+        hostLabel: String,
+        identity: WindowsIdentity
+    ): List<CloudManagedResource> {
+        val normPath = if (path.startsWith("/")) path else "/$path"
+        val toUrl = "http://$host:$port$normPath"
+        val resourceUri = "http://schemas.microsoft.com/wbem/wsman/1/wmi/root/virtualization/v2/Msvm_ComputerSystem"
+        val enumerateSoap = buildWinRmEnumerateSoap(toUrl = toUrl, resourceUri = resourceUri)
+        val firstXml = VncNativeBridge.nativeWinrmWsmanPost(
+            host = host,
+            port = port,
+            path = normPath,
+            username = identity.username,
+            password = identity.password,
+            domain = identity.domain,
+            soapXml = enumerateSoap,
+            timeoutMs = 10_000
+        )
+        extractWsmanFaultSummary(firstXml)?.let { error("WinRM SOAP Fault: $it") }
+        var items = parseHyperVWsmanXml(firstXml, hostLabel)
+        if (items.isEmpty() && !firstXml.contains("EndOfSequence", ignoreCase = true)) {
+            val ctx = extractWsmanEnumerationContext(firstXml)
+            if (!ctx.isNullOrBlank()) {
+                val pullSoap = buildWinRmPullSoap(toUrl = toUrl, resourceUri = resourceUri, enumerationContext = ctx)
+                val pullXml = VncNativeBridge.nativeWinrmWsmanPost(
+                    host = host,
+                    port = port,
+                    path = normPath,
+                    username = identity.username,
+                    password = identity.password,
+                    domain = identity.domain,
+                    soapXml = pullSoap,
+                    timeoutMs = 10_000
+                )
+                extractWsmanFaultSummary(pullXml)?.let { error("WinRM Pull Fault: $it") }
+                items = parseHyperVWsmanXml(pullXml, hostLabel)
+            }
+        }
+        return items
+    }
+
+    private fun fetchHyperVWinRmHttps(
+        wsmanUrl: String,
+        spnHost: String,
+        hostLabel: String,
+        identity: WindowsIdentity,
+        http: OkHttpClient
+    ): List<CloudManagedResource> {
+        val resourceUri = "http://schemas.microsoft.com/wbem/wsman/1/wmi/root/virtualization/v2/Msvm_ComputerSystem"
+        val enumerateSoap = buildWinRmEnumerateSoap(toUrl = wsmanUrl, resourceUri = resourceUri)
+        val firstXml = postWsmanHttpsNtlmOrBasic(wsmanUrl, spnHost, enumerateSoap, identity, http)
+        extractWsmanFaultSummary(firstXml)?.let { error("WinRM HTTPS SOAP Fault: $it") }
+        var items = parseHyperVWsmanXml(firstXml, hostLabel)
+        if (items.isEmpty() && !firstXml.contains("EndOfSequence", ignoreCase = true)) {
+            val ctx = extractWsmanEnumerationContext(firstXml)
+            if (!ctx.isNullOrBlank()) {
+                val pullSoap = buildWinRmPullSoap(toUrl = wsmanUrl, resourceUri = resourceUri, enumerationContext = ctx)
+                val pullXml = postWsmanHttpsNtlmOrBasic(wsmanUrl, spnHost, pullSoap, identity, http)
+                items = parseHyperVWsmanXml(pullXml, hostLabel)
+            }
+        }
+        return items
+    }
+
+    private fun runHyperVSshPowerShell(
+        host: String,
+        identity: WindowsIdentity,
+        command: String
+    ): String {
+        val baseUser = identity.username.ifBlank { "Administrator" }
+        val candidates = if (identity.domain.isNotBlank() && '\\' !in baseUser && '@' !in baseUser) {
+            listOf("${identity.domain}\\$baseUser", baseUser)
+        } else {
+            listOf(baseUser)
+        }
+        var lastErr: Throwable? = null
+        for (sshUser in candidates) {
+            val res = runCatching {
+                VncNativeBridge.nativeSshExecCommand(
+                    host = host,
+                    port = 22,
+                    username = sshUser,
+                    password = identity.password,
+                    privateKeyPem = identity.privateKeyPem,
+                    passphrase = identity.keyPassphrase,
+                    command = command,
+                    timeoutSecs = 15
+                )
+            }
+            if (res.isSuccess) return res.getOrThrow()
+            lastErr = res.exceptionOrNull()
+        }
+        throw lastErr ?: IllegalStateException("Windows OpenSSH command failed")
+    }
+
     private fun fetchHyperVInventory(
         host: String,
         settings: ProtocolSpecificSettings.CloudVirtualization,
         secret: ResolvedSessionSecret,
         allowSelfSignedTls: Boolean
     ): List<CloudManagedResource> {
-        val http = clientFor(allowSelfSignedTls)
-        val url = normalizeWinRmUrl(host, settings.apiEndpointUrl)
-        val resourceUri = "http://schemas.microsoft.com/wbem/wsman/1/wmi/root/virtualization/v2/Msvm_ComputerSystem"
-        val soap = buildWinRmEnumerateSoap(toUrl = url, resourceUri = resourceUri)
-        val basic = Base64.getEncoder()
-            .encodeToString("${secret.username}:${secret.password}".toByteArray(StandardCharsets.UTF_8))
+        val bareHost = extractBareHyperVHost(host.ifBlank { settings.apiEndpointUrl })
+        require(bareHost.isNotBlank()) {
+            "Hyper-V host address is empty. Edit the connection and set the Hyper-V Server IP or hostname."
+        }
+        val identity = resolveWindowsIdentity(secret, settings.realmOrDomain)
+        require(identity.username.isNotBlank() || identity.privateKeyPem.isNotBlank()) {
+            "Hyper-V requires Windows Administrator credentials. Assign or inherit a Vault Credential on this connection, or connect directly by VM GUID on TCP 2179."
+        }
 
-        val req = Request.Builder()
-            .url(url)
-            .header("Authorization", "Basic $basic")
-            .post(soap.toRequestBody("application/soap+xml;charset=UTF-8".toMediaType()))
-            .build()
+        val explicitEndpoint = sanitizedHyperVEndpoint(settings.apiEndpointUrl, bareHost)
+        val httpsClient = clientFor(allowSelfSignedTls = true)
 
-        http.newCall(req).execute().use { resp ->
-            if (!resp.isSuccessful) error("Hyper-V WinRM HTTP ${resp.code}")
-            val body = resp.body?.string().orEmpty()
-            val systemBlockRegex = Regex("<(?:\\w+:)?Msvm_ComputerSystem[^>]*>(.*?)</(?:\\w+:)?Msvm_ComputerSystem>", setOf(RegexOption.DOT_MATCHES_ALL))
-            val elemRegex = Regex("<(?:\\w+:)?ElementName>([^<]+)</(?:\\w+:)?ElementName>")
-            val nameRegex = Regex("<(?:\\w+:)?Name>([^<]+)</(?:\\w+:)?Name>")
-            val captionRegex = Regex("<(?:\\w+:)?Caption>([^<]+)</(?:\\w+:)?Caption>")
-            val stateRegex = Regex("<(?:\\w+:)?EnabledState>(\\d+)</(?:\\w+:)?EnabledState>")
-
-            val blocks = systemBlockRegex.findAll(body).map { it.groupValues[1] }.toList()
-            if (blocks.isNotEmpty()) {
-                return blocks.mapNotNull { block ->
-                    val caption = captionRegex.find(block)?.groupValues?.get(1)?.trim().orEmpty()
-                    if (caption.equals("Hosting Computer System", ignoreCase = true)) {
-                        return@mapNotNull null
-                    }
-                    val vmName = elemRegex.find(block)?.groupValues?.get(1)?.trim() ?: return@mapNotNull null
-                    val vmGuid = nameRegex.find(block)?.groupValues?.get(1)?.trim() ?: vmName
-                    val stateCode = stateRegex.find(block)?.groupValues?.get(1)?.toIntOrNull() ?: 2
-                    val power = when (stateCode) {
-                        2 -> "RUNNING"
-                        3, 6 -> "STOPPED"
-                        32768 -> "PAUSED"
-                        32769 -> "SAVED"
-                        else -> "UNKNOWN"
-                    }
-                    CloudManagedResource(
-                        id = unescapeXml(vmGuid),
-                        name = unescapeXml(vmName),
-                        nodeOrZone = host,
-                        powerState = power,
-                        cpuRamSummary = "Hyper-V Gen2 VM",
-                        addressOrSessionHost = host,
-                        preferredConsoleProtocol = VaultProtocolType.RDP
-                    )
-                }
+        if (explicitEndpoint.isNotBlank()) {
+            val parsed = runCatching { URI(explicitEndpoint) }.getOrNull()
+            val scheme = parsed?.scheme?.lowercase(Locale.ROOT).orEmpty()
+            val endpointHost = parsed?.host?.takeIf { it.isNotBlank() } ?: bareHost
+            val endpointPath = parsed?.path?.takeIf { it.isNotBlank() } ?: "/wsman"
+            if (scheme == "http") {
+                val port = if (parsed != null && parsed.port > 0) parsed.port else 5985
+                return fetchHyperVWinRmHttp(endpointHost, port, endpointPath, bareHost, identity)
+            } else if (scheme == "https") {
+                val port = if (parsed != null && parsed.port > 0) parsed.port else 5986
+                val wsmanUrl = normalizeWinRmUrl(endpointHost, "https://$endpointHost:$port$endpointPath")
+                return fetchHyperVWinRmHttps(wsmanUrl, endpointHost, bareHost, identity, clientFor(allowSelfSignedTls))
             }
+        }
 
-            val names = elemRegex.findAll(body).map { it.groupValues[1] }.toList()
-            val guids = nameRegex.findAll(body).map { it.groupValues[1] }.toList()
-            return names.mapIndexed { index, vmName ->
-                CloudManagedResource(
-                    id = guids.getOrElse(index) { "hv-$index" },
-                    name = unescapeXml(vmName),
-                    nodeOrZone = host,
-                    powerState = "RUNNING",
-                    cpuRamSummary = "Hyper-V Gen2 VM",
-                    addressOrSessionHost = host,
-                    preferredConsoleProtocol = VaultProtocolType.RDP
-                )
+        val transportErrors = mutableListOf<String>()
+
+        if (identity.username.isNotBlank()) {
+            // Tier 1: WinRM HTTP :5985 with NTLMv2 + [MS-WSMV] SPNEGO RC4 Sealing
+            runCatching {
+                fetchHyperVWinRmHttp(bareHost, 5985, "/wsman", bareHost, identity)
+            }.onSuccess { return it }
+                .onFailure { transportErrors += "WinRM :5985 (${it.message ?: it::class.simpleName})" }
+
+            // Tier 2: WinRM HTTPS :5986 with 2-step NTLMv2 + Permissive TLS + Basic fallback
+            runCatching {
+                fetchHyperVWinRmHttps("https://$bareHost:5986/wsman", bareHost, bareHost, identity, httpsClient)
+            }.onSuccess { return it }
+                .onFailure { transportErrors += "WinRM :5986 (${it.message ?: it::class.simpleName})" }
+        }
+
+        // Tier 3: OpenSSH :22 PowerShell Get-VM fallback
+        runCatching {
+            val psCmd = "powershell.exe -NoProfile -NonInteractive -Command \"\$ErrorActionPreference='Stop'; Get-VM | ForEach-Object { [PSCustomObject]@{ Id = \$_.Id.Guid.ToString(); Name = \$_.Name; State = \$_.State.ToString(); CpuCount = [int]\$_.ProcessorCount; MemAssignedMB = [int](\$_.MemoryAssigned / 1MB); MemStartupMB = [int](\$_.MemoryStartup / 1MB) } } | ConvertTo-Json -Compress\""
+            val rawOut = runHyperVSshPowerShell(bareHost, identity, psCmd)
+            parseHyperVPowerShellJson(rawOut, bareHost)
+        }.onSuccess { return it }
+            .onFailure { transportErrors += "SSH :22 (${it.message ?: it::class.simpleName})" }
+
+        error(
+            "Unable to query Hyper-V host $bareHost. Enable WinRM (`Enable-PSRemoting -Force`) on TCP 5985/5986 or OpenSSH on TCP 22, or connect directly by VM GUID on TCP 2179. Details: ${transportErrors.joinToString(" • ")}"
+        )
+    }
+
+    private fun validateHyperVStateChangeXml(xml: String, vmName: String, action: VmPowerAction) {
+        extractWsmanFaultSummary(xml)?.let { error("Hyper-V SOAP Fault: $it") }
+        val retCode = extractWmiReturnValue(xml)
+        if (retCode != null && retCode != 0 && retCode != 4096) {
+            val detail = when (retCode) {
+                32769 -> "Access denied (32769)"
+                32775 -> "Invalid VM state for ${action.name} (32775)"
+                else -> "WMI return code $retCode"
             }
+            error("Hyper-V ${action.name} on $vmName failed: $detail")
         }
     }
 
@@ -867,53 +1393,87 @@ object CloudVirtualizationHubClient {
         action: VmPowerAction,
         allowSelfSignedTls: Boolean
     ): String {
-        val http = clientFor(allowSelfSignedTls)
+        val bareHost = extractBareHyperVHost(host.ifBlank { settings.apiEndpointUrl })
+        val identity = resolveWindowsIdentity(secret, settings.realmOrDomain)
         val stateCode = when (action) {
             VmPowerAction.START -> 2
             VmPowerAction.STOP -> 3
+            VmPowerAction.SAVE -> 32769
             VmPowerAction.REBOOT -> 10
         }
-        val url = normalizeWinRmUrl(host, settings.apiEndpointUrl)
-        val resourceUri = "http://schemas.microsoft.com/wbem/wsman/1/wmi/root/virtualization/v2/Msvm_ComputerSystem"
-        val basic = Base64.getEncoder()
-            .encodeToString("${secret.username}:${secret.password}".toByteArray(StandardCharsets.UTF_8))
-        val invokeXml = """
-            <s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"
-                        xmlns:wsa="http://schemas.xmlsoap.org/ws/2004/08/addressing"
-                        xmlns:wsman="http://schemas.dmtf.org/wbem/wsman/1/wsman.xsd"
-                        xmlns:p="$resourceUri">
-              <s:Header>
-                <wsa:To>${escapeXml(url)}</wsa:To>
-                <wsman:ResourceURI s:mustUnderstand="true">$resourceUri</wsman:ResourceURI>
-                <wsa:Action s:mustUnderstand="true">$resourceUri/RequestStateChange</wsa:Action>
-                <wsman:MaxEnvelopeSize s:mustUnderstand="true">153600</wsman:MaxEnvelopeSize>
-                <wsa:MessageID>uuid:${UUID.randomUUID()}</wsa:MessageID>
-                <wsa:ReplyTo>
-                  <wsa:Address s:mustUnderstand="true">http://schemas.xmlsoap.org/ws/2004/08/addressing/role/anonymous</wsa:Address>
-                </wsa:ReplyTo>
-                <wsman:SelectorSet>
-                  <wsman:Selector Name="Name">${escapeXml(resource.id)}</wsman:Selector>
-                </wsman:SelectorSet>
-                <wsman:OperationTimeout>PT60.000S</wsman:OperationTimeout>
-              </s:Header>
-              <s:Body>
-                <p:RequestStateChange_INPUT>
-                  <p:RequestedState>$stateCode</p:RequestedState>
-                </p:RequestStateChange_INPUT>
-              </s:Body>
-            </s:Envelope>
-        """.trimIndent()
 
-        val req = Request.Builder()
-            .url(url)
-            .header("Authorization", "Basic $basic")
-            .post(invokeXml.toRequestBody("application/soap+xml;charset=UTF-8".toMediaType()))
-            .build()
+        val explicitEndpoint = sanitizedHyperVEndpoint(settings.apiEndpointUrl, bareHost)
+        val httpsClient = clientFor(allowSelfSignedTls = true)
 
-        http.newCall(req).execute().use { resp ->
-            if (!resp.isSuccessful) error("Hyper-V state change HTTP ${resp.code}")
-            return "Hyper-V RequestedState=$stateCode -> ${resource.name}"
+        if (explicitEndpoint.isNotBlank()) {
+            val parsed = runCatching { URI(explicitEndpoint) }.getOrNull()
+            val scheme = parsed?.scheme?.lowercase(Locale.ROOT).orEmpty()
+            val endpointHost = parsed?.host?.takeIf { it.isNotBlank() } ?: bareHost
+            val endpointPath = parsed?.path?.takeIf { it.isNotBlank() } ?: "/wsman"
+            if (scheme == "http") {
+                val port = if (parsed != null && parsed.port > 0) parsed.port else 5985
+                val normPath = if (endpointPath.startsWith("/")) endpointPath else "/$endpointPath"
+                val toUrl = "http://$endpointHost:$port$normPath"
+                val soap = buildHyperVStateChangeSoap(toUrl, resource.id, stateCode)
+                val xml = VncNativeBridge.nativeWinrmWsmanPost(
+                    endpointHost, port, normPath, identity.username, identity.password, identity.domain, soap, 12_000
+                )
+                validateHyperVStateChangeXml(xml, resource.name, action)
+                return "Hyper-V ${action.name} -> ${resource.name}"
+            } else if (scheme == "https") {
+                val port = if (parsed != null && parsed.port > 0) parsed.port else 5986
+                val wsmanUrl = normalizeWinRmUrl(endpointHost, "https://$endpointHost:$port$endpointPath")
+                val soap = buildHyperVStateChangeSoap(wsmanUrl, resource.id, stateCode)
+                val xml = postWsmanHttpsNtlmOrBasic(wsmanUrl, endpointHost, soap, identity, clientFor(allowSelfSignedTls))
+                validateHyperVStateChangeXml(xml, resource.name, action)
+                return "Hyper-V ${action.name} -> ${resource.name}"
+            }
         }
+
+        val transportErrors = mutableListOf<String>()
+
+        if (identity.username.isNotBlank()) {
+            runCatching {
+                val toUrl = "http://$bareHost:5985/wsman"
+                val soap = buildHyperVStateChangeSoap(toUrl, resource.id, stateCode)
+                val xml = VncNativeBridge.nativeWinrmWsmanPost(
+                    bareHost, 5985, "/wsman", identity.username, identity.password, identity.domain, soap, 12_000
+                )
+                validateHyperVStateChangeXml(xml, resource.name, action)
+                "Hyper-V ${action.name} -> ${resource.name}"
+            }.onSuccess { return it }
+                .onFailure { transportErrors += "WinRM :5985 (${it.message})" }
+
+            runCatching {
+                val wsmanUrl = "https://$bareHost:5986/wsman"
+                val soap = buildHyperVStateChangeSoap(wsmanUrl, resource.id, stateCode)
+                val xml = postWsmanHttpsNtlmOrBasic(wsmanUrl, bareHost, soap, identity, httpsClient)
+                validateHyperVStateChangeXml(xml, resource.name, action)
+                "Hyper-V ${action.name} -> ${resource.name}"
+            }.onSuccess { return it }
+                .onFailure { transportErrors += "WinRM :5986 (${it.message})" }
+        }
+
+        runCatching {
+            val cleanGuid = resource.id.filter { it.isDigit() || it in 'a'..'f' || it in 'A'..'F' || it == '-' }
+            val safeName = resource.name.replace("'", "''")
+            val selector = if (cleanGuid.length >= 32) "Get-VM -Id '$cleanGuid'" else "Get-VM -Name '$safeName'"
+            val verb = when (action) {
+                VmPowerAction.START -> "Start-VM -ErrorAction Stop"
+                VmPowerAction.STOP -> "Stop-VM -TurnOff -Force -ErrorAction Stop"
+                VmPowerAction.SAVE -> "Save-VM -ErrorAction Stop"
+                VmPowerAction.REBOOT -> "Restart-VM -Force -ErrorAction Stop"
+            }
+            runHyperVSshPowerShell(
+                bareHost,
+                identity,
+                "powershell.exe -NoProfile -NonInteractive -Command \"$selector | $verb\""
+            )
+            "Hyper-V ${action.name} (SSH) -> ${resource.name}"
+        }.onSuccess { return it }
+            .onFailure { transportErrors += "SSH :22 (${it.message})" }
+
+        error("Hyper-V ${action.name} failed across all transports: ${transportErrors.joinToString(" | ")}")
     }
 
     private fun fetchWindowsTerminalServicesSessions(

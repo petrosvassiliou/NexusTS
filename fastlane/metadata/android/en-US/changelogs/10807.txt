@@ -1,0 +1,1 @@
+• v0.8.7: Full Microsoft Hyper-V multi-transport VM inventory & power actions (WinRM HTTP 5985 NTLMv2 + SPNEGO sealing, WinRM HTTPS 5986, OpenSSH 22 PowerShell), native FreeRDP 3.12 VMConnect console on TCP 2179 (Basic & Enhanced Session Mode), live port diagnostics, and Royal TS .rtsz/.rtsx Hyper-V parity

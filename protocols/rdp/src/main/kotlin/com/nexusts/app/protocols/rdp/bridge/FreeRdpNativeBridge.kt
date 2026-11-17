@@ -111,7 +111,8 @@ object FreeRdpNativeBridge {
         remoteAppArgs: String,
         sharedDriveName: String,
         sharedDriveLocalPath: String,
-        appHomeDir: String
+        appHomeDir: String,
+        preconnectionBlob: String
     ): Long
 
     @JvmStatic
@@ -704,6 +705,8 @@ class RdpManagedSession(
                 ?.let { java.io.File(it, "freerdp_runtime").apply { mkdirs() }.absolutePath }
                 .orEmpty()
 
+            val preconnectionBlob = settings.effectivePreconnectionBlob()
+            val defaultRdpPort = settings.effectivePort()
             val trimmedHostRaw = connection.host.trim()
             val colonCount = trimmedHostRaw.count { it == ':' }
             val parsedHostAndPort = if (colonCount == 1) {
@@ -712,10 +715,10 @@ class RdpManagedSession(
                 if (hostPart.isNotEmpty() && portPart != null && portPart in 1..65535) {
                     hostPart to portPart
                 } else {
-                    trimmedHostRaw to settings.port
+                    trimmedHostRaw to defaultRdpPort
                 }
             } else {
-                trimmedHostRaw.removeSurrounding("[", "]") to settings.port
+                trimmedHostRaw.removeSurrounding("[", "]") to defaultRdpPort
             }
 
             // Negotiate DISP_DVC channel capability at connect time so live resize mode toggles work without reconnecting
@@ -751,13 +754,14 @@ class RdpManagedSession(
                 compressionEnabled = settings.compressionEnabled,
                 nlaSecurity = settings.nlaSecurityRequired,
                 restrictedAdminMode = settings.restrictedAdminMode,
-                ignoreCertificate = settings.ignoreCertificateWarnings,
+                ignoreCertificate = settings.ignoreCertificateWarnings || preconnectionBlob.isNotEmpty(),
                 remoteAppMode = settings.remoteAppMode,
                 remoteAppProgram = settings.remoteAppProgram,
                 remoteAppArgs = settings.remoteAppArguments,
                 sharedDriveName = stagedDrive?.shareName.orEmpty(),
                 sharedDriveLocalPath = stagedDrive?.localPosixDirectory?.absolutePath.orEmpty(),
-                appHomeDir = runtimeHomeDir
+                appHomeDir = runtimeHomeDir,
+                preconnectionBlob = preconnectionBlob
             )
             nativeHandle = createdHandle
             synchronized(surfaceLock) {
@@ -777,7 +781,7 @@ class RdpManagedSession(
                 }
                 _lastError.value = com.nexusts.app.core.vault.error.NexusErrorClassifier.classifyRdpError(
                     host = connection.host,
-                    port = settings.port,
+                    port = parsedHostAndPort.second,
                     rawNativeError = rawNativeErr,
                     connectionId = connection.id
                 )
@@ -789,7 +793,7 @@ class RdpManagedSession(
             started.set(false)
             _lastError.value = com.nexusts.app.core.vault.error.NexusErrorClassifier.classifyThrowable(
                 throwable = t,
-                operationTitle = "RDP Session Error (${connection.host}:${settings.port})",
+                operationTitle = "RDP Session Error (${connection.host}:${settings.effectivePort()})",
                 recoveryConnectionId = connection.id
             )
             false

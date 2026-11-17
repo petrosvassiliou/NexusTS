@@ -136,7 +136,7 @@ enum class VaultProtocolType {
             WEB_PAGE -> "HTTPS 443"
             VMWARE_VSPHERE -> "HTTPS 443"
             PROXMOX_VE -> "HTTPS 8006"
-            HYPER_V -> "TCP 2179"
+            HYPER_V -> "WinRM 5985 / 2179"
             AWS_EC2 -> "SSH / SSM"
             AZURE_VM -> "SSH / Bastion"
             WINDOWS_TERMINAL_SERVICES -> "TCP 3389"
@@ -248,8 +248,35 @@ sealed interface ProtocolSpecificSettings {
         val nlaSecurityRequired: Boolean = true,
         val tlsSecurity: Boolean = true,
         val restrictedAdminMode: Boolean = false,
-        val ignoreCertificateWarnings: Boolean = false
-    ) : ProtocolSpecificSettings
+        val ignoreCertificateWarnings: Boolean = false,
+        val hyperVVmId: String = "",
+        val hyperVEnhancedSession: Boolean = false
+    ) : ProtocolSpecificSettings {
+        fun effectivePreconnectionBlob(): String {
+            var cleaned = hyperVVmId.trim()
+            while (cleaned.length >= 2 && (
+                    (cleaned.startsWith("{") && cleaned.endsWith("}")) ||
+                        (cleaned.startsWith("\"") && cleaned.endsWith("\"")) ||
+                        (cleaned.startsWith("'") && cleaned.endsWith("'"))
+                    )
+            ) {
+                cleaned = cleaned.substring(1, cleaned.length - 1).trim()
+            }
+            if (cleaned.isEmpty()) return ""
+            return if (hyperVEnhancedSession && !cleaned.contains("EnhancedMode=", ignoreCase = true)) {
+                "$cleaned;EnhancedMode=1"
+            } else {
+                cleaned
+            }
+        }
+
+        fun effectivePort(): Int {
+            if (effectivePreconnectionBlob().isNotEmpty() && (port <= 0 || port == 3389)) {
+                return 2179
+            }
+            return if (port <= 0) 3389 else port
+        }
+    }
 
     @Serializable
     @SerialName("ssh")

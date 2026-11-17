@@ -229,6 +229,44 @@ object VncNativeBridge {
     @JvmStatic
     external fun nativeGrabTcpBanner(host: String, port: Int, timeoutMs: Int): String
 
+    // --- WinRM NTLMv2 + [MS-WSMV] SPNEGO Session Encryption & One-Shot SSH Exec JNI ---
+
+    @JvmStatic
+    external fun nativeWinrmWsmanPost(
+        host: String,
+        port: Int,
+        path: String,
+        username: String,
+        password: String,
+        domain: String,
+        soapXml: String,
+        timeoutMs: Int
+    ): String
+
+    @JvmStatic
+    external fun nativeNtlmBuildNegotiate(): String
+
+    @JvmStatic
+    external fun nativeNtlmBuildAuthenticate(
+        challengeB64: String,
+        username: String,
+        password: String,
+        domain: String,
+        spnHost: String
+    ): String
+
+    @JvmStatic
+    external fun nativeSshExecCommand(
+        host: String,
+        port: Int,
+        username: String,
+        password: String,
+        privateKeyPem: String,
+        passphrase: String,
+        command: String,
+        timeoutSecs: Int
+    ): String
+
     private val json = Json { ignoreUnknownKeys = true }
 
     private val pingTimeRegex = Regex("time[=<]([0-9.]+)\\s*ms", RegexOption.IGNORE_CASE)

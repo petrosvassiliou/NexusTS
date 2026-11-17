@@ -1388,6 +1388,74 @@ class EnterpriseVaultImporterTest {
         assertEquals(200, migratedTpl.desktopScaleFactorPercent)
         assertEquals(180, migratedTpl.deviceScaleFactorPercent)
     }
+
+    @Test
+    fun royalTsHyperVHostAndVmConnectInstanceImportExportAndPcbBlobParity() {
+        val rtsxXml = """
+            <?xml version="1.0" encoding="utf-8"?>
+            <RTSZDocument>
+              <RoyalDocument>
+                <ID>doc-hyperv-parity</ID>
+                <Name>Hyper-V Production</Name>
+                <RoyalHyperVConnection>
+                  <ID>hv-host-01</ID>
+                  <Name>HV-Node-01</Name>
+                  <URI>hv01.corp.internal</URI>
+                </RoyalHyperVConnection>
+                <RoyalRDSConnection>
+                  <ID>hv-rds-host-mode</ID>
+                  <Name>HV-Node-02 (Mode 1)</Name>
+                  <URI>hv02.corp.internal</URI>
+                  <HyperVMode>1</HyperVMode>
+                </RoyalRDSConnection>
+                <RoyalRDSConnection>
+                  <ID>hv-vm-console</ID>
+                  <Name>Prod-DB-VM</Name>
+                  <URI>hv01.corp.internal</URI>
+                  <HyperVMode>2</HyperVMode>
+                  <HyperVInstance>{11111111-2222-3333-4444-555555555555}</HyperVInstance>
+                  <HyperVPort>2179</HyperVPort>
+                  <HyperVEnhancedSessionMode>True</HyperVEnhancedSessionMode>
+                </RoyalRDSConnection>
+              </RoyalDocument>
+            </RTSZDocument>
+        """.trimIndent().toByteArray(StandardCharsets.UTF_8)
+
+        val imported = RtszDocumentImporter().importRtszBytes(rtsxXml)
+        assertEquals(3, imported.connections.size)
+
+        val hvNode1 = imported.connections.first { it.id == "hv-host-01" }
+        assertEquals(VaultProtocolType.HYPER_V, hvNode1.protocol)
+        assertEquals("", (hvNode1.settings as ProtocolSpecificSettings.CloudVirtualization).apiEndpointUrl)
+
+        val hvNode2 = imported.connections.first { it.id == "hv-rds-host-mode" }
+        assertEquals(VaultProtocolType.HYPER_V, hvNode2.protocol)
+        assertEquals("", (hvNode2.settings as ProtocolSpecificSettings.CloudVirtualization).apiEndpointUrl)
+
+        val vmConsole = imported.connections.first { it.id == "hv-vm-console" }
+        assertEquals(VaultProtocolType.RDP, vmConsole.protocol)
+        val rdpSettings = vmConsole.settings as ProtocolSpecificSettings.Rdp
+        assertEquals(2179, rdpSettings.effectivePort())
+        assertEquals("11111111-2222-3333-4444-555555555555", rdpSettings.hyperVVmId)
+        assertTrue(rdpSettings.hyperVEnhancedSession)
+        assertEquals(
+            "11111111-2222-3333-4444-555555555555;EnhancedMode=1",
+            rdpSettings.effectivePreconnectionBlob()
+        )
+        assertTrue(rdpSettings.ignoreCertificateWarnings)
+
+        val exportedRtsx = exporter.exportToRtsxXml(imported)
+        assertTrue(exportedRtsx.contains("<RoyalHyperVConnection>"))
+        assertTrue(exportedRtsx.contains("<HyperVInstance>11111111-2222-3333-4444-555555555555</HyperVInstance>"))
+        assertTrue(exportedRtsx.contains("<HyperVEnhancedSessionMode>True</HyperVEnhancedSessionMode>"))
+
+        val reimported = RtszDocumentImporter().importRtszBytes(exportedRtsx.toByteArray(StandardCharsets.UTF_8))
+        assertEquals(3, reimported.connections.size)
+        val roundTrippedVm = reimported.connections.first { it.id == "hv-vm-console" }.settings as ProtocolSpecificSettings.Rdp
+        assertEquals("11111111-2222-3333-4444-555555555555;EnhancedMode=1", roundTrippedVm.effectivePreconnectionBlob())
+        assertEquals(2179, roundTrippedVm.effectivePort())
+    }
 }
+
 
 

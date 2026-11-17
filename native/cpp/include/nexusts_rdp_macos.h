@@ -69,6 +69,7 @@ typedef struct NexusRdpConfig {
     const char* shared_drive_name;
     const char* shared_drive_local_path;
     const char* app_home_dir;
+    const char* preconnection_blob;
 } NexusRdpConfig;
 
 typedef struct NexusRdpDirtyRect {

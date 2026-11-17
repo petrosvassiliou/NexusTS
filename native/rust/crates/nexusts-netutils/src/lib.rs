@@ -15,6 +15,8 @@ use tokio::io::AsyncReadExt;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
+pub mod winrm_ntlm;
+
 #[derive(Debug, Error)]
 pub enum NetUtilError {
     #[error("Invalid MAC address '{0}' (expected AA:BB:CC:DD:EE:FF)")]

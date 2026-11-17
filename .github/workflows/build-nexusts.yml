@@ -21,7 +21,7 @@ on:
       release_tag:
         description: "Tag name when publishing via workflow_dispatch"
         required: false
-        default: "v0.8.6"
+        default: "v0.8.7"
         type: string
 
 permissions:
@@ -319,7 +319,7 @@ jobs:
           set -euo pipefail
           TAG_NAME="${GITHUB_REF_NAME}"
           if [[ "${TAG_NAME}" != v* ]]; then
-            TAG_NAME="${{ inputs.release_tag || 'v0.8.6' }}"
+            TAG_NAME="${{ inputs.release_tag || 'v0.8.7' }}"
           fi
           echo "tag_name=${TAG_NAME}" >> "${GITHUB_OUTPUT}"
 
@@ -346,7 +346,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.stage.outputs.tag_name }}
-          name: "NexusTS ${{ steps.stage.outputs.tag_name }} — Bidirectional RDP File & Text Copy/Paste, Crisp 200% Retina Default & Session Log Off"
+          name: "NexusTS ${{ steps.stage.outputs.tag_name }} — Native Microsoft Hyper-V Multi-Transport Inventory & FreeRDP VMConnect (TCP 2179)"
           draft: false
           prerelease: ${{ contains(steps.stage.outputs.tag_name, '-') }}
           generate_release_notes: true
@@ -354,22 +354,23 @@ jobs:
             ## NexusTS ${{ steps.stage.outputs.tag_name }} (`com.nexusts.app` / `com.nexusts.app.macos`)
             **Native Remote Management & Connection Manager for Googlebook OS, Android Tablets & macOS**
 
-            > **RDP Clipboard, Retina Scaling & Session Lifecycle Release (`0.8.6` / `versionCode = 10806`)**: Introduces **synchronized RDP text copy/paste** (eliminating `CB_FORMAT_LIST_RESPONSE` / Fast-Path `Ctrl+V` races and `Left Win` Start-Menu key-ups) plus full **bidirectional `[MS-RDPECLIP]` file & folder copy/paste** (`FileGroupDescriptorW` + streamed `FileContents` chunks integrated directly with macOS Finder `NSPasteboard` and Android `FileProvider` `ClipboardManager`), restores the **Retina HiDPI default back to `200%`** (`deviceScaleFactor = 180`, automatically upgrading non-customized pre-`v0.8.6` connections while preserving explicit user overrides), and adds **Disconnect** and **Log Off Session** to sidebar & tab context menus across macOS and Android.
+            > **Microsoft Hyper-V & FreeRDP VMConnect Release (`0.8.7` / `versionCode = 10807`)**: Delivers full Royal TS / Royal TSX **Microsoft Hyper-V** parity across macOS and Android — featuring **3-tier live Hyper-V VM inventory & power management** (`WinRM HTTP :5985` with NTLMv2 + `[MS-WSMV]` SPNEGO RC4 message sealing, `WinRM HTTPS :5986` with NTLMv2 + self-signed TLS trust, and `OpenSSH :22` PowerShell fallback), **native FreeRDP 3.12 `VMConnect` (`TCP 2179` + Preconnection PDU v2)** with **Basic & Enhanced Session Mode** (`;EnhancedMode=1`), automatic healing of legacy poisoned Hyper-V endpoints, live Hyper-V port diagnostics, and full Royal TS `.rtsz` / `.rtsx` `<RoyalHyperVConnection>` & `<RoyalRDSConnection>` (`HyperVMode=1/2`) import/export.
 
             ### Signed Deliverables (100% In-Place Upgrade Compatible)
-            - **`NexusTS-${{ steps.stage.outputs.tag_name }}-googlebook-android-release.apk`**: Cryptographically signed (APK Signature Scheme v2/v3/v4, RSA-4096) universal `arm64-v8a` + `x86_64` APK with 16 KB ELF page alignment (`0x4000`) and 100% Google Play Protect compliance (`versionCode = 10806`).
+            - **`NexusTS-${{ steps.stage.outputs.tag_name }}-googlebook-android-release.apk`**: Cryptographically signed (APK Signature Scheme v2/v3/v4, RSA-4096) universal `arm64-v8a` + `x86_64` APK with 16 KB ELF page alignment (`0x4000`) and 100% Google Play Protect compliance (`versionCode = 10807`).
             - **`NexusTS-${{ steps.stage.outputs.tag_name }}-playstore-release.aab`**: Signed Android App Bundle for optional Managed Google Play / internal distribution.
             - **`NexusTS-${{ steps.stage.outputs.tag_name }}-macOS-Universal.zip` & `.dmg`**: Self-contained Universal2 (`arm64` + `x86_64`) macOS application bundle statically linking OpenSSL 3.4 + Cisco OpenH264 2.5.0 + FreeRDP 3.12 (`.zip` powers one-click in-app updates without downloading a `.dmg`).
             - **`nexusts-upload-certificate.pem` & `oauth-and-mdm-registration.json`**: Public X.509 upload certificate (`SHA-1: A6:AF:15:A9:BF:0B:FE:38:D4:66:46:3E:3E:72:A6:5B:4F:9C:4D:F6`, `SHA-256: 4A:BD:80:F1:20:14:B9:88:09:1C:97:92:2F:87:02:D1:BF:B7:93:9C:73:B6:9A:DB:1A:9B:76:30:6A:30:27:82`) and Managed Google Play `app_restrictions` template.
 
             ### Highlights in ${{ steps.stage.outputs.tag_name }}
-            - **Synchronized RDP Text Copy/Paste & Bidirectional File/Folder Copy/Paste (`[MS-RDPECLIP]`)**:
-              - Gates remote `Ctrl+V` / `⌘V` scancode injection on `CB_FORMAT_LIST_RESPONSE` acknowledgement, suppresses `Left Win` Start-Menu triggers during `⌘C`/`⌘V`/`⌘X`/`⌘A`/`⌘Z`, deduplicates `MonitorReady` format announcements, and restores `RdpPointerAndKeyNSView` first-responder focus on tab switches.
-              - Supports copying files and folders **Local -> Remote** (`FileGroupDescriptorW` 592-byte records + `FILECONTENTS_SIZE` / `FILECONTENTS_RANGE` + `CB_LOCK_CLIPDATA`) and **Remote -> Local** (256 KB streamed range transfers with strict path-traversal rejection, publishing native file URLs to macOS `NSPasteboard` for Finder/Desktop `⌘V` and `FileProvider` `content://` URIs on Android).
-            - **Retina HiDPI Default Restored to `200%` (`deviceScaleFactor = 180`)**:
-              - New RDP connections default to crisp `200%` Retina scaling, and existing non-customized `150%`/`100%` vault entries automatically migrate to `200%` while preserving explicit Connection Editor or `.rtsz` scale overrides.
-            - **Sidebar & Session Tab `Disconnect` + `Log Off Session` Context Actions**:
-              - Right-clicking or long-pressing active connections in the sidebar or session tabs now offers **Disconnect** (keeps remote programs running) and **Log Off Session** (cleanly logs off the remote Windows RDP/WTS user session before closing the tab).
+            - **3-Tier Microsoft Hyper-V Live VM Inventory & Power Actions (`Start`, `Turn Off`, `Save`, `Restart`)**:
+              - Queries `root/virtualization/v2/Msvm_ComputerSystem` over **WinRM HTTP `:5985/wsman`** using native Rust NTLMv2 + `[MS-WSMV]` `application/HTTP-SPNEGO-session-encrypted` RC4 sealing (works out of the box on Windows Server & Windows 10/11 Hyper-V hosts without lowering `AllowUnencrypted`), automatically falling back to **WinRM HTTPS `:5986/wsman`** (NTLMv2 + self-signed TLS trust) and **OpenSSH `:22` PowerShell** (`Get-VM`, `Start-VM`, `Stop-VM`, `Save-VM`, `Restart-VM`).
+              - Eliminates hardcoded `:8006` / `:443` Hyper-V endpoint bugs and auto-heals legacy saved `.nxts` vault connections on open.
+            - **Native FreeRDP 3.12 Hyper-V `VMConnect` (`TCP 2179` + Preconnection PDU v2)**:
+              - Connects directly to Hyper-V virtual machine consoles over `TCP 2179` (`FreeRDP_SendPreconnectionPdu`, `FreeRDP_PreconnectionBlob`, `NegotiateSecurityLayer = FALSE`) in both **Basic Console** (`<VM-GUID>`) and **VMBus Enhanced Session Mode** (`<VM-GUID>;EnhancedMode=1`), inheriting Hyper-V host credentials automatically.
+              - Adds live Hyper-V TCP port diagnostics (`2179`, `5985`, `5986`, `22`, `3389`), direct **Connect by VM GUID (Port 2179)**, and **Host Desktop (RDP 3389)** in the Hyper-V session view, plus dedicated `Hyper-V VM ID (GUID)` & `Enhanced Session Mode` fields in the RDP Connection Editor.
+            - **Royal TS `.rtsz` / `.rtsx` Hyper-V Host & VM Instance Parity**:
+              - Imports and exports `<RoyalHyperVConnection>` and `<RoyalRDSConnection>` (`HyperVMode=1` Host Inventory & `HyperVMode=2` VM Console with `HyperVInstance`, `HyperVPort`, and `HyperVEnhancedSessionMode`) across macOS and Android.
           files: release-assets/*
 
       - name: Check Optional Google Play Service Account Secret

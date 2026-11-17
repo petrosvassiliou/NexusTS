@@ -917,4 +917,82 @@ class ProtocolWireLoopbackTest {
         }
         return false
     }
+
+    @Test
+    fun hyperVEndpointSanitizerWsmanXmlAndPowerShellJsonParsersWork() {
+        assertEquals(
+            "",
+            com.nexusts.app.protocols.vnc.cloud.CloudVirtualizationHubClient.sanitizedHyperVEndpoint(
+                "https://localhost:8006",
+                "hv01.corp.local"
+            )
+        )
+        assertEquals(
+            "",
+            com.nexusts.app.protocols.vnc.cloud.CloudVirtualizationHubClient.sanitizedHyperVEndpoint(
+                "https://hv01.corp.local",
+                "hv01.corp.local"
+            )
+        )
+        assertEquals(
+            "http://hv01.corp.local:5985/wsman",
+            com.nexusts.app.protocols.vnc.cloud.CloudVirtualizationHubClient.sanitizedHyperVEndpoint(
+                "http://hv01.corp.local:5985/wsman",
+                "hv01.corp.local"
+            )
+        )
+
+        val wsmanXml = """
+            <s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:p="http://schemas.microsoft.com/wbem/wsman/1/wmi/root/virtualization/v2/Msvm_ComputerSystem">
+              <s:Body>
+                <p:Msvm_ComputerSystem>
+                  <p:Name>HV01</p:Name>
+                  <p:ElementName>HV01</p:ElementName>
+                  <p:Caption>Hosting Computer System</p:Caption>
+                  <p:EnabledState>2</p:EnabledState>
+                </p:Msvm_ComputerSystem>
+                <p:Msvm_ComputerSystem>
+                  <p:Name>11111111-2222-3333-4444-555555555555</p:Name>
+                  <p:ElementName>Prod-SQL-01</p:ElementName>
+                  <p:Caption>Virtual Machine</p:Caption>
+                  <p:EnabledState>2</p:EnabledState>
+                </p:Msvm_ComputerSystem>
+                <p:Msvm_ComputerSystem>
+                  <p:Name>66666666-7777-8888-9999-000000000000</p:Name>
+                  <p:ElementName>Lab-DC-02</p:ElementName>
+                  <p:Caption>Virtual Machine</p:Caption>
+                  <p:EnabledState>32769</p:EnabledState>
+                </p:Msvm_ComputerSystem>
+              </s:Body>
+            </s:Envelope>
+        """.trimIndent()
+        val parsedXml = com.nexusts.app.protocols.vnc.cloud.CloudVirtualizationHubClient.parseHyperVWsmanXml(
+            wsmanXml,
+            "hv01.corp.local"
+        )
+        assertEquals(2, parsedXml.size)
+        assertEquals("11111111-2222-3333-4444-555555555555", parsedXml[0].id)
+        assertEquals("Prod-SQL-01", parsedXml[0].name)
+        assertEquals("RUNNING", parsedXml[0].powerState)
+        assertEquals("SAVED", parsedXml[1].powerState)
+
+        val singlePsJson = """{"Id":"aaaa1111-bbbb-cccc-dddd-eeeeffff0001","Name":"Single-VM","State":"Running","CpuCount":4,"MemAssignedMB":8192,"MemStartupMB":4096}"""
+        val parsedSingle = com.nexusts.app.protocols.vnc.cloud.CloudVirtualizationHubClient.parseHyperVPowerShellJson(
+            singlePsJson,
+            "hv01.corp.local"
+        )
+        assertEquals(1, parsedSingle.size)
+        assertEquals("Single-VM", parsedSingle[0].name)
+        assertEquals("RUNNING", parsedSingle[0].powerState)
+
+        val arrayPsJson = """[{"Id":"1","Name":"VM-A","State":"Off","CpuCount":2,"MemAssignedMB":0,"MemStartupMB":2048},{"Id":"2","Name":"VM-B","State":"Saved","CpuCount":8,"MemAssignedMB":16384,"MemStartupMB":16384}]"""
+        val parsedArray = com.nexusts.app.protocols.vnc.cloud.CloudVirtualizationHubClient.parseHyperVPowerShellJson(
+            arrayPsJson,
+            "hv01.corp.local"
+        )
+        assertEquals(2, parsedArray.size)
+        assertEquals("STOPPED", parsedArray[0].powerState)
+        assertEquals("SAVED", parsedArray[1].powerState)
+    }
 }
+

@@ -365,7 +365,14 @@ class VaultDocumentExporter {
     ) {
         when (settings) {
             is ProtocolSpecificSettings.Rdp -> {
-                appendXmlTag("RDPPort", settings.port.toString(), indent)
+                val effectivePort = settings.effectivePort()
+                appendXmlTag("RDPPort", effectivePort.toString(), indent)
+                if (settings.hyperVVmId.isNotBlank()) {
+                    appendXmlTag("HyperVMode", "2", indent)
+                    appendXmlTag("HyperVInstance", settings.hyperVVmId.trim(), indent)
+                    appendXmlTag("HyperVPort", effectivePort.toString(), indent)
+                    appendXmlTag("HyperVEnhancedSessionMode", if (settings.hyperVEnhancedSession) "True" else "False", indent)
+                }
                 appendXmlTag("ConnectToAdministerOrConsole", settings.connectToConsoleAdmin.toString(), indent)
                 appendXmlTag("AutoAdjustRetinaDisplay", settings.hiDpiEnabled.toString(), indent)
                 appendXmlTag("DesktopScaleFactor", settings.desktopScaleFactorPercent.toString(), indent)
@@ -578,7 +585,7 @@ class VaultDocumentExporter {
     }
 
     private fun extractDefaultOrConfiguredPort(protocol: VaultProtocolType, settings: ProtocolSpecificSettings): Int = when (settings) {
-        is ProtocolSpecificSettings.Rdp -> settings.port
+        is ProtocolSpecificSettings.Rdp -> settings.effectivePort()
         is ProtocolSpecificSettings.Ssh -> settings.port
         is ProtocolSpecificSettings.FileTransfer -> settings.port
         is ProtocolSpecificSettings.Vnc -> settings.port
@@ -592,7 +599,7 @@ class VaultDocumentExporter {
             VaultProtocolType.WEB_PAGE -> 443
             VaultProtocolType.PROXMOX_VE -> 8006
             VaultProtocolType.VMWARE_VSPHERE -> 443
-            VaultProtocolType.HYPER_V -> 5986
+            VaultProtocolType.HYPER_V -> 5985
             VaultProtocolType.KUBERNETES_POD -> 6443
             VaultProtocolType.DOCKER_CONTAINER -> 2376
             else -> 0

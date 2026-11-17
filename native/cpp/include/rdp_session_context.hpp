@@ -125,12 +125,26 @@ struct RdpConnectParams {
     std::string shared_drive_name;
     std::string shared_drive_local_path;
     std::string app_home_dir;
+    // Hyper-V VMConnect ([MS-RDPBCGR] 2.2.1.3.9 Preconnection PDU v2 PCB):
+    // "<VM-GUID>" for basic VM console or "<VM-GUID>;EnhancedMode=1" for VMBus Enhanced Session Mode.
+    std::string preconnection_blob;
     std::vector<RdpMonitorLayout> monitors;
 
     constexpr bool uses_h264_codec() const noexcept {
         return enable_gfx_pipeline && (gfx_codec_mode == 1 || gfx_codec_mode == 2);
     }
 };
+
+std::string normalize_hyperv_preconnection_blob(
+    const std::string& raw_pcb,
+    bool force_enhanced_session = false
+);
+
+uint16_t resolve_effective_rdp_port(
+    uint16_t configured_port,
+    bool port_from_host_literal,
+    const std::string& normalized_preconnection_blob
+) noexcept;
 
 class RdpHardwareH264Decoder {
 public:

@@ -522,6 +522,57 @@ impl ActiveSshClientSession {
             .await?;
         Ok(())
     }
+
+    /// Executes a non-interactive one-shot remote command (`exec` channel) over SSHv2 and returns
+    /// UTF-8 stdout (or an error with stderr/exit code when non-zero), used for OpenSSH PowerShell
+    /// Hyper-V VM inventory (`Get-VM`) and VM power control (`Start-VM` / `Stop-VM` / `Save-VM` / `Restart-VM`).
+    pub async fn exec_oneshot_command(
+        spec: SshConnectSpec,
+        command: &str,
+        timeout_secs: u64,
+    ) -> Result<String, TransportError> {
+        let timeout_dur = Duration::from_secs(timeout_secs.clamp(2, 60));
+        let fut = async {
+            let session = Self::connect_without_shell(spec, None).await?;
+            let mut channel = session.handle.channel_open_session().await?;
+            channel.exec(true, command).await?;
+
+            let mut stdout = Vec::new();
+            let mut stderr = Vec::new();
+            let mut exit_status: Option<u32> = None;
+
+            while let Some(msg) = channel.wait().await {
+                match msg {
+                    russh::ChannelMsg::Data { data } => stdout.extend_from_slice(&data),
+                    russh::ChannelMsg::ExtendedData { data, .. } => stderr.extend_from_slice(&data),
+                    russh::ChannelMsg::ExitStatus { exit_status: code } => exit_status = Some(code),
+                    russh::ChannelMsg::Eof | russh::ChannelMsg::Close => {}
+                    _ => {}
+                }
+            }
+            let _ = session.disconnect().await;
+
+            let out_str = String::from_utf8_lossy(&stdout).trim().to_string();
+            let err_str = String::from_utf8_lossy(&stderr).trim().to_string();
+            if let Some(code) = exit_status {
+                if code != 0 && out_str.is_empty() {
+                    return Err(TransportError::Io(std::io::Error::other(if err_str.is_empty() {
+                        format!("Remote SSH command exited with status {code}")
+                    } else {
+                        err_str
+                    })));
+                }
+            }
+            Ok(out_str)
+        };
+
+        tokio::time::timeout(timeout_dur, fut).await.map_err(|_| {
+            TransportError::Io(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("SSH command timed out after {}s", timeout_dur.as_secs()),
+            ))
+        })?
+    }
 }
 
 /// Complete RFC 854 Telnet `IAC` Command Filter & Negotiation Engine.

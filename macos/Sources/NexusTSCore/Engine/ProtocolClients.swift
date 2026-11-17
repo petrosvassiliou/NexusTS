@@ -153,7 +153,140 @@ public struct CloudVmInventoryItem: Identifiable, Equatable, Hashable, Sendable 
     }
 }
 
+public enum HyperVPowerAction: String, CaseIterable, Sendable {
+    case start = "START"
+    case stop = "STOP"
+    case save = "SAVE"
+    case reboot = "REBOOT"
+
+    public var displayTitle: String {
+        switch self {
+        case .start: return "Start"
+        case .stop: return "Turn Off"
+        case .save: return "Save State"
+        case .reboot: return "Restart"
+        }
+    }
+
+    public var requestedWmiState: Int {
+        switch self {
+        case .start: return 2
+        case .stop: return 3
+        case .save: return 32769
+        case .reboot: return 10
+        }
+    }
+}
+
+public struct HyperVPortDiagnostic: Identifiable, Equatable, Sendable {
+    public var id: UInt16 { port }
+    public let port: UInt16
+    public let serviceLabel: String
+    public let isOpen: Bool
+    public let latencyMs: UInt64
+
+    public init(port: UInt16, serviceLabel: String, isOpen: Bool, latencyMs: UInt64) {
+        self.port = port
+        self.serviceLabel = serviceLabel
+        self.isOpen = isOpen
+        self.latencyMs = latencyMs
+    }
+}
+
 public enum CloudHypervisorClient {
+    /// Strips legacy poisoned defaults (`https://localhost:8006` from Proxmox or bare `https://<host>` on port 443)
+    /// so Hyper-V connections automatically probe WinRM HTTP `:5985`, WinRM HTTPS `:5986`, and OpenSSH `:22`.
+    public static func sanitizedHyperVEndpoint(rawEndpoint: String, connectionHost: String) -> String {
+        let trimmed = rawEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard !trimmed.isEmpty else { return "" }
+        let lower = trimmed.lowercased()
+        let cleanHost = connectionHost.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+
+        if lower.contains(":8006") && !cleanHost.contains(":8006") {
+            return ""
+        }
+        if (lower.contains("localhost") || lower.contains("127.0.0.1"))
+            && !cleanHost.isEmpty
+            && cleanHost != "localhost"
+            && cleanHost != "127.0.0.1" {
+            return ""
+        }
+        // Bare https://<host> or http://<host> without an explicit :port came from generic URL synthesis (port 443/80).
+        if let comps = URLComponents(string: trimmed), comps.port == nil {
+            let path = comps.path.trimmingCharacters(in: CharacterSet(charactersIn: "/")).lowercased()
+            if path.isEmpty {
+                return ""
+            }
+        }
+        return trimmed
+    }
+
+    public static func diagnoseHyperVPorts(host: String) async -> [HyperVPortDiagnostic] {
+        let cleanHost = extractBareHostname(host)
+        guard !cleanHost.isEmpty else { return [] }
+        let targets: [(UInt16, String)] = [
+            (2179, "VMConnect"),
+            (5985, "WinRM HTTP"),
+            (5986, "WinRM HTTPS"),
+            (22, "OpenSSH"),
+            (3389, "Host RDP")
+        ]
+        return await withTaskGroup(of: (Int, HyperVPortDiagnostic).self) { group in
+            for (idx, item) in targets.enumerated() {
+                group.addTask {
+                    let hit = NativeNetworkDiagnostics.probeTcpPort(host: cleanHost, port: item.0, timeoutMs: 650)
+                    let isOpen = hit?.open ?? false
+                    let latency = hit?.latencyMs ?? 0
+                    return (idx, HyperVPortDiagnostic(port: item.0, serviceLabel: item.1, isOpen: isOpen, latencyMs: latency))
+                }
+            }
+            var ordered = Array<HyperVPortDiagnostic?>(repeating: nil, count: targets.count)
+            for await (idx, diag) in group {
+                ordered[idx] = diag
+            }
+            return ordered.compactMap { $0 }
+        }
+    }
+
+    private static func extractBareHostname(_ rawHost: String) -> String {
+        var h = rawHost.trimmingCharacters(in: .whitespacesAndNewlines)
+        if h.lowercased().hasPrefix("http://") || h.lowercased().hasPrefix("https://"),
+           let comps = URLComponents(string: h),
+           let parsedHost = comps.host, !parsedHost.isEmpty {
+            return parsedHost
+        }
+        if let slashIdx = h.firstIndex(of: "/") {
+            h = String(h[..<slashIdx])
+        }
+        if !h.hasPrefix("["), h.filter({ $0 == ":" }).count == 1, let colonIdx = h.lastIndex(of: ":") {
+            let portPart = h[h.index(after: colonIdx)...]
+            if Int(portPart) != nil {
+                h = String(h[..<colonIdx])
+            }
+        }
+        return h.trimmingCharacters(in: CharacterSet(charactersIn: "[] "))
+    }
+
+    private static func splitWindowsIdentity(
+        credential: VaultCredential?,
+        fallbackRealmOrDomain: String
+    ) -> (username: String, password: String, domain: String) {
+        guard let cred = credential else { return ("", "", "") }
+        let rawUser = cred.username.trimmingCharacters(in: .whitespacesAndNewlines)
+        let rawDom = cred.domain.trimmingCharacters(in: .whitespacesAndNewlines)
+        let fallbackDom = fallbackRealmOrDomain.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if let backslash = rawUser.firstIndex(of: "\\") {
+            let domPart = String(rawUser[..<backslash])
+            let userPart = String(rawUser[rawUser.index(after: backslash)...])
+            let effectiveDom = domPart == "." ? "" : (rawDom.isEmpty ? domPart : rawDom)
+            return (userPart, cred.secretPassword, effectiveDom)
+        }
+        let resolvedDom = !rawDom.isEmpty ? rawDom : (rawUser.contains("@") ? "" : fallbackDom)
+        return (rawUser, cred.secretPassword, resolvedDom == "." ? "" : resolvedDom)
+    }
+
     public static func fetchInventory(
         connection: VaultConnection,
         credential: VaultCredential?
@@ -306,11 +439,10 @@ public enum CloudHypervisorClient {
             }
 
         case .HYPER_V:
-            return try await fetchHyperVWinRmInventory(
-                baseEndpoint: base.isEmpty ? "https://\(connection.host):5986" : base,
-                hostLabel: connection.host,
-                credential: credential,
-                urlSession: urlSession
+            return try await fetchHyperVMultiTransportInventory(
+                connection: connection,
+                cfg: cfg,
+                credential: credential
             )
 
         default:
@@ -318,27 +450,216 @@ public enum CloudHypervisorClient {
         }
     }
 
-    /// Queries Hyper-V `Msvm_ComputerSystem` virtual machines over WinRM WS-Management (`:5985` / `:5986`).
-    private static func fetchHyperVWinRmInventory(
-        baseEndpoint: String,
-        hostLabel: String,
-        credential: VaultCredential?,
-        urlSession: URLSession
-    ) async throws -> [CloudVmInventoryItem] {
-        let wsmanUrlStr = baseEndpoint.lowercased().hasSuffix("/wsman")
-            ? baseEndpoint
-            : "\(baseEndpoint)/wsman"
-        guard let wsmanUrl = URL(string: wsmanUrlStr) else { return [] }
+    // MARK: - Hyper-V Multi-Transport Engine (WinRM 5985 NTLMv2+SPNEGO Sealing -> WinRM 5986 HTTPS NTLMv2 -> OpenSSH 22 PowerShell)
 
+    public static func performHyperVPowerAction(
+        connection: VaultConnection,
+        credential: VaultCredential?,
+        vmId: String,
+        vmName: String,
+        action: HyperVPowerAction
+    ) async throws -> String {
+        let cfg: CloudVirtualizationProtocolSettings = {
+            if case .cloudVirtualization(let c) = connection.settings { return c }
+            return CloudVirtualizationProtocolSettings(apiEndpointUrl: "")
+        }()
+        let bareHost = extractBareHostname(connection.host)
+        guard !bareHost.isEmpty else {
+            throw NativeBridgeError.networkUtilityError("Hyper-V host address is empty. Edit the connection and set the Hyper-V Server IP or hostname.")
+        }
+        let identity = splitWindowsIdentity(credential: credential, fallbackRealmOrDomain: cfg.realmOrDomain)
+        let hasCreds = !identity.username.isEmpty || !(credential?.privateKeyPem.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+        if !hasCreds {
+            throw NativeBridgeError.authenticationFailed("Hyper-V requires Windows Administrator credentials. Assign or inherit a Vault Credential on this connection.")
+        }
+
+        let explicitEndpoint = sanitizedHyperVEndpoint(rawEndpoint: cfg.apiEndpointUrl, connectionHost: bareHost)
+        let permissiveTlsSession = ConfigurableTlsUrlSession.session(verifyTls: false)
+        var transportErrors: [String] = []
+
+        if !explicitEndpoint.isEmpty, let comps = URLComponents(string: explicitEndpoint), let scheme = comps.scheme?.lowercased() {
+            let endpointHost = comps.host ?? bareHost
+            let endpointPath = comps.path.isEmpty ? "/wsman" : comps.path
+            if scheme == "http" {
+                let port = UInt16(clamping: comps.port ?? 5985)
+                return try await executeHyperVWsmanStateChangeHttp(
+                    host: endpointHost,
+                    port: port,
+                    path: endpointPath,
+                    identity: identity,
+                    vmId: vmId,
+                    vmName: vmName,
+                    action: action
+                )
+            } else if scheme == "https" {
+                let port = comps.port ?? 5986
+                return try await executeHyperVWsmanStateChangeHttps(
+                    baseEndpoint: "https://\(endpointHost):\(port)\(endpointPath)",
+                    spnHost: endpointHost,
+                    identity: identity,
+                    vmId: vmId,
+                    vmName: vmName,
+                    action: action,
+                    urlSession: cfg.verifyTls ? ConfigurableTlsUrlSession.session(verifyTls: true) : permissiveTlsSession
+                )
+            }
+        }
+
+        if !identity.username.isEmpty {
+            do {
+                return try await executeHyperVWsmanStateChangeHttp(
+                    host: bareHost,
+                    port: 5985,
+                    path: "/wsman",
+                    identity: identity,
+                    vmId: vmId,
+                    vmName: vmName,
+                    action: action
+                )
+            } catch {
+                transportErrors.append("WinRM :5985 — \(error.localizedDescription)")
+            }
+
+            do {
+                return try await executeHyperVWsmanStateChangeHttps(
+                    baseEndpoint: "https://\(bareHost):5986/wsman",
+                    spnHost: bareHost,
+                    identity: identity,
+                    vmId: vmId,
+                    vmName: vmName,
+                    action: action,
+                    urlSession: permissiveTlsSession
+                )
+            } catch {
+                transportErrors.append("WinRM HTTPS :5986 — \(error.localizedDescription)")
+            }
+        }
+
+        if let cred = credential {
+            do {
+                return try await executeHyperVSshPowerAction(
+                    host: bareHost,
+                    credential: cred,
+                    identity: identity,
+                    vmId: vmId,
+                    vmName: vmName,
+                    action: action
+                )
+            } catch {
+                transportErrors.append("OpenSSH :22 — \(error.localizedDescription)")
+            }
+        }
+
+        throw NativeBridgeError.networkUtilityError(
+            "Hyper-V \(action.displayTitle) failed across all transports (\(transportErrors.joined(separator: " | ")))."
+        )
+    }
+
+    private static func fetchHyperVMultiTransportInventory(
+        connection: VaultConnection,
+        cfg: CloudVirtualizationProtocolSettings,
+        credential: VaultCredential?
+    ) async throws -> [CloudVmInventoryItem] {
+        let bareHost = extractBareHostname(connection.host)
+        guard !bareHost.isEmpty else {
+            throw NativeBridgeError.networkUtilityError("Hyper-V host address is empty. Edit the connection and enter your Hyper-V Server IP or FQDN.")
+        }
+
+        let identity = splitWindowsIdentity(credential: credential, fallbackRealmOrDomain: cfg.realmOrDomain)
+        let hasSshKey = !(credential?.privateKeyPem.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+        if identity.username.isEmpty && !hasSshKey {
+            throw NativeBridgeError.authenticationFailed(
+                "Hyper-V authentication requires a Windows / Hyper-V Administrator credential. Edit this connection (or parent folder) to assign a Vault Credential, or connect directly to a VM by GUID on TCP 2179 above."
+            )
+        }
+
+        let explicitEndpoint = sanitizedHyperVEndpoint(rawEndpoint: cfg.apiEndpointUrl, connectionHost: bareHost)
+        // Hyper-V WinRM :5986 almost universally uses machine self-signed certs unless AD CS templates are deployed
+        let httpsSession = ConfigurableTlsUrlSession.session(verifyTls: false)
+
+        if !explicitEndpoint.isEmpty, let comps = URLComponents(string: explicitEndpoint), let scheme = comps.scheme?.lowercased() {
+            let endpointHost = comps.host ?? bareHost
+            let endpointPath = comps.path.isEmpty ? "/wsman" : comps.path
+            if scheme == "http" {
+                let port = UInt16(clamping: comps.port ?? 5985)
+                return try await fetchHyperVWinRmHttpInventory(
+                    host: endpointHost,
+                    port: port,
+                    path: endpointPath,
+                    hostLabel: bareHost,
+                    identity: identity
+                )
+            } else if scheme == "https" {
+                let port = comps.port ?? 5986
+                return try await fetchHyperVWinRmHttpsInventory(
+                    wsmanEndpoint: "https://\(endpointHost):\(port)\(endpointPath)",
+                    spnHost: endpointHost,
+                    hostLabel: bareHost,
+                    identity: identity,
+                    urlSession: httpsSession
+                )
+            }
+        }
+
+        var transportErrors: [String] = []
+
+        // Tier 1: Stock Windows Server WinRM HTTP (:5985/wsman) with NTLMv2 + [MS-WSMV] SPNEGO RC4 Sealing
+        if !identity.username.isEmpty {
+            do {
+                return try await fetchHyperVWinRmHttpInventory(
+                    host: bareHost,
+                    port: 5985,
+                    path: "/wsman",
+                    hostLabel: bareHost,
+                    identity: identity
+                )
+            } catch {
+                transportErrors.append("WinRM :5985 (\(error.localizedDescription))")
+            }
+
+            // Tier 2: WinRM HTTPS (:5986/wsman) with 2-step NTLMv2 + Permissive TLS + Basic fallback
+            do {
+                return try await fetchHyperVWinRmHttpsInventory(
+                    wsmanEndpoint: "https://\(bareHost):5986/wsman",
+                    spnHost: bareHost,
+                    hostLabel: bareHost,
+                    identity: identity,
+                    urlSession: httpsSession
+                )
+            } catch {
+                transportErrors.append("WinRM :5986 (\(error.localizedDescription))")
+            }
+        }
+
+        // Tier 3: Windows OpenSSH Server (:22) PowerShell Get-VM fallback
+        if let cred = credential {
+            do {
+                return try await fetchHyperVSshInventory(
+                    host: bareHost,
+                    hostLabel: bareHost,
+                    credential: cred,
+                    identity: identity
+                )
+            } catch {
+                transportErrors.append("SSH :22 (\(error.localizedDescription))")
+            }
+        }
+
+        throw NativeBridgeError.networkUtilityError(
+            "Unable to query Hyper-V host \(bareHost). Enable WinRM (`Enable-PSRemoting -Force`) on TCP 5985/5986 or OpenSSH on TCP 22, or connect directly by VM GUID on TCP 2179. Details: \(transportErrors.joined(separator: " • "))"
+        )
+    }
+
+    private static func buildHyperVEnumerateEnvelope(toUrl: String) -> String {
         let msgId = UUID().uuidString.lowercased()
-        let soapEnvelope = """
+        return """
         <?xml version="1.0" encoding="UTF-8"?>
         <s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"
                     xmlns:a="http://schemas.xmlsoap.org/ws/2004/08/addressing"
                     xmlns:w="http://schemas.dmtf.org/wbem/wsman/1/wsman.xsd"
                     xmlns:n="http://schemas.xmlsoap.org/ws/2004/09/enumeration">
           <s:Header>
-            <a:To>\(wsmanUrlStr)</a:To>
+            <a:To>\(xmlEscape(toUrl))</a:To>
             <w:ResourceURI s:mustUnderstand="true">http://schemas.microsoft.com/wbem/wsman/1/wmi/root/virtualization/v2/Msvm_ComputerSystem</w:ResourceURI>
             <a:ReplyTo><a:Address s:mustUnderstand="true">http://schemas.xmlsoap.org/ws/2004/08/addressing/role/anonymous</a:Address></a:ReplyTo>
             <a:Action s:mustUnderstand="true">http://schemas.xmlsoap.org/ws/2004/09/enumeration/Enumerate</a:Action>
@@ -354,23 +675,508 @@ public enum CloudHypervisorClient {
           </s:Body>
         </s:Envelope>
         """
+    }
 
-        var req = URLRequest(url: wsmanUrl)
-        req.httpMethod = "POST"
-        req.setValue("application/soap+xml;charset=UTF-8", forHTTPHeaderField: "Content-Type")
-        if let cred = credential, !cred.username.isEmpty {
-            let userPrincipal = cred.domain.isEmpty ? cred.username : "\(cred.domain)\\\(cred.username)"
-            let basic = Data("\(userPrincipal):\(cred.secretPassword)".utf8).base64EncodedString()
-            req.setValue("Basic \(basic)", forHTTPHeaderField: "Authorization")
-        }
-        req.httpBody = Data(soapEnvelope.utf8)
+    private static func buildHyperVPullEnvelope(toUrl: String, enumerationContext: String) -> String {
+        let msgId = UUID().uuidString.lowercased()
+        return """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"
+                    xmlns:a="http://schemas.xmlsoap.org/ws/2004/08/addressing"
+                    xmlns:w="http://schemas.dmtf.org/wbem/wsman/1/wsman.xsd"
+                    xmlns:n="http://schemas.xmlsoap.org/ws/2004/09/enumeration">
+          <s:Header>
+            <a:To>\(xmlEscape(toUrl))</a:To>
+            <w:ResourceURI s:mustUnderstand="true">http://schemas.microsoft.com/wbem/wsman/1/wmi/root/virtualization/v2/Msvm_ComputerSystem</w:ResourceURI>
+            <a:ReplyTo><a:Address s:mustUnderstand="true">http://schemas.xmlsoap.org/ws/2004/08/addressing/role/anonymous</a:Address></a:ReplyTo>
+            <a:Action s:mustUnderstand="true">http://schemas.xmlsoap.org/ws/2004/09/enumeration/Pull</a:Action>
+            <w:MaxEnvelopeSize s:mustUnderstand="true">512000</w:MaxEnvelopeSize>
+            <a:MessageID>uuid:\(msgId)</a:MessageID>
+            <w:OperationTimeout>PT15.000S</w:OperationTimeout>
+          </s:Header>
+          <s:Body>
+            <n:Pull>
+              <n:EnumerationContext>\(xmlEscape(enumerationContext))</n:EnumerationContext>
+              <n:MaxElements>200</n:MaxElements>
+            </n:Pull>
+          </s:Body>
+        </s:Envelope>
+        """
+    }
 
-        let (xmlData, resp) = try await urlSession.data(for: req)
-        if let http = resp as? HTTPURLResponse, http.statusCode == 401 {
-            throw NativeBridgeError.authenticationFailed("Hyper-V WinRM authentication rejected (HTTP 401).")
+    private static func buildHyperVStateChangeEnvelope(toUrl: String, vmId: String, requestedState: Int) -> String {
+        let msgId = UUID().uuidString.lowercased()
+        let resourceUri = "http://schemas.microsoft.com/wbem/wsman/1/wmi/root/virtualization/v2/Msvm_ComputerSystem"
+        return """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"
+                    xmlns:a="http://schemas.xmlsoap.org/ws/2004/08/addressing"
+                    xmlns:w="http://schemas.dmtf.org/wbem/wsman/1/wsman.xsd"
+                    xmlns:p="\(resourceUri)">
+          <s:Header>
+            <a:To>\(xmlEscape(toUrl))</a:To>
+            <w:ResourceURI s:mustUnderstand="true">\(resourceUri)</w:ResourceURI>
+            <a:ReplyTo><a:Address s:mustUnderstand="true">http://schemas.xmlsoap.org/ws/2004/08/addressing/role/anonymous</a:Address></a:ReplyTo>
+            <a:Action s:mustUnderstand="true">\(resourceUri)/RequestStateChange</a:Action>
+            <w:MaxEnvelopeSize s:mustUnderstand="true">512000</w:MaxEnvelopeSize>
+            <a:MessageID>uuid:\(msgId)</a:MessageID>
+            <w:SelectorSet>
+              <w:Selector Name="CreationClassName">Msvm_ComputerSystem</w:Selector>
+              <w:Selector Name="Name">\(xmlEscape(vmId))</w:Selector>
+            </w:SelectorSet>
+            <w:OperationTimeout>PT15.000S</w:OperationTimeout>
+          </s:Header>
+          <s:Body>
+            <p:RequestStateChange_INPUT>
+              <p:RequestedState>\(requestedState)</p:RequestedState>
+            </p:RequestStateChange_INPUT>
+          </s:Body>
+        </s:Envelope>
+        """
+    }
+
+    private static func xmlEscape(_ raw: String) -> String {
+        raw.replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
+            .replacingOccurrences(of: "'", with: "&apos;")
+    }
+
+    private static func fetchHyperVWinRmHttpInventory(
+        host: String,
+        port: UInt16,
+        path: String,
+        hostLabel: String,
+        identity: (username: String, password: String, domain: String)
+    ) async throws -> [CloudVmInventoryItem] {
+        let normalizedPath = path.hasPrefix("/") ? path : "/\(path)"
+        let toUrl = "http://\(host):\(port)\(normalizedPath)"
+        let enumerateSoap = buildHyperVEnumerateEnvelope(toUrl: toUrl)
+
+        let firstXml = try await Task.detached(priority: .userInitiated) {
+            try NativeNetworkDiagnostics.winrmWsmanPost(
+                host: host,
+                port: port,
+                path: normalizedPath,
+                username: identity.username,
+                password: identity.password,
+                domain: identity.domain,
+                soapXml: enumerateSoap,
+                timeoutMs: 10_000
+            )
+        }.value
+
+        if let fault = extractWsmanFaultSummary(firstXml) {
+            throw NativeBridgeError.networkUtilityError("WinRM SOAP Fault: \(fault)")
         }
-        let xml = String(data: xmlData, encoding: .utf8) ?? ""
-        return parseHyperVWsmanXml(xml, hostLabel: hostLabel)
+        var items = parseHyperVWsmanXml(firstXml, hostLabel: hostLabel)
+        if items.isEmpty,
+           !firstXml.contains("EndOfSequence"),
+           let enumCtx = extractWsmanEnumerationContext(firstXml),
+           !enumCtx.isEmpty {
+            let pullSoap = buildHyperVPullEnvelope(toUrl: toUrl, enumerationContext: enumCtx)
+            let pullXml = try await Task.detached(priority: .userInitiated) {
+                try NativeNetworkDiagnostics.winrmWsmanPost(
+                    host: host,
+                    port: port,
+                    path: normalizedPath,
+                    username: identity.username,
+                    password: identity.password,
+                    domain: identity.domain,
+                    soapXml: pullSoap,
+                    timeoutMs: 10_000
+                )
+            }.value
+            if let fault = extractWsmanFaultSummary(pullXml) {
+                throw NativeBridgeError.networkUtilityError("WinRM Pull Fault: \(fault)")
+            }
+            items = parseHyperVWsmanXml(pullXml, hostLabel: hostLabel)
+        }
+        return items
+    }
+
+    private static func fetchHyperVWinRmHttpsInventory(
+        wsmanEndpoint: String,
+        spnHost: String,
+        hostLabel: String,
+        identity: (username: String, password: String, domain: String),
+        urlSession: URLSession
+    ) async throws -> [CloudVmInventoryItem] {
+        let wsmanUrlStr = wsmanEndpoint.lowercased().contains("/wsman")
+            ? wsmanEndpoint
+            : "\(wsmanEndpoint.trimmingCharacters(in: CharacterSet(charactersIn: "/")))/wsman"
+        let enumerateSoap = buildHyperVEnumerateEnvelope(toUrl: wsmanUrlStr)
+        let firstXml = try await postWsmanHttpsWithNtlmOrBasic(
+            wsmanUrlStr: wsmanUrlStr,
+            spnHost: spnHost,
+            soapXml: enumerateSoap,
+            identity: identity,
+            urlSession: urlSession
+        )
+        if let fault = extractWsmanFaultSummary(firstXml) {
+            throw NativeBridgeError.networkUtilityError("WinRM HTTPS Fault: \(fault)")
+        }
+        var items = parseHyperVWsmanXml(firstXml, hostLabel: hostLabel)
+        if items.isEmpty,
+           !firstXml.contains("EndOfSequence"),
+           let enumCtx = extractWsmanEnumerationContext(firstXml),
+           !enumCtx.isEmpty {
+            let pullSoap = buildHyperVPullEnvelope(toUrl: wsmanUrlStr, enumerationContext: enumCtx)
+            let pullXml = try await postWsmanHttpsWithNtlmOrBasic(
+                wsmanUrlStr: wsmanUrlStr,
+                spnHost: spnHost,
+                soapXml: pullSoap,
+                identity: identity,
+                urlSession: urlSession
+            )
+            items = parseHyperVWsmanXml(pullXml, hostLabel: hostLabel)
+        }
+        return items
+    }
+
+    private static func postWsmanHttpsWithNtlmOrBasic(
+        wsmanUrlStr: String,
+        spnHost: String,
+        soapXml: String,
+        identity: (username: String, password: String, domain: String),
+        urlSession: URLSession
+    ) async throws -> String {
+        guard let wsmanUrl = URL(string: wsmanUrlStr) else {
+            throw NativeBridgeError.networkUtilityError("Invalid WinRM HTTPS URL: \(wsmanUrlStr)")
+        }
+        let bodyData = Data(soapXml.utf8)
+
+        // Step 1: Attempt NTLMv2 over TLS (`Negotiate` / `NTLM`)
+        if !identity.username.isEmpty {
+            let type1 = NativeNetworkDiagnostics.buildNtlmNegotiate()
+            if !type1.isEmpty {
+                var negReq = URLRequest(url: wsmanUrl)
+                negReq.httpMethod = "POST"
+                negReq.setValue("application/soap+xml;charset=UTF-8", forHTTPHeaderField: "Content-Type")
+                negReq.setValue("Keep-Alive", forHTTPHeaderField: "Connection")
+                negReq.setValue("Negotiate \(type1)", forHTTPHeaderField: "Authorization")
+                negReq.httpBody = Data()
+
+                let (step1Data, step1Resp) = try await urlSession.data(for: negReq)
+                if let http1 = step1Resp as? HTTPURLResponse {
+                    if (200..<300).contains(http1.statusCode) && !step1Data.isEmpty {
+                        return String(data: step1Data, encoding: .utf8) ?? ""
+                    }
+                    if http1.statusCode == 401,
+                       let wwwAuth = http1.value(forHTTPHeaderField: "WWW-Authenticate"),
+                       let (scheme, challengeB64) = extractNtlmChallengeToken(from: wwwAuth) {
+                        let type3 = try NativeNetworkDiagnostics.buildNtlmAuthenticate(
+                            challengeB64: challengeB64,
+                            username: identity.username,
+                            password: identity.password,
+                            domain: identity.domain,
+                            spnHost: spnHost
+                        )
+                        var authReq = URLRequest(url: wsmanUrl)
+                        authReq.httpMethod = "POST"
+                        authReq.setValue("application/soap+xml;charset=UTF-8", forHTTPHeaderField: "Content-Type")
+                        authReq.setValue("Keep-Alive", forHTTPHeaderField: "Connection")
+                        authReq.setValue("\(scheme) \(type3)", forHTTPHeaderField: "Authorization")
+                        authReq.httpBody = bodyData
+
+                        let (step2Data, step2Resp) = try await urlSession.data(for: authReq)
+                        if let http2 = step2Resp as? HTTPURLResponse {
+                            if (200..<300).contains(http2.statusCode) {
+                                return String(data: step2Data, encoding: .utf8) ?? ""
+                            }
+                            if http2.statusCode == 401 {
+                                throw NativeBridgeError.authenticationFailed("Hyper-V WinRM HTTPS NTLMv2 authentication rejected (HTTP 401).")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Step 2: Basic Auth over TLS fallback
+        var basicReq = URLRequest(url: wsmanUrl)
+        basicReq.httpMethod = "POST"
+        basicReq.setValue("application/soap+xml;charset=UTF-8", forHTTPHeaderField: "Content-Type")
+        if !identity.username.isEmpty {
+            let userPrincipal = identity.domain.isEmpty ? identity.username : "\(identity.domain)\\\(identity.username)"
+            let basic = Data("\(userPrincipal):\(identity.password)".utf8).base64EncodedString()
+            basicReq.setValue("Basic \(basic)", forHTTPHeaderField: "Authorization")
+        }
+        basicReq.httpBody = bodyData
+
+        let (xmlData, resp) = try await urlSession.data(for: basicReq)
+        if let http = resp as? HTTPURLResponse {
+            if http.statusCode == 401 {
+                throw NativeBridgeError.authenticationFailed("Hyper-V WinRM HTTPS authentication rejected (HTTP 401).")
+            }
+            if http.statusCode >= 400 {
+                throw NativeBridgeError.networkUtilityError("Hyper-V WinRM HTTPS returned HTTP \(http.statusCode).")
+            }
+        }
+        return String(data: xmlData, encoding: .utf8) ?? ""
+    }
+
+    private static func extractNtlmChallengeToken(from headerValue: String) -> (scheme: String, token: String)? {
+        for part in headerValue.split(separator: ",") {
+            let trimmed = part.trimmingCharacters(in: .whitespacesAndNewlines)
+            for prefix in ["Negotiate ", "NTLM "] {
+                if trimmed.lowercased().hasPrefix(prefix.lowercased()) {
+                    let tok = String(trimmed.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !tok.isEmpty, !tok.contains(" ") {
+                        let schemeName = prefix.trimmingCharacters(in: .whitespaces)
+                        return (schemeName, tok)
+                    }
+                }
+            }
+        }
+        return nil
+    }
+
+    private static func executeHyperVWsmanStateChangeHttp(
+        host: String,
+        port: UInt16,
+        path: String,
+        identity: (username: String, password: String, domain: String),
+        vmId: String,
+        vmName: String,
+        action: HyperVPowerAction
+    ) async throws -> String {
+        let normalizedPath = path.hasPrefix("/") ? path : "/\(path)"
+        let toUrl = "http://\(host):\(port)\(normalizedPath)"
+        let soap = buildHyperVStateChangeEnvelope(toUrl: toUrl, vmId: vmId, requestedState: action.requestedWmiState)
+        let respXml = try await Task.detached(priority: .userInitiated) {
+            try NativeNetworkDiagnostics.winrmWsmanPost(
+                host: host,
+                port: port,
+                path: normalizedPath,
+                username: identity.username,
+                password: identity.password,
+                domain: identity.domain,
+                soapXml: soap,
+                timeoutMs: 12_000
+            )
+        }.value
+        try validateHyperVStateChangeResponse(respXml, vmName: vmName, action: action)
+        return "\(action.displayTitle) dispatched for \(vmName)."
+    }
+
+    private static func executeHyperVWsmanStateChangeHttps(
+        baseEndpoint: String,
+        spnHost: String,
+        identity: (username: String, password: String, domain: String),
+        vmId: String,
+        vmName: String,
+        action: HyperVPowerAction,
+        urlSession: URLSession
+    ) async throws -> String {
+        let soap = buildHyperVStateChangeEnvelope(toUrl: baseEndpoint, vmId: vmId, requestedState: action.requestedWmiState)
+        let respXml = try await postWsmanHttpsWithNtlmOrBasic(
+            wsmanUrlStr: baseEndpoint,
+            spnHost: spnHost,
+            soapXml: soap,
+            identity: identity,
+            urlSession: urlSession
+        )
+        try validateHyperVStateChangeResponse(respXml, vmName: vmName, action: action)
+        return "\(action.displayTitle) dispatched for \(vmName)."
+    }
+
+    private static func validateHyperVStateChangeResponse(
+        _ xml: String,
+        vmName: String,
+        action: HyperVPowerAction
+    ) throws {
+        if let fault = extractWsmanFaultSummary(xml) {
+            throw NativeBridgeError.networkUtilityError("Hyper-V SOAP Fault: \(fault)")
+        }
+        if let retCode = extractWmiReturnValue(xml), retCode != 0 && retCode != 4096 {
+            let detail: String
+            switch retCode {
+            case 32769: detail = "Access denied (32769)"
+            case 32775: detail = "VM is not in a valid state for \(action.displayTitle) (32775)"
+            default: detail = "WMI return code \(retCode)"
+            }
+            throw NativeBridgeError.networkUtilityError("Hyper-V \(action.displayTitle) on \(vmName) failed: \(detail)")
+        }
+    }
+
+    private static func fetchHyperVSshInventory(
+        host: String,
+        hostLabel: String,
+        credential: VaultCredential,
+        identity: (username: String, password: String, domain: String)
+    ) async throws -> [CloudVmInventoryItem] {
+        let psScript = "powershell.exe -NoProfile -NonInteractive -Command \"$ErrorActionPreference='Stop'; Get-VM | ForEach-Object { [PSCustomObject]@{ Id = $_.Id.Guid.ToString(); Name = $_.Name; State = $_.State.ToString(); CpuCount = [int]$_.ProcessorCount; MemAssignedMB = [int]($_.MemoryAssigned / 1MB); MemStartupMB = [int]($_.MemoryStartup / 1MB) } } | ConvertTo-Json -Compress\""
+        let rawOut = try await runWindowsSshPowerShell(
+            host: host,
+            credential: credential,
+            identity: identity,
+            command: psScript
+        )
+        return try parseHyperVPowerShellJson(rawOut, hostLabel: hostLabel)
+    }
+
+    private static func executeHyperVSshPowerAction(
+        host: String,
+        credential: VaultCredential,
+        identity: (username: String, password: String, domain: String),
+        vmId: String,
+        vmName: String,
+        action: HyperVPowerAction
+    ) async throws -> String {
+        let cleanGuid = vmId.filter { $0.isHexDigit || $0 == "-" }
+        let safeName = vmName.replacingOccurrences(of: "'", with: "''")
+        let selector = cleanGuid.count >= 32 ? "Get-VM -Id '\(cleanGuid)'" : "Get-VM -Name '\(safeName)'"
+        let verb: String = {
+            switch action {
+            case .start: return "Start-VM -ErrorAction Stop"
+            case .stop: return "Stop-VM -TurnOff -Force -ErrorAction Stop"
+            case .save: return "Save-VM -ErrorAction Stop"
+            case .reboot: return "Restart-VM -Force -ErrorAction Stop"
+            }
+        }()
+        let cmd = "powershell.exe -NoProfile -NonInteractive -Command \"\(selector) | \(verb)\""
+        _ = try await runWindowsSshPowerShell(host: host, credential: credential, identity: identity, command: cmd)
+        return "\(action.displayTitle) executed via SSH PowerShell for \(vmName)."
+    }
+
+    private static func runWindowsSshPowerShell(
+        host: String,
+        credential: VaultCredential,
+        identity: (username: String, password: String, domain: String),
+        command: String
+    ) async throws -> String {
+        let pem = credential.privateKeyPem.trimmingCharacters(in: .whitespacesAndNewlines)
+        let auth: SshFfiConnectPayload.Auth = !pem.isEmpty
+            ? .privateKeyPem(
+                pem: pem,
+                passphrase: credential.privateKeyPassphrase.isEmpty ? nil : credential.privateKeyPassphrase
+            )
+            : .password(identity.password)
+
+        let candidateUsers: [String] = {
+            let baseUser = identity.username.isEmpty ? "Administrator" : identity.username
+            if !identity.domain.isEmpty && !baseUser.contains("\\") && !baseUser.contains("@") {
+                return ["\(identity.domain)\\\(baseUser)", baseUser]
+            }
+            return [baseUser]
+        }()
+
+        return try await Task.detached(priority: .userInitiated) {
+            var lastErr: Error?
+            for sshUser in candidateUsers {
+                let spec = SshFfiConnectPayload(
+                    host: host,
+                    port: 22,
+                    username: sshUser,
+                    auth: auth
+                )
+                do {
+                    return try NativeSshSession.execCommand(spec: spec, command: command, timeoutSecs: 15)
+                } catch {
+                    lastErr = error
+                }
+            }
+            throw lastErr ?? NativeBridgeError.sshTransportError("Windows OpenSSH command failed")
+        }.value
+    }
+
+    public static func parseHyperVPowerShellJson(_ raw: String, hostLabel: String) throws -> [CloudVmInventoryItem] {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty || trimmed == "null" {
+            return []
+        }
+        struct PsVmRow: Decodable {
+            let Id: String?
+            let Name: String?
+            let State: String?
+            let CpuCount: Int?
+            let MemAssignedMB: Int?
+            let MemStartupMB: Int?
+        }
+
+        let jsonSlice: Substring = {
+            if let arrStart = trimmed.firstIndex(of: "["), let arrEnd = trimmed.lastIndex(of: "]"), arrStart < arrEnd {
+                if let objStart = trimmed.firstIndex(of: "{"), objStart < arrStart {
+                    // Check whether array starts first
+                } else {
+                    return trimmed[arrStart...arrEnd]
+                }
+            }
+            if let objStart = trimmed.firstIndex(of: "{"), let objEnd = trimmed.lastIndex(of: "}"), objStart < objEnd {
+                return trimmed[objStart...objEnd]
+            }
+            return trimmed[...]
+        }()
+
+        let data = Data(String(jsonSlice).utf8)
+        let rows: [PsVmRow]
+        if jsonSlice.first == "[" {
+            rows = try JSONDecoder().decode([PsVmRow].self, from: data)
+        } else if jsonSlice.first == "{" {
+            rows = [try JSONDecoder().decode(PsVmRow.self, from: data)]
+        } else {
+            throw NativeBridgeError.networkUtilityError("Unexpected PowerShell output: \(trimmed.prefix(180))")
+        }
+
+        return rows.map { row in
+            let vmId = (row.Id ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let rawState = (row.State ?? "Unknown").uppercased()
+            let normalizedState: String = {
+                if rawState.contains("RUN") { return "RUNNING" }
+                if rawState.contains("OFF") || rawState.contains("STOP") { return "STOPPED" }
+                if rawState.contains("SAV") { return "SAVED" }
+                if rawState.contains("PAUS") { return "PAUSED" }
+                return rawState
+            }()
+            let cpus = max(1, row.CpuCount ?? 2)
+            let memMb = (row.MemAssignedMB ?? 0) > 0 ? (row.MemAssignedMB ?? 0) : (row.MemStartupMB ?? 0)
+            let memLabel = memMb >= 1024
+                ? String(format: "%.1f GiB", Double(memMb) / 1024.0)
+                : "\(max(0, memMb)) MiB"
+            return CloudVmInventoryItem(
+                id: vmId.isEmpty ? UUID().uuidString.lowercased() : vmId,
+                name: row.Name ?? (vmId.isEmpty ? "Hyper-V VM" : vmId),
+                powerState: normalizedState,
+                addressOrNode: hostLabel,
+                cpuSummary: "\(cpus) vCPU",
+                memorySummary: memMb > 0 ? memLabel : "Dynamic RAM",
+                consoleProtocol: .RDP
+            )
+        }
+    }
+
+    private static func extractWsmanEnumerationContext(_ xml: String) -> String? {
+        guard let range = xml.range(of: "EnumerationContext>", options: .caseInsensitive) else { return nil }
+        let after = xml[range.upperBound...]
+        guard let closeTag = after.range(of: "</", options: .caseInsensitive) else { return nil }
+        let val = after[..<closeTag.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines)
+        return val.isEmpty ? nil : val
+    }
+
+    private static func extractWsmanFaultSummary(_ xml: String) -> String? {
+        guard xml.range(of: ":Fault>", options: .caseInsensitive) != nil
+                || xml.range(of: "<Fault>", options: .caseInsensitive) != nil else {
+            return nil
+        }
+        for tag in ["Text>", "Message>", "FaultString>"] {
+            if let open = xml.range(of: tag, options: .caseInsensitive) {
+                let tail = xml[open.upperBound...]
+                if let close = tail.range(of: "</", options: .caseInsensitive) {
+                    let msg = tail[..<close.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !msg.isEmpty { return String(msg.prefix(240)) }
+                }
+            }
+        }
+        return "WS-Management Fault returned by Hyper-V host"
+    }
+
+    private static func extractWmiReturnValue(_ xml: String) -> Int? {
+        guard let open = xml.range(of: "ReturnValue>", options: .caseInsensitive) else { return nil }
+        let tail = xml[open.upperBound...]
+        guard let close = tail.range(of: "</", options: .caseInsensitive) else { return nil }
+        return Int(tail[..<close.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
     public static func parseHyperVWsmanXml(_ xml: String, hostLabel: String) -> [CloudVmInventoryItem] {
@@ -454,8 +1260,8 @@ public enum CloudHypervisorClient {
                         name: resolvedName,
                         powerState: state,
                         addressOrNode: hostLabel,
-                        cpuSummary: "Hyper-V Gen2",
-                        memorySummary: "WinRM v2",
+                        cpuSummary: "VMConnect 2179",
+                        memorySummary: resolvedId,
                         consoleProtocol: .RDP
                     ))
                 default:

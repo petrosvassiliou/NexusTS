@@ -1,0 +1,1 @@
+• v0.8.7: Inventario y control de energía completo para Microsoft Hyper-V (WinRM HTTP 5985 NTLMv2 + sellado SPNEGO, WinRM HTTPS 5986 y OpenSSH 22 PowerShell), consola nativa FreeRDP 3.12 VMConnect en TCP 2179 (modo básico y sesión mejorada) e importación/exportación Royal TS .rtsz/.rtsx

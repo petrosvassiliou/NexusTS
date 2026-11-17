@@ -1384,6 +1384,68 @@ DWORD freerdp_on_verify_changed_certificate_ex(
 
 } // namespace
 
+std::string normalize_hyperv_preconnection_blob(
+    const std::string& raw_pcb,
+    bool force_enhanced_session
+) {
+    auto trim_ws = [](const std::string& s) -> std::string {
+        const auto first = s.find_first_not_of(" \t\r\n");
+        if (first == std::string::npos) {
+            return {};
+        }
+        const auto last = s.find_last_not_of(" \t\r\n");
+        return s.substr(first, last - first + 1u);
+    };
+
+    const std::string trimmed = trim_ws(raw_pcb);
+    if (trimmed.empty()) {
+        return {};
+    }
+
+    const auto semi_pos = trimmed.find(';');
+    std::string guid_part = trim_ws(semi_pos == std::string::npos ? trimmed : trimmed.substr(0u, semi_pos));
+    std::string suffix_part = semi_pos == std::string::npos ? std::string() : trim_ws(trimmed.substr(semi_pos + 1u));
+
+    while (!guid_part.empty() && (guid_part.front() == '{' || guid_part.front() == '"' || guid_part.front() == '\'')) {
+        guid_part.erase(guid_part.begin());
+    }
+    while (!guid_part.empty() && (guid_part.back() == '}' || guid_part.back() == '"' || guid_part.back() == '\'')) {
+        guid_part.pop_back();
+    }
+    guid_part = trim_ws(guid_part);
+    if (guid_part.empty()) {
+        return {};
+    }
+
+    if (!suffix_part.empty()) {
+        while (!suffix_part.empty() && (suffix_part.back() == '"' || suffix_part.back() == '\'')) {
+            suffix_part.pop_back();
+        }
+        return guid_part + ";" + suffix_part;
+    }
+    if (force_enhanced_session) {
+        return guid_part + ";EnhancedMode=1";
+    }
+    return guid_part;
+}
+
+uint16_t resolve_effective_rdp_port(
+    uint16_t configured_port,
+    bool port_from_host_literal,
+    const std::string& normalized_preconnection_blob
+) noexcept {
+    if (!normalized_preconnection_blob.empty()) {
+        if (port_from_host_literal && configured_port != 0u) {
+            return configured_port;
+        }
+        if (configured_port == 0u || configured_port == 3389u) {
+            return 2179u;
+        }
+        return configured_port;
+    }
+    return configured_port == 0u ? 3389u : configured_port;
+}
+
 RdpSessionContext::RdpSessionContext(RdpConnectParams params)
     : params_(std::move(params)),
       active_scale_percent_(std::clamp(params_.desktop_scale_factor, 100u, 500u)),
@@ -2179,7 +2241,9 @@ bool RdpSessionContext::connect() {
         return raw.substr(first, last - first + 1u);
     };
     std::string effective_host = trim_ascii(params_.host);
-    uint16_t effective_port = params_.port == 0u ? 3389u : params_.port;
+    const std::string effective_pcb = normalize_hyperv_preconnection_blob(params_.preconnection_blob);
+    uint16_t effective_port = params_.port;
+    bool port_from_host_literal = false;
     if (effective_host.size() >= 2u && effective_host.front() == '[' && effective_host.back() == ']') {
         effective_host = effective_host.substr(1u, effective_host.size() - 2u);
     } else {
@@ -2193,10 +2257,12 @@ bool RdpSessionContext::connect() {
                 if (parsed_port >= 1ul && parsed_port <= 65535ul) {
                     effective_host = host_part;
                     effective_port = static_cast<uint16_t>(parsed_port);
+                    port_from_host_literal = true;
                 }
             }
         }
     }
+    effective_port = resolve_effective_rdp_port(effective_port, port_from_host_literal, effective_pcb);
     if (effective_host.empty()) {
         set_last_error("DNS_NAME_NOT_FOUND: Hostname is empty.");
         return false;
@@ -2257,10 +2323,11 @@ bool RdpSessionContext::connect() {
     instance->VerifyCertificateEx = &freerdp_on_verify_certificate_ex;
     instance->VerifyChangedCertificateEx = &freerdp_on_verify_changed_certificate_ex;
 
+    const bool effective_ignore_cert = params_.ignore_certificate || !effective_pcb.empty();
     register_freerdp_callbacks(
         instance,
         this,
-        params_.ignore_certificate,
+        effective_ignore_cert,
         env_ready,
         effective_username,
         params_.password,
@@ -2386,7 +2453,7 @@ bool RdpSessionContext::connect() {
     freerdp_settings_set_bool(settings, FreeRDP_RedirectDrives, params_.redirect_drives);
     if (params_.redirect_drives && !params_.shared_drive_local_path.empty()) {
         const std::string drive_name =
-            params_.shared_drive_name.empty() ? "NexusTS" : params_.shared_drive_name;
+            params_.shared_drive_name.empty() ? "NexusTS" : params_.shared_drive_local_path.empty() ? "NexusTS" : params_.shared_drive_name;
         const char* drive_args[2] = {
             drive_name.c_str(),
             params_.shared_drive_local_path.c_str()
@@ -2435,8 +2502,22 @@ bool RdpSessionContext::connect() {
     freerdp_settings_set_bool(settings, FreeRDP_NlaSecurity, effective_nla);
     freerdp_settings_set_bool(settings, FreeRDP_TlsSecurity, params_.tls_security);
     freerdp_settings_set_bool(settings, FreeRDP_RestrictedAdminModeRequired, params_.restricted_admin_mode);
-    freerdp_settings_set_bool(settings, FreeRDP_IgnoreCertificate, params_.ignore_certificate);
+    freerdp_settings_set_bool(settings, FreeRDP_IgnoreCertificate, effective_ignore_cert);
     freerdp_settings_set_bool(settings, FreeRDP_RemoteApplicationMode, params_.remote_app_mode);
+
+    if (!effective_pcb.empty()) {
+        // Hyper-V VMConnect (vmms.exe on TCP 2179): send RDP_PRECONNECTION_PDU_V2 before X.224
+        // Connection Request and enforce CredSSP/NLA directly without NegotiateSecurityLayer,
+        // matching FreeRDP 3.x `/vmconnect:<VM-GUID>[;EnhancedMode=1]`.
+        freerdp_settings_set_bool(settings, FreeRDP_SendPreconnectionPdu, TRUE);
+        freerdp_settings_set_string(settings, FreeRDP_PreconnectionBlob, effective_pcb.c_str());
+        freerdp_settings_set_bool(settings, FreeRDP_NegotiateSecurityLayer, FALSE);
+        freerdp_settings_set_bool(settings, FreeRDP_NlaSecurity, TRUE);
+        freerdp_settings_set_bool(settings, FreeRDP_TlsSecurity, FALSE);
+        freerdp_settings_set_bool(settings, FreeRDP_RdpSecurity, FALSE);
+        NX_RDP_LOGI("Configured Hyper-V VMConnect Preconnection PDU v2 (host='%s', port=%u, PCB='%s')",
+                    effective_host.c_str(), effective_port, effective_pcb.c_str());
+    }
 
     if (!effective_username.empty()) {
         freerdp_settings_set_string(settings, FreeRDP_Username, effective_username.c_str());
@@ -2709,6 +2790,7 @@ bool RdpSessionContext::connect() {
     });
 #else
     (void)effective_port;
+    (void)effective_pcb;
     render_diagnostic_surface_frame(w, h);
     connected_.store(true, std::memory_order_release);
 #endif

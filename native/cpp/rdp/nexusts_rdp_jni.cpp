@@ -200,11 +200,12 @@ Java_com_nexusts_app_protocols_rdp_bridge_FreeRdpNativeBridge_nativeCreateSessio
     jstring remote_app_args,
     jstring shared_drive_name,
     jstring shared_drive_local_path,
-    jstring app_home_dir
+    jstring app_home_dir,
+    jstring preconnection_blob
 ) {
     nexusts::rdp::RdpConnectParams params;
     params.host = jstring_to_utf8(env, host);
-    params.port = static_cast<uint16_t>(std::clamp<jint>(port, 1, 65535));
+    params.port = port <= 0 ? 0u : static_cast<uint16_t>(std::clamp<jint>(port, 1, 65535));
     params.username = jstring_to_utf8(env, username);
     params.password = jstring_to_utf8(env, password);
     params.domain = jstring_to_utf8(env, domain);
@@ -244,6 +245,7 @@ Java_com_nexusts_app_protocols_rdp_bridge_FreeRdpNativeBridge_nativeCreateSessio
     params.shared_drive_name = jstring_to_utf8(env, shared_drive_name);
     params.shared_drive_local_path = jstring_to_utf8(env, shared_drive_local_path);
     params.app_home_dir = jstring_to_utf8(env, app_home_dir);
+    params.preconnection_blob = jstring_to_utf8(env, preconnection_blob);
 
     auto session = std::make_shared<nexusts::rdp::RdpSessionContext>(std::move(params));
     std::lock_guard<std::mutex> lock(g_sessions_mutex);

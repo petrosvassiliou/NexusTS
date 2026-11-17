@@ -111,7 +111,7 @@ public enum VaultProtocolType: String, Codable, CaseIterable, Identifiable, Send
         case .VNC, .APPLE_SCREEN_SHARING: return 5900
         case .WEB_PAGE, .VMWARE_VSPHERE, .AWS_EC2, .AZURE_VM: return 443
         case .PROXMOX_VE: return 8006
-        case .HYPER_V: return 5986
+        case .HYPER_V: return 5985
         case .KUBERNETES_POD: return 6443
         case .DOCKER_CONTAINER: return 2375
         case .SERIAL, .UTILITY_PING, .UTILITY_TRACEROUTE, .UTILITY_PORT_SCANNER: return 0
@@ -142,7 +142,10 @@ public enum VaultProtocolType: String, Codable, CaseIterable, Identifiable, Send
                 ? host
                 : (host.isEmpty ? "https://localhost" : "https://\(host)")
             return .webPage(WebPageProtocolSettings(url: url))
-        case .VMWARE_VSPHERE, .PROXMOX_VE, .HYPER_V, .AWS_EC2, .AZURE_VM:
+        case .HYPER_V:
+            let url = (host.hasPrefix("http://") || host.hasPrefix("https://")) ? host : ""
+            return .cloudVirtualization(CloudVirtualizationProtocolSettings(apiEndpointUrl: url))
+        case .VMWARE_VSPHERE, .PROXMOX_VE, .AWS_EC2, .AZURE_VM:
             let url = host.hasPrefix("http") ? host : "https://\(host.isEmpty ? "localhost" : host):\(defaultPort)"
             return .cloudVirtualization(CloudVirtualizationProtocolSettings(apiEndpointUrl: url))
         case .UTILITY_PING, .UTILITY_TRACEROUTE, .UTILITY_PORT_SCANNER, .UTILITY_WAKE_ON_LAN:
@@ -387,6 +390,8 @@ public struct RdpProtocolSettings: Codable, Equatable, Hashable, Sendable {
     public var tlsSecurity: Bool = true
     public var restrictedAdminMode: Bool = false
     public var ignoreCertificateWarnings: Bool = false
+    public var hyperVVmId: String = ""
+    public var hyperVEnhancedSession: Bool = false
 
     public init() {}
 
@@ -399,7 +404,7 @@ public struct RdpProtocolSettings: Codable, Equatable, Hashable, Sendable {
         case enableFontSmoothing, enableDesktopComposition, enableWallpaper, enableFullWindowDrag
         case enableMenuAnimations, enableThemes, compressionEnabled, remoteAppMode, remoteAppProgram
         case remoteAppArguments, rdGatewayHostname, rdGatewayPort, nlaSecurityRequired, tlsSecurity
-        case restrictedAdminMode, ignoreCertificateWarnings
+        case restrictedAdminMode, ignoreCertificateWarnings, hyperVVmId, hyperVEnhancedSession
     }
 
     public init(from decoder: Decoder) throws {
@@ -460,6 +465,30 @@ public struct RdpProtocolSettings: Codable, Equatable, Hashable, Sendable {
         self.tlsSecurity = try c.decodeIfPresent(Bool.self, forKey: .tlsSecurity) ?? true
         self.restrictedAdminMode = try c.decodeIfPresent(Bool.self, forKey: .restrictedAdminMode) ?? false
         self.ignoreCertificateWarnings = try c.decodeIfPresent(Bool.self, forKey: .ignoreCertificateWarnings) ?? false
+        self.hyperVVmId = try c.decodeIfPresent(String.self, forKey: .hyperVVmId) ?? ""
+        self.hyperVEnhancedSession = try c.decodeIfPresent(Bool.self, forKey: .hyperVEnhancedSession) ?? false
+    }
+
+    public var effectivePreconnectionBlob: String {
+        var cleaned = hyperVVmId.trimmingCharacters(in: .whitespacesAndNewlines)
+        while cleaned.count >= 2,
+              let first = cleaned.first,
+              let last = cleaned.last,
+              (first == "{" && last == "}") || (first == "\"" && last == "\"") || (first == "'" && last == "'") {
+            cleaned = String(cleaned.dropFirst().dropLast()).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        guard !cleaned.isEmpty else { return "" }
+        if hyperVEnhancedSession && !cleaned.lowercased().contains("enhancedmode=") {
+            return "\(cleaned);EnhancedMode=1"
+        }
+        return cleaned
+    }
+
+    public var effectiveRdpPort: Int {
+        if !effectivePreconnectionBlob.isEmpty && (port <= 0 || port == 3389) {
+            return 2179
+        }
+        return port <= 0 ? 3389 : port
     }
 
     public var macSharedFolderPath: String? {
@@ -650,7 +679,7 @@ public struct CloudVirtualizationProtocolSettings: Codable, Equatable, Hashable,
     public var verifyTls: Bool
 
     public init(
-        apiEndpointUrl: String = "https://localhost:8006",
+        apiEndpointUrl: String = "",
         regionOrCluster: String = "",
         subscriptionOrAccountId: String = "",
         realmOrDomain: String = "pam",
@@ -885,12 +914,15 @@ public enum ProtocolSpecificSettings: Codable, Equatable, Hashable, Sendable {
 
     public var effectivePort: Int {
         switch self {
-        case .rdp(let s): return s.port
+        case .rdp(let s): return s.effectiveRdpPort
         case .ssh(let s): return s.port
         case .fileTransfer(let s): return s.port
         case .vnc(let s): return s.port
         case .webPage(let s): return Self.portFromUrlString(s.url, defaultHttps: 443, defaultHttp: 80)
-        case .cloudVirtualization(let s): return Self.portFromUrlString(s.apiEndpointUrl, defaultHttps: 443, defaultHttp: 80)
+        case .cloudVirtualization(let s):
+            return s.apiEndpointUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? 5985
+                : Self.portFromUrlString(s.apiEndpointUrl, defaultHttps: 443, defaultHttp: 80)
         case .netUtility(let s): return s.wolUdpPort
         case .serialUart(let s): return s.baudRate
         case .containerExec(let s):

@@ -35,7 +35,7 @@ int64_t nexusts_rdp_create_session(const NexusRdpConfig* config) {
     }
     nexusts::rdp::RdpConnectParams params{};
     params.host = safe_cstr(config->host);
-    params.port = config->port == 0 ? 3389 : config->port;
+    params.port = config->port;
     params.username = safe_cstr(config->username);
     params.password = safe_cstr(config->password);
     params.domain = safe_cstr(config->domain);
@@ -82,6 +82,7 @@ int64_t nexusts_rdp_create_session(const NexusRdpConfig* config) {
     params.shared_drive_name = safe_cstr(config->shared_drive_name);
     params.shared_drive_local_path = safe_cstr(config->shared_drive_local_path);
     params.app_home_dir = safe_cstr(config->app_home_dir);
+    params.preconnection_blob = safe_cstr(config->preconnection_blob);
 
     auto ctx = std::make_shared<nexusts::rdp::RdpSessionContext>(std::move(params));
     std::lock_guard<std::mutex> lock(g_macos_rdp_mutex);

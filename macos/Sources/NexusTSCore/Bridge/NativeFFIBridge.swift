@@ -611,6 +611,30 @@ public final class NativeSshSession: @unchecked Sendable {
         return NativeSshSession(handle: sessionId)
     }
 
+    public static func execCommand(
+        spec: SshFfiConnectPayload,
+        command: String,
+        timeoutSecs: UInt64 = 15
+    ) throws -> String {
+        let specJson = String(decoding: try JSONEncoder().encode(spec), as: UTF8.self)
+        var errPtr: UnsafeMutablePointer<CChar>? = nil
+        let outPtr: UnsafeMutablePointer<CChar>? = specJson.withCString { sPtr in
+            command.withCString { cmdPtr in
+                nexusts_ffi_ssh_exec_command(sPtr, cmdPtr, timeoutSecs, &errPtr)
+            }
+        }
+        if let errPtr {
+            defer { nexusts_ffi_free_cstr(errPtr) }
+            if let outPtr { nexusts_ffi_free_cstr(outPtr) }
+            throw NativeBridgeError.sshTransportError(String(cString: errPtr))
+        }
+        guard let outPtr else {
+            throw NativeBridgeError.sshTransportError("SSH command execution returned empty handle")
+        }
+        defer { nexusts_ffi_free_cstr(outPtr) }
+        return String(cString: outPtr)
+    }
+
     public var isConnected: Bool {
         handle > 0 && nexusts_ffi_ssh_is_connected(handle)
     }
@@ -1822,6 +1846,7 @@ public final class NativeRdpSession: @unchecked Sendable {
         self.initialPixelWidth = alignedInitW
         self.initialPixelHeight = alignedInitH
         self.initialScalePercent = effectiveInitialHiDpi ? resolvedScalePercent : 100
+        let preconnectionBlob = settings.effectivePreconnectionBlob
         self.handle = host.withCString { hostPtr in
             username.withCString { userPtr in
                 password.withCString { passPtr in
@@ -1832,54 +1857,57 @@ public final class NativeRdpSession: @unchecked Sendable {
                                     driveName.withCString { driveNamePtr in
                                         drivePath.withCString { drivePathPtr in
                                             runtimeHomeDir.withCString { homeDirPtr in
-                                                var cfg = NexusRdpConfig()
-                                                cfg.host = hostPtr
-                                                cfg.port = UInt16(clamping: settings.port)
-                                                cfg.username = userPtr
-                                                cfg.password = passPtr
-                                                cfg.domain = domPtr
-                                                cfg.rd_gateway_host = gwPtr
-                                                cfg.rd_gateway_port = UInt16(clamping: settings.rdGatewayPort)
-                                                cfg.initial_width = UInt32(alignedInitW)
-                                                cfg.initial_height = UInt32(alignedInitH)
-                                                cfg.desktop_dpi = UInt32((96 * self.initialScalePercent) / 100)
-                                                cfg.connect_to_console = settings.connectToConsoleAdmin
-                                                cfg.hidpi_enabled = effectiveInitialHiDpi
-                                                cfg.desktop_scale_factor = UInt32(self.initialScalePercent)
-                                                cfg.device_scale_factor = UInt32(resolvedDeviceScalePercent)
-                                                cfg.color_depth_bits = UInt32(settings.colorDepthBits)
-                                                cfg.enable_gfx_pipeline = settings.enableGfxPipeline
-                                                cfg.gfx_codec_mode = settings.gfxCodecProfile.nativeCode
-                                                cfg.enable_h264_avc444 = settings.gfxCodecProfile == .AVC444_CHROMA
-                                                cfg.enable_remotefx = settings.enableRemoteFx
-                                                cfg.enable_dynamic_resize = settings.resizeBehavior == .DYNAMIC_DISP_DVC
-                                                cfg.multi_monitor_spanning = settings.multiMonitorSpanning
-                                                cfg.redirect_clipboard = settings.redirectClipboard
-                                                cfg.audio_redirection_mode = settings.audioRedirectionMode.nativeCode
-                                                cfg.redirect_audio_out = settings.redirectAudioPlayback
-                                                cfg.redirect_mic_in = settings.redirectMicrophone
-                                                cfg.redirect_drives = settings.redirectDrives || !drivePath.isEmpty
-                                                cfg.redirect_printers = settings.redirectPrinters
-                                                cfg.redirect_serial_ports = settings.redirectPorts
-                                                cfg.redirect_smartcard = settings.redirectSmartcardYubiKey
-                                                cfg.enable_font_smoothing = settings.enableFontSmoothing
-                                                cfg.enable_desktop_composition = settings.enableDesktopComposition
-                                                cfg.enable_wallpaper = settings.enableWallpaper
-                                                cfg.enable_full_window_drag = settings.enableFullWindowDrag
-                                                cfg.enable_menu_animations = settings.enableMenuAnimations
-                                                cfg.enable_themes = settings.enableThemes
-                                                cfg.compression_enabled = settings.compressionEnabled
-                                                cfg.nla_security = settings.nlaSecurityRequired
-                                                cfg.tls_security = settings.tlsSecurity
-                                                cfg.restricted_admin_mode = settings.restrictedAdminMode
-                                                cfg.ignore_certificate = settings.ignoreCertificateWarnings
-                                                cfg.remote_app_mode = settings.remoteAppMode
-                                                cfg.remote_app_program = appPtr
-                                                cfg.remote_app_args = argsPtr
-                                                cfg.shared_drive_name = driveNamePtr
-                                                cfg.shared_drive_local_path = drivePathPtr
-                                                cfg.app_home_dir = homeDirPtr
-                                                return nexusts_rdp_create_session(&cfg)
+                                                preconnectionBlob.withCString { pcbPtr in
+                                                    var cfg = NexusRdpConfig()
+                                                    cfg.host = hostPtr
+                                                    cfg.port = UInt16(clamping: settings.effectiveRdpPort)
+                                                    cfg.username = userPtr
+                                                    cfg.password = passPtr
+                                                    cfg.domain = domPtr
+                                                    cfg.rd_gateway_host = gwPtr
+                                                    cfg.rd_gateway_port = UInt16(clamping: settings.rdGatewayPort)
+                                                    cfg.initial_width = UInt32(alignedInitW)
+                                                    cfg.initial_height = UInt32(alignedInitH)
+                                                    cfg.desktop_dpi = UInt32((96 * self.initialScalePercent) / 100)
+                                                    cfg.connect_to_console = settings.connectToConsoleAdmin
+                                                    cfg.hidpi_enabled = effectiveInitialHiDpi
+                                                    cfg.desktop_scale_factor = UInt32(self.initialScalePercent)
+                                                    cfg.device_scale_factor = UInt32(resolvedDeviceScalePercent)
+                                                    cfg.color_depth_bits = UInt32(settings.colorDepthBits)
+                                                    cfg.enable_gfx_pipeline = settings.enableGfxPipeline
+                                                    cfg.gfx_codec_mode = settings.gfxCodecProfile.nativeCode
+                                                    cfg.enable_h264_avc444 = settings.gfxCodecProfile == .AVC444_CHROMA
+                                                    cfg.enable_remotefx = settings.enableRemoteFx
+                                                    cfg.enable_dynamic_resize = settings.resizeBehavior == .DYNAMIC_DISP_DVC
+                                                    cfg.multi_monitor_spanning = settings.multiMonitorSpanning
+                                                    cfg.redirect_clipboard = settings.redirectClipboard
+                                                    cfg.audio_redirection_mode = settings.audioRedirectionMode.nativeCode
+                                                    cfg.redirect_audio_out = settings.redirectAudioPlayback
+                                                    cfg.redirect_mic_in = settings.redirectMicrophone
+                                                    cfg.redirect_drives = settings.redirectDrives || !drivePath.isEmpty
+                                                    cfg.redirect_printers = settings.redirectPrinters
+                                                    cfg.redirect_serial_ports = settings.redirectPorts
+                                                    cfg.redirect_smartcard = settings.redirectSmartcardYubiKey
+                                                    cfg.enable_font_smoothing = settings.enableFontSmoothing
+                                                    cfg.enable_desktop_composition = settings.enableDesktopComposition
+                                                    cfg.enable_wallpaper = settings.enableWallpaper
+                                                    cfg.enable_full_window_drag = settings.enableFullWindowDrag
+                                                    cfg.enable_menu_animations = settings.enableMenuAnimations
+                                                    cfg.enable_themes = settings.enableThemes
+                                                    cfg.compression_enabled = settings.compressionEnabled
+                                                    cfg.nla_security = settings.nlaSecurityRequired
+                                                    cfg.tls_security = settings.tlsSecurity
+                                                    cfg.restricted_admin_mode = settings.restrictedAdminMode
+                                                    cfg.ignore_certificate = settings.ignoreCertificateWarnings || !preconnectionBlob.isEmpty
+                                                    cfg.remote_app_mode = settings.remoteAppMode
+                                                    cfg.remote_app_program = appPtr
+                                                    cfg.remote_app_args = argsPtr
+                                                    cfg.shared_drive_name = driveNamePtr
+                                                    cfg.shared_drive_local_path = drivePathPtr
+                                                    cfg.app_home_dir = homeDirPtr
+                                                    cfg.preconnection_blob = pcbPtr
+                                                    return nexusts_rdp_create_session(&cfg)
+                                                }
                                             }
                                         }
                                     }
@@ -2809,5 +2837,92 @@ public enum NativeNetworkDiagnostics {
         guard let ptr else { return [] }
         defer { nexusts_ffi_free_cstr(ptr) }
         return (try? JSONDecoder().decode([SftpRemoteEntry].self, from: Data(String(cString: ptr).utf8))) ?? []
+    }
+
+    public static func winrmWsmanPost(
+        host: String,
+        port: UInt16 = 5985,
+        path: String = "/wsman",
+        username: String,
+        password: String,
+        domain: String = "",
+        soapXml: String,
+        timeoutMs: UInt64 = 12_000
+    ) throws -> String {
+        var errPtr: UnsafeMutablePointer<CChar>? = nil
+        let outPtr: UnsafeMutablePointer<CChar>? = host.withCString { hPtr in
+            path.withCString { pathPtr in
+                username.withCString { uPtr in
+                    password.withCString { pPtr in
+                        domain.withCString { dPtr in
+                            soapXml.withCString { xmlPtr in
+                                nexusts_ffi_winrm_wsman_post(
+                                    hPtr,
+                                    port,
+                                    pathPtr,
+                                    uPtr,
+                                    pPtr,
+                                    dPtr,
+                                    xmlPtr,
+                                    timeoutMs,
+                                    &errPtr
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if let errPtr {
+            defer { nexusts_ffi_free_cstr(errPtr) }
+            if let outPtr { nexusts_ffi_free_cstr(outPtr) }
+            let msg = String(cString: errPtr)
+            if msg.lowercased().contains("401") || msg.lowercased().contains("authentication") || msg.lowercased().contains("unauthorized") {
+                throw NativeBridgeError.authenticationFailed(msg)
+            }
+            throw NativeBridgeError.networkUtilityError(msg)
+        }
+        guard let outPtr else {
+            throw NativeBridgeError.networkUtilityError("WinRM WSMan returned empty response")
+        }
+        defer { nexusts_ffi_free_cstr(outPtr) }
+        return String(cString: outPtr)
+    }
+
+    public static func buildNtlmNegotiate() -> String {
+        guard let ptr = nexusts_ffi_ntlm_build_negotiate() else { return "" }
+        defer { nexusts_ffi_free_cstr(ptr) }
+        return String(cString: ptr)
+    }
+
+    public static func buildNtlmAuthenticate(
+        challengeB64: String,
+        username: String,
+        password: String,
+        domain: String = "",
+        spnHost: String = ""
+    ) throws -> String {
+        var errPtr: UnsafeMutablePointer<CChar>? = nil
+        let outPtr: UnsafeMutablePointer<CChar>? = challengeB64.withCString { cPtr in
+            username.withCString { uPtr in
+                password.withCString { pPtr in
+                    domain.withCString { dPtr in
+                        spnHost.withCString { hPtr in
+                            nexusts_ffi_ntlm_build_authenticate(cPtr, uPtr, pPtr, dPtr, hPtr, &errPtr)
+                        }
+                    }
+                }
+            }
+        }
+        if let errPtr {
+            defer { nexusts_ffi_free_cstr(errPtr) }
+            if let outPtr { nexusts_ffi_free_cstr(outPtr) }
+            throw NativeBridgeError.authenticationFailed(String(cString: errPtr))
+        }
+        guard let outPtr else {
+            throw NativeBridgeError.authenticationFailed("Failed to construct NTLMv2 Type 3 token")
+        }
+        defer { nexusts_ffi_free_cstr(outPtr) }
+        return String(cString: outPtr)
     }
 }

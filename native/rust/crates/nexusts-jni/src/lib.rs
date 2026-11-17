@@ -10,6 +10,9 @@ use jni::JNIEnv;
 use nexusts_crypto::{
     generate_ed25519_ssh_keypair, open_nxts_vault, seal_nxts_vault, Argon2idProfile,
 };
+use nexusts_netutils::winrm_ntlm::{
+    ntlm_build_authenticate_b64, ntlm_build_negotiate_b64, winrm_http_wsman_post,
+};
 use nexusts_netutils::{
     grab_tcp_service_banner, probe_tcp_port, scan_tcp_ports, send_wake_on_lan, tcp_latency_ping,
     trace_route_hops,
@@ -2429,6 +2432,183 @@ pub extern "system" fn Java_com_nexusts_app_protocols_vnc_bridge_VncNativeBridge
         Ok(ptr) => ptr,
         Err(_) => {
             throw_runtime_exception(&mut env, "Rust panic in nativeGrabTcpBanner");
+            JObject::null().into_raw()
+        }
+    }
+}
+
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub extern "system" fn Java_com_nexusts_app_protocols_vnc_bridge_VncNativeBridge_nativeWinrmWsmanPost<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    host: JString<'local>,
+    port: jint,
+    path: JString<'local>,
+    username: JString<'local>,
+    password: JString<'local>,
+    domain: JString<'local>,
+    soap_xml: JString<'local>,
+    timeout_ms: jint,
+) -> jstring {
+    let outcome = catch_unwind(AssertUnwindSafe(|| -> jstring {
+        let host_s = read_jstring(&mut env, &host);
+        let path_s = read_jstring(&mut env, &path);
+        let user_s = read_jstring(&mut env, &username);
+        let pass_s = read_jstring(&mut env, &password);
+        let dom_s = read_jstring(&mut env, &domain);
+        let soap_s = read_jstring(&mut env, &soap_xml);
+        let tcp_port = u16::try_from(port).unwrap_or(5985);
+        let timeout_u64 = timeout_ms.max(1000) as u64;
+
+        let res = tokio_runtime().block_on(async move {
+            winrm_http_wsman_post(
+                &host_s,
+                tcp_port,
+                &path_s,
+                &user_s,
+                &pass_s,
+                &dom_s,
+                &soap_s,
+                timeout_u64,
+            )
+            .await
+        });
+
+        match res {
+            Ok(reply) => new_checkjni_string(&mut env, reply.soap_xml),
+            Err(e) => {
+                throw_runtime_exception(&mut env, &e.to_string());
+                JObject::null().into_raw()
+            }
+        }
+    }));
+
+    match outcome {
+        Ok(ptr) => ptr,
+        Err(_) => {
+            throw_runtime_exception(&mut env, "Rust panic in nativeWinrmWsmanPost");
+            JObject::null().into_raw()
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_nexusts_app_protocols_vnc_bridge_VncNativeBridge_nativeNtlmBuildNegotiate<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+) -> jstring {
+    let outcome = catch_unwind(AssertUnwindSafe(|| -> jstring {
+        new_checkjni_string(&mut env, ntlm_build_negotiate_b64())
+    }));
+
+    match outcome {
+        Ok(ptr) => ptr,
+        Err(_) => {
+            throw_runtime_exception(&mut env, "Rust panic in nativeNtlmBuildNegotiate");
+            JObject::null().into_raw()
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_nexusts_app_protocols_vnc_bridge_VncNativeBridge_nativeNtlmBuildAuthenticate<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    challenge_b64: JString<'local>,
+    username: JString<'local>,
+    password: JString<'local>,
+    domain: JString<'local>,
+    spn_host: JString<'local>,
+) -> jstring {
+    let outcome = catch_unwind(AssertUnwindSafe(|| -> jstring {
+        let ch_s = read_jstring(&mut env, &challenge_b64);
+        let user_s = read_jstring(&mut env, &username);
+        let pass_s = read_jstring(&mut env, &password);
+        let dom_s = read_jstring(&mut env, &domain);
+        let spn_s = read_jstring(&mut env, &spn_host);
+
+        match ntlm_build_authenticate_b64(&ch_s, &user_s, &pass_s, &dom_s, &spn_s) {
+            Ok(b64) => new_checkjni_string(&mut env, b64),
+            Err(e) => {
+                throw_runtime_exception(&mut env, &e.to_string());
+                JObject::null().into_raw()
+            }
+        }
+    }));
+
+    match outcome {
+        Ok(ptr) => ptr,
+        Err(_) => {
+            throw_runtime_exception(&mut env, "Rust panic in nativeNtlmBuildAuthenticate");
+            JObject::null().into_raw()
+        }
+    }
+}
+
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub extern "system" fn Java_com_nexusts_app_protocols_vnc_bridge_VncNativeBridge_nativeSshExecCommand<
+    'local,
+>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    host: JString<'local>,
+    port: jint,
+    username: JString<'local>,
+    password: JString<'local>,
+    private_key_pem: JString<'local>,
+    passphrase: JString<'local>,
+    command: JString<'local>,
+    timeout_secs: jint,
+) -> jstring {
+    let outcome = catch_unwind(AssertUnwindSafe(|| -> jstring {
+        let host_s = read_jstring(&mut env, &host);
+        let user_s = read_jstring(&mut env, &username);
+        let pass_s = read_jstring(&mut env, &password);
+        let key_s = read_jstring(&mut env, &private_key_pem);
+        let key_pass_s = read_jstring(&mut env, &passphrase);
+        let cmd_s = read_jstring(&mut env, &command);
+        let ssh_port = u16::try_from(port).unwrap_or(22);
+        let timeout_u64 = timeout_secs.max(2) as u64;
+
+        let spec = build_ssh_spec_from_params(
+            host_s,
+            ssh_port,
+            user_s,
+            pass_s,
+            key_s,
+            key_pass_s,
+            String::new(),
+            120,
+            40,
+            false,
+            String::new(),
+        );
+
+        let res = tokio_runtime().block_on(async move {
+            ActiveSshClientSession::exec_oneshot_command(spec, &cmd_s, timeout_u64).await
+        });
+
+        match res {
+            Ok(stdout) => new_checkjni_string(&mut env, stdout),
+            Err(e) => {
+                throw_runtime_exception(&mut env, &e.to_string());
+                JObject::null().into_raw()
+            }
+        }
+    }));
+
+    match outcome {
+        Ok(ptr) => ptr,
+        Err(_) => {
+            throw_runtime_exception(&mut env, "Rust panic in nativeSshExecCommand");
             JObject::null().into_raw()
         }
     }

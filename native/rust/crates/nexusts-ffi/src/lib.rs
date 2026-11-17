@@ -8,6 +8,9 @@ use nexusts_crypto::{
     clear_ssh_agent, generate_ed25519_ssh_keypair, open_nxts_vault, seal_nxts_vault,
     sign_ssh_agent_challenge, Argon2idProfile,
 };
+use nexusts_netutils::winrm_ntlm::{
+    ntlm_build_authenticate_b64, ntlm_build_negotiate_b64, winrm_http_wsman_post,
+};
 use nexusts_netutils::{
     grab_tcp_service_banner, probe_tcp_port, scan_tcp_ports, send_wake_on_lan, tcp_latency_ping,
     trace_route_hops,
@@ -2272,6 +2275,137 @@ pub extern "C" fn nexusts_ffi_net_grab_banner(
         to_c_string(banner)
     }))
     .unwrap_or(ptr::null_mut())
+}
+
+#[no_mangle]
+pub extern "C" fn nexusts_ffi_winrm_wsman_post(
+    host_cstr: *const c_char,
+    port: u16,
+    path_cstr: *const c_char,
+    username_cstr: *const c_char,
+    password_cstr: *const c_char,
+    domain_cstr: *const c_char,
+    soap_xml_cstr: *const c_char,
+    timeout_ms: u64,
+    out_error: *mut *mut c_char,
+) -> *mut c_char {
+    catch_unwind(AssertUnwindSafe(|| unsafe {
+        let host = opt_str_from_c(host_cstr).unwrap_or("").trim().to_string();
+        if host.is_empty() {
+            write_out_error(out_error, "WinRM host is empty");
+            return ptr::null_mut();
+        }
+        let path = opt_str_from_c(path_cstr).unwrap_or("/wsman").to_string();
+        let username = opt_str_from_c(username_cstr).unwrap_or("").to_string();
+        let password = opt_str_from_c(password_cstr).unwrap_or("").to_string();
+        let domain = opt_str_from_c(domain_cstr).unwrap_or("").to_string();
+        let soap_xml = opt_str_from_c(soap_xml_cstr).unwrap_or("").to_string();
+
+        let res = tokio_runtime().block_on(async move {
+            winrm_http_wsman_post(
+                &host,
+                port,
+                &path,
+                &username,
+                &password,
+                &domain,
+                &soap_xml,
+                timeout_ms,
+            )
+            .await
+        });
+
+        match res {
+            Ok(reply) => to_c_string(reply.soap_xml),
+            Err(err) => {
+                write_out_error(out_error, err.to_string());
+                ptr::null_mut()
+            }
+        }
+    }))
+    .unwrap_or_else(|_| unsafe {
+        write_out_error(out_error, "Panic in nexusts_ffi_winrm_wsman_post");
+        ptr::null_mut()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn nexusts_ffi_ntlm_build_negotiate() -> *mut c_char {
+    catch_unwind(AssertUnwindSafe(|| to_c_string(ntlm_build_negotiate_b64())))
+        .unwrap_or(ptr::null_mut())
+}
+
+#[no_mangle]
+pub extern "C" fn nexusts_ffi_ntlm_build_authenticate(
+    challenge_b64_cstr: *const c_char,
+    username_cstr: *const c_char,
+    password_cstr: *const c_char,
+    domain_cstr: *const c_char,
+    spn_host_cstr: *const c_char,
+    out_error: *mut *mut c_char,
+) -> *mut c_char {
+    catch_unwind(AssertUnwindSafe(|| unsafe {
+        let challenge_b64 = opt_str_from_c(challenge_b64_cstr).unwrap_or("");
+        let username = opt_str_from_c(username_cstr).unwrap_or("");
+        let password = opt_str_from_c(password_cstr).unwrap_or("");
+        let domain = opt_str_from_c(domain_cstr).unwrap_or("");
+        let spn_host = opt_str_from_c(spn_host_cstr).unwrap_or("");
+
+        match ntlm_build_authenticate_b64(challenge_b64, username, password, domain, spn_host) {
+            Ok(b64) => to_c_string(b64),
+            Err(err) => {
+                write_out_error(out_error, err.to_string());
+                ptr::null_mut()
+            }
+        }
+    }))
+    .unwrap_or_else(|_| unsafe {
+        write_out_error(out_error, "Panic in nexusts_ffi_ntlm_build_authenticate");
+        ptr::null_mut()
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn nexusts_ffi_ssh_exec_command(
+    connect_spec_json_cstr: *const c_char,
+    command_cstr: *const c_char,
+    timeout_secs: u64,
+    out_error: *mut *mut c_char,
+) -> *mut c_char {
+    catch_unwind(AssertUnwindSafe(|| unsafe {
+        let Some(spec_json) = opt_str_from_c(connect_spec_json_cstr) else {
+            write_out_error(out_error, "Missing connect_spec_json");
+            return ptr::null_mut();
+        };
+        let spec: SshConnectSpec = match serde_json::from_str(spec_json) {
+            Ok(s) => s,
+            Err(e) => {
+                write_out_error(out_error, format!("Invalid SshConnectSpec JSON: {e}"));
+                return ptr::null_mut();
+            }
+        };
+        let command = opt_str_from_c(command_cstr).unwrap_or("").to_string();
+        if command.trim().is_empty() {
+            write_out_error(out_error, "Empty SSH exec command");
+            return ptr::null_mut();
+        }
+
+        let res = tokio_runtime().block_on(async move {
+            ActiveSshClientSession::exec_oneshot_command(spec, &command, timeout_secs).await
+        });
+
+        match res {
+            Ok(stdout) => to_c_string(stdout),
+            Err(err) => {
+                write_out_error(out_error, err.to_string());
+                ptr::null_mut()
+            }
+        }
+    }))
+    .unwrap_or_else(|_| unsafe {
+        write_out_error(out_error, "Panic in nexusts_ffi_ssh_exec_command");
+        ptr::null_mut()
+    })
 }
 
 #[cfg(test)]

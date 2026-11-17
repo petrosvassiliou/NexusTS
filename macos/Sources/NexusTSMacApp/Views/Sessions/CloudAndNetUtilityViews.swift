@@ -180,7 +180,11 @@ public struct CloudHypervisorSessionView: View {
     @State private var inventory: [CloudVmInventoryItem] = []
     @State private var selectedVmId: CloudVmInventoryItem.ID? = nil
     @State private var isLoading: Bool = false
+    @State private var isRunningPowerAction: Bool = false
     @State private var statusMessage: String = "Ready to query hypervisor API"
+    @State private var enhancedSessionMode: Bool = false
+    @State private var manualVmGuid: String = ""
+    @State private var portDiagnostics: [HyperVPortDiagnostic] = []
 
     public init(tab: WorkspaceSessionTab) {
         self.tab = tab
@@ -190,27 +194,86 @@ public struct CloudHypervisorSessionView: View {
         store.activeConnections.first(where: { $0.id == tab.connection.id }) ?? tab.connection
     }
 
+    private var isHyperV: Bool {
+        latestConnection.protocolType == .HYPER_V
+    }
+
+    private var selectedVm: CloudVmInventoryItem? {
+        guard let selectedId = selectedVmId else { return nil }
+        return inventory.first(where: { $0.id == selectedId })
+    }
+
     public var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 10) {
                 ProtocolSquircleIcon(protocolType: latestConnection.protocolType, size: 22)
-                Text("\(latestConnection.protocolType.displayName) • \(latestConnection.name)")
-                    .font(.callout.weight(.semibold))
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("\(latestConnection.protocolType.displayName) • \(latestConnection.name)")
+                        .font(.callout.weight(.semibold))
+                    if !latestConnection.host.isEmpty {
+                        Text(latestConnection.host)
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(.secondary)
+                    }
+                }
 
                 Spacer()
 
-                if let selectedId = selectedVmId,
-                   let vm = inventory.first(where: { $0.id == selectedId }) {
+                if let vm = selectedVm {
+                    if isHyperV {
+                        HStack(spacing: 4) {
+                            Button {
+                                performVmPower(vm: vm, action: .start)
+                            } label: {
+                                Label("Start", systemImage: "play.fill")
+                            }
+                            .help("Start VM (\(vm.name))")
+
+                            Button {
+                                performVmPower(vm: vm, action: .stop)
+                            } label: {
+                                Label("Turn Off", systemImage: "stop.fill")
+                            }
+                            .help("Turn Off VM (\(vm.name))")
+
+                            Button {
+                                performVmPower(vm: vm, action: .save)
+                            } label: {
+                                Label("Save", systemImage: "tray.and.arrow.down.fill")
+                            }
+                            .help("Save VM State (\(vm.name))")
+
+                            Button {
+                                performVmPower(vm: vm, action: .reboot)
+                            } label: {
+                                Label("Restart", systemImage: "arrow.triangle.2.circlepath")
+                            }
+                            .help("Restart VM (\(vm.name))")
+                        }
+                        .controlSize(.small)
+                        .disabled(isRunningPowerAction)
+                    }
+
                     Button {
-                        let child = VaultConnection(
-                            name: vm.name,
-                            host: vm.addressOrNode.isEmpty ? latestConnection.host : vm.addressOrNode,
-                            protocolType: vm.consoleProtocol,
-                            osFamily: vm.consoleProtocol == .RDP ? "Windows" : "Linux"
-                        )
-                        store.openConnection(child, inSplit: .horizontal)
+                        openVmConsole(vm: vm, inSplit: nil)
                     } label: {
-                        Label("Open Console in Split Pane", systemImage: "rectangle.split.2x1")
+                        Label(isHyperV ? "Connect VM (2179)" : "Open Console", systemImage: "display")
+                    }
+                    .controlSize(.small)
+
+                    Button {
+                        openVmConsole(vm: vm, inSplit: .horizontal)
+                    } label: {
+                        Label("Split Console", systemImage: "rectangle.split.2x1")
+                    }
+                    .controlSize(.small)
+                }
+
+                if isHyperV {
+                    Button {
+                        openHostDesktopRdp(inSplit: nil)
+                    } label: {
+                        Label("Host Desktop (3389)", systemImage: "pc")
                     }
                     .controlSize(.small)
                 }
@@ -228,37 +291,134 @@ public struct CloudHypervisorSessionView: View {
             .padding(.vertical, 7)
             .background(.bar)
 
+            if isHyperV {
+                Divider()
+                hyperVQuickConnectAndDiagnosticsBar
+            }
+
             Divider()
 
-            if inventory.isEmpty && !isLoading {
+            if isLoading && inventory.isEmpty {
+                VStack(spacing: 12) {
+                    ProgressView()
+                    Text(statusMessage)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if inventory.isEmpty {
                 ContentUnavailableView {
                     Label("\(latestConnection.protocolType.displayName) Inventory", systemImage: latestConnection.protocolType.sfSymbolName)
                 } description: {
                     Text(statusMessage)
                 } actions: {
-                    Button("Query Live VM Inventory") {
-                        loadInventory()
+                    HStack(spacing: 10) {
+                        Button("Query Live VM Inventory") {
+                            loadInventory()
+                        }
+                        .buttonStyle(.borderedProminent)
+
+                        Button("Edit Connection & Credentials…") {
+                            store.editingConnection = latestConnection
+                        }
+
+                        if isHyperV {
+                            Button("Open Host RDP (3389)") {
+                                openHostDesktopRdp(inSplit: nil)
+                            }
+                        }
                     }
-                    .buttonStyle(.borderedProminent)
                 }
             } else {
-                Table(inventory, selection: $selectedVmId) {
-                    TableColumn("Instance / VM") { vm in
-                        Text(vm.name).font(.body.weight(.medium))
+                VStack(spacing: 0) {
+                    Table(inventory, selection: $selectedVmId) {
+                        TableColumn("Instance / VM") { vm in
+                            Text(vm.name).font(.body.weight(.medium))
+                        }
+                        TableColumn("State") { vm in
+                            EnvironmentCapsuleBadge(vm.powerState)
+                        }
+                        .width(110)
+                        TableColumn(isHyperV ? "VM GUID / Host" : "Node / IP") { vm in
+                            Text(isHyperV ? vm.id : vm.addressOrNode)
+                                .font(.system(.caption, design: .monospaced))
+                                .textSelection(.enabled)
+                        }
+                        TableColumn("Compute") { vm in
+                            Text("\(vm.cpuSummary) • \(vm.memorySummary)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        TableColumn("Actions") { vm in
+                            HStack(spacing: 6) {
+                                Button(isHyperV ? "VMConnect" : "Console") {
+                                    openVmConsole(vm: vm, inSplit: nil)
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .controlSize(.mini)
+
+                                if isHyperV {
+                                    Button("Start") {
+                                        performVmPower(vm: vm, action: .start)
+                                    }
+                                    .controlSize(.mini)
+                                    .disabled(isRunningPowerAction || vm.powerState == "RUNNING")
+
+                                    Button("Off") {
+                                        performVmPower(vm: vm, action: .stop)
+                                    }
+                                    .controlSize(.mini)
+                                    .disabled(isRunningPowerAction || vm.powerState == "STOPPED")
+                                }
+                            }
+                        }
+                        .width(isHyperV ? 195 : 100)
                     }
-                    TableColumn("State") { vm in
-                        EnvironmentCapsuleBadge(vm.powerState)
+                    .contextMenu(forSelectionType: CloudVmInventoryItem.ID.self) { ids in
+                        if let firstId = ids.first, let vm = inventory.first(where: { $0.id == firstId }) {
+                            Button("Open VM Console") {
+                                openVmConsole(vm: vm, inSplit: nil)
+                            }
+                            Button("Open VM Console in Split Pane") {
+                                openVmConsole(vm: vm, inSplit: .horizontal)
+                            }
+                            if isHyperV {
+                                Divider()
+                                Button("Start VM") { performVmPower(vm: vm, action: .start) }
+                                Button("Turn Off VM") { performVmPower(vm: vm, action: .stop) }
+                                Button("Save VM State") { performVmPower(vm: vm, action: .save) }
+                                Button("Restart VM") { performVmPower(vm: vm, action: .reboot) }
+                                Divider()
+                                Button("Save VM as Vault RDP Connection") {
+                                    saveHyperVVmToVault(vm: vm)
+                                }
+                                Button("Copy VM GUID") {
+                                    NSPasteboard.general.clearContents()
+                                    NSPasteboard.general.setString(vm.id, forType: .string)
+                                }
+                            }
+                        }
+                    } primaryAction: { ids in
+                        if let firstId = ids.first, let vm = inventory.first(where: { $0.id == firstId }) {
+                            openVmConsole(vm: vm, inSplit: nil)
+                        }
                     }
-                    .width(120)
-                    TableColumn("Node / IP") { vm in
-                        Text(vm.addressOrNode)
-                            .font(.system(.caption, design: .monospaced))
-                    }
-                    TableColumn("Compute") { vm in
-                        Text("\(vm.cpuSummary) • \(vm.memorySummary)")
+
+                    Divider()
+                    HStack {
+                        Text(statusMessage)
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                        Spacer()
+                        if isHyperV {
+                            Text(enhancedSessionMode ? "VMConnect Mode: Enhanced Session (VMBus)" : "VMConnect Mode: Basic Console (TCP 2179)")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
                     }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 5)
+                    .background(.bar)
                 }
             }
         }
@@ -267,10 +427,64 @@ public struct CloudHypervisorSessionView: View {
         }
     }
 
-    private func loadInventory() {
-        isLoading = true
-        let conn = latestConnection
-        statusMessage = "Querying \(conn.protocolType.displayName)…"
+    private var hyperVQuickConnectAndDiagnosticsBar: some View {
+        HStack(spacing: 10) {
+            HStack(spacing: 6) {
+                ForEach(portDiagnostics) { diag in
+                    HStack(spacing: 4) {
+                        Circle()
+                            .fill(diag.isOpen ? Color(nsColor: .systemGreen) : Color.secondary.opacity(0.35))
+                            .frame(width: 6, height: 6)
+                        Text(verbatim: "\(diag.serviceLabel) :\(diag.port)")
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(diag.isOpen ? .primary : .secondary)
+                    }
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(
+                        Capsule()
+                            .fill(diag.isOpen ? Color.green.opacity(0.12) : Color.secondary.opacity(0.08))
+                    )
+                }
+            }
+
+            Spacer(minLength: 8)
+
+            Toggle("Enhanced Session", isOn: $enhancedSessionMode)
+                .toggleStyle(.checkbox)
+                .controlSize(.small)
+                .font(.caption)
+                .help("Request Hyper-V Enhanced Session Mode (VMBus clipboard & dynamic resize) over TCP 2179")
+
+            TextField("Direct VM GUID (e.g. 8f2c1a40-…)", text: $manualVmGuid)
+                .textFieldStyle(.roundedBorder)
+                .controlSize(.small)
+                .font(.system(.caption, design: .monospaced))
+                .frame(width: 220)
+
+            Button("Connect GUID (2179)") {
+                let trimmed = manualVmGuid.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else { return }
+                let item = CloudVmInventoryItem(
+                    id: trimmed,
+                    name: "\(latestConnection.name) • \(trimmed.prefix(8))",
+                    powerState: "RUNNING",
+                    addressOrNode: latestConnection.host,
+                    cpuSummary: "VMConnect 2179",
+                    memorySummary: trimmed,
+                    consoleProtocol: .RDP
+                )
+                openVmConsole(vm: item, inSplit: nil)
+            }
+            .controlSize(.small)
+            .disabled(manualVmGuid.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.65))
+    }
+
+    private func resolveEffectiveCredential(for conn: VaultConnection) -> VaultCredential? {
         let resolved = PropertyInheritanceResolver.resolve(connection: conn, in: store.document)
         var cred = resolved.effectiveCredential
         if tab.adHocUsernameOverride != nil || tab.adHocPasswordOverride != nil || tab.adHocDomainOverride != nil {
@@ -280,13 +494,143 @@ public struct CloudHypervisorSessionView: View {
             if let d = tab.adHocDomainOverride, !d.isEmpty { copy.domain = d }
             cred = copy
         }
+        return cred
+    }
+
+    private func openVmConsole(vm: CloudVmInventoryItem, inSplit orientation: SplitOrientation?) {
+        let parent = latestConnection
+        if isHyperV {
+            var rdpCfg = RdpProtocolSettings(port: 2179)
+            rdpCfg.hyperVVmId = vm.id
+            rdpCfg.hyperVEnhancedSession = enhancedSessionMode
+            rdpCfg.ignoreCertificateWarnings = true
+            let child = VaultConnection(
+                parentFolderId: parent.parentFolderId,
+                name: vm.name,
+                host: parent.host,
+                protocolType: .RDP,
+                osFamily: "Windows",
+                inheritable: parent.inheritable,
+                settings: .rdp(rdpCfg)
+            )
+            store.openConnection(
+                child,
+                inSplit: orientation,
+                adHocUsername: tab.adHocUsernameOverride,
+                adHocPassword: tab.adHocPasswordOverride,
+                adHocDomain: tab.adHocDomainOverride
+            )
+        } else {
+            let child = VaultConnection(
+                parentFolderId: parent.parentFolderId,
+                name: vm.name,
+                host: vm.addressOrNode.isEmpty ? parent.host : vm.addressOrNode,
+                protocolType: vm.consoleProtocol,
+                osFamily: vm.consoleProtocol == .RDP ? "Windows" : "Linux",
+                inheritable: parent.inheritable
+            )
+            store.openConnection(
+                child,
+                inSplit: orientation,
+                adHocUsername: tab.adHocUsernameOverride,
+                adHocPassword: tab.adHocPasswordOverride,
+                adHocDomain: tab.adHocDomainOverride
+            )
+        }
+    }
+
+    private func openHostDesktopRdp(inSplit orientation: SplitOrientation?) {
+        let parent = latestConnection
+        var rdpCfg = RdpProtocolSettings(port: 3389)
+        rdpCfg.ignoreCertificateWarnings = true
+        let hostConn = VaultConnection(
+            parentFolderId: parent.parentFolderId,
+            name: "\(parent.name) (Host Desktop)",
+            host: parent.host,
+            protocolType: .RDP,
+            osFamily: "Windows",
+            inheritable: parent.inheritable,
+            settings: .rdp(rdpCfg)
+        )
+        store.openConnection(
+            hostConn,
+            inSplit: orientation,
+            adHocUsername: tab.adHocUsernameOverride,
+            adHocPassword: tab.adHocPasswordOverride,
+            adHocDomain: tab.adHocDomainOverride
+        )
+    }
+
+    private func saveHyperVVmToVault(vm: CloudVmInventoryItem) {
+        let parent = latestConnection
+        var rdpCfg = RdpProtocolSettings(port: 2179)
+        rdpCfg.hyperVVmId = vm.id
+        rdpCfg.hyperVEnhancedSession = enhancedSessionMode
+        rdpCfg.ignoreCertificateWarnings = true
+        let saved = VaultConnection(
+            parentFolderId: parent.parentFolderId,
+            name: vm.name,
+            host: parent.host,
+            protocolType: .RDP,
+            osFamily: "Windows",
+            tags: ["hyper-v", "vmconnect"],
+            notes: "Hyper-V VM GUID: \(vm.id) on host \(parent.host)",
+            inheritable: parent.inheritable,
+            settings: .rdp(rdpCfg)
+        )
+        store.upsertConnection(saved)
+        statusMessage = "Saved '\(vm.name)' (TCP 2179 VMConnect) to Vault."
+    }
+
+    private func performVmPower(vm: CloudVmInventoryItem, action: HyperVPowerAction) {
+        let conn = latestConnection
+        let cred = resolveEffectiveCredential(for: conn)
+        isRunningPowerAction = true
+        statusMessage = "Sending \(action.displayTitle) to \(vm.name)…"
         Task {
+            do {
+                let msg = try await CloudHypervisorClient.performHyperVPowerAction(
+                    connection: conn,
+                    credential: cred,
+                    vmId: vm.id,
+                    vmName: vm.name,
+                    action: action
+                )
+                statusMessage = msg
+                try? await Task.sleep(nanoseconds: 900_000_000)
+                let refreshed = try await CloudHypervisorClient.fetchInventory(connection: conn, credential: cred)
+                inventory = refreshed
+            } catch {
+                statusMessage = error.localizedDescription
+            }
+            isRunningPowerAction = false
+        }
+    }
+
+    private func loadInventory() {
+        isLoading = true
+        let conn = latestConnection
+        statusMessage = "Querying \(conn.protocolType.displayName) (\(conn.host))…"
+        let cred = resolveEffectiveCredential(for: conn)
+        Task {
+            if conn.protocolType == .HYPER_V {
+                let hostForDiag = conn.host
+                Task {
+                    let diags = await CloudHypervisorClient.diagnoseHyperVPorts(host: hostForDiag)
+                    await MainActor.run {
+                        portDiagnostics = diags
+                    }
+                }
+            }
             do {
                 let items = try await CloudHypervisorClient.fetchInventory(connection: conn, credential: cred)
                 inventory = items
+                if selectedVmId == nil {
+                    selectedVmId = items.first?.id
+                }
                 statusMessage = items.isEmpty
-                    ? "Connected — 0 virtual machines returned or credentials required."
-                    : "Discovered \(items.count) virtual machine(s)."
+                    ? "Connected to \(conn.host) — 0 virtual machines found."
+                    : "Discovered \(items.count) virtual machine(s) on \(conn.host)."
             } catch {
                 statusMessage = error.localizedDescription
             }
