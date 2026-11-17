@@ -67,7 +67,6 @@ public struct ContainerWorkloadStudioView: View {
 
     public var body: some View {
         let cred = resolvedCredential()
-        let bearer = cred?.secretPassword ?? ""
 
         VStack(spacing: 0) {
             HStack(spacing: 12) {

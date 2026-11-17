@@ -5,9 +5,14 @@ import java.io.BufferedReader
 import java.io.ByteArrayOutputStream
 import java.io.Closeable
 import java.io.IOException
+import java.io.InputStream
 import java.io.InputStreamReader
+import java.io.OutputStream
+import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.net.SocketAddress
+import java.nio.channels.SocketChannel
 import java.nio.charset.StandardCharsets
 import java.security.SecureRandom
 import java.security.cert.X509Certificate
@@ -89,6 +94,8 @@ class JvmFtpFtpsTransferClient(
     private var controlWriter: BufferedOutputStream? = null
     private var dataChannelProtected: Boolean = false
     private var activeControlPort: Int = 21
+    private var controlPeerAddress: InetAddress? = null
+    private var negotiatedControlTlsProtocol: String = ""
     private var epsvSupported: Boolean = true
     private var mlsdSupported: Boolean = true
 
@@ -121,9 +128,11 @@ class JvmFtpFtpsTransferClient(
         rawTcp.tcpNoDelay = true
         rawTcp.soTimeout = readTimeoutMs
         rawTcp.connect(InetSocketAddress(trimmedHost, targetPort), connectTimeoutMs)
+        controlPeerAddress = rawTcp.inetAddress
 
         if (securityMode == FtpSecurityMode.IMPLICIT_FTPS) {
             val sslSock = wrapSocketWithTls(rawTcp, trimmedHost, targetPort)
+            negotiatedControlTlsProtocol = sslSock.session.protocol.orEmpty()
             controlSessionIdHex = sslSock.session.id.joinToString("") { "%02x".format(it) }
             attachControlStreams(sslSock)
             val greeting = readControlReply()
@@ -146,6 +155,7 @@ class JvmFtpFtpsTransferClient(
                     throw IOException("Explicit FTPS AUTH TLS rejected: ${authReply.code} ${authReply.message}")
                 }
                 val sslSock = wrapSocketWithTls(rawTcp, trimmedHost, targetPort)
+                negotiatedControlTlsProtocol = sslSock.session.protocol.orEmpty()
                 controlSessionIdHex = sslSock.session.id.joinToString("") { "%02x".format(it) }
                 attachControlStreams(sslSock)
             }
@@ -193,10 +203,18 @@ class JvmFtpFtpsTransferClient(
         }
     }
 
-    private fun wrapSocketWithTls(plainSocket: Socket, peerHost: String, peerPort: Int): SSLSocket {
+    private fun wrapSocketWithTls(
+        plainSocket: Socket,
+        peerHost: String,
+        peerPort: Int,
+        lockedProtocol: String? = null
+    ): SSLSocket {
         val ssl = sslSocketFactory.createSocket(plainSocket, peerHost, peerPort, true) as SSLSocket
         ssl.useClientMode = true
         ssl.soTimeout = readTimeoutMs
+        if (!lockedProtocol.isNullOrBlank() && ssl.supportedProtocols.contains(lockedProtocol)) {
+            ssl.enabledProtocols = arrayOf(lockedProtocol)
+        }
         if (!allowInsecureTls) {
             val params: SSLParameters = ssl.sslParameters
             params.endpointIdentificationAlgorithm = "HTTPS"
@@ -204,6 +222,20 @@ class JvmFtpFtpsTransferClient(
         }
         ssl.startHandshake()
         return ssl
+    }
+
+    private fun wrapDataSocketWithControlTlsSession(rawData: Socket): SSLSocket {
+        val logicalPeerSocket = ControlSessionPeerSocket(
+            delegate = rawData,
+            logicalPeerAddress = controlPeerAddress ?: rawData.inetAddress,
+            logicalPeerPort = activeControlPort
+        )
+        return wrapSocketWithTls(
+            plainSocket = logicalPeerSocket,
+            peerHost = host.trim(),
+            peerPort = activeControlPort,
+            lockedProtocol = negotiatedControlTlsProtocol.takeIf { it.isNotBlank() }
+        )
     }
 
     private fun attachControlStreams(socket: Socket) {
@@ -280,10 +312,10 @@ class JvmFtpFtpsTransferClient(
                 throw IOException("FTP STOR rejected: ${prelim.code} ${prelim.message}")
             }
 
-            // Pass activeControlPort (NOT passivePort) so JSSE SSLSessionContext reuses the control TLS session
-            // required by vsftpd (require_ssl_reuse=YES), ProFTPD, and FileZilla Server!
+            // Wrap rawData in ControlSessionPeerSocket + lock negotiated TLS protocol so JSSE/Conscrypt
+            // reuses the control TLS session required by vsftpd (require_ssl_reuse=YES), ProFTPD, & FileZilla!
             val activeDataSocket: Socket = if (dataChannelProtected) {
-                wrapSocketWithTls(rawData, host.trim(), activeControlPort).also { ssl ->
+                wrapDataSocketWithControlTlsSession(rawData).also { ssl ->
                     lastDataSessionIdHex = ssl.session.id.joinToString("") { "%02x".format(it) }
                 }
             } else {
@@ -360,9 +392,10 @@ class JvmFtpFtpsTransferClient(
                 throw IOException("FTP command '$command' rejected: ${prelim.code} ${prelim.message}")
             }
 
-            // Pass activeControlPort (NOT passivePort) so JSSE SSLSessionContext reuses the control TLS session!
+            // Wrap rawData in ControlSessionPeerSocket + lock negotiated TLS protocol so JSSE/Conscrypt
+            // reuses the control TLS session!
             val activeDataSocket: Socket = if (dataChannelProtected) {
-                wrapSocketWithTls(rawData, host.trim(), activeControlPort).also { ssl ->
+                wrapDataSocketWithControlTlsSession(rawData).also { ssl ->
                     lastDataSessionIdHex = ssl.session.id.joinToString("") { "%02x".format(it) }
                 }
             } else {
@@ -496,6 +529,8 @@ class JvmFtpFtpsTransferClient(
         controlReader = null
         controlWriter = null
         dataChannelProtected = false
+        controlPeerAddress = null
+        negotiatedControlTlsProtocol = ""
     }
 
     companion object {
@@ -799,6 +834,63 @@ class JvmFtpFtpsTransferClient(
             return if (cleanParent == "/") "/$cleanChild" else "$cleanParent/$cleanChild"
         }
     }
+}
+
+/**
+ * Zero-reflection delegating [Socket] that presents the FTPS control channel's `(InetAddress, port)`
+ * to `SSLSocketFactory.createSocket(Socket, host, port, autoClose)`.
+ *
+ * OpenJDK's `BaseSSLSocketImpl.getPort()` (and `SSLSocketImpl.getPeerPort()`) delegates directly to
+ * the underlying `Socket.getPort()` rather than using the `port` argument passed to `createSocket(...)`,
+ * which otherwise causes JSSE's `sessionHostPortCache` to miss the cached control TLS session on
+ * ephemeral `PASV`/`EPSV` data ports (`vsftpd` `require_ssl_reuse=YES`, ProFTPD, FileZilla Server).
+ */
+private class ControlSessionPeerSocket(
+    private val delegate: Socket,
+    private val logicalPeerAddress: InetAddress?,
+    private val logicalPeerPort: Int
+) : Socket() {
+    override fun getPort(): Int = logicalPeerPort
+    override fun getInetAddress(): InetAddress? = logicalPeerAddress ?: delegate.inetAddress
+    override fun getRemoteSocketAddress(): SocketAddress =
+        InetSocketAddress(logicalPeerAddress ?: delegate.inetAddress, logicalPeerPort)
+    override fun getLocalAddress(): InetAddress = delegate.localAddress
+    override fun getLocalPort(): Int = delegate.localPort
+    override fun getLocalSocketAddress(): SocketAddress? = delegate.localSocketAddress
+    override fun getChannel(): SocketChannel? = delegate.channel
+    override fun getInputStream(): InputStream = delegate.inputStream
+    override fun getOutputStream(): OutputStream = delegate.outputStream
+    override fun setTcpNoDelay(on: Boolean) {
+        delegate.tcpNoDelay = on
+    }
+    override fun getTcpNoDelay(): Boolean = delegate.tcpNoDelay
+    override fun setSoLinger(on: Boolean, linger: Int) = delegate.setSoLinger(on, linger)
+    override fun getSoLinger(): Int = delegate.soLinger
+    override fun setSoTimeout(timeout: Int) {
+        delegate.soTimeout = timeout
+    }
+    override fun getSoTimeout(): Int = delegate.soTimeout
+    override fun setSendBufferSize(size: Int) {
+        delegate.sendBufferSize = size
+    }
+    override fun getSendBufferSize(): Int = delegate.sendBufferSize
+    override fun setReceiveBufferSize(size: Int) {
+        delegate.receiveBufferSize = size
+    }
+    override fun getReceiveBufferSize(): Int = delegate.receiveBufferSize
+    override fun setKeepAlive(on: Boolean) {
+        delegate.keepAlive = on
+    }
+    override fun getKeepAlive(): Boolean = delegate.keepAlive
+    override fun shutdownInput() = delegate.shutdownInput()
+    override fun shutdownOutput() = delegate.shutdownOutput()
+    override fun isConnected(): Boolean = delegate.isConnected
+    override fun isBound(): Boolean = delegate.isBound
+    override fun isClosed(): Boolean = delegate.isClosed
+    override fun isInputShutdown(): Boolean = delegate.isInputShutdown
+    override fun isOutputShutdown(): Boolean = delegate.isOutputShutdown
+    @Synchronized
+    override fun close() = delegate.close()
 }
 
 typealias JvmFtpsTransferClient = JvmFtpFtpsTransferClient

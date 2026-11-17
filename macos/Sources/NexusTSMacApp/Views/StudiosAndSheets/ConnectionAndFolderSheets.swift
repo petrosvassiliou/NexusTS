@@ -376,7 +376,7 @@ public struct ConnectionEditorSheet: View {
                         }
                     )) {
                         ForEach(ports) { p in
-                            Text("\(p.displayTitle) (\(p.calloutPath))").tag(p.calloutPath)
+                            Text("\(p.displayName) (\(p.calloutPath))").tag(p.calloutPath)
                         }
                     }
                 }
