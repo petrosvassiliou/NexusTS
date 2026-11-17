@@ -834,11 +834,20 @@ class RtszDocumentImporter {
             lowerTag == "royalwebconnection" || lowerTag == "royalwebpageconnection" ->
                 VaultProtocolType.WEB_PAGE
 
+            lowerTag == "royaltelnetconnection" -> VaultProtocolType.TELNET
+            lowerTag == "royalserialportconnection" -> VaultProtocolType.SERIAL
             lowerTag == "royalvmwareconnection" -> VaultProtocolType.VMWARE_VSPHERE
             lowerTag == "royalhypervconnection" -> VaultProtocolType.HYPER_V
             lowerTag == "royalproxmoxconnection" -> VaultProtocolType.PROXMOX_VE
             lowerTag == "royalawsconnection" -> VaultProtocolType.AWS_EC2
             lowerTag == "royalazureconnection" -> VaultProtocolType.AZURE_VM
+            lowerTag == "royalcloudconnection" -> {
+                if (elem.childText("SubscriptionOrAccountId").contains('-')) {
+                    VaultProtocolType.AZURE_VM
+                } else {
+                    VaultProtocolType.AWS_EC2
+                }
+            }
             lowerTag == "royalterminalservicesconnection" ||
                 lowerTag == "royalwindowsterminalservicesconnection" ||
                 lowerTag == "royalwindowsservicesconnection" ||
@@ -848,7 +857,21 @@ class RtszDocumentImporter {
                 VaultProtocolType.WINDOWS_TERMINAL_SERVICES
             lowerTag == "royalpowershellconnection" -> VaultProtocolType.SSH
             lowerTag == "royaldockerconnection" -> VaultProtocolType.DOCKER_CONTAINER
-            lowerTag == "royalkubernetesconnection" -> VaultProtocolType.KUBERNETES_POD
+            lowerTag == "royalkubernetesconnection" || lowerTag == "royalcontainerconnection" -> {
+                val ep = elem.childText("ClusterEndpoint").ifBlank { elem.childText("ClusterOrSocketEndpoint") }.ifBlank { rawEndpoint }
+                if (ep.startsWith("unix://", true) || ep.startsWith("tcp://", true) || ep.contains(":2375") || ep.contains(":2376")) {
+                    VaultProtocolType.DOCKER_CONTAINER
+                } else {
+                    VaultProtocolType.KUBERNETES_POD
+                }
+            }
+            lowerTag == "royalnetworkutilityconnection" -> {
+                if (elem.childText("WolMacAddress").isNotBlank() || elem.childText("MACAddress").isNotBlank()) {
+                    VaultProtocolType.UTILITY_WAKE_ON_LAN
+                } else {
+                    VaultProtocolType.UTILITY_PING
+                }
+            }
             rawEndpoint.startsWith("http://", true) || rawEndpoint.startsWith("https://", true) ->
                 VaultProtocolType.WEB_PAGE
             else -> VaultProtocolType.RDP
@@ -1022,27 +1045,37 @@ class RtszDocumentImporter {
         }
 
         VaultProtocolType.SFTP, VaultProtocolType.FTP, VaultProtocolType.FTPS, VaultProtocolType.SCP -> {
+            val implicitFtps = elem.childBoolean("FtpsImplicitTls", "FTPSImplicitTls", default = false)
             val defaultPort = when (protocol) {
                 VaultProtocolType.FTP -> 21
-                VaultProtocolType.FTPS -> 990
+                VaultProtocolType.FTPS -> if (implicitFtps) 990 else 21
                 else -> 22
             }
+            val parsedPort = elem.childInt("Port", "SSHPort", "FTPPort") ?: uriPortFallback ?: defaultPort
             ProtocolSpecificSettings.FileTransfer(
-                port = elem.childInt("Port", "SSHPort", "FTPPort") ?: uriPortFallback ?: defaultPort,
-                initialLocalDirectory = elem.childText("InitialLocalPath").ifBlank { elem.childText("LocalPath") },
+                port = parsedPort,
+                initialLocalDirectory = elem.childText("InitialLocalPath")
+                    .ifBlank { elem.childText("InitialLocalDirectory") }
+                    .ifBlank { elem.childText("LocalPath") },
                 initialRemoteDirectory = elem.childText("InitialRemotePath")
-                    .ifBlank { elem.childText("RemotePath") }
-                    .ifBlank { "/" },
+                    .ifBlank { elem.childText("InitialRemoteDirectory") }
+                    .ifBlank { elem.childText("RemotePath") },
                 preserveTimestamps = elem.childBoolean("PreserveTimestamps", default = true),
                 showHiddenDotfiles = elem.childBoolean("ShowHiddenDotfiles", "ShowHiddenFiles", default = true),
                 maxConcurrentTransfers = elem.childInt("MaxConcurrentTransfers") ?: 4,
-                ftpsImplicitTls = elem.childBoolean("FtpsImplicitTls", default = false)
+                ftpsImplicitTls = if (elem.hasDirectChild("FtpsImplicitTls") || elem.hasDirectChild("FTPSImplicitTls")) {
+                    implicitFtps
+                } else {
+                    protocol == VaultProtocolType.FTPS && parsedPort == 990
+                },
+                passiveMode = elem.childBoolean("PassiveMode", default = true),
+                verifyTls = elem.childBoolean("VerifyTls", default = false)
             )
         }
 
         VaultProtocolType.VNC, VaultProtocolType.APPLE_SCREEN_SHARING -> {
             val isArd = protocol == VaultProtocolType.APPLE_SCREEN_SHARING ||
-                elem.childBoolean("IsAppleRemoteDesktop", "UseAppleScreenSharing", "AppleArdDiffieHellmanAuth", default = false)
+                elem.childBoolean("IsAppleRemoteDesktop", "UseAppleScreenSharing", "AppleScreenSharing", "AppleArdDiffieHellmanAuth", default = false)
             val encodings = elem.childText("PreferredEncodings")
                 .split(',')
                 .map { it.trim() }
@@ -1055,8 +1088,8 @@ class RtszDocumentImporter {
                 jpegQualityLevel = elem.childInt("JpegQualityLevel") ?: 7,
                 viewOnly = elem.childBoolean("ViewOnly", default = false),
                 sharedSession = elem.childBoolean("SharedSession", default = true),
-                appleArdDiffieHellmanAuth = if (elem.hasDirectChild("AppleArdDiffieHellmanAuth")) {
-                    elem.childBoolean("AppleArdDiffieHellmanAuth", default = isArd)
+                appleArdDiffieHellmanAuth = if (elem.hasDirectChild("AppleArdDiffieHellmanAuth") || elem.hasDirectChild("AppleScreenSharing")) {
+                    elem.childBoolean("AppleArdDiffieHellmanAuth", "AppleScreenSharing", default = isArd)
                 } else {
                     isArd
                 }
@@ -1065,6 +1098,7 @@ class RtszDocumentImporter {
 
         VaultProtocolType.WEB_PAGE -> {
             val rawUrl = elem.childText("WebPageUrl")
+                .ifBlank { elem.childText("WebUrl") }
                 .ifBlank { elem.childText("URL") }
                 .ifBlank { uri }
                 .trim()
@@ -1076,16 +1110,21 @@ class RtszDocumentImporter {
             ProtocolSpecificSettings.WebPage(
                 url = webUrl,
                 isolatedStorageProfileId = elem.childText("IsolatedProfileId").ifBlank { UUID.randomUUID().toString() },
-                autoFillEnabled = elem.childBoolean("AutoFill", "EnableAutoFill", default = true),
+                autoFillEnabled = elem.childBoolean("AutoFill", "AutoFillEnabled", "EnableAutoFill", default = true),
                 usernameCssSelector = elem.childText("UsernameCssSelector")
                     .ifBlank { "input[type='email'], input[name*='user'], input[type='text']" },
                 passwordCssSelector = elem.childText("PasswordCssSelector")
                     .ifBlank { "input[type='password']" },
                 submitCssSelector = elem.childText("SubmitCssSelector")
                     .ifBlank { "button[type='submit'], input[type='submit']" },
-                injectHttpBasicAuth = elem.childBoolean("InjectHttpBasicAuth", "PassCredentialsForBasicAuthentication", default = false),
+                injectHttpBasicAuth = elem.childBoolean("InjectHttpBasicAuth", "PassCredentialsForBasicAuthentication", default = true),
                 pinnedCertSha256 = elem.childText("PinnedCertSha256"),
-                ignoreSelfSignedInternalCert = elem.childBoolean("IgnoreSelfSignedCert", "IgnoreCertificateErrors", default = false)
+                ignoreSelfSignedInternalCert = elem.childBoolean(
+                    "IgnoreSelfSignedCert",
+                    "IgnoreSelfSignedInternalCert",
+                    "IgnoreCertificateErrors",
+                    default = true
+                )
             )
         }
 
@@ -1098,19 +1137,23 @@ class RtszDocumentImporter {
                 elem.childText("ApiEndpointUrl")
             } else if (uri.startsWith("http://", true) || uri.startsWith("https://", true)) {
                 uri
-            } else if (protocol == VaultProtocolType.HYPER_V) {
+            } else if (protocol in setOf(VaultProtocolType.HYPER_V, VaultProtocolType.AWS_EC2, VaultProtocolType.AZURE_VM)) {
                 ""
+            } else if (protocol == VaultProtocolType.PROXMOX_VE && uri.isNotBlank()) {
+                if (uri.contains(':')) "https://$uri" else "https://$uri:8006"
             } else if (uri.isNotBlank()) {
                 "https://$uri"
             } else {
                 ""
             }
+            val defaultRealm = if (protocol == VaultProtocolType.PROXMOX_VE) "pam" else ""
             ProtocolSpecificSettings.CloudVirtualization(
                 apiEndpointUrl = apiUrl,
                 regionOrCluster = elem.childText("RegionOrCluster"),
                 subscriptionOrAccountId = elem.childText("SubscriptionOrAccountId"),
-                realmOrDomain = elem.childText("RealmOrDomain").ifBlank { "pam" },
-                autoSyncDynamicInventory = elem.childBoolean("AutoSyncDynamicInventory", default = true)
+                realmOrDomain = if (elem.hasDirectChild("RealmOrDomain")) elem.childText("RealmOrDomain") else defaultRealm,
+                autoSyncDynamicInventory = elem.childBoolean("AutoSyncDynamicInventory", default = true),
+                verifyTls = elem.childBoolean("VerifyTls", default = false)
             )
         }
 
@@ -1122,42 +1165,47 @@ class RtszDocumentImporter {
                 pingCount = elem.childInt("PingCount") ?: 10,
                 pingIntervalMs = elem.childInt("PingIntervalMs") ?: 1000,
                 tracerouteMaxHops = elem.childInt("TracerouteMaxHops") ?: 30,
-                portScanRangeStart = elem.childInt("PortScanStart") ?: 1,
-                portScanRangeEnd = elem.childInt("PortScanEnd") ?: 1024,
+                portScanRangeStart = elem.childInt("PortScanStart", "PortScanRangeStart") ?: 1,
+                portScanRangeEnd = elem.childInt("PortScanEnd", "PortScanRangeEnd") ?: 1024,
                 portScanConcurrency = elem.childInt("PortScanConcurrency") ?: 128,
                 wolMacAddress = elem.childText("WolMacAddress")
                     .ifBlank { elem.childText("MACAddress") }
                     .ifBlank { elem.childText("PhysicalAddress") },
-                wolBroadcastAddress = elem.childText("WolBroadcastIp").ifBlank { "255.255.255.255" },
+                wolBroadcastAddress = elem.childText("WolBroadcastIp")
+                    .ifBlank { elem.childText("WolBroadcastAddress") }
+                    .ifBlank { "255.255.255.255" },
                 wolUdpPort = elem.childInt("WolUdpPort") ?: 9,
                 wolSecureOnHex = elem.childText("WolSecureOnHex")
             )
         }
 
         VaultProtocolType.KUBERNETES_POD, VaultProtocolType.DOCKER_CONTAINER -> {
+            val defaultEndpoint = if (protocol == VaultProtocolType.DOCKER_CONTAINER) {
+                if (uri.isNotBlank()) "http://$uri:2375" else "http://127.0.0.1:2375"
+            } else {
+                if (uri.isNotBlank()) "https://$uri:6443" else "https://kubernetes.default.svc:6443"
+            }
             ProtocolSpecificSettings.ContainerExec(
-                clusterOrSocketEndpoint = if (elem.hasDirectChild("ClusterEndpoint")) {
-                    elem.childText("ClusterEndpoint")
-                } else {
-                    uri.ifBlank { "https://kubernetes.default.svc:6443" }
+                clusterOrSocketEndpoint = when {
+                    elem.hasDirectChild("ClusterEndpoint") -> elem.childText("ClusterEndpoint")
+                    elem.hasDirectChild("ClusterOrSocketEndpoint") -> elem.childText("ClusterOrSocketEndpoint")
+                    uri.startsWith("http://", true) || uri.startsWith("https://", true) ||
+                        uri.startsWith("unix://", true) || uri.startsWith("tcp://", true) -> uri
+                    else -> defaultEndpoint
                 },
-                contextName = if (elem.hasDirectChild("ContextName")) {
-                    elem.childText("ContextName")
-                } else {
-                    "prod-eu-central"
-                },
+                contextName = elem.childText("ContextName"),
                 namespace = if (elem.hasDirectChild("Namespace")) {
                     elem.childText("Namespace")
                 } else {
                     "default"
                 },
-                podOrContainerName = elem.childText("Workload"),
-                subContainerName = elem.childText("ContainerName"),
-                shellCommand = elem.childText("Shell").ifBlank { "/bin/sh" },
-                followLogsOnOpen = elem.childBoolean("FollowLogs", default = false),
+                podOrContainerName = elem.childText("Workload").ifBlank { elem.childText("PodOrContainerName") },
+                subContainerName = elem.childText("ContainerName").ifBlank { elem.childText("SubContainerName") },
+                shellCommand = elem.childText("Shell").ifBlank { elem.childText("ShellCommand") }.ifBlank { "/bin/sh" },
+                followLogsOnOpen = elem.childBoolean("FollowLogs", "FollowLogsOnOpen", default = false),
                 logTailLines = elem.childInt("LogTailLines") ?: 200,
                 portForwards = decodePortForwards(elem.childText("PortForwardRules")),
-                verifyTls = elem.childBoolean("VerifyTls", default = true)
+                verifyTls = elem.childBoolean("VerifyTls", default = false)
             )
         }
     }

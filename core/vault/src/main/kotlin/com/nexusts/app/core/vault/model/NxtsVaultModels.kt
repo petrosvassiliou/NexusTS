@@ -300,11 +300,13 @@ sealed interface ProtocolSpecificSettings {
     data class FileTransfer(
         val port: Int = 22,
         val initialLocalDirectory: String = "",
-        val initialRemoteDirectory: String = "/",
+        val initialRemoteDirectory: String = "",
         val preserveTimestamps: Boolean = true,
         val showHiddenDotfiles: Boolean = true,
         val maxConcurrentTransfers: Int = 4,
-        val ftpsImplicitTls: Boolean = false
+        val ftpsImplicitTls: Boolean = false,
+        val passiveMode: Boolean = true,
+        val verifyTls: Boolean = false
     ) : ProtocolSpecificSettings
 
     @Serializable
@@ -328,9 +330,9 @@ sealed interface ProtocolSpecificSettings {
         val usernameCssSelector: String = "input[type='email'], input[name*='user'], input[type='text']",
         val passwordCssSelector: String = "input[type='password']",
         val submitCssSelector: String = "button[type='submit'], input[type='submit']",
-        val injectHttpBasicAuth: Boolean = false,
+        val injectHttpBasicAuth: Boolean = true,
         val pinnedCertSha256: String = "",
-        val ignoreSelfSignedInternalCert: Boolean = false
+        val ignoreSelfSignedInternalCert: Boolean = true
     ) : ProtocolSpecificSettings
 
     @Serializable
@@ -340,7 +342,8 @@ sealed interface ProtocolSpecificSettings {
         val regionOrCluster: String = "",
         val subscriptionOrAccountId: String = "",
         val realmOrDomain: String = "pam",
-        val autoSyncDynamicInventory: Boolean = true
+        val autoSyncDynamicInventory: Boolean = true,
+        val verifyTls: Boolean = false
     ) : ProtocolSpecificSettings
 
     @Serializable
@@ -377,7 +380,7 @@ sealed interface ProtocolSpecificSettings {
     @SerialName("container_exec")
     data class ContainerExec(
         val clusterOrSocketEndpoint: String = "https://kubernetes.default.svc:6443",
-        val contextName: String = "prod-eu-central",
+        val contextName: String = "",
         val namespace: String = "default",
         val podOrContainerName: String = "",
         val subContainerName: String = "",
@@ -385,7 +388,7 @@ sealed interface ProtocolSpecificSettings {
         val followLogsOnOpen: Boolean = false,
         val logTailLines: Int = 200,
         val portForwards: List<SshPortForwardRule> = emptyList(),
-        val verifyTls: Boolean = true
+        val verifyTls: Boolean = false
     ) : ProtocolSpecificSettings
 }
 

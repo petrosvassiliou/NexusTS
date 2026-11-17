@@ -120,17 +120,23 @@ public enum VaultProtocolType: String, Codable, CaseIterable, Identifiable, Send
     }
 
     public func defaultSettings(host: String = "") -> ProtocolSpecificSettings {
+        let trimmed = host.trimmingCharacters(in: .whitespacesAndNewlines)
         switch self {
         case .RDP, .WINDOWS_TERMINAL_SERVICES:
             return .rdp(RdpProtocolSettings())
         case .SSH, .TELNET:
             return .ssh(SshProtocolSettings(port: defaultPort == 0 ? 22 : defaultPort))
         case .SERIAL:
-            return .serialUart(SerialUartProtocolSettings())
+            var uart = SerialUartProtocolSettings()
+            if !trimmed.isEmpty {
+                uart.devicePathHint = trimmed
+            }
+            return .serialUart(uart)
         case .SFTP, .FTP, .FTPS, .SCP:
             return .fileTransfer(FileTransferProtocolSettings(
                 port: defaultPort,
-                ftpsImplicitTls: self == .FTPS
+                ftpsImplicitTls: self == .FTPS,
+                verifyTls: false
             ))
         case .VNC, .APPLE_SCREEN_SHARING:
             return .vnc(VncProtocolSettings(
@@ -138,23 +144,71 @@ public enum VaultProtocolType: String, Codable, CaseIterable, Identifiable, Send
                 appleArdDiffieHellmanAuth: self == .APPLE_SCREEN_SHARING
             ))
         case .WEB_PAGE:
-            let url = host.hasPrefix("http://") || host.hasPrefix("https://")
-                ? host
-                : (host.isEmpty ? "https://localhost" : "https://\(host)")
+            let url = (trimmed.hasPrefix("http://") || trimmed.hasPrefix("https://"))
+                ? trimmed
+                : (trimmed.isEmpty ? "" : "https://\(trimmed)")
             return .webPage(WebPageProtocolSettings(url: url))
         case .HYPER_V:
-            let url = (host.hasPrefix("http://") || host.hasPrefix("https://")) ? host : ""
-            return .cloudVirtualization(CloudVirtualizationProtocolSettings(apiEndpointUrl: url))
-        case .VMWARE_VSPHERE, .PROXMOX_VE, .AWS_EC2, .AZURE_VM:
-            let url = host.hasPrefix("http") ? host : "https://\(host.isEmpty ? "localhost" : host):\(defaultPort)"
-            return .cloudVirtualization(CloudVirtualizationProtocolSettings(apiEndpointUrl: url))
+            let url = (trimmed.hasPrefix("http://") || trimmed.hasPrefix("https://")) ? trimmed : ""
+            return .cloudVirtualization(CloudVirtualizationProtocolSettings(
+                apiEndpointUrl: url,
+                realmOrDomain: ""
+            ))
+        case .PROXMOX_VE:
+            let url = trimmed.isEmpty
+                ? ""
+                : (trimmed.hasPrefix("http") ? trimmed : "https://\(trimmed):8006")
+            return .cloudVirtualization(CloudVirtualizationProtocolSettings(
+                apiEndpointUrl: url,
+                realmOrDomain: "pam"
+            ))
+        case .VMWARE_VSPHERE:
+            let url = trimmed.isEmpty
+                ? ""
+                : (trimmed.hasPrefix("http") ? trimmed : "https://\(trimmed)")
+            return .cloudVirtualization(CloudVirtualizationProtocolSettings(
+                apiEndpointUrl: url,
+                realmOrDomain: ""
+            ))
+        case .AWS_EC2:
+            let url = trimmed.hasPrefix("http") ? trimmed : ""
+            let region = (!trimmed.isEmpty && !trimmed.hasPrefix("http") && !trimmed.contains("."))
+                ? trimmed
+                : "us-east-1"
+            return .cloudVirtualization(CloudVirtualizationProtocolSettings(
+                apiEndpointUrl: url,
+                regionOrCluster: region,
+                realmOrDomain: ""
+            ))
+        case .AZURE_VM:
+            let url = trimmed.hasPrefix("http") ? trimmed : "https://management.azure.com"
+            let subId = (!trimmed.isEmpty && !trimmed.hasPrefix("http")) ? trimmed : ""
+            return .cloudVirtualization(CloudVirtualizationProtocolSettings(
+                apiEndpointUrl: url,
+                subscriptionOrAccountId: subId,
+                realmOrDomain: ""
+            ))
         case .UTILITY_PING, .UTILITY_TRACEROUTE, .UTILITY_PORT_SCANNER, .UTILITY_WAKE_ON_LAN:
-            return .netUtility(NetUtilityProtocolSettings())
+            var net = NetUtilityProtocolSettings()
+            if self == .UTILITY_WAKE_ON_LAN && trimmed.contains(":") {
+                net.wolMacAddress = trimmed
+            }
+            return .netUtility(net)
         case .KUBERNETES_POD, .DOCKER_CONTAINER:
-            let endpoint = self == .DOCKER_CONTAINER ? "unix:///var/run/docker.sock" : "https://kubernetes.default.svc:6443"
+            let endpoint: String
+            if self == .DOCKER_CONTAINER {
+                if trimmed.hasPrefix("unix://") || trimmed.hasPrefix("http://") || trimmed.hasPrefix("https://") || trimmed.hasPrefix("tcp://") {
+                    endpoint = trimmed
+                } else {
+                    endpoint = "unix:///var/run/docker.sock"
+                }
+            } else {
+                endpoint = (trimmed.hasPrefix("http://") || trimmed.hasPrefix("https://")) ? trimmed : ""
+            }
+            let targetName = (trimmed.hasPrefix("http") || trimmed.hasPrefix("unix:") || trimmed.hasPrefix("tcp:")) ? "" : trimmed
             return .containerExec(ContainerExecProtocolSettings(
                 clusterOrSocketEndpoint: endpoint,
-                podOrContainerName: host
+                podOrContainerName: targetName
             ))
         }
     }
@@ -562,34 +616,52 @@ public struct SshProtocolSettings: Codable, Equatable, Hashable, Sendable {
 public struct FileTransferProtocolSettings: Codable, Equatable, Hashable, Sendable {
     public var port: Int = 22
     public var initialLocalDirectory: String = ""
-    public var initialRemoteDirectory: String = "/"
+    public var initialRemoteDirectory: String = ""
     public var preserveTimestamps: Bool = true
     public var showHiddenDotfiles: Bool = true
     public var maxConcurrentTransfers: Int = 4
     public var ftpsImplicitTls: Bool = false
-    public var verifyTls: Bool = true
+    public var passiveMode: Bool = true
+    public var verifyTls: Bool = false
 
-    public init(port: Int = 22, ftpsImplicitTls: Bool = false, verifyTls: Bool = true) {
+    public init(
+        port: Int = 22,
+        initialLocalDirectory: String = "",
+        initialRemoteDirectory: String = "",
+        preserveTimestamps: Bool = true,
+        showHiddenDotfiles: Bool = true,
+        maxConcurrentTransfers: Int = 4,
+        ftpsImplicitTls: Bool = false,
+        passiveMode: Bool = true,
+        verifyTls: Bool = false
+    ) {
         self.port = port
+        self.initialLocalDirectory = initialLocalDirectory
+        self.initialRemoteDirectory = initialRemoteDirectory
+        self.preserveTimestamps = preserveTimestamps
+        self.showHiddenDotfiles = showHiddenDotfiles
+        self.maxConcurrentTransfers = maxConcurrentTransfers
         self.ftpsImplicitTls = ftpsImplicitTls
+        self.passiveMode = passiveMode
         self.verifyTls = verifyTls
     }
 
     enum CodingKeys: String, CodingKey {
         case port, initialLocalDirectory, initialRemoteDirectory
-        case preserveTimestamps, showHiddenDotfiles, maxConcurrentTransfers, ftpsImplicitTls, verifyTls
+        case preserveTimestamps, showHiddenDotfiles, maxConcurrentTransfers, ftpsImplicitTls, passiveMode, verifyTls
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.port = try c.decodeIfPresent(Int.self, forKey: .port) ?? 22
         self.initialLocalDirectory = try c.decodeIfPresent(String.self, forKey: .initialLocalDirectory) ?? ""
-        self.initialRemoteDirectory = try c.decodeIfPresent(String.self, forKey: .initialRemoteDirectory) ?? "/"
+        self.initialRemoteDirectory = try c.decodeIfPresent(String.self, forKey: .initialRemoteDirectory) ?? ""
         self.preserveTimestamps = try c.decodeIfPresent(Bool.self, forKey: .preserveTimestamps) ?? true
         self.showHiddenDotfiles = try c.decodeIfPresent(Bool.self, forKey: .showHiddenDotfiles) ?? true
         self.maxConcurrentTransfers = try c.decodeIfPresent(Int.self, forKey: .maxConcurrentTransfers) ?? 4
         self.ftpsImplicitTls = try c.decodeIfPresent(Bool.self, forKey: .ftpsImplicitTls) ?? false
-        self.verifyTls = try c.decodeIfPresent(Bool.self, forKey: .verifyTls) ?? true
+        self.passiveMode = try c.decodeIfPresent(Bool.self, forKey: .passiveMode) ?? true
+        self.verifyTls = try c.decodeIfPresent(Bool.self, forKey: .verifyTls) ?? false
     }
 }
 
@@ -602,8 +674,21 @@ public struct VncProtocolSettings: Codable, Equatable, Hashable, Sendable {
     public var sharedSession: Bool = true
     public var appleArdDiffieHellmanAuth: Bool = false
 
-    public init(port: Int = 5900, appleArdDiffieHellmanAuth: Bool = false) {
+    public init(
+        port: Int = 5900,
+        preferredEncodings: [String] = ["ZRLE", "Tight", "CopyRect", "Hextile", "Raw"],
+        compressionLevel: Int = 6,
+        jpegQualityLevel: Int = 7,
+        viewOnly: Bool = false,
+        sharedSession: Bool = true,
+        appleArdDiffieHellmanAuth: Bool = false
+    ) {
         self.port = port
+        self.preferredEncodings = preferredEncodings
+        self.compressionLevel = compressionLevel
+        self.jpegQualityLevel = jpegQualityLevel
+        self.viewOnly = viewOnly
+        self.sharedSession = sharedSession
         self.appleArdDiffieHellmanAuth = appleArdDiffieHellmanAuth
     }
 
@@ -637,15 +722,15 @@ public struct WebPageProtocolSettings: Codable, Equatable, Hashable, Sendable {
     public var ignoreSelfSignedInternalCert: Bool
 
     public init(
-        url: String = "https://localhost",
+        url: String = "",
         isolatedStorageProfileId: String = UUID().uuidString.lowercased(),
         autoFillEnabled: Bool = true,
         usernameCssSelector: String = "input[type='email'], input[name*='user'], input[type='text']",
         passwordCssSelector: String = "input[type='password']",
         submitCssSelector: String = "button[type='submit'], input[type='submit']",
-        injectHttpBasicAuth: Bool = false,
+        injectHttpBasicAuth: Bool = true,
         pinnedCertSha256: String = "",
-        ignoreSelfSignedInternalCert: Bool = false
+        ignoreSelfSignedInternalCert: Bool = true
     ) {
         self.url = url
         self.isolatedStorageProfileId = isolatedStorageProfileId
@@ -666,15 +751,15 @@ public struct WebPageProtocolSettings: Codable, Equatable, Hashable, Sendable {
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        self.url = try c.decodeIfPresent(String.self, forKey: .url) ?? "https://localhost"
+        self.url = try c.decodeIfPresent(String.self, forKey: .url) ?? ""
         self.isolatedStorageProfileId = try c.decodeIfPresent(String.self, forKey: .isolatedStorageProfileId) ?? UUID().uuidString.lowercased()
         self.autoFillEnabled = try c.decodeIfPresent(Bool.self, forKey: .autoFillEnabled) ?? true
         self.usernameCssSelector = try c.decodeIfPresent(String.self, forKey: .usernameCssSelector) ?? "input[type='email'], input[name*='user'], input[type='text']"
         self.passwordCssSelector = try c.decodeIfPresent(String.self, forKey: .passwordCssSelector) ?? "input[type='password']"
         self.submitCssSelector = try c.decodeIfPresent(String.self, forKey: .submitCssSelector) ?? "button[type='submit'], input[type='submit']"
-        self.injectHttpBasicAuth = try c.decodeIfPresent(Bool.self, forKey: .injectHttpBasicAuth) ?? false
+        self.injectHttpBasicAuth = try c.decodeIfPresent(Bool.self, forKey: .injectHttpBasicAuth) ?? true
         self.pinnedCertSha256 = try c.decodeIfPresent(String.self, forKey: .pinnedCertSha256) ?? ""
-        self.ignoreSelfSignedInternalCert = try c.decodeIfPresent(Bool.self, forKey: .ignoreSelfSignedInternalCert) ?? false
+        self.ignoreSelfSignedInternalCert = try c.decodeIfPresent(Bool.self, forKey: .ignoreSelfSignedInternalCert) ?? true
     }
 }
 
@@ -729,7 +814,29 @@ public struct NetUtilityProtocolSettings: Codable, Equatable, Hashable, Sendable
     public var wolUdpPort: Int = 9
     public var wolSecureOnHex: String = ""
 
-    public init() {}
+    public init(
+        pingCount: Int = 10,
+        pingIntervalMs: Int = 1000,
+        tracerouteMaxHops: Int = 30,
+        portScanRangeStart: Int = 1,
+        portScanRangeEnd: Int = 1024,
+        portScanConcurrency: Int = 128,
+        wolMacAddress: String = "",
+        wolBroadcastAddress: String = "255.255.255.255",
+        wolUdpPort: Int = 9,
+        wolSecureOnHex: String = ""
+    ) {
+        self.pingCount = pingCount
+        self.pingIntervalMs = pingIntervalMs
+        self.tracerouteMaxHops = tracerouteMaxHops
+        self.portScanRangeStart = portScanRangeStart
+        self.portScanRangeEnd = portScanRangeEnd
+        self.portScanConcurrency = portScanConcurrency
+        self.wolMacAddress = wolMacAddress
+        self.wolBroadcastAddress = wolBroadcastAddress
+        self.wolUdpPort = wolUdpPort
+        self.wolSecureOnHex = wolSecureOnHex
+    }
 
     enum CodingKeys: String, CodingKey {
         case pingCount, pingIntervalMs, tracerouteMaxHops, portScanRangeStart
@@ -764,7 +871,29 @@ public struct SerialUartProtocolSettings: Codable, Equatable, Hashable, Sendable
     public var devicePathHint: String = "/dev/cu.usbserial"
     public var lineEnding: String = "CRLF"
 
-    public init() {}
+    public init(
+        baudRate: Int = 115200,
+        dataBits: Int = 8,
+        stopBits: Int = 1,
+        parity: String = "NONE",
+        flowControl: String = "NONE",
+        dtrEnabled: Bool = true,
+        rtsEnabled: Bool = true,
+        usbVendorIdFilter: Int = 0,
+        devicePathHint: String = "/dev/cu.usbserial",
+        lineEnding: String = "CRLF"
+    ) {
+        self.baudRate = baudRate
+        self.dataBits = dataBits
+        self.stopBits = stopBits
+        self.parity = parity
+        self.flowControl = flowControl
+        self.dtrEnabled = dtrEnabled
+        self.rtsEnabled = rtsEnabled
+        self.usbVendorIdFilter = usbVendorIdFilter
+        self.devicePathHint = devicePathHint
+        self.lineEnding = lineEnding
+    }
 
     enum CodingKeys: String, CodingKey {
         case baudRate, dataBits, stopBits, parity, flowControl
@@ -787,8 +916,8 @@ public struct SerialUartProtocolSettings: Codable, Equatable, Hashable, Sendable
 }
 
 public struct ContainerExecProtocolSettings: Codable, Equatable, Hashable, Sendable {
-    public var clusterOrSocketEndpoint: String = "https://kubernetes.default.svc:6443"
-    public var contextName: String = "prod-eu-central"
+    public var clusterOrSocketEndpoint: String = ""
+    public var contextName: String = ""
     public var namespace: String = "default"
     public var podOrContainerName: String = ""
     public var subContainerName: String = ""
@@ -796,14 +925,30 @@ public struct ContainerExecProtocolSettings: Codable, Equatable, Hashable, Senda
     public var followLogsOnOpen: Bool = false
     public var logTailLines: Int = 200
     public var portForwards: [String] = []
-    public var verifyTls: Bool = true
+    public var verifyTls: Bool = false
 
     public init(
-        clusterOrSocketEndpoint: String = "https://kubernetes.default.svc:6443",
-        podOrContainerName: String = ""
+        clusterOrSocketEndpoint: String = "",
+        contextName: String = "",
+        namespace: String = "default",
+        podOrContainerName: String = "",
+        subContainerName: String = "",
+        shellCommand: String = "/bin/sh",
+        followLogsOnOpen: Bool = false,
+        logTailLines: Int = 200,
+        portForwards: [String] = [],
+        verifyTls: Bool = false
     ) {
         self.clusterOrSocketEndpoint = clusterOrSocketEndpoint
+        self.contextName = contextName
+        self.namespace = namespace
         self.podOrContainerName = podOrContainerName
+        self.subContainerName = subContainerName
+        self.shellCommand = shellCommand
+        self.followLogsOnOpen = followLogsOnOpen
+        self.logTailLines = logTailLines
+        self.portForwards = portForwards
+        self.verifyTls = verifyTls
     }
 
     enum CodingKeys: String, CodingKey {
@@ -813,8 +958,8 @@ public struct ContainerExecProtocolSettings: Codable, Equatable, Hashable, Senda
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        self.clusterOrSocketEndpoint = try c.decodeIfPresent(String.self, forKey: .clusterOrSocketEndpoint) ?? "https://kubernetes.default.svc:6443"
-        self.contextName = try c.decodeIfPresent(String.self, forKey: .contextName) ?? "prod-eu-central"
+        self.clusterOrSocketEndpoint = try c.decodeIfPresent(String.self, forKey: .clusterOrSocketEndpoint) ?? ""
+        self.contextName = try c.decodeIfPresent(String.self, forKey: .contextName) ?? ""
         self.namespace = try c.decodeIfPresent(String.self, forKey: .namespace) ?? "default"
         self.podOrContainerName = try c.decodeIfPresent(String.self, forKey: .podOrContainerName) ?? ""
         self.subContainerName = try c.decodeIfPresent(String.self, forKey: .subContainerName) ?? ""
@@ -822,7 +967,7 @@ public struct ContainerExecProtocolSettings: Codable, Equatable, Hashable, Senda
         self.followLogsOnOpen = try c.decodeIfPresent(Bool.self, forKey: .followLogsOnOpen) ?? false
         self.logTailLines = try c.decodeIfPresent(Int.self, forKey: .logTailLines) ?? 200
         self.portForwards = try c.decodeIfPresent([String].self, forKey: .portForwards) ?? []
-        self.verifyTls = try c.decodeIfPresent(Bool.self, forKey: .verifyTls) ?? true
+        self.verifyTls = try c.decodeIfPresent(Bool.self, forKey: .verifyTls) ?? false
     }
 }
 

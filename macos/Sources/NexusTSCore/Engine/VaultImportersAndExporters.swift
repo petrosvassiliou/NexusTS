@@ -601,9 +601,10 @@ private final class RoyalTsXmlSAXParser: NSObject, XMLParserDelegate {
 
     private static let objectTags: Set<String> = [
         "RoyalDocument", "RoyalFolder", "RoyalSmartFolder", "RoyalDynamicFolder", "RoyalTrash",
-        "RoyalRDSConnection", "RoyalSSHConnection", "RoyalVNCConnection",
-        "RoyalFileTransferConnection", "RoyalWebPageConnection", "RoyalCredential",
-        "RoyalHyperVConnection", "RoyalVMwareConnection", "RoyalProxmoxConnection",
+        "RoyalRDSConnection", "RoyalSSHConnection", "RoyalTelnetConnection", "RoyalSerialPortConnection",
+        "RoyalVNCConnection", "RoyalFileTransferConnection", "RoyalWebPageConnection", "RoyalCredential",
+        "RoyalHyperVConnection", "RoyalVMwareConnection", "RoyalProxmoxConnection", "RoyalCloudConnection",
+        "RoyalContainerConnection", "RoyalNetworkUtilityConnection",
         "RoyalWindowsTerminalServicesConnection", "RoyalTerminalServicesConnection"
     ]
 
@@ -679,6 +680,16 @@ private final class RoyalTsXmlSAXParser: NSObject, XMLParserDelegate {
                 .split(whereSeparator: { $0 == ";" || $0 == "," })
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
                 .filter { !$0.isEmpty }
+            let explicitNexusProto = node.fields["NexusProtocolType"]
+                .flatMap { VaultProtocolType(rawValue: $0.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()) }
+
+            func parseBool(_ raw: String?, default defaultValue: Bool = false) -> Bool {
+                guard let raw else { return defaultValue }
+                let lower = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                if ["true", "1", "yes"].contains(lower) { return true }
+                if ["false", "0", "no"].contains(lower) { return false }
+                return defaultValue
+            }
 
             func parseInheritable() -> InheritableProperties {
                 let modeInt = Int(node.fields["CredentialMode"] ?? "1") ?? 1
@@ -769,7 +780,8 @@ private final class RoyalTsXmlSAXParser: NSObject, XMLParserDelegate {
                     username: node.fields["UserName"] ?? "",
                     domain: node.fields["Domain"] ?? "",
                     secretPassword: node.fields["Password"] ?? "",
-                    privateKeyPem: node.fields["KeyFileContent"] ?? ""
+                    privateKeyPem: node.fields["KeyFileContent"] ?? "",
+                    keyPassphrase: node.fields["KeyPassphrase"] ?? ""
                 ))
             case "RoyalHyperVConnection":
                 let rawUri = node.fields["URI"] ?? ""
@@ -778,12 +790,15 @@ private final class RoyalTsXmlSAXParser: NSObject, XMLParserDelegate {
                     if rawUri.lowercased().hasPrefix("http://") || rawUri.lowercased().hasPrefix("https://") { return rawUri }
                     return ""
                 }()
-                var hvSettings = CloudVirtualizationProtocolSettings(apiEndpointUrl: apiUrl)
+                var hvSettings = CloudVirtualizationProtocolSettings(
+                    apiEndpointUrl: apiUrl,
+                    verifyTls: parseBool(node.fields["VerifyTls"], default: false)
+                )
                 hvSettings.regionOrCluster = node.fields["RegionOrCluster"] ?? ""
                 hvSettings.subscriptionOrAccountId = node.fields["SubscriptionOrAccountId"] ?? ""
-                hvSettings.realmOrDomain = node.fields["RealmOrDomain"] ?? "pam"
+                hvSettings.realmOrDomain = node.fields["RealmOrDomain"] ?? ""
                 if let autoSync = node.fields["AutoSyncDynamicInventory"] {
-                    hvSettings.autoSyncDynamicInventory = autoSync.lowercased() == "true"
+                    hvSettings.autoSyncDynamicInventory = parseBool(autoSync, default: true)
                 }
                 conns.append(VaultConnection(
                     id: id,
@@ -794,32 +809,49 @@ private final class RoyalTsXmlSAXParser: NSObject, XMLParserDelegate {
                     osFamily: "Windows",
                     tags: parsedTags,
                     notes: node.fields["Description"] ?? "",
-                    favorite: (node.fields["Favorite"] ?? "").lowercased() == "true",
+                    favorite: parseBool(node.fields["Favorite"]),
                     sortOrder: sortOrder,
                     inheritable: parseInheritable(),
                     settings: .cloudVirtualization(hvSettings)
                 ))
-            case "RoyalVMwareConnection", "RoyalProxmoxConnection":
-                let isPve = node.elementType == "RoyalProxmoxConnection" || (node.fields["NexusProtocolType"] ?? "").uppercased() == "PROXMOX_VE"
-                let proto: VaultProtocolType = isPve ? .PROXMOX_VE : .VMWARE_VSPHERE
+            case "RoyalVMwareConnection", "RoyalProxmoxConnection", "RoyalCloudConnection":
+                let proto: VaultProtocolType = {
+                    if let explicitNexusProto,
+                       [.VMWARE_VSPHERE, .PROXMOX_VE, .AWS_EC2, .AZURE_VM, .HYPER_V].contains(explicitNexusProto) {
+                        return explicitNexusProto
+                    }
+                    return node.elementType == "RoyalProxmoxConnection" ? .PROXMOX_VE : .VMWARE_VSPHERE
+                }()
                 let rawUri = node.fields["URI"] ?? ""
-                let apiUrl = node.fields["ApiEndpointUrl"]
-                    ?? ((rawUri.lowercased().hasPrefix("http://") || rawUri.lowercased().hasPrefix("https://"))
-                        ? rawUri
-                        : (rawUri.isEmpty ? "" : "https://\(rawUri):\(proto.defaultPort)"))
-                var virt = CloudVirtualizationProtocolSettings(apiEndpointUrl: apiUrl)
-                virt.regionOrCluster = node.fields["RegionOrCluster"] ?? ""
-                virt.realmOrDomain = node.fields["RealmOrDomain"] ?? "pam"
+                let defaultVerifyTls = (proto == .AWS_EC2 || proto == .AZURE_VM)
+                let apiUrl: String = {
+                    if let explicit = node.fields["ApiEndpointUrl"] { return explicit }
+                    if proto == .AWS_EC2 || proto == .AZURE_VM { return "" }
+                    if rawUri.lowercased().hasPrefix("http://") || rawUri.lowercased().hasPrefix("https://") {
+                        return rawUri
+                    }
+                    return rawUri.isEmpty ? "" : "https://\(rawUri):\(proto.defaultPort)"
+                }()
+                var virt = CloudVirtualizationProtocolSettings(
+                    apiEndpointUrl: apiUrl,
+                    regionOrCluster: node.fields["RegionOrCluster"] ?? (proto == .AWS_EC2 ? "us-east-1" : ""),
+                    subscriptionOrAccountId: node.fields["SubscriptionOrAccountId"] ?? "",
+                    realmOrDomain: node.fields["RealmOrDomain"] ?? (proto == .PROXMOX_VE ? "pam" : ""),
+                    verifyTls: parseBool(node.fields["VerifyTls"], default: defaultVerifyTls)
+                )
+                if let autoSync = node.fields["AutoSyncDynamicInventory"] {
+                    virt.autoSyncDynamicInventory = parseBool(autoSync, default: true)
+                }
                 conns.append(VaultConnection(
                     id: id,
                     parentFolderId: parentFolderId,
                     name: name,
                     host: rawUri,
                     protocolType: proto,
-                    osFamily: "Linux",
+                    osFamily: proto == .HYPER_V ? "Windows" : "Linux",
                     tags: parsedTags,
                     notes: node.fields["Description"] ?? "",
-                    favorite: (node.fields["Favorite"] ?? "").lowercased() == "true",
+                    favorite: parseBool(node.fields["Favorite"]),
                     sortOrder: sortOrder,
                     inheritable: parseInheritable(),
                     settings: .cloudVirtualization(virt)
@@ -842,7 +874,7 @@ private final class RoyalTsXmlSAXParser: NSObject, XMLParserDelegate {
                         osFamily: "Windows",
                         tags: parsedTags,
                         notes: node.fields["Description"] ?? "",
-                        favorite: (node.fields["Favorite"] ?? "").lowercased() == "true",
+                        favorite: parseBool(node.fields["Favorite"]),
                         sortOrder: sortOrder,
                         inheritable: parseInheritable(),
                         settings: .cloudVirtualization(CloudVirtualizationProtocolSettings(apiEndpointUrl: apiUrl))
@@ -852,20 +884,19 @@ private final class RoyalTsXmlSAXParser: NSObject, XMLParserDelegate {
                     let isHyperVVm = hyperVMode == "2" || !vmGuid.isEmpty
                     if isHyperVVm {
                         rdp.hyperVVmId = vmGuid
-                        let enhRaw = (node.fields["HyperVEnhancedSessionMode"] ?? node.fields["EnhancedSessionMode"] ?? "").lowercased()
-                        rdp.hyperVEnhancedSession = enhRaw == "true" || enhRaw == "1"
+                        rdp.hyperVEnhancedSession = parseBool(node.fields["HyperVEnhancedSessionMode"] ?? node.fields["EnhancedSessionMode"])
                         rdp.port = Int(node.fields["HyperVPort"] ?? node.fields["RDPPort"] ?? node.fields["Port"] ?? "2179") ?? 2179
                         let explicitIgnore = node.fields["IgnoreCertificateWarning"] ?? node.fields["IgnoreCertificate"]
                         rdp.ignoreCertificateWarnings = explicitIgnore == nil
                             ? true
-                            : ["true", "1"].contains(explicitIgnore!.lowercased())
+                            : parseBool(explicitIgnore)
                     } else {
                         rdp.port = Int(node.fields["RDPPort"] ?? node.fields["Port"] ?? "3389") ?? 3389
                         if let explicitIgnore = node.fields["IgnoreCertificateWarning"] ?? node.fields["IgnoreCertificate"] {
-                            rdp.ignoreCertificateWarnings = ["true", "1"].contains(explicitIgnore.lowercased())
+                            rdp.ignoreCertificateWarnings = parseBool(explicitIgnore)
                         }
                     }
-                    rdp.connectToConsoleAdmin = (node.fields["ConnectToAdministerOrConsole"] ?? "").lowercased() == "true"
+                    rdp.connectToConsoleAdmin = parseBool(node.fields["ConnectToAdministerOrConsole"])
                     if let explicitScaleStr = node.fields["DesktopScaleFactor"] ?? node.fields["ScaleFactor"],
                        let explicitScale = Int(explicitScaleStr.trimmingCharacters(in: .whitespacesAndNewlines)),
                        (100...500).contains(explicitScale) {
@@ -873,7 +904,8 @@ private final class RoyalTsXmlSAXParser: NSObject, XMLParserDelegate {
                         rdp.deviceScaleFactorPercent = explicitScale >= 175 ? 180 : (explicitScale >= 125 ? 140 : 100)
                         rdp.hiDpiScaleCustomized = true
                     }
-                    let isWts = node.elementType != "RoyalRDSConnection"
+                    let isWts = explicitNexusProto == .WINDOWS_TERMINAL_SERVICES
+                        || (explicitNexusProto == nil && node.elementType != "RoyalRDSConnection")
                     conns.append(VaultConnection(
                         id: id,
                         parentFolderId: parentFolderId,
@@ -883,53 +915,203 @@ private final class RoyalTsXmlSAXParser: NSObject, XMLParserDelegate {
                         osFamily: "Windows",
                         tags: parsedTags,
                         notes: node.fields["Description"] ?? "",
-                        favorite: (node.fields["Favorite"] ?? "").lowercased() == "true",
+                        favorite: parseBool(node.fields["Favorite"]),
                         sortOrder: sortOrder,
                         inheritable: parseInheritable(),
                         settings: .rdp(rdp)
                     ))
                 }
-            case "RoyalSSHConnection":
-                let isTelnet = (node.fields["IsTelnetConnection"] ?? "").lowercased() == "true"
-                var ssh = SshProtocolSettings(port: Int(node.fields["Port"] ?? (isTelnet ? "23" : "22")) ?? 22)
-                ssh.terminalType = node.fields["TerminalType"] ?? "xterm-256color"
+            case "RoyalSerialPortConnection":
+                let uri = node.fields["URI"] ?? ""
+                var serial = SerialUartProtocolSettings(
+                    baudRate: Int(node.fields["BaudRate"] ?? "115200") ?? 115200,
+                    dataBits: Int(node.fields["DataBits"] ?? "8") ?? 8,
+                    stopBits: Int(node.fields["StopBits"] ?? "1") ?? 1,
+                    parity: node.fields["Parity"] ?? "NONE",
+                    flowControl: node.fields["FlowControl"] ?? "NONE",
+                    devicePathHint: node.fields["SerialPort"] ?? node.fields["DevicePathHint"] ?? uri
+                )
+                serial.lineEnding = node.fields["LineEnding"] ?? "CRLF"
+                serial.dtrEnabled = parseBool(node.fields["DtrEnabled"], default: true)
+                serial.rtsEnabled = parseBool(node.fields["RtsEnabled"], default: true)
                 conns.append(VaultConnection(
                     id: id,
                     parentFolderId: parentFolderId,
                     name: name,
-                    host: node.fields["URI"] ?? "",
-                    protocolType: isTelnet ? .TELNET : .SSH,
+                    host: uri.isEmpty ? serial.devicePathHint : uri,
+                    protocolType: .SERIAL,
+                    osFamily: node.fields["OSFamily"] ?? "Network",
+                    tags: parsedTags,
+                    notes: node.fields["Description"] ?? "",
+                    favorite: parseBool(node.fields["Favorite"]),
+                    sortOrder: sortOrder,
+                    inheritable: parseInheritable(),
+                    settings: .serialUart(serial)
+                ))
+            case "RoyalContainerConnection":
+                let proto: VaultProtocolType = explicitNexusProto == .DOCKER_CONTAINER ? .DOCKER_CONTAINER : .KUBERNETES_POD
+                let rawUri = node.fields["URI"] ?? ""
+                var ce = ContainerExecProtocolSettings(
+                    clusterOrSocketEndpoint: node.fields["ClusterOrSocketEndpoint"]
+                        ?? (proto == .DOCKER_CONTAINER ? "unix:///var/run/docker.sock" : ""),
+                    contextName: node.fields["ContextName"] ?? "",
+                    namespace: node.fields["Namespace"] ?? "default",
+                    podOrContainerName: node.fields["PodOrContainerName"] ?? rawUri,
+                    subContainerName: node.fields["SubContainerName"] ?? "",
+                    shellCommand: node.fields["ShellCommand"] ?? "/bin/sh",
+                    followLogsOnOpen: parseBool(node.fields["FollowLogsOnOpen"], default: false),
+                    logTailLines: Int(node.fields["LogTailLines"] ?? "200") ?? 200,
+                    verifyTls: parseBool(node.fields["VerifyTls"], default: false)
+                )
+                if ce.clusterOrSocketEndpoint.isEmpty && proto == .DOCKER_CONTAINER && node.fields["ClusterOrSocketEndpoint"] == nil {
+                    ce.clusterOrSocketEndpoint = "unix:///var/run/docker.sock"
+                }
+                conns.append(VaultConnection(
+                    id: id,
+                    parentFolderId: parentFolderId,
+                    name: name,
+                    host: rawUri,
+                    protocolType: proto,
                     osFamily: "Linux",
                     tags: parsedTags,
                     notes: node.fields["Description"] ?? "",
-                    favorite: (node.fields["Favorite"] ?? "").lowercased() == "true",
+                    favorite: parseBool(node.fields["Favorite"]),
                     sortOrder: sortOrder,
                     inheritable: parseInheritable(),
-                    settings: .ssh(ssh)
+                    settings: .containerExec(ce)
                 ))
+            case "RoyalNetworkUtilityConnection":
+                let proto: VaultProtocolType = {
+                    if let explicitNexusProto,
+                       [.UTILITY_PING, .UTILITY_TRACEROUTE, .UTILITY_PORT_SCANNER, .UTILITY_WAKE_ON_LAN].contains(explicitNexusProto) {
+                        return explicitNexusProto
+                    }
+                    return .UTILITY_PING
+                }()
+                let rawUri = node.fields["URI"] ?? ""
+                var net = NetUtilityProtocolSettings(
+                    pingCount: Int(node.fields["PingCount"] ?? "5") ?? 5,
+                    pingIntervalMs: Int(node.fields["PingIntervalMs"] ?? "1000") ?? 1000,
+                    tracerouteMaxHops: Int(node.fields["TracerouteMaxHops"] ?? "30") ?? 30,
+                    portScanRangeStart: Int(node.fields["PortScanRangeStart"] ?? "1") ?? 1,
+                    portScanRangeEnd: Int(node.fields["PortScanRangeEnd"] ?? "1024") ?? 1024,
+                    portScanConcurrency: Int(node.fields["PortScanConcurrency"] ?? "64") ?? 64,
+                    wolMacAddress: node.fields["WolMacAddress"] ?? "",
+                    wolBroadcastAddress: node.fields["WolBroadcastAddress"] ?? "255.255.255.255",
+                    wolUdpPort: Int(node.fields["WolUdpPort"] ?? "9") ?? 9,
+                    wolSecureOnHex: node.fields["WolSecureOnHex"] ?? ""
+                )
+                if proto == .UTILITY_WAKE_ON_LAN && net.wolMacAddress.isEmpty && rawUri.contains(":") {
+                    net.wolMacAddress = rawUri
+                }
+                conns.append(VaultConnection(
+                    id: id,
+                    parentFolderId: parentFolderId,
+                    name: name,
+                    host: rawUri,
+                    protocolType: proto,
+                    osFamily: "Linux",
+                    tags: parsedTags,
+                    notes: node.fields["Description"] ?? "",
+                    favorite: parseBool(node.fields["Favorite"]),
+                    sortOrder: sortOrder,
+                    inheritable: parseInheritable(),
+                    settings: .netUtility(net)
+                ))
+            case "RoyalSSHConnection", "RoyalTelnetConnection":
+                let isTelnet = node.elementType == "RoyalTelnetConnection"
+                    || explicitNexusProto == .TELNET
+                    || parseBool(node.fields["IsTelnetConnection"])
+                    || parseBool(node.fields["IsTelnet"])
+                let proto: VaultProtocolType = explicitNexusProto ?? (isTelnet ? .TELNET : .SSH)
+                let rawUri = node.fields["URI"] ?? ""
+                if proto == .SERIAL {
+                    let serial = SerialUartProtocolSettings(
+                        baudRate: Int(node.fields["BaudRate"] ?? "115200") ?? 115200,
+                        devicePathHint: node.fields["SerialPort"] ?? rawUri
+                    )
+                    conns.append(VaultConnection(
+                        id: id,
+                        parentFolderId: parentFolderId,
+                        name: name,
+                        host: rawUri,
+                        protocolType: .SERIAL,
+                        tags: parsedTags,
+                        notes: node.fields["Description"] ?? "",
+                        favorite: parseBool(node.fields["Favorite"]),
+                        sortOrder: sortOrder,
+                        inheritable: parseInheritable(),
+                        settings: .serialUart(serial)
+                    ))
+                } else {
+                    let defaultPortStr = isTelnet ? "23" : "22"
+                    var ssh = SshProtocolSettings(port: Int(node.fields["Port"] ?? defaultPortStr) ?? (isTelnet ? 23 : 22))
+                    ssh.terminalType = node.fields["TerminalType"] ?? "xterm-256color"
+                    conns.append(VaultConnection(
+                        id: id,
+                        parentFolderId: parentFolderId,
+                        name: name,
+                        host: rawUri,
+                        protocolType: isTelnet ? .TELNET : .SSH,
+                        osFamily: "Linux",
+                        tags: parsedTags,
+                        notes: node.fields["Description"] ?? "",
+                        favorite: parseBool(node.fields["Favorite"]),
+                        sortOrder: sortOrder,
+                        inheritable: parseInheritable(),
+                        settings: .ssh(ssh)
+                    ))
+                }
             case "RoyalVNCConnection":
                 var vnc = VncProtocolSettings(port: Int(node.fields["VNCPort"] ?? node.fields["Port"] ?? "5900") ?? 5900)
-                vnc.appleArdDiffieHellmanAuth = (node.fields["AppleScreenSharing"] ?? "").lowercased() == "true"
+                let isArd = explicitNexusProto == .APPLE_SCREEN_SHARING
+                    || parseBool(node.fields["AppleScreenSharing"])
+                    || parseBool(node.fields["UseAppleRemoteDesktopAuth"])
+                vnc.appleArdDiffieHellmanAuth = isArd
+                vnc.viewOnly = parseBool(node.fields["ViewOnly"])
+                vnc.sharedSession = parseBool(node.fields["SharedSession"], default: true)
                 conns.append(VaultConnection(
                     id: id,
                     parentFolderId: parentFolderId,
                     name: name,
                     host: node.fields["URI"] ?? "",
-                    protocolType: vnc.appleArdDiffieHellmanAuth ? .APPLE_SCREEN_SHARING : .VNC,
-                    osFamily: vnc.appleArdDiffieHellmanAuth ? "macOS" : "Linux",
+                    protocolType: isArd ? .APPLE_SCREEN_SHARING : .VNC,
+                    osFamily: isArd ? "macOS" : "Linux",
                     tags: parsedTags,
                     notes: node.fields["Description"] ?? "",
+                    favorite: parseBool(node.fields["Favorite"]),
                     sortOrder: sortOrder,
                     inheritable: parseInheritable(),
                     settings: .vnc(vnc)
                 ))
             case "RoyalFileTransferConnection":
-                let protoStr = (node.fields["ConnectionType"] ?? "SFTP").uppercased()
-                let proto: VaultProtocolType = protoStr.contains("SCP") ? .SCP : (protoStr.contains("FTPS") ? .FTPS : (protoStr.contains("FTP") ? .FTP : .SFTP))
-                let ft = FileTransferProtocolSettings(
-                    port: Int(node.fields["Port"] ?? "\(proto.defaultPort)") ?? proto.defaultPort,
-                    ftpsImplicitTls: proto == .FTPS
+                let protoStr = (node.fields["ConnectionType"] ?? "").uppercased()
+                let proto: VaultProtocolType = {
+                    if let explicitNexusProto,
+                       [.SFTP, .SCP, .FTP, .FTPS].contains(explicitNexusProto) {
+                        return explicitNexusProto
+                    }
+                    if protoStr.contains("SCP") { return .SCP }
+                    if protoStr.contains("FTPS") { return .FTPS }
+                    if protoStr.contains("FTP") { return .FTP }
+                    return .SFTP
+                }()
+                let parsedPort = Int(node.fields["Port"] ?? "\(proto.defaultPort)") ?? proto.defaultPort
+                let implicitDefault = proto == .FTPS && parsedPort != 21
+                var ft = FileTransferProtocolSettings(
+                    port: parsedPort,
+                    initialLocalDirectory: node.fields["InitialLocalDirectory"] ?? "",
+                    initialRemoteDirectory: node.fields["InitialRemoteDirectory"] ?? node.fields["RemotePath"] ?? "",
+                    preserveTimestamps: parseBool(node.fields["PreserveTimestamps"], default: true),
+                    showHiddenDotfiles: parseBool(node.fields["ShowHiddenDotfiles"], default: true),
+                    ftpsImplicitTls: parseBool(node.fields["FTPSImplicitTls"], default: implicitDefault),
+                    passiveMode: parseBool(node.fields["PassiveMode"], default: true),
+                    verifyTls: parseBool(node.fields["VerifyTls"], default: false)
                 )
+                if let ftpsMode = node.fields["FTPSMode"]?.lowercased() {
+                    if ftpsMode.contains("explicit") { ft.ftpsImplicitTls = false }
+                    else if ftpsMode.contains("implicit") { ft.ftpsImplicitTls = true }
+                }
                 conns.append(VaultConnection(
                     id: id,
                     parentFolderId: parentFolderId,
@@ -938,12 +1120,22 @@ private final class RoyalTsXmlSAXParser: NSObject, XMLParserDelegate {
                     protocolType: proto,
                     tags: parsedTags,
                     notes: node.fields["Description"] ?? "",
+                    favorite: parseBool(node.fields["Favorite"]),
                     sortOrder: sortOrder,
                     inheritable: parseInheritable(),
                     settings: .fileTransfer(ft)
                 ))
             case "RoyalWebPageConnection":
                 let uri = node.fields["URI"] ?? "https://localhost"
+                var wp = WebPageProtocolSettings(
+                    url: node.fields["WebUrl"] ?? uri,
+                    ignoreSelfSignedInternalCert: parseBool(node.fields["IgnoreCertificateWarning"] ?? node.fields["IgnoreSelfSignedInternalCert"], default: true)
+                )
+                wp.autoFillEnabled = parseBool(node.fields["AutoFillEnabled"], default: false)
+                wp.injectHttpBasicAuth = parseBool(node.fields["InjectHttpBasicAuth"], default: true)
+                if let pin = node.fields["PinnedCertSha256"], !pin.isEmpty {
+                    wp.pinnedCertSha256 = pin
+                }
                 conns.append(VaultConnection(
                     id: id,
                     parentFolderId: parentFolderId,
@@ -952,9 +1144,10 @@ private final class RoyalTsXmlSAXParser: NSObject, XMLParserDelegate {
                     protocolType: .WEB_PAGE,
                     tags: parsedTags,
                     notes: node.fields["Description"] ?? "",
+                    favorite: parseBool(node.fields["Favorite"]),
                     sortOrder: sortOrder,
                     inheritable: parseInheritable(),
-                    settings: .webPage(WebPageProtocolSettings(url: uri))
+                    settings: .webPage(wp)
                 ))
             default:
                 break
@@ -1110,6 +1303,27 @@ public enum VaultDocumentExporter {
                 .replacingOccurrences(of: ">", with: "&gt;")
                 .replacingOccurrences(of: "\"", with: "&quot;")
         }
+        func appendInheritableLines(_ inh: InheritableProperties, into lines: inout [String]) {
+            switch inh.credentialMode {
+            case .NONE_DIRECT:
+                lines.append("      <CredentialMode>0</CredentialMode>")
+            case .INHERIT_FROM_PARENT:
+                lines.append("      <CredentialMode>1</CredentialMode>")
+            case .OVERRIDE_EXPLICIT:
+                lines.append("      <CredentialMode>2</CredentialMode>")
+                if let credId = inh.explicitCredentialId, !credId.isEmpty {
+                    lines.append("      <CredentialId>\(esc(credId))</CredentialId>")
+                }
+            case .PROMPT_AT_CONNECT:
+                lines.append("      <CredentialMode>4</CredentialMode>")
+            }
+            if let env = inh.environmentBadge, !env.isEmpty {
+                lines.append("      <Environment>\(esc(env))</Environment>")
+            }
+            if let col = inh.displayColorAccentHex, !col.isEmpty {
+                lines.append("      <Color>\(esc(col))</Color>")
+            }
+        }
         var lines: [String] = [
             "<?xml version=\"1.0\" encoding=\"utf-8\"?>",
             "<RTSZDocument>",
@@ -1124,6 +1338,10 @@ public enum VaultDocumentExporter {
             lines.append("      <ParentID>\(esc(parent))</ParentID>")
             lines.append("      <Name>\(esc(folder.name))</Name>")
             lines.append("      <Description>\(esc(folder.description))</Description>")
+            if !folder.tags.isEmpty {
+                lines.append("      <Tags>\(esc(folder.tags.joined(separator: ";")))</Tags>")
+            }
+            appendInheritableLines(folder.inheritable, into: &lines)
             lines.append("      <SortOrder>\(folder.sortOrder)</SortOrder>")
             lines.append("    </RoyalFolder>")
         }
@@ -1155,6 +1373,17 @@ public enum VaultDocumentExporter {
             }
             lines.append("    </RoyalSmartFolder>")
         }
+        for df in document.dynamicFolders where !document.tombstonedObjectIds.contains(df.id) {
+            let parent = df.parentFolderId ?? document.documentId
+            lines.append("    <RoyalDynamicFolder>")
+            lines.append("      <ID>\(esc(df.id))</ID>")
+            lines.append("      <ParentID>\(esc(parent))</ParentID>")
+            lines.append("      <Name>\(esc(df.name))</Name>")
+            lines.append("      <ScriptInterpreter>\(esc(df.interpreter.rawValue))</ScriptInterpreter>")
+            lines.append("      <Script>\(esc(df.scriptOrEndpointPayload))</Script>")
+            appendInheritableLines(df.inheritable, into: &lines)
+            lines.append("    </RoyalDynamicFolder>")
+        }
         let activeCreds = document.credentials.filter { !document.tombstonedObjectIds.contains($0.id) }
         if !activeCreds.isEmpty {
             let sysCredFolderId = "royal-system-credentials-\(document.documentId)"
@@ -1175,6 +1404,12 @@ public enum VaultDocumentExporter {
                 if !cred.secretPassword.isEmpty {
                     lines.append("      <Password>\(esc(cred.secretPassword))</Password>")
                 }
+                if !cred.privateKeyPem.isEmpty {
+                    lines.append("      <KeyFileContent>\(esc(cred.privateKeyPem))</KeyFileContent>")
+                }
+                if !cred.keyPassphrase.isEmpty {
+                    lines.append("      <KeyPassphrase>\(esc(cred.keyPassphrase))</KeyPassphrase>")
+                }
                 lines.append("    </RoyalCredential>")
             }
         }
@@ -1184,37 +1419,134 @@ public enum VaultDocumentExporter {
                 switch conn.protocolType {
                 case .RDP: return "RoyalRDSConnection"
                 case .WINDOWS_TERMINAL_SERVICES: return "RoyalWindowsTerminalServicesConnection"
+                case .SSH: return "RoyalSSHConnection"
+                case .TELNET: return "RoyalTelnetConnection"
+                case .SERIAL: return "RoyalSerialPortConnection"
                 case .VNC, .APPLE_SCREEN_SHARING: return "RoyalVNCConnection"
                 case .SFTP, .FTP, .FTPS, .SCP: return "RoyalFileTransferConnection"
                 case .WEB_PAGE: return "RoyalWebPageConnection"
                 case .HYPER_V: return "RoyalHyperVConnection"
                 case .PROXMOX_VE: return "RoyalProxmoxConnection"
-                case .VMWARE_VSPHERE, .AWS_EC2, .AZURE_VM: return "RoyalVMwareConnection"
-                default: return "RoyalSSHConnection"
+                case .VMWARE_VSPHERE: return "RoyalVMwareConnection"
+                case .AWS_EC2, .AZURE_VM: return "RoyalCloudConnection"
+                case .KUBERNETES_POD, .DOCKER_CONTAINER: return "RoyalContainerConnection"
+                case .UTILITY_PING, .UTILITY_TRACEROUTE, .UTILITY_PORT_SCANNER, .UTILITY_WAKE_ON_LAN:
+                    return "RoyalNetworkUtilityConnection"
                 }
             }()
             lines.append("    <\(tag)>")
             lines.append("      <ID>\(esc(conn.id))</ID>")
             lines.append("      <ParentID>\(esc(parent))</ParentID>")
             lines.append("      <Name>\(esc(conn.name))</Name>")
+            lines.append("      <NexusProtocolType>\(esc(conn.protocolType.rawValue))</NexusProtocolType>")
             lines.append("      <URI>\(esc(conn.host))</URI>")
             lines.append("      <Port>\(conn.settings.effectivePort)</Port>")
-            if conn.inheritable.credentialMode == .OVERRIDE_EXPLICIT,
-               let credId = conn.inheritable.explicitCredentialId, !credId.isEmpty {
-                lines.append("      <CredentialMode>2</CredentialMode>")
-                lines.append("      <CredentialId>\(esc(credId))</CredentialId>")
+            if !conn.osFamily.isEmpty {
+                lines.append("      <OSFamily>\(esc(conn.osFamily))</OSFamily>")
             }
-            if case .rdp(let rdp) = conn.settings {
+            if !conn.tags.isEmpty {
+                lines.append("      <Tags>\(esc(conn.tags.joined(separator: ";")))</Tags>")
+            }
+            appendInheritableLines(conn.inheritable, into: &lines)
+
+            switch conn.settings {
+            case .rdp(let rdp):
                 lines.append("      <RDPPort>\(rdp.effectiveRdpPort)</RDPPort>")
+                lines.append("      <IgnoreCertificateWarning>\(rdp.ignoreCertificateWarnings ? "True" : "False")</IgnoreCertificateWarning>")
+                lines.append("      <ConnectToAdministerOrConsole>\(rdp.connectToConsoleAdmin ? "True" : "False")</ConnectToAdministerOrConsole>")
+                if rdp.hiDpiScaleCustomized {
+                    lines.append("      <DesktopScaleFactor>\(rdp.desktopScaleFactorPercent)</DesktopScaleFactor>")
+                }
                 if !rdp.hyperVVmId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     lines.append("      <HyperVMode>2</HyperVMode>")
                     lines.append("      <HyperVInstance>\(esc(rdp.hyperVVmId.trimmingCharacters(in: .whitespacesAndNewlines)))</HyperVInstance>")
                     lines.append("      <HyperVPort>\(rdp.effectiveRdpPort)</HyperVPort>")
                     lines.append("      <HyperVEnhancedSessionMode>\(rdp.hyperVEnhancedSession ? "True" : "False")</HyperVEnhancedSessionMode>")
                 }
-            } else if case .cloudVirtualization(let cv) = conn.settings, !cv.apiEndpointUrl.isEmpty {
-                lines.append("      <ApiEndpointUrl>\(esc(cv.apiEndpointUrl))</ApiEndpointUrl>")
+            case .ssh(let ssh):
+                if conn.protocolType == .TELNET {
+                    lines.append("      <IsTelnetConnection>True</IsTelnetConnection>")
+                }
+                lines.append("      <TerminalType>\(esc(ssh.terminalType))</TerminalType>")
+            case .serialUart(let ser):
+                lines.append("      <SerialPort>\(esc(ser.devicePathHint))</SerialPort>")
+                lines.append("      <BaudRate>\(ser.baudRate)</BaudRate>")
+                lines.append("      <DataBits>\(ser.dataBits)</DataBits>")
+                lines.append("      <StopBits>\(ser.stopBits)</StopBits>")
+                lines.append("      <Parity>\(esc(ser.parity))</Parity>")
+                lines.append("      <FlowControl>\(esc(ser.flowControl))</FlowControl>")
+                lines.append("      <LineEnding>\(esc(ser.lineEnding))</LineEnding>")
+                lines.append("      <DtrEnabled>\(ser.dtrEnabled ? "True" : "False")</DtrEnabled>")
+                lines.append("      <RtsEnabled>\(ser.rtsEnabled ? "True" : "False")</RtsEnabled>")
+            case .fileTransfer(let ft):
+                lines.append("      <ConnectionType>\(esc(conn.protocolType.rawValue))</ConnectionType>")
+                lines.append("      <FTPSImplicitTls>\(ft.ftpsImplicitTls ? "True" : "False")</FTPSImplicitTls>")
+                lines.append("      <PassiveMode>\(ft.passiveMode ? "True" : "False")</PassiveMode>")
+                lines.append("      <VerifyTls>\(ft.verifyTls ? "True" : "False")</VerifyTls>")
+                lines.append("      <PreserveTimestamps>\(ft.preserveTimestamps ? "True" : "False")</PreserveTimestamps>")
+                lines.append("      <ShowHiddenDotfiles>\(ft.showHiddenDotfiles ? "True" : "False")</ShowHiddenDotfiles>")
+                if !ft.initialRemoteDirectory.isEmpty {
+                    lines.append("      <InitialRemoteDirectory>\(esc(ft.initialRemoteDirectory))</InitialRemoteDirectory>")
+                }
+                if !ft.initialLocalDirectory.isEmpty {
+                    lines.append("      <InitialLocalDirectory>\(esc(ft.initialLocalDirectory))</InitialLocalDirectory>")
+                }
+            case .vnc(let vnc):
+                lines.append("      <VNCPort>\(vnc.port)</VNCPort>")
+                let isArd = conn.protocolType == .APPLE_SCREEN_SHARING || vnc.appleArdDiffieHellmanAuth
+                lines.append("      <AppleScreenSharing>\(isArd ? "True" : "False")</AppleScreenSharing>")
+                lines.append("      <ViewOnly>\(vnc.viewOnly ? "True" : "False")</ViewOnly>")
+                lines.append("      <SharedSession>\(vnc.sharedSession ? "True" : "False")</SharedSession>")
+            case .webPage(let wp):
+                lines.append("      <WebUrl>\(esc(wp.url))</WebUrl>")
+                lines.append("      <IgnoreSelfSignedInternalCert>\(wp.ignoreSelfSignedInternalCert ? "True" : "False")</IgnoreSelfSignedInternalCert>")
+                lines.append("      <InjectHttpBasicAuth>\(wp.injectHttpBasicAuth ? "True" : "False")</InjectHttpBasicAuth>")
+                lines.append("      <AutoFillEnabled>\(wp.autoFillEnabled ? "True" : "False")</AutoFillEnabled>")
+                if !wp.pinnedCertSha256.isEmpty {
+                    lines.append("      <PinnedCertSha256>\(esc(wp.pinnedCertSha256))</PinnedCertSha256>")
+                }
+            case .cloudVirtualization(let cv):
+                if !cv.apiEndpointUrl.isEmpty {
+                    lines.append("      <ApiEndpointUrl>\(esc(cv.apiEndpointUrl))</ApiEndpointUrl>")
+                }
+                if !cv.regionOrCluster.isEmpty {
+                    lines.append("      <RegionOrCluster>\(esc(cv.regionOrCluster))</RegionOrCluster>")
+                }
+                if !cv.subscriptionOrAccountId.isEmpty {
+                    lines.append("      <SubscriptionOrAccountId>\(esc(cv.subscriptionOrAccountId))</SubscriptionOrAccountId>")
+                }
+                if !cv.realmOrDomain.isEmpty {
+                    lines.append("      <RealmOrDomain>\(esc(cv.realmOrDomain))</RealmOrDomain>")
+                }
+                lines.append("      <VerifyTls>\(cv.verifyTls ? "True" : "False")</VerifyTls>")
+                lines.append("      <AutoSyncDynamicInventory>\(cv.autoSyncDynamicInventory ? "True" : "False")</AutoSyncDynamicInventory>")
+            case .containerExec(let ce):
+                lines.append("      <ClusterOrSocketEndpoint>\(esc(ce.clusterOrSocketEndpoint))</ClusterOrSocketEndpoint>")
+                lines.append("      <ContextName>\(esc(ce.contextName))</ContextName>")
+                lines.append("      <Namespace>\(esc(ce.namespace))</Namespace>")
+                lines.append("      <PodOrContainerName>\(esc(ce.podOrContainerName))</PodOrContainerName>")
+                lines.append("      <SubContainerName>\(esc(ce.subContainerName))</SubContainerName>")
+                lines.append("      <ShellCommand>\(esc(ce.shellCommand))</ShellCommand>")
+                lines.append("      <FollowLogsOnOpen>\(ce.followLogsOnOpen ? "True" : "False")</FollowLogsOnOpen>")
+                lines.append("      <LogTailLines>\(ce.logTailLines)</LogTailLines>")
+                lines.append("      <VerifyTls>\(ce.verifyTls ? "True" : "False")</VerifyTls>")
+            case .netUtility(let nu):
+                lines.append("      <PingCount>\(nu.pingCount)</PingCount>")
+                lines.append("      <PingIntervalMs>\(nu.pingIntervalMs)</PingIntervalMs>")
+                lines.append("      <TracerouteMaxHops>\(nu.tracerouteMaxHops)</TracerouteMaxHops>")
+                lines.append("      <PortScanRangeStart>\(nu.portScanRangeStart)</PortScanRangeStart>")
+                lines.append("      <PortScanRangeEnd>\(nu.portScanRangeEnd)</PortScanRangeEnd>")
+                lines.append("      <PortScanConcurrency>\(nu.portScanConcurrency)</PortScanConcurrency>")
+                if !nu.wolMacAddress.isEmpty {
+                    lines.append("      <WolMacAddress>\(esc(nu.wolMacAddress))</WolMacAddress>")
+                }
+                lines.append("      <WolBroadcastAddress>\(esc(nu.wolBroadcastAddress))</WolBroadcastAddress>")
+                lines.append("      <WolUdpPort>\(nu.wolUdpPort)</WolUdpPort>")
+                if !nu.wolSecureOnHex.isEmpty {
+                    lines.append("      <WolSecureOnHex>\(esc(nu.wolSecureOnHex))</WolSecureOnHex>")
+                }
             }
+
             lines.append("      <Description>\(esc(conn.notes))</Description>")
             lines.append("      <SortOrder>\(conn.sortOrder)</SortOrder>")
             lines.append("      <Favorite>\(conn.favorite ? "True" : "False")</Favorite>")

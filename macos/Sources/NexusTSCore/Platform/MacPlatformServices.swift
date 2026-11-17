@@ -340,6 +340,8 @@ public final class MacSerialPortSession: @unchecked Sendable {
             options.c_cflag &= ~tcflag_t(PARENB)
         }
 
+        options.c_cflag &= ~tcflag_t(CRTSCTS)
+        options.c_iflag &= ~tcflag_t(IXON | IXOFF | IXANY)
         if settings.flowControl.uppercased() == "RTS_CTS" {
             options.c_cflag |= tcflag_t(CRTSCTS)
         } else if settings.flowControl.uppercased() == "XON_XOFF" {
@@ -716,7 +718,7 @@ public struct MacReleaseUpdateCandidate: Equatable, Sendable {
 }
 
 public enum MacGitHubReleaseUpdater {
-    public static let currentVersion = "0.8.7"
+    public static let currentVersion = "0.8.8"
     public static let githubTokenKeychainKey = "github_release_pat"
 
     private static let legacyPreRebaseVersions: Set<String> = [

@@ -381,7 +381,7 @@ object VncNativeBridge {
 
     suspend fun runTcpPing(
         host: String,
-        port: Int = 443,
+        port: Int = 0,
         count: Int = 5,
         intervalMs: Long = 500L
     ): List<PingSample> = withContext(Dispatchers.IO) {
@@ -397,7 +397,7 @@ object VncNativeBridge {
         for (seq in 1..totalSamples) {
             coroutineContext.ensureActive()
             var icmpSample: PingSample? = null
-            if (pingBin != null) {
+            if (pingBin != null && port <= 0) {
                 icmpSample = runCatching {
                     val startedNs = System.nanoTime()
                     val proc = ProcessBuilder(pingBin, "-n", "-c", "1", "-W", "2", resolvedIp)
@@ -419,7 +419,7 @@ object VncNativeBridge {
             val sample = icmpSample ?: run {
                 if (isNativeLoaded) {
                     val nativeRtt = runCatching {
-                        nativeTcpLatencyPingMs(resolvedIp, port.coerceIn(1, 65535), 1500)
+                        nativeTcpLatencyPingMs(resolvedIp, port.coerceIn(0, 65535), 1500)
                     }.getOrDefault(-1L)
                     if (nativeRtt >= 0L) {
                         return@run PingSample(
@@ -430,16 +430,23 @@ object VncNativeBridge {
                         )
                     }
                 }
+                val fallbackPorts = if (port > 0) intArrayOf(port) else intArrayOf(443, 80, 22, 3389)
                 var ok = false
                 val elapsed = measureTimeMillis {
-                    ok = try {
-                        Socket().use { s -> s.connect(InetSocketAddress(resolvedIp, port), 1500) }
-                        true
-                    } catch (_: ConnectException) {
-                        // TCP RST means the host IP stack responded directly and is alive/reachable.
-                        true
-                    } catch (_: Throwable) {
-                        false
+                    for (candidatePort in fallbackPorts) {
+                        val reached = try {
+                            Socket().use { s -> s.connect(InetSocketAddress(resolvedIp, candidatePort), 1200) }
+                            true
+                        } catch (_: ConnectException) {
+                            // TCP RST means the host IP stack responded directly and is alive/reachable.
+                            true
+                        } catch (_: Throwable) {
+                            false
+                        }
+                        if (reached) {
+                            ok = true
+                            break
+                        }
                     }
                 }
                 PingSample(sequence = seq, targetIp = resolvedIp, latencyMs = elapsed, reachable = ok)
@@ -922,7 +929,7 @@ class VncRfbSessionClient(
             handle = VncNativeBridge.nativeVncSessionConnect(
                 host = host,
                 port = port,
-                username = username,
+                username = if (isAppleScreenSharing) username else "",
                 password = password,
                 sharedSession = sharedSession,
                 viewOnly = viewOnly
@@ -1094,7 +1101,7 @@ class VncRfbSessionClient(
                 input.readFully(types)
                 val offered = types.map { it.toInt() and 0xFF }
                 val picked = when {
-                    (isAppleScreenSharing || username.isNotBlank()) && 30 in offered -> 30
+                    isAppleScreenSharing && 30 in offered -> 30
                     password.isBlank() && 1 in offered -> 1
                     2 in offered -> 2
                     30 in offered -> 30

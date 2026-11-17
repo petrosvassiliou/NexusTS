@@ -1,0 +1,1 @@
+• v0.8.8: Πλήρης έλεγχος και επιδιόρθωση όλων των 23 πρωτοκόλλων — ESXi VIM SOAP /sdk, Proxmox API Token & LXC, AWS EC2 SigV4 + STS, Azure ARM OAuth2 + NIC IP, Explicit FTPS TLS session reuse, SSH keyboard-interactive, VNC/Apple ARD, K8s/Docker και πλήρης συμβατότητα Royal TS .rtsz/.rtsx

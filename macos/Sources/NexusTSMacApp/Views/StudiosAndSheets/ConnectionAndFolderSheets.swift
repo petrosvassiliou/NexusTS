@@ -85,9 +85,24 @@ public struct ConnectionEditorSheet: View {
                             transferSettings.port = newProto.defaultPort
                             transferSettings.ftpsImplicitTls = newProto == .FTPS
                         }
+                        if newProto == .APPLE_SCREEN_SHARING {
+                            vncSettings.appleArdDiffieHellmanAuth = true
+                            osFamily = "macOS"
+                        } else if newProto == .VNC {
+                            vncSettings.appleArdDiffieHellmanAuth = false
+                        }
                         if newProto == .RDP || newProto == .WINDOWS_TERMINAL_SERVICES || newProto == .HYPER_V {
                             if osFamily == "Linux" {
                                 osFamily = "Windows"
+                            }
+                        }
+                        if newProto == .DOCKER_CONTAINER {
+                            if containerSettings.clusterOrSocketEndpoint.isEmpty || containerSettings.clusterOrSocketEndpoint.contains("6443") {
+                                containerSettings.clusterOrSocketEndpoint = "unix:///var/run/docker.sock"
+                            }
+                        } else if newProto == .KUBERNETES_POD {
+                            if containerSettings.clusterOrSocketEndpoint.hasPrefix("unix://") {
+                                containerSettings.clusterOrSocketEndpoint = ""
                             }
                         }
                         if newProto == .HYPER_V {
@@ -95,12 +110,31 @@ public struct ConnectionEditorSheet: View {
                                 rawEndpoint: cloudSettings.apiEndpointUrl,
                                 connectionHost: host
                             )
-                        } else if newProto == .PROXMOX_VE && cloudSettings.apiEndpointUrl.isEmpty {
-                            let h = host.trimmingCharacters(in: .whitespacesAndNewlines)
-                            cloudSettings.apiEndpointUrl = "https://\(h.isEmpty ? "localhost" : h):8006"
+                        } else if newProto == .AZURE_VM {
+                            if cloudSettings.apiEndpointUrl.isEmpty || cloudSettings.apiEndpointUrl.contains("localhost") {
+                                cloudSettings.apiEndpointUrl = "https://management.azure.com"
+                            }
+                        } else if newProto == .AWS_EC2 {
+                            if cloudSettings.apiEndpointUrl.contains("localhost") || cloudSettings.apiEndpointUrl == "https://management.azure.com" {
+                                cloudSettings.apiEndpointUrl = ""
+                            }
+                            if cloudSettings.regionOrCluster.isEmpty {
+                                cloudSettings.regionOrCluster = "us-east-1"
+                            }
+                        } else if newProto == .PROXMOX_VE {
+                            if cloudSettings.apiEndpointUrl.contains("localhost") || cloudSettings.apiEndpointUrl == "https://management.azure.com" {
+                                cloudSettings.apiEndpointUrl = ""
+                            }
+                            if cloudSettings.realmOrDomain.isEmpty {
+                                cloudSettings.realmOrDomain = "pam"
+                            }
+                        } else if newProto == .VMWARE_VSPHERE {
+                            if cloudSettings.apiEndpointUrl.contains("localhost") || cloudSettings.apiEndpointUrl == "https://management.azure.com" {
+                                cloudSettings.apiEndpointUrl = ""
+                            }
                         }
                     }
-                    TextField(protocolType == .SERIAL ? "Device Hint (/dev/cu.*)" : "Hostname / IP / URI", text: $host)
+                    TextField(hostFieldPlaceholder, text: $host)
 
                     Picker("Parent Folder", selection: $parentFolderId) {
                         Text("Vault Root (Top Level)").tag("")
@@ -170,6 +204,18 @@ public struct ConnectionEditorSheet: View {
         }
         .frame(width: 600, height: 640)
         .onAppear(perform: populateInitialState)
+    }
+
+    private var hostFieldPlaceholder: String {
+        switch protocolType {
+        case .SERIAL: return "Device Hint (/dev/cu.*)"
+        case .AWS_EC2: return "AWS Region or Optional Endpoint (e.g. us-east-1)"
+        case .AZURE_VM: return "Optional Host Hint (Use Subscription ID below)"
+        case .DOCKER_CONTAINER: return "Container Name or Remote Docker SSH/TCP Host"
+        case .KUBERNETES_POD: return "Pod Name or Optional Cluster Host"
+        case .WEB_PAGE: return "Hostname or Full HTTPS URL"
+        default: return "Hostname / IP / URI"
+        }
     }
 
     @ViewBuilder
@@ -254,7 +300,7 @@ public struct ConnectionEditorSheet: View {
                     .disabled(rdpSettings.hyperVVmId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
 
-        case .SSH, .TELNET:
+        case .SSH:
             Section("SSHv2 / Terminal Engine") {
                 TextField("Port", value: $sshSettings.port, format: .number)
                 TextField("TERM Type", text: $sshSettings.terminalType)
@@ -273,15 +319,39 @@ public struct ConnectionEditorSheet: View {
                 TextField("Scrollback Lines", value: $sshSettings.scrollbackLines, format: .number)
             }
 
+        case .TELNET:
+            Section("Telnet NVT Terminal (RFC 854 / NAWS)") {
+                TextField("TCP Port", value: $sshSettings.port, format: .number)
+                TextField("TERM Type", text: $sshSettings.terminalType)
+                TextField("Initial Login / Startup Command", text: $sshSettings.startupCommand)
+                TextField("Scrollback Lines", value: $sshSettings.scrollbackLines, format: .number)
+            }
+
         case .SFTP, .FTP, .FTPS, .SCP:
             Section("Dual-Pane File Transfer") {
                 TextField("Port", value: $transferSettings.port, format: .number)
                 TextField("Initial Local macOS Directory", text: $transferSettings.initialLocalDirectory)
-                TextField("Initial Remote Directory", text: $transferSettings.initialRemoteDirectory)
+                TextField("Initial Remote Directory (Blank = Home Directory)", text: $transferSettings.initialRemoteDirectory)
                 Toggle("Show Hidden Dotfiles", isOn: $transferSettings.showHiddenDotfiles)
                 Toggle("Preserve Timestamps", isOn: $transferSettings.preserveTimestamps)
+                if protocolType == .FTP || protocolType == .FTPS {
+                    Toggle("Passive Data Mode (EPSV / PASV)", isOn: $transferSettings.passiveMode)
+                }
                 if protocolType == .FTPS {
-                    Toggle("Implicit TLS on Port 990 (Uncheck for Explicit AUTH TLS on 21)", isOn: $transferSettings.ftpsImplicitTls)
+                    Toggle(
+                        "Implicit TLS on Port 990 (Uncheck for Explicit AUTH TLS on 21)",
+                        isOn: Binding(
+                            get: { transferSettings.ftpsImplicitTls },
+                            set: { implicit in
+                                transferSettings.ftpsImplicitTls = implicit
+                                if implicit && transferSettings.port == 21 {
+                                    transferSettings.port = 990
+                                } else if !implicit && transferSettings.port == 990 {
+                                    transferSettings.port = 21
+                                }
+                            }
+                        )
+                    )
                     Toggle("Verify Server TLS Certificate", isOn: $transferSettings.verifyTls)
                 }
             }
@@ -289,18 +359,52 @@ public struct ConnectionEditorSheet: View {
         case .VNC, .APPLE_SCREEN_SHARING:
             Section("VNC / Apple Remote Desktop (ARD)") {
                 TextField("RFB Port", value: $vncSettings.port, format: .number)
-                Toggle("Apple Remote Desktop Diffie-Hellman Auth", isOn: $vncSettings.appleArdDiffieHellmanAuth)
+                Toggle("Apple Remote Desktop Diffie-Hellman Auth (Type 30)", isOn: $vncSettings.appleArdDiffieHellmanAuth)
                 Toggle("Shared Desktop Session", isOn: $vncSettings.sharedSession)
                 Toggle("View-Only Mode", isOn: $vncSettings.viewOnly)
             }
 
         case .SERIAL:
             Section("IOKit Hardware UART / Serial") {
+                let ports = MacSerialPortSession.discoverSerialPorts()
+                if !ports.isEmpty {
+                    Picker("Detected Serial Port", selection: Binding(
+                        get: { serialSettings.devicePathHint },
+                        set: { newPath in
+                            serialSettings.devicePathHint = newPath
+                            if host.isEmpty { host = newPath }
+                        }
+                    )) {
+                        ForEach(ports) { p in
+                            Text("\(p.displayTitle) (\(p.calloutPath))").tag(p.calloutPath)
+                        }
+                    }
+                }
                 TextField("Callout Device (/dev/cu.*)", text: $serialSettings.devicePathHint)
                 Picker("Baud Rate", selection: $serialSettings.baudRate) {
                     ForEach(MacSerialPortSession.supportedBaudRates, id: \.self) { b in
                         Text("\(b) baud").tag(b)
                     }
+                }
+                Picker("Data Bits", selection: $serialSettings.dataBits) {
+                    Text("8 Data Bits").tag(8)
+                    Text("7 Data Bits").tag(7)
+                    Text("6 Data Bits").tag(6)
+                    Text("5 Data Bits").tag(5)
+                }
+                Picker("Parity", selection: $serialSettings.parity) {
+                    Text("None (N)").tag("NONE")
+                    Text("Even (E)").tag("EVEN")
+                    Text("Odd (O)").tag("ODD")
+                }
+                Picker("Stop Bits", selection: $serialSettings.stopBits) {
+                    Text("1 Stop Bit").tag(1)
+                    Text("2 Stop Bits").tag(2)
+                }
+                Picker("Flow Control", selection: $serialSettings.flowControl) {
+                    Text("None").tag("NONE")
+                    Text("Hardware RTS/CTS").tag("RTS_CTS")
+                    Text("Software XON/XOFF").tag("XON_XOFF")
                 }
                 Picker("Line Ending", selection: $serialSettings.lineEnding) {
                     Text("CRLF (\\r\\n)").tag("CRLF")
@@ -313,7 +417,7 @@ public struct ConnectionEditorSheet: View {
 
         case .WEB_PAGE:
             Section("Isolated Web Console") {
-                TextField("Target HTTPS URL", text: $webSettings.url)
+                TextField("Target HTTP/HTTPS URL (Blank = https://<Hostname>)", text: $webSettings.url)
                 Toggle("Enable Vault Credential JS Auto-Fill", isOn: $webSettings.autoFillEnabled)
                 Toggle("Inject HTTP Basic / Digest Auth", isOn: $webSettings.injectHttpBasicAuth)
                 Toggle("Allow Internal Self-Signed TLS Certificates", isOn: $webSettings.ignoreSelfSignedInternalCert)
@@ -321,14 +425,22 @@ public struct ConnectionEditorSheet: View {
             }
 
         case .KUBERNETES_POD, .DOCKER_CONTAINER:
-            Section("Kubernetes / Docker Socket") {
-                TextField("API / Socket (e.g. unix:///var/run/docker.sock)", text: $containerSettings.clusterOrSocketEndpoint)
-                TextField("Namespace", text: $containerSettings.namespace)
-                TextField("Pod or Container Name", text: $containerSettings.podOrContainerName)
-                TextField("Exec Shell", text: $containerSettings.shellCommand)
+            Section(protocolType == .DOCKER_CONTAINER ? "Docker Engine Socket / Remote Host" : "Kubernetes Cluster & Pod Exec") {
+                TextField(
+                    protocolType == .DOCKER_CONTAINER
+                        ? "Socket or TCP URL (unix:///var/run/docker.sock or tcp://host:2375)"
+                        : "Cluster API URL (Blank = Auto ~/.kube/config)",
+                    text: $containerSettings.clusterOrSocketEndpoint
+                )
                 if protocolType == .KUBERNETES_POD {
-                    Toggle("Verify Kubernetes API TLS Certificate", isOn: $containerSettings.verifyTls)
+                    TextField("Namespace", text: $containerSettings.namespace)
                 }
+                TextField(protocolType == .DOCKER_CONTAINER ? "Default Container Name (Optional)" : "Default Pod Name (Optional)", text: $containerSettings.podOrContainerName)
+                if protocolType == .KUBERNETES_POD {
+                    TextField("Target Container Name (Optional — Multi-Container Pods)", text: $containerSettings.subContainerName)
+                }
+                TextField("Exec Shell", text: $containerSettings.shellCommand)
+                Toggle("Verify API TLS Certificate", isOn: $containerSettings.verifyTls)
             }
 
         case .HYPER_V:
@@ -340,17 +452,57 @@ public struct ConnectionEditorSheet: View {
 
         case .VMWARE_VSPHERE, .PROXMOX_VE, .AWS_EC2, .AZURE_VM:
             Section("Cloud / Hypervisor API") {
-                TextField("API Endpoint URL", text: $cloudSettings.apiEndpointUrl)
-                TextField("Region or Cluster (e.g. eu-central-1)", text: $cloudSettings.regionOrCluster)
-                TextField("Subscription / Account ID", text: $cloudSettings.subscriptionOrAccountId)
-                Toggle("Verify Hypervisor TLS Certificate", isOn: $cloudSettings.verifyTls)
+                TextField(
+                    protocolType == .PROXMOX_VE
+                        ? "API Endpoint URL (Blank = https://<Host>:8006)"
+                        : (protocolType == .VMWARE_VSPHERE ? "vCenter / ESXi URL (Blank = https://<Host>)" : "API Endpoint URL (Optional Override)"),
+                    text: $cloudSettings.apiEndpointUrl
+                )
+                TextField(
+                    protocolType == .AWS_EC2
+                        ? "AWS Region (e.g. eu-central-1, us-east-1)"
+                        : (protocolType == .AZURE_VM ? "Resource Group Filter (Optional)" : "Cluster / Datacenter Filter (Optional)"),
+                    text: $cloudSettings.regionOrCluster
+                )
+                if protocolType == .AZURE_VM || protocolType == .AWS_EC2 {
+                    TextField(
+                        protocolType == .AZURE_VM ? "Azure Subscription ID (GUID)" : "AWS Account ID / STS Session Token (Optional)",
+                        text: $cloudSettings.subscriptionOrAccountId
+                    )
+                }
+                TextField(
+                    protocolType == .PROXMOX_VE
+                        ? "Proxmox Auth Realm (e.g. pam, pve)"
+                        : (protocolType == .AZURE_VM ? "Entra Tenant ID (Required for Client Secret Auth)" : "SSO / Auth Domain (Optional)"),
+                    text: $cloudSettings.realmOrDomain
+                )
+                Toggle("Verify API TLS Certificate", isOn: $cloudSettings.verifyTls)
             }
 
-        case .UTILITY_PING, .UTILITY_TRACEROUTE, .UTILITY_PORT_SCANNER, .UTILITY_WAKE_ON_LAN:
-            Section("Network Diagnostic Parameters") {
+        case .UTILITY_PING:
+            Section("Ping Reachability Parameters") {
+                TextField("Probe Count", value: $netSettings.pingCount, format: .number)
+                TextField("Interval (ms)", value: $netSettings.pingIntervalMs, format: .number)
+            }
+
+        case .UTILITY_TRACEROUTE:
+            Section("Traceroute Parameters") {
+                TextField("Maximum Hops (TTL)", value: $netSettings.tracerouteMaxHops, format: .number)
+            }
+
+        case .UTILITY_PORT_SCANNER:
+            Section("TCP Port Scanner Parameters") {
                 TextField("Port Scan Start", value: $netSettings.portScanRangeStart, format: .number)
                 TextField("Port Scan End", value: $netSettings.portScanRangeEnd, format: .number)
-                TextField("Wake-on-LAN MAC Address", text: $netSettings.wolMacAddress)
+                TextField("Concurrent Probes", value: $netSettings.portScanConcurrency, format: .number)
+            }
+
+        case .UTILITY_WAKE_ON_LAN:
+            Section("Wake-on-LAN Magic Packet") {
+                TextField("Target MAC Address (AA:BB:CC:DD:EE:FF)", text: $netSettings.wolMacAddress)
+                TextField("Broadcast IP (255.255.255.255)", text: $netSettings.wolBroadcastAddress)
+                TextField("UDP Port (9 or 7)", value: $netSettings.wolUdpPort, format: .number)
+                TextField("SecureOn Password Hex (Optional 6-byte)", text: $netSettings.wolSecureOnHex)
             }
         }
     }
@@ -394,20 +546,37 @@ public struct ConnectionEditorSheet: View {
             parentFolderId = safeInitialFolder ?? ""
             if initialProtocol == .RDP || initialProtocol == .WINDOWS_TERMINAL_SERVICES || initialProtocol == .HYPER_V {
                 osFamily = "Windows"
+            } else if initialProtocol == .APPLE_SCREEN_SHARING {
+                osFamily = "macOS"
             }
             sshSettings.port = initialProtocol == .TELNET ? 23 : 22
             transferSettings.port = initialProtocol.defaultPort
             transferSettings.ftpsImplicitTls = initialProtocol == .FTPS
-            if initialProtocol == .APPLE_SCREEN_SHARING {
-                vncSettings.appleArdDiffieHellmanAuth = true
+            vncSettings.appleArdDiffieHellmanAuth = (initialProtocol == .APPLE_SCREEN_SHARING)
+            if initialProtocol == .DOCKER_CONTAINER {
+                containerSettings.clusterOrSocketEndpoint = "unix:///var/run/docker.sock"
+            } else if initialProtocol == .KUBERNETES_POD {
+                containerSettings.clusterOrSocketEndpoint = ""
             }
-            if initialProtocol == .PROXMOX_VE {
-                cloudSettings.apiEndpointUrl = "https://localhost:8006"
+            if initialProtocol == .AZURE_VM {
+                cloudSettings.apiEndpointUrl = "https://management.azure.com"
+                cloudSettings.realmOrDomain = ""
+            } else if initialProtocol == .AWS_EC2 {
+                cloudSettings.apiEndpointUrl = ""
+                cloudSettings.regionOrCluster = "us-east-1"
+                cloudSettings.realmOrDomain = ""
+            } else if initialProtocol == .PROXMOX_VE {
+                cloudSettings.apiEndpointUrl = ""
+                cloudSettings.realmOrDomain = "pam"
+            } else if initialProtocol == .VMWARE_VSPHERE || initialProtocol == .HYPER_V {
+                cloudSettings.apiEndpointUrl = ""
+                cloudSettings.realmOrDomain = ""
             }
         }
     }
 
     private func assembledSettings() -> ProtocolSpecificSettings {
+        let trimmedHost = host.trimmingCharacters(in: .whitespacesAndNewlines)
         switch protocolType {
         case .RDP, .WINDOWS_TERMINAL_SERVICES:
             var savedRdp = rdpSettings
@@ -420,34 +589,55 @@ public struct ConnectionEditorSheet: View {
         case .VNC, .APPLE_SCREEN_SHARING:
             return .vnc(vncSettings)
         case .WEB_PAGE:
-            if webSettings.url.isEmpty {
-                webSettings.url = host.hasPrefix("http") ? host : "https://\(host)"
+            var savedWeb = webSettings
+            let rawUrl = savedWeb.url.trimmingCharacters(in: .whitespacesAndNewlines)
+            if (rawUrl.isEmpty || rawUrl == "https://localhost") && !trimmedHost.isEmpty {
+                savedWeb.url = (trimmedHost.hasPrefix("http://") || trimmedHost.hasPrefix("https://"))
+                    ? trimmedHost
+                    : "https://\(trimmedHost)"
             }
-            return .webPage(webSettings)
+            return .webPage(savedWeb)
         case .SERIAL:
-            if !host.isEmpty { serialSettings.devicePathHint = host }
-            return .serialUart(serialSettings)
+            var savedSerial = serialSettings
+            if !trimmedHost.isEmpty { savedSerial.devicePathHint = trimmedHost }
+            return .serialUart(savedSerial)
         case .KUBERNETES_POD, .DOCKER_CONTAINER:
-            return .containerExec(containerSettings)
+            var savedContainer = containerSettings
+            if protocolType == .DOCKER_CONTAINER && savedContainer.clusterOrSocketEndpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                savedContainer.clusterOrSocketEndpoint = "unix:///var/run/docker.sock"
+            }
+            return .containerExec(savedContainer)
         case .HYPER_V:
             var savedCloud = cloudSettings
             savedCloud.apiEndpointUrl = CloudHypervisorClient.sanitizedHyperVEndpoint(
                 rawEndpoint: savedCloud.apiEndpointUrl,
-                connectionHost: host
+                connectionHost: trimmedHost
             )
             return .cloudVirtualization(savedCloud)
         case .VMWARE_VSPHERE, .PROXMOX_VE, .AWS_EC2, .AZURE_VM:
             var savedCloud = cloudSettings
-            if savedCloud.apiEndpointUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !host.isEmpty {
+            let rawEp = savedCloud.apiEndpointUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+            let isPlaceholderLocalhost = rawEp.hasPrefix("https://localhost:") && trimmedHost.lowercased() != "localhost"
+            if (rawEp.isEmpty || isPlaceholderLocalhost) && !trimmedHost.isEmpty {
                 if protocolType == .PROXMOX_VE {
-                    savedCloud.apiEndpointUrl = host.hasPrefix("http") ? host : "https://\(host):8006"
+                    savedCloud.apiEndpointUrl = trimmedHost.hasPrefix("http") ? trimmedHost : "https://\(trimmedHost):8006"
                 } else if protocolType == .VMWARE_VSPHERE {
-                    savedCloud.apiEndpointUrl = host.hasPrefix("http") ? host : "https://\(host)"
+                    savedCloud.apiEndpointUrl = trimmedHost.hasPrefix("http") ? trimmedHost : "https://\(trimmedHost)"
                 }
+            }
+            if protocolType == .AZURE_VM && rawEp.isEmpty {
+                savedCloud.apiEndpointUrl = "https://management.azure.com"
+            }
+            if protocolType == .AWS_EC2 && savedCloud.regionOrCluster.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                savedCloud.regionOrCluster = (!trimmedHost.isEmpty && !trimmedHost.contains(".")) ? trimmedHost : "us-east-1"
             }
             return .cloudVirtualization(savedCloud)
         case .UTILITY_PING, .UTILITY_TRACEROUTE, .UTILITY_PORT_SCANNER, .UTILITY_WAKE_ON_LAN:
-            return .netUtility(netSettings)
+            var savedNet = netSettings
+            if protocolType == .UTILITY_WAKE_ON_LAN && savedNet.wolMacAddress.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && trimmedHost.contains(":") {
+                savedNet.wolMacAddress = trimmedHost
+            }
+            return .netUtility(savedNet)
         }
     }
 

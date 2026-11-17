@@ -36,18 +36,43 @@ public struct ContainerWorkloadStudioView: View {
             clusterOrSocketEndpoint: latestConnection.protocolType == .DOCKER_CONTAINER
                 ? "unix:///var/run/docker.sock"
                 : "https://kubernetes.default.svc:6443",
-            podOrContainerName: latestConnection.host
+            podOrContainerName: latestConnection.protocolType == .DOCKER_CONTAINER ? "" : latestConnection.host
         )
     }
 
-    public var body: some View {
+    private var effectiveContainerSettings: ContainerExecProtocolSettings {
+        var cfg = containerSettings
+        if let selId = selectedWorkloadId,
+           let item = workloads.first(where: { $0.id == selId }) {
+            cfg.podOrContainerName = item.name
+            if latestConnection.protocolType == .KUBERNETES_POD && !item.namespaceOrImage.isEmpty {
+                cfg.namespace = item.namespaceOrImage
+            }
+        }
+        return cfg
+    }
+
+    private func resolvedCredential() -> VaultCredential? {
         let resolved = PropertyInheritanceResolver.resolve(connection: latestConnection, in: store.document)
-        let bearer = tab.adHocPasswordOverride ?? resolved.effectiveCredential?.secretPassword ?? ""
+        var cred = resolved.effectiveCredential
+        if tab.adHocUsernameOverride != nil || tab.adHocPasswordOverride != nil || tab.adHocDomainOverride != nil {
+            var copy = cred ?? VaultCredential(name: "Ad-Hoc")
+            if let u = tab.adHocUsernameOverride, !u.isEmpty { copy.username = u }
+            if let p = tab.adHocPasswordOverride, !p.isEmpty { copy.secretPassword = p }
+            if let d = tab.adHocDomainOverride, !d.isEmpty { copy.domain = d }
+            cred = copy
+        }
+        return cred
+    }
+
+    public var body: some View {
+        let cred = resolvedCredential()
+        let bearer = cred?.secretPassword ?? ""
 
         VStack(spacing: 0) {
             HStack(spacing: 12) {
                 ProtocolSquircleIcon(protocolType: latestConnection.protocolType, size: 22)
-                Text("\(latestConnection.name) • \(containerSettings.clusterOrSocketEndpoint)")
+                Text("\(latestConnection.name) • \(effectiveContainerSettings.clusterOrSocketEndpoint)")
                     .font(.callout.weight(.semibold))
                     .lineLimit(1)
 
@@ -62,7 +87,7 @@ public struct ContainerWorkloadStudioView: View {
                 .frame(width: 360)
 
                 Button {
-                    refreshData(bearer: bearer)
+                    refreshData(credential: cred)
                 } label: {
                     Label("Refresh", systemImage: "arrow.clockwise")
                 }
@@ -78,7 +103,7 @@ public struct ContainerWorkloadStudioView: View {
             switch mode {
             case .logs:
                 ScrollView {
-                    Text(logsOutput.isEmpty ? "No container log lines fetched yet. Click Refresh or verify socket/API endpoint." : logsOutput)
+                    Text(logsOutput.isEmpty ? "No container log lines fetched yet. Select a workload or click Refresh." : logsOutput)
                         .font(.system(size: store.terminalFontSize, design: .monospaced))
                         .foregroundStyle(Color(white: 0.90))
                         .textSelection(.enabled)
@@ -110,7 +135,9 @@ public struct ContainerWorkloadStudioView: View {
 
                     let cliCmd = ContainerWorkloadClient.buildSafeExecCommand(
                         protocolType: latestConnection.protocolType,
-                        settings: containerSettings
+                        settings: effectiveContainerSettings,
+                        remoteSshHost: latestConnection.host,
+                        remoteSshUser: cred?.username ?? ""
                     )
 
                     Text(cliCmd)
@@ -147,21 +174,72 @@ public struct ContainerWorkloadStudioView: View {
             .background(.bar)
         }
         .onAppear {
-            refreshData(bearer: bearer)
+            refreshData(credential: cred)
+        }
+        .onChange(of: selectedWorkloadId) { _, newId in
+            guard newId != nil else { return }
+            fetchSelectedWorkloadLogs(credential: cred)
         }
     }
 
-    private func refreshData(bearer: String) {
-        isLoading = true
+    private func fetchSelectedWorkloadLogs(credential: VaultCredential?) {
         let proto = latestConnection.protocolType
-        let cfg = containerSettings
+        let remoteHost = latestConnection.host
+        let cfg = effectiveContainerSettings
+        let bearer = credential?.secretPassword ?? ""
+        guard !cfg.podOrContainerName.isEmpty else { return }
+        isLoading = true
         Task {
             do {
-                async let fetchedLogs = ContainerWorkloadClient.fetchLogs(protocolType: proto, settings: cfg, bearerToken: bearer)
-                async let fetchedList = ContainerWorkloadClient.listWorkloads(protocolType: proto, settings: cfg, bearerToken: bearer)
-                let (l, w) = try await (fetchedLogs, fetchedList)
-                logsOutput = l
+                let fetched = try await ContainerWorkloadClient.fetchLogs(
+                    protocolType: proto,
+                    settings: cfg,
+                    bearerToken: bearer,
+                    remoteHost: remoteHost,
+                    sshCredential: credential
+                )
+                logsOutput = fetched
+                statusText = "Loaded logs for \(cfg.podOrContainerName)"
+            } catch {
+                statusText = error.localizedDescription
+            }
+            isLoading = false
+        }
+    }
+
+    private func refreshData(credential: VaultCredential?) {
+        isLoading = true
+        let proto = latestConnection.protocolType
+        let remoteHost = latestConnection.host
+        let baseCfg = effectiveContainerSettings
+        let bearer = credential?.secretPassword ?? ""
+        Task {
+            do {
+                let w = try await ContainerWorkloadClient.listWorkloads(
+                    protocolType: proto,
+                    settings: baseCfg,
+                    bearerToken: bearer,
+                    remoteHost: remoteHost,
+                    sshCredential: credential
+                )
                 workloads = w
+                var logCfg = baseCfg
+                if logCfg.podOrContainerName.isEmpty, let first = w.first {
+                    selectedWorkloadId = first.id
+                    logCfg.podOrContainerName = first.name
+                    if proto == .KUBERNETES_POD && !first.namespaceOrImage.isEmpty {
+                        logCfg.namespace = first.namespaceOrImage
+                    }
+                }
+                if !logCfg.podOrContainerName.isEmpty {
+                    logsOutput = (try? await ContainerWorkloadClient.fetchLogs(
+                        protocolType: proto,
+                        settings: logCfg,
+                        bearerToken: bearer,
+                        remoteHost: remoteHost,
+                        sshCredential: credential
+                    )) ?? ""
+                }
                 statusText = "Loaded \(w.count) workload(s)"
             } catch {
                 statusText = error.localizedDescription
@@ -220,39 +298,40 @@ public struct CloudHypervisorSessionView: View {
                 Spacer()
 
                 if let vm = selectedVm {
-                    if isHyperV {
-                        HStack(spacing: 4) {
-                            Button {
-                                performVmPower(vm: vm, action: .start)
-                            } label: {
-                                Label("Start", systemImage: "play.fill")
-                            }
-                            .help("Start VM (\(vm.name))")
-
-                            Button {
-                                performVmPower(vm: vm, action: .stop)
-                            } label: {
-                                Label("Turn Off", systemImage: "stop.fill")
-                            }
-                            .help("Turn Off VM (\(vm.name))")
-
-                            Button {
-                                performVmPower(vm: vm, action: .save)
-                            } label: {
-                                Label("Save", systemImage: "tray.and.arrow.down.fill")
-                            }
-                            .help("Save VM State (\(vm.name))")
-
-                            Button {
-                                performVmPower(vm: vm, action: .reboot)
-                            } label: {
-                                Label("Restart", systemImage: "arrow.triangle.2.circlepath")
-                            }
-                            .help("Restart VM (\(vm.name))")
+                    HStack(spacing: 4) {
+                        Button {
+                            performVmPower(vm: vm, action: .start)
+                        } label: {
+                            Label("Start", systemImage: "play.fill")
                         }
-                        .controlSize(.small)
-                        .disabled(isRunningPowerAction)
+                        .help("Start VM (\(vm.name))")
+
+                        Button {
+                            performVmPower(vm: vm, action: .stop)
+                        } label: {
+                            Label("Turn Off", systemImage: "stop.fill")
+                        }
+                        .help("Stop / Power Off VM (\(vm.name))")
+
+                        Button {
+                            performVmPower(vm: vm, action: .save)
+                        } label: {
+                            Label(
+                                isHyperV ? "Save" : (latestConnection.protocolType == .AZURE_VM ? "Deallocate" : "Suspend"),
+                                systemImage: "tray.and.arrow.down.fill"
+                            )
+                        }
+                        .help("Save / Suspend / Deallocate VM (\(vm.name))")
+
+                        Button {
+                            performVmPower(vm: vm, action: .reboot)
+                        } label: {
+                            Label("Restart", systemImage: "arrow.triangle.2.circlepath")
+                        }
+                        .help("Restart VM (\(vm.name))")
                     }
+                    .controlSize(.small)
+                    .disabled(isRunningPowerAction)
 
                     Button {
                         openVmConsole(vm: vm, inSplit: nil)
@@ -357,22 +436,20 @@ public struct CloudHypervisorSessionView: View {
                                 .buttonStyle(.borderedProminent)
                                 .controlSize(.mini)
 
-                                if isHyperV {
-                                    Button("Start") {
-                                        performVmPower(vm: vm, action: .start)
-                                    }
-                                    .controlSize(.mini)
-                                    .disabled(isRunningPowerAction || vm.powerState == "RUNNING")
-
-                                    Button("Off") {
-                                        performVmPower(vm: vm, action: .stop)
-                                    }
-                                    .controlSize(.mini)
-                                    .disabled(isRunningPowerAction || vm.powerState == "STOPPED")
+                                Button("Start") {
+                                    performVmPower(vm: vm, action: .start)
                                 }
+                                .controlSize(.mini)
+                                .disabled(isRunningPowerAction || vm.powerState.uppercased().contains("RUN") || vm.powerState.uppercased().contains("ON"))
+
+                                Button("Off") {
+                                    performVmPower(vm: vm, action: .stop)
+                                }
+                                .controlSize(.mini)
+                                .disabled(isRunningPowerAction || vm.powerState.uppercased().contains("STOP") || vm.powerState.uppercased().contains("OFF") || vm.powerState.uppercased().contains("DEALLOC"))
                             }
                         }
-                        .width(isHyperV ? 195 : 100)
+                        .width(195)
                     }
                     .contextMenu(forSelectionType: CloudVmInventoryItem.ID.self) { ids in
                         if let firstId = ids.first, let vm = inventory.first(where: { $0.id == firstId }) {
@@ -382,17 +459,25 @@ public struct CloudHypervisorSessionView: View {
                             Button("Open VM Console in Split Pane") {
                                 openVmConsole(vm: vm, inSplit: .horizontal)
                             }
+                            Divider()
+                            Button("Start VM") { performVmPower(vm: vm, action: .start) }
+                            Button("Stop / Turn Off VM") { performVmPower(vm: vm, action: .stop) }
+                            Button(isHyperV ? "Save VM State" : (latestConnection.protocolType == .AZURE_VM ? "Deallocate VM" : "Suspend VM")) {
+                                performVmPower(vm: vm, action: .save)
+                            }
+                            Button("Restart VM") { performVmPower(vm: vm, action: .reboot) }
                             if isHyperV {
-                                Divider()
-                                Button("Start VM") { performVmPower(vm: vm, action: .start) }
-                                Button("Turn Off VM") { performVmPower(vm: vm, action: .stop) }
-                                Button("Save VM State") { performVmPower(vm: vm, action: .save) }
-                                Button("Restart VM") { performVmPower(vm: vm, action: .reboot) }
                                 Divider()
                                 Button("Save VM as Vault RDP Connection") {
                                     saveHyperVVmToVault(vm: vm)
                                 }
                                 Button("Copy VM GUID") {
+                                    NSPasteboard.general.clearContents()
+                                    NSPasteboard.general.setString(vm.id, forType: .string)
+                                }
+                            } else {
+                                Divider()
+                                Button("Copy VM ID") {
                                     NSPasteboard.general.clearContents()
                                     NSPasteboard.general.setString(vm.id, forType: .string)
                                 }
@@ -520,23 +605,80 @@ public struct CloudHypervisorSessionView: View {
                 adHocPassword: tab.adHocPasswordOverride,
                 adHocDomain: tab.adHocDomainOverride
             )
-        } else {
+            return
+        }
+
+        let cloudCfg: CloudVirtualizationProtocolSettings = {
+            if case .cloudVirtualization(let c) = parent.settings { return c }
+            return CloudVirtualizationProtocolSettings()
+        }()
+
+        if parent.protocolType == .PROXMOX_VE {
+            let base = CloudHypervisorClient.resolveProxmoxBaseUrl(
+                apiEndpointUrl: cloudCfg.apiEndpointUrl,
+                connectionHost: parent.host
+            )
+            let parts = vm.id.split(separator: "/").map(String.init)
+            let node = parts.count >= 3 ? parts[0] : (vm.addressOrNode.isEmpty ? parent.host : vm.addressOrNode)
+            let kind = (parts.count >= 3 && parts[1] == "lxc") ? "lxc" : "kvm"
+            let numericId = parts.last ?? vm.id
+            let encodedName = vm.name.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? vm.name
+            let consoleUrl = "\(base)/?console=\(kind)&novnc=1&vmid=\(numericId)&vmname=\(encodedName)&node=\(node)"
+            let webCfg = WebPageProtocolSettings(url: consoleUrl, ignoreSelfSignedInternalCert: true)
             let child = VaultConnection(
                 parentFolderId: parent.parentFolderId,
-                name: vm.name,
-                host: vm.addressOrNode.isEmpty ? parent.host : vm.addressOrNode,
-                protocolType: vm.consoleProtocol,
-                osFamily: vm.consoleProtocol == .RDP ? "Windows" : "Linux",
-                inheritable: parent.inheritable
+                name: "\(vm.name) (noVNC)",
+                host: consoleUrl,
+                protocolType: .WEB_PAGE,
+                osFamily: "Linux",
+                inheritable: parent.inheritable,
+                settings: .webPage(webCfg)
             )
-            store.openConnection(
-                child,
-                inSplit: orientation,
-                adHocUsername: tab.adHocUsernameOverride,
-                adHocPassword: tab.adHocPasswordOverride,
-                adHocDomain: tab.adHocDomainOverride
-            )
+            store.openConnection(child, inSplit: orientation)
+            return
         }
+
+        if parent.protocolType == .VMWARE_VSPHERE && vm.consoleProtocol == .WEB_PAGE {
+            let base = CloudHypervisorClient.resolveVsphereBaseUrl(
+                apiEndpointUrl: cloudCfg.apiEndpointUrl,
+                connectionHost: parent.host
+            )
+            let uiUrl = "\(base)/ui/#/host/vms/\(vm.id)"
+            let webCfg = WebPageProtocolSettings(url: uiUrl, ignoreSelfSignedInternalCert: true)
+            let child = VaultConnection(
+                parentFolderId: parent.parentFolderId,
+                name: "\(vm.name) (Web Console)",
+                host: uiUrl,
+                protocolType: .WEB_PAGE,
+                osFamily: "Linux",
+                inheritable: parent.inheritable,
+                settings: .webPage(webCfg)
+            )
+            store.openConnection(child, inSplit: orientation)
+            return
+        }
+
+        let targetHost = vm.addressOrNode.isEmpty ? parent.host : vm.addressOrNode
+        let isCloudApiParent = parent.protocolType == .AWS_EC2 || parent.protocolType == .AZURE_VM
+        let guestInheritable = isCloudApiParent
+            ? InheritableProperties(credentialMode: .PROMPT_AT_CONNECT)
+            : parent.inheritable
+        let child = VaultConnection(
+            parentFolderId: parent.parentFolderId,
+            name: vm.name,
+            host: targetHost,
+            protocolType: vm.consoleProtocol,
+            osFamily: vm.consoleProtocol == .RDP ? "Windows" : "Linux",
+            inheritable: guestInheritable,
+            settings: vm.consoleProtocol.defaultSettings(host: targetHost)
+        )
+        store.openConnection(
+            child,
+            inSplit: orientation,
+            adHocUsername: isCloudApiParent ? nil : tab.adHocUsernameOverride,
+            adHocPassword: isCloudApiParent ? nil : tab.adHocPasswordOverride,
+            adHocDomain: isCloudApiParent ? nil : tab.adHocDomainOverride
+        )
     }
 
     private func openHostDesktopRdp(inSplit orientation: SplitOrientation?) {
@@ -591,7 +733,7 @@ public struct CloudHypervisorSessionView: View {
         statusMessage = "Sending \(action.displayTitle) to \(vm.name)…"
         Task {
             do {
-                let msg = try await CloudHypervisorClient.performHyperVPowerAction(
+                let msg = try await CloudHypervisorClient.performCloudPowerAction(
                     connection: conn,
                     credential: cred,
                     vmId: vm.id,
@@ -650,7 +792,7 @@ public struct NetworkDiagnosticsSessionView: View {
     private enum NetToolKind: String, CaseIterable, Identifiable {
         case portScan = "Port Scan"
         case traceroute = "Traceroute"
-        case ping = "TCP Ping"
+        case ping = "Ping"
         case wol = "Wake-on-LAN"
         case dns = "DNS Lookup"
         case subnet = "Subnet CIDR"
@@ -881,20 +1023,10 @@ public struct NetworkDiagnosticsSessionView: View {
             let intervalNs = UInt64(max(50, min(10_000, cfg.pingIntervalMs))) * 1_000_000
             Task.detached {
                 var results: [String] = []
-                let candidatePorts: [UInt16] = [443, 80, 22, 3389]
                 for seq in 1...count {
-                    var matchedPort: UInt16? = nil
-                    var matchedRtt: Int64 = -1
-                    for p in candidatePorts {
-                        let rtt = NativeNetworkDiagnostics.tcpPingMs(host: host, port: p, timeoutMs: 750)
-                        if rtt >= 0 {
-                            matchedPort = p
-                            matchedRtt = rtt
-                            break
-                        }
-                    }
-                    if let p = matchedPort {
-                        results.append("seq=\(seq)  host=\(host):\(p)  rtt=\(matchedRtt) ms  status=OPEN")
+                    let rtt = NativeNetworkDiagnostics.tcpPingMs(host: host, port: 0, timeoutMs: 900)
+                    if rtt >= 0 {
+                        results.append("seq=\(seq)  host=\(host)  rtt=\(rtt) ms  status=ALIVE")
                     } else {
                         results.append("seq=\(seq)  host=\(host)  timeout")
                     }

@@ -195,6 +195,23 @@ public struct SerialConsoleView: View {
                 .controlSize(.small)
                 .disabled(!isOpen || outboundLine.isEmpty)
 
+                HStack(spacing: 4) {
+                    Button("Ctrl+C") {
+                        serialSession.write(Data([0x03]))
+                    }
+                    .help("Send ETX (0x03 / SIGINT)")
+                    Button("ESC") {
+                        serialSession.write(Data([0x1B]))
+                    }
+                    .help("Send Escape (0x1B)")
+                    Button("TAB") {
+                        serialSession.write(Data([0x09]))
+                    }
+                    .help("Send Tab Completion (0x09)")
+                }
+                .controlSize(.mini)
+                .disabled(!isOpen)
+
                 Button("Clear") {
                     consoleLines.removeAll()
                     rxPartialBuffer.removeAll(keepingCapacity: true)
@@ -249,6 +266,15 @@ public struct SerialConsoleView: View {
         }
     }
 
+    private static func stripAnsiEscapeCodes(_ raw: String) -> String {
+        guard raw.contains("\u{1B}") else { return raw }
+        return raw.replacingOccurrences(
+            of: "\\x1B\\[[0-9;?]*[A-Za-z]",
+            with: "",
+            options: .regularExpression
+        )
+    }
+
     private func drainCompleteLines(timestamp: String) {
         var cursor = 0
         let bytes = Array(rxPartialBuffer)
@@ -259,7 +285,7 @@ public struct SerialConsoleView: View {
             let b = bytes[cursor]
             if b == 0x0D || b == 0x0A {
                 let slice = bytes[lineStart..<cursor]
-                let text = String(decoding: slice, as: UTF8.self)
+                let text = Self.stripAnsiEscapeCodes(String(decoding: slice, as: UTF8.self))
                 consoleLines.append("[\(timestamp)] \(text)")
                 if b == 0x0D && (cursor + 1) < total && bytes[cursor + 1] == 0x0A {
                     cursor += 2
@@ -280,7 +306,7 @@ public struct SerialConsoleView: View {
     private func flushPartialRxBuffer() {
         guard !rxPartialBuffer.isEmpty else { return }
         let ts = Self.timestampFormatter.string(from: Date())
-        let tail = String(decoding: rxPartialBuffer, as: UTF8.self)
+        let tail = Self.stripAnsiEscapeCodes(String(decoding: rxPartialBuffer, as: UTF8.self))
         rxPartialBuffer.removeAll(keepingCapacity: true)
         if !tail.isEmpty {
             consoleLines.append("[\(ts)] \(tail)")
@@ -316,11 +342,19 @@ public struct SerialConsoleView: View {
             cfg.dtrEnabled = dtrEnabled
             cfg.rtsEnabled = rtsEnabled
 
+            let parityLetter: String = {
+                switch parity.uppercased() {
+                case "EVEN": return "E"
+                case "ODD":  return "O"
+                default:     return "N"
+                }
+            }()
+
             do {
                 try serialSession.open(settings: cfg)
                 isOpen = true
-                statusBanner = "Connected \(selectedDevicePath) @ \(baudRate) \(dataBits)N\(stopBits) (\(lineEnding))"
-                consoleLines.append("● Opened \(selectedDevicePath) @ \(baudRate) baud (\(lineEnding))")
+                statusBanner = "Connected \(selectedDevicePath) @ \(baudRate) \(dataBits)\(parityLetter)\(stopBits) (\(lineEnding))"
+                consoleLines.append("● Opened \(selectedDevicePath) @ \(baudRate) \(dataBits)\(parityLetter)\(stopBits) (\(lineEnding))")
             } catch {
                 statusBanner = error.localizedDescription
                 consoleLines.append("✖ \(error.localizedDescription)")

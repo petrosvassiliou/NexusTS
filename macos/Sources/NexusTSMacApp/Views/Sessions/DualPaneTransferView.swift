@@ -108,11 +108,12 @@ private struct DualPaneTransferLiveBody: View {
                     )
                     .frame(width: 8, height: 8)
 
-                Text(verbatim: "\(latestConnection.protocolType.shortBadge) Commander • \(latestConnection.host):\(String(transferSettings.port))")
+                let effectivePort = transferSettings.port > 0 ? transferSettings.port : latestConnection.protocolType.defaultPort
+                Text(verbatim: "\(latestConnection.protocolType.shortBadge) Commander • \(latestConnection.host):\(String(effectivePort))")
                     .font(.callout.weight(.semibold))
 
                 if latestConnection.protocolType == .FTPS {
-                    EnvironmentCapsuleBadge(transferSettings.ftpsImplicitTls || transferSettings.port == 990 ? "Implicit TLS" : "Explicit AUTH TLS")
+                    EnvironmentCapsuleBadge(transferSettings.ftpsImplicitTls ? "Implicit TLS" : "Explicit AUTH TLS")
                 }
 
                 Spacer()

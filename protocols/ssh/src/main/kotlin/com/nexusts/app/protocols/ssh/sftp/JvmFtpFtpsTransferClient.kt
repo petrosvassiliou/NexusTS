@@ -88,6 +88,17 @@ class JvmFtpFtpsTransferClient(
     private var controlReader: BufferedReader? = null
     private var controlWriter: BufferedOutputStream? = null
     private var dataChannelProtected: Boolean = false
+    private var activeControlPort: Int = 21
+    private var epsvSupported: Boolean = true
+    private var mlsdSupported: Boolean = true
+
+    @Volatile
+    var controlSessionIdHex: String = ""
+        private set
+
+    @Volatile
+    var lastDataSessionIdHex: String = ""
+        private set
 
     val isConnected: Boolean
         get() = controlSocket?.let { it.isConnected && !it.isClosed } == true
@@ -102,6 +113,9 @@ class JvmFtpFtpsTransferClient(
             securityMode == FtpSecurityMode.IMPLICIT_FTPS -> 990
             else -> 21
         }
+        activeControlPort = targetPort
+        epsvSupported = true
+        mlsdSupported = true
 
         val rawTcp = Socket()
         rawTcp.tcpNoDelay = true
@@ -110,6 +124,7 @@ class JvmFtpFtpsTransferClient(
 
         if (securityMode == FtpSecurityMode.IMPLICIT_FTPS) {
             val sslSock = wrapSocketWithTls(rawTcp, trimmedHost, targetPort)
+            controlSessionIdHex = sslSock.session.id.joinToString("") { "%02x".format(it) }
             attachControlStreams(sslSock)
             val greeting = readControlReply()
             if (!greeting.isPositiveCompletion) {
@@ -131,6 +146,7 @@ class JvmFtpFtpsTransferClient(
                     throw IOException("Explicit FTPS AUTH TLS rejected: ${authReply.code} ${authReply.message}")
                 }
                 val sslSock = wrapSocketWithTls(rawTcp, trimmedHost, targetPort)
+                controlSessionIdHex = sslSock.session.id.joinToString("") { "%02x".format(it) }
                 attachControlStreams(sslSock)
             }
             authenticateAndNegotiateProtection()
@@ -215,19 +231,29 @@ class JvmFtpFtpsTransferClient(
     }
 
     @Synchronized
-    fun listDirectory(remotePath: String = "/"): List<RemoteTransferEntry> {
+    fun listDirectory(remotePath: String = ""): List<RemoteTransferEntry> {
         ensureConnected()
-        val targetPath = remotePath.ifBlank { "/" }
-        cwd(targetPath)
-
-        // Attempt RFC 3659 MLSD first
-        val mlsdResult = runCatching {
-            val rawBytes = executePassiveDownloadCommand("MLSD")
-            val text = rawBytes.toString(StandardCharsets.UTF_8)
-            parseMlsdListing(targetPath, text)
+        val targetPath = if (remotePath.isBlank()) {
+            pwd()
+        } else {
+            cwd(remotePath)
+            remotePath
         }
-        if (mlsdResult.isSuccess) {
-            return mlsdResult.getOrThrow()
+
+        // Attempt RFC 3659 MLSD first when server supports it
+        if (mlsdSupported) {
+            val mlsdResult = runCatching {
+                val rawBytes = executePassiveDownloadCommand("MLSD")
+                val text = rawBytes.toString(StandardCharsets.UTF_8)
+                parseMlsdListing(targetPath, text)
+            }
+            if (mlsdResult.isSuccess) {
+                return mlsdResult.getOrThrow()
+            }
+            val msg = mlsdResult.exceptionOrNull()?.message.orEmpty()
+            if (msg.contains(" 500 ") || msg.contains(" 501 ") || msg.contains(" 502 ") || msg.contains(" 504 ")) {
+                mlsdSupported = false
+            }
         }
 
         // Fallback to standard LIST (UNIX ls -la or Windows DOS directory format)
@@ -245,20 +271,21 @@ class JvmFtpFtpsTransferClient(
     @Synchronized
     fun uploadFile(remotePath: String, content: ByteArray): Boolean {
         ensureConnected()
-        val passivePort = negotiatePassiveDataPort()
-        val rawData = Socket()
-        rawData.tcpNoDelay = true
-        rawData.soTimeout = readTimeoutMs
+        val (passiveHost, passivePort) = negotiatePassiveDataEndpoint()
+        val rawData = connectPassiveDataSocket(passiveHost, passivePort)
         try {
-            rawData.connect(InetSocketAddress(host.trim(), passivePort), connectTimeoutMs)
             val prelim = sendCommand("STOR $remotePath")
             if (!prelim.isPositivePreliminary && !prelim.isPositiveCompletion) {
                 runCatching { rawData.close() }
                 throw IOException("FTP STOR rejected: ${prelim.code} ${prelim.message}")
             }
 
+            // Pass activeControlPort (NOT passivePort) so JSSE SSLSessionContext reuses the control TLS session
+            // required by vsftpd (require_ssl_reuse=YES), ProFTPD, and FileZilla Server!
             val activeDataSocket: Socket = if (dataChannelProtected) {
-                wrapSocketWithTls(rawData, host.trim(), passivePort)
+                wrapSocketWithTls(rawData, host.trim(), activeControlPort).also { ssl ->
+                    lastDataSessionIdHex = ssl.session.id.joinToString("") { "%02x".format(it) }
+                }
             } else {
                 rawData
             }
@@ -324,20 +351,20 @@ class JvmFtpFtpsTransferClient(
     }
 
     private fun executePassiveDownloadCommand(command: String): ByteArray {
-        val passivePort = negotiatePassiveDataPort()
-        val rawData = Socket()
-        rawData.tcpNoDelay = true
-        rawData.soTimeout = readTimeoutMs
+        val (passiveHost, passivePort) = negotiatePassiveDataEndpoint()
+        val rawData = connectPassiveDataSocket(passiveHost, passivePort)
         try {
-            rawData.connect(InetSocketAddress(host.trim(), passivePort), connectTimeoutMs)
             val prelim = sendCommand(command)
             if (!prelim.isPositivePreliminary && !prelim.isPositiveCompletion) {
                 runCatching { rawData.close() }
                 throw IOException("FTP command '$command' rejected: ${prelim.code} ${prelim.message}")
             }
 
+            // Pass activeControlPort (NOT passivePort) so JSSE SSLSessionContext reuses the control TLS session!
             val activeDataSocket: Socket = if (dataChannelProtected) {
-                wrapSocketWithTls(rawData, host.trim(), passivePort)
+                wrapSocketWithTls(rawData, host.trim(), activeControlPort).also { ssl ->
+                    lastDataSessionIdHex = ssl.session.id.joinToString("") { "%02x".format(it) }
+                }
             } else {
                 rawData
             }
@@ -374,16 +401,47 @@ class JvmFtpFtpsTransferClient(
         }
     }
 
-    private fun negotiatePassiveDataPort(): Int {
-        val epsv = sendCommand("EPSV")
-        if (epsv.code == 229) {
-            parseEpsvPort(epsv.message)?.let { return it }
+    private fun connectPassiveDataSocket(targetHost: String, passivePort: Int): Socket {
+        val primary = Socket()
+        primary.tcpNoDelay = true
+        primary.soTimeout = readTimeoutMs
+        try {
+            primary.connect(InetSocketAddress(targetHost, passivePort), connectTimeoutMs)
+            return primary
+        } catch (primaryErr: IOException) {
+            runCatching { primary.close() }
+            val fallbackHost = controlSocket?.inetAddress?.hostAddress ?: host.trim()
+            if (fallbackHost.isBlank() || fallbackHost == targetHost) {
+                throw primaryErr
+            }
+            val secondary = Socket()
+            secondary.tcpNoDelay = true
+            secondary.soTimeout = readTimeoutMs
+            secondary.connect(InetSocketAddress(fallbackHost, passivePort), connectTimeoutMs)
+            return secondary
+        }
+    }
+
+    private fun negotiatePassiveDataEndpoint(): Pair<String, Int> {
+        val controlPeerIp = controlSocket?.inetAddress?.hostAddress?.takeIf { it.isNotBlank() } ?: host.trim()
+        var epsvCode = 0
+        if (epsvSupported) {
+            val epsv = sendCommand("EPSV")
+            epsvCode = epsv.code
+            if (epsv.code == 229) {
+                parseEpsvPort(epsv.message)?.let { return controlPeerIp to it }
+            } else if (epsv.code in listOf(500, 501, 502, 522)) {
+                epsvSupported = false
+            }
         }
         val pasv = sendCommand("PASV")
         if (pasv.code == 227) {
-            parsePasvPort(pasv.message)?.let { return it }
+            parsePasvEndpoint(pasv.message)?.let { (pasvIp, pasvPort) ->
+                val resolvedIp = resolveNatSafePasvHost(pasvIp, controlPeerIp)
+                return resolvedIp to pasvPort
+            }
         }
-        throw IOException("Failed to negotiate passive data port (EPSV=${epsv.code}, PASV=${pasv.code})")
+        throw IOException("Failed to negotiate passive data port (EPSV=$epsvCode, PASV=${pasv.code})")
     }
 
     private fun ensureConnected() {
@@ -452,6 +510,8 @@ class JvmFtpFtpsTransferClient(
             }
             val ctx = SSLContext.getInstance("TLS")
             ctx.init(null, arrayOf<TrustManager>(trustAll), SecureRandom())
+            ctx.clientSessionContext?.sessionCacheSize = 64
+            ctx.clientSessionContext?.sessionTimeout = 3600
             return ctx.socketFactory
         }
 
@@ -466,12 +526,43 @@ class JvmFtpFtpsTransferClient(
             return parts[3].trim().toIntOrNull()?.takeIf { it in 1..65535 }
         }
 
-        fun parsePasvPort(message: String): Int? {
+        fun parsePasvEndpoint(message: String): Pair<String, Int>? {
             val match = Regex("\\((\\d+),(\\d+),(\\d+),(\\d+),(\\d+),(\\d+)\\)").find(message) ?: return null
+            val h1 = match.groupValues[1].toIntOrNull() ?: return null
+            val h2 = match.groupValues[2].toIntOrNull() ?: return null
+            val h3 = match.groupValues[3].toIntOrNull() ?: return null
+            val h4 = match.groupValues[4].toIntOrNull() ?: return null
             val p1 = match.groupValues[5].toIntOrNull() ?: return null
             val p2 = match.groupValues[6].toIntOrNull() ?: return null
             val port = (p1 shl 8) + p2
-            return port.takeIf { it in 1..65535 }
+            if (port !in 1..65535) return null
+            return "$h1.$h2.$h3.$h4" to port
+        }
+
+        fun parsePasvPort(message: String): Int? = parsePasvEndpoint(message)?.second
+
+        fun resolveNatSafePasvHost(pasvIp: String, controlPeerIp: String): String {
+            if (pasvIp == "0.0.0.0" || pasvIp.startsWith("0.")) return controlPeerIp
+            if (pasvIp == controlPeerIp) return pasvIp
+            val pasvUnroutable = isPrivateOrLoopbackIpv4(pasvIp)
+            val controlPrivate = isPrivateOrLoopbackIpv4(controlPeerIp)
+            // If server advertises an internal RFC1918/loopback IP over NAT while control peer is public
+            // OR advertises a different RFC1918 subnet/loopback than the connected control peer, prefer controlPeerIp.
+            if (pasvUnroutable && (!controlPrivate || pasvIp.startsWith("127.") != controlPeerIp.startsWith("127."))) {
+                return controlPeerIp
+            }
+            return pasvIp
+        }
+
+        private fun isPrivateOrLoopbackIpv4(ip: String): Boolean {
+            val parts = ip.split('.').map { it.toIntOrNull() ?: return false }
+            if (parts.size != 4) return false
+            val (a, b) = parts[0] to parts[1]
+            return a == 10 ||
+                a == 127 ||
+                (a == 192 && b == 168) ||
+                (a == 172 && b in 16..31) ||
+                (a == 169 && b == 254)
         }
 
         fun extractQuotedPath(message: String): String? {
@@ -570,7 +661,7 @@ class JvmFtpFtpsTransferClient(
             val normalizedParent = normalizeRemoteDir(parentDir)
             val results = mutableListOf<RemoteTransferEntry>()
             val unixRegex = Regex(
-                "^([dlcbps-])([rwxstST-]{9})\\+?\\s+\\d+\\s+(\\S+)\\s+\\S+\\s+(\\d+)\\s+(\\w{3}\\s+\\d{1,2}\\s+[\\d:]{4,5})\\s+(.+)$"
+                "^([dlcbps-])([rwxstST-]{9})[@+]?\\s+\\d+\\s+(\\S+)\\s+.+?\\s+(\\d+)\\s+([A-Za-z]{3}\\s+\\d{1,2}\\s+(?:\\d{4}|\\d{1,2}:\\d{2}))\\s+(.+)$"
             )
             for (rawLine in listBody.lineSequence()) {
                 val line = rawLine.trimEnd('\r', '\n').trim()

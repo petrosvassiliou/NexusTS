@@ -234,11 +234,6 @@ fn connect_ssh_session_internal(
     bastion_spec: Option<SshConnectSpec>,
     open_pty: bool,
 ) -> Result<i64, String> {
-    let startup_cmd = spec
-        .startup_command
-        .clone()
-        .filter(|s| !s.trim().is_empty());
-
     let record_res = tokio_runtime().block_on(async move {
         let bastion_session = if let Some(bspec) = bastion_spec {
             Some(ActiveSshClientSession::connect_without_shell(bspec, None).await?)
@@ -254,10 +249,6 @@ fn connect_ssh_session_internal(
         if open_pty {
             let (session, mut pty_channel) =
                 ActiveSshClientSession::connect(spec, bastion_session.as_ref()).await?;
-            if let Some(cmd) = startup_cmd {
-                let line = format!("{cmd}\r");
-                let _ = pty_channel.data(line.as_bytes()).await;
-            }
 
             let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<JniSshActorCmd>();
             let out_clone = Arc::clone(&output_buf);
@@ -385,11 +376,12 @@ pub extern "system" fn Java_com_nexusts_app_core_vault_crypto_NativeVaultCryptoB
                 .convert_byte_array(&passphrase_utf8)
                 .map_err(|e| e.to_string())?;
             let profile = Argon2idProfile {
-                memory_kib: memory_kib.max(0) as u32,
-                iterations: iterations.max(0) as u32,
-                parallelism: parallelism.max(0) as u32,
+                memory_kib: (memory_kib.max(0) as u32).max(8_192),
+                iterations: (iterations.max(0) as u32).max(1),
+                parallelism: (parallelism.max(0) as u32).max(1),
             };
-            seal_nxts_vault(&plain, &pass, revision as u64, profile).map_err(|e| e.to_string())
+            seal_nxts_vault(&plain, &pass, (revision.max(1)) as u64, profile)
+                .map_err(|e| e.to_string())
         })();
 
         match res {
@@ -1310,6 +1302,9 @@ pub extern "system" fn Java_com_nexusts_app_protocols_ssh_bridge_SshNativeBridge
                         client: Arc::new(client),
                     })
                 }
+                "FTPS" | "FTPS_IMPLICIT" | "FTPS_EXPLICIT" => Err(String::from(
+                    "FTPS uses JvmFtpFtpsTransferClient TLS transport rather than nativeTransferConnect",
+                )),
                 _ => {
                     // Default: SFTP v3 over SSHv2
                     let spec = build_ssh_spec_from_params(
@@ -1466,14 +1461,7 @@ pub extern "system" fn Java_com_nexusts_app_protocols_ssh_bridge_SshNativeBridge
         let Some(rec) = transfer_sessions().get(&handle).map(|r| Arc::clone(r.value())) else {
             return new_checkjni_string(&mut env, "[]");
         };
-        let path = {
-            let p = read_jstring(&mut env, &remote_path);
-            if p.trim().is_empty() {
-                String::from("/")
-            } else {
-                p
-            }
-        };
+        let path = read_jstring(&mut env, &remote_path);
         let res = tokio_runtime().block_on(async {
             match &rec.backend {
                 JniTransferBackend::Sftp { sftp, .. } => sftp.list_directory(&path).await,
@@ -2358,7 +2346,7 @@ pub extern "system" fn Java_com_nexusts_app_protocols_vnc_bridge_VncNativeBridge
         let Ok(p) = u16::try_from(port) else {
             return -1;
         };
-        if host_s.trim().is_empty() || p == 0 {
+        if host_s.trim().is_empty() {
             return -1;
         }
         let t_ms = timeout_ms.max(20) as u64;

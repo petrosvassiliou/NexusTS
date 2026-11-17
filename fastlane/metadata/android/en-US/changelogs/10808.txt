@@ -1,0 +1,1 @@
+• v0.8.8: Complete 23-protocol wire, TLS & Royal TS .rtsz/.rtsx verification — ESXi VIM SOAP /sdk, Proxmox API Token & LXC power, AWS EC2 SigV4 + STS, Azure ARM OAuth2 + NIC IP, Explicit FTPS TLS session reuse, SSH keyboard-interactive + port release, VNC vs Apple ARD auth, and K8s/Docker exec

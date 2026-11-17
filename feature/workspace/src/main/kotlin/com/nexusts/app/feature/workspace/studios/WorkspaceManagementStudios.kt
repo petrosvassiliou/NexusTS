@@ -471,10 +471,15 @@ fun NewOrEditConnectionDialog(
 
     val initialRdp = (initialConnection?.settings as? ProtocolSpecificSettings.Rdp) ?: ProtocolSpecificSettings.Rdp()
     val initialSsh = (initialConnection?.settings as? ProtocolSpecificSettings.Ssh) ?: ProtocolSpecificSettings.Ssh()
-    val initialVnc = (initialConnection?.settings as? ProtocolSpecificSettings.Vnc) ?: ProtocolSpecificSettings.Vnc()
+    val initialVnc = (initialConnection?.settings as? ProtocolSpecificSettings.Vnc) ?: ProtocolSpecificSettings.Vnc(
+        appleArdDiffieHellmanAuth = (initialConnection?.protocol ?: defaultProtocol) == VaultProtocolType.APPLE_SCREEN_SHARING
+    )
     val initialFt = (initialConnection?.settings as? ProtocolSpecificSettings.FileTransfer) ?: ProtocolSpecificSettings.FileTransfer()
     val initialSerial = (initialConnection?.settings as? ProtocolSpecificSettings.SerialUart) ?: ProtocolSpecificSettings.SerialUart()
     val initialContainer = (initialConnection?.settings as? ProtocolSpecificSettings.ContainerExec) ?: ProtocolSpecificSettings.ContainerExec()
+    val initialWeb = (initialConnection?.settings as? ProtocolSpecificSettings.WebPage) ?: ProtocolSpecificSettings.WebPage()
+    val initialCloud = (initialConnection?.settings as? ProtocolSpecificSettings.CloudVirtualization) ?: ProtocolSpecificSettings.CloudVirtualization()
+    val initialNet = (initialConnection?.settings as? ProtocolSpecificSettings.NetUtility) ?: ProtocolSpecificSettings.NetUtility()
 
     var name by remember(initialConnection) { mutableStateOf(initialConnection?.name.orEmpty()) }
     var host by remember(initialConnection) { mutableStateOf(initialConnection?.host.orEmpty()) }
@@ -499,16 +504,51 @@ fun NewOrEditConnectionDialog(
 
     var activeRdpTab by remember(initialConnection) { mutableIntStateOf(0) }
 
-    // VNC & File Transfer ports
+    // VNC & File Transfer state
     var vncPortText by remember(initialConnection) { mutableStateOf(initialVnc.port.toString()) }
+    var vncArdAuth by remember(initialConnection, defaultProtocol) {
+        mutableStateOf(
+            if (initialConnection != null) {
+                initialVnc.appleArdDiffieHellmanAuth || initialConnection.protocol == VaultProtocolType.APPLE_SCREEN_SHARING
+            } else {
+                defaultProtocol == VaultProtocolType.APPLE_SCREEN_SHARING
+            }
+        )
+    }
+    var vncViewOnly by remember(initialConnection) { mutableStateOf(initialVnc.viewOnly) }
+    var vncSharedSession by remember(initialConnection) { mutableStateOf(initialVnc.sharedSession) }
+
     var ftPortText by remember(initialConnection, defaultProtocol) {
-        val defaultFt = when (initialConnection?.protocol ?: defaultProtocol) {
-            VaultProtocolType.FTP -> 21
-            VaultProtocolType.FTPS -> 990
+        val defaultFt = when {
+            initialConnection != null -> initialFt.port
+            defaultProtocol == VaultProtocolType.FTP -> 21
+            defaultProtocol == VaultProtocolType.FTPS -> 990
             else -> initialFt.port
         }
         mutableStateOf(defaultFt.toString())
     }
+    var ftImplicitTls by remember(initialConnection) { mutableStateOf(initialFt.ftpsImplicitTls) }
+    var ftRemoteDir by remember(initialConnection) { mutableStateOf(initialFt.initialRemoteDirectory) }
+    var ftPassiveMode by remember(initialConnection) { mutableStateOf(initialFt.passiveMode) }
+    var ftVerifyTls by remember(initialConnection) { mutableStateOf(initialFt.verifyTls) }
+
+    // Web, Cloud & Network Utilities state
+    var webIgnoreSelfSigned by remember(initialConnection) { mutableStateOf(initialWeb.ignoreSelfSignedInternalCert) }
+    var webAutoFill by remember(initialConnection) { mutableStateOf(initialWeb.autoFillEnabled) }
+    var webInjectBasicAuth by remember(initialConnection) { mutableStateOf(initialWeb.injectHttpBasicAuth) }
+
+    var cloudApiEndpoint by remember(initialConnection) { mutableStateOf(initialCloud.apiEndpointUrl) }
+    var cloudRegionOrCluster by remember(initialConnection) { mutableStateOf(initialCloud.regionOrCluster) }
+    var cloudSubscriptionId by remember(initialConnection) { mutableStateOf(initialCloud.subscriptionOrAccountId) }
+    var cloudRealmOrTenant by remember(initialConnection) { mutableStateOf(initialCloud.realmOrTenant) }
+    var cloudVerifyTls by remember(initialConnection) { mutableStateOf(initialCloud.verifyTls) }
+
+    var netWolMac by remember(initialConnection) { mutableStateOf(initialNet.wolMacAddress) }
+    var netWolBroadcast by remember(initialConnection) { mutableStateOf(initialNet.wolBroadcastAddress) }
+    var netPortStartText by remember(initialConnection) { mutableStateOf(initialNet.portScanRangeStart.toString()) }
+    var netPortEndText by remember(initialConnection) { mutableStateOf(initialNet.portScanRangeEnd.toString()) }
+    var netPingCountText by remember(initialConnection) { mutableStateOf(initialNet.pingCount.toString()) }
+    var netMaxHopsText by remember(initialConnection) { mutableStateOf(initialNet.tracerouteMaxHops.toString()) }
 
     // USB-C Hardware Serial / UART state
     var serialBaudRate by remember(initialConnection) { mutableIntStateOf(initialSerial.baudRate) }
@@ -518,10 +558,20 @@ fun NewOrEditConnectionDialog(
     var serialRts by remember(initialConnection) { mutableStateOf(initialSerial.rtsEnabled) }
 
     // Kubernetes Pod & Docker Container Exec state
+    var containerEndpoint by remember(initialConnection, defaultProtocol) {
+        val defaultEp = if (initialConnection == null && defaultProtocol == VaultProtocolType.KUBERNETES_POD) {
+            ""
+        } else {
+            initialContainer.clusterOrSocketEndpoint
+        }
+        mutableStateOf(defaultEp)
+    }
     var containerNamespace by remember(initialConnection) { mutableStateOf(initialContainer.namespace) }
     var containerTargetName by remember(initialConnection) { mutableStateOf(initialContainer.podOrContainerName) }
+    var containerSubName by remember(initialConnection) { mutableStateOf(initialContainer.subContainerName) }
     var containerShell by remember(initialConnection) { mutableStateOf(initialContainer.shellCommand) }
     var containerFollowLogs by remember(initialConnection) { mutableStateOf(initialContainer.followLogsOnOpen) }
+    var containerVerifyTls by remember(initialConnection) { mutableStateOf(initialContainer.verifyTls) }
 
     // SSH Port-Forwarding (-L / -R / -D), X11 & Bastion Jump state
     var sshPortText by remember(initialConnection, defaultProtocol) {
@@ -602,10 +652,18 @@ fun NewOrEditConnectionDialog(
                         selectedProto = proto
                         when (proto) {
                             VaultProtocolType.FTP -> ftPortText = "21"
-                            VaultProtocolType.FTPS -> ftPortText = "990"
+                            VaultProtocolType.FTPS -> ftPortText = if (ftImplicitTls) "990" else "21"
                             VaultProtocolType.SFTP, VaultProtocolType.SCP -> ftPortText = "22"
                             VaultProtocolType.TELNET -> sshPortText = "23"
                             VaultProtocolType.SSH -> if (sshPortText == "23") sshPortText = "22"
+                            VaultProtocolType.APPLE_SCREEN_SHARING -> vncArdAuth = true
+                            VaultProtocolType.VNC -> vncArdAuth = false
+                            VaultProtocolType.KUBERNETES_POD -> {
+                                if (containerEndpoint == "unix:///var/run/docker.sock") containerEndpoint = ""
+                            }
+                            VaultProtocolType.DOCKER_CONTAINER -> {
+                                if (containerEndpoint.isBlank()) containerEndpoint = "unix:///var/run/docker.sock"
+                            }
                             else -> Unit
                         }
                     }
@@ -691,7 +749,9 @@ fun NewOrEditConnectionDialog(
                     )
                 }
 
-                if (selectedProto == VaultProtocolType.RDP) {
+                val isRdpOrWts = selectedProto == VaultProtocolType.RDP ||
+                    selectedProto == VaultProtocolType.WINDOWS_TERMINAL_SERVICES
+                if (isRdpOrWts) {
                     FlowRow(
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                         verticalArrangement = Arrangement.spacedBy(6.dp)
@@ -712,7 +772,7 @@ fun NewOrEditConnectionDialog(
                 }
 
                 // Credential & Gateway Inheritance (shown for non-RDP, or shown on Tab 0 for RDP)
-                if (selectedProto != VaultProtocolType.RDP || activeRdpTab == 0) {
+                if (!isRdpOrWts || activeRdpTab == 0) {
                     Text(
                         text = strings.dialogFieldCredentialMode,
                         style = MaterialTheme.typography.labelMedium,
@@ -840,7 +900,7 @@ fun NewOrEditConnectionDialog(
                         }
                     }
 
-                    if (selectedProto == VaultProtocolType.RDP) {
+                    if (isRdpOrWts) {
                         RdpOptionSwitchRow(
                             label = strings.rdpOptClipboardSharing,
                             checked = redirectClipboard,
@@ -879,7 +939,7 @@ fun NewOrEditConnectionDialog(
                 }
 
                 // RDP Tab 1: Display & HiDPI Scaling
-                if (selectedProto == VaultProtocolType.RDP && activeRdpTab == 1) {
+                if (isRdpOrWts && activeRdpTab == 1) {
                     RdpOptionSwitchRow(
                         label = strings.rdpOptHiDpiScaling,
                         checked = hiDpiEnabled,
@@ -983,7 +1043,7 @@ fun NewOrEditConnectionDialog(
                 }
 
                 // RDP Tab 2: Local Resources (Clipboard, Audio Mode, Mic, Drives, Printers, Ports, Smartcard)
-                if (selectedProto == VaultProtocolType.RDP && activeRdpTab == 2) {
+                if (isRdpOrWts && activeRdpTab == 2) {
                     RdpOptionSwitchRow(
                         label = strings.rdpOptClipboardSharing,
                         checked = redirectClipboard,
@@ -1135,7 +1195,7 @@ fun NewOrEditConnectionDialog(
                 }
 
                 // RDP Tab 3: Experience & Security (ClearType, Aero, Wallpaper, NLA, Restricted Admin, Cert, RD Gateway)
-                if (selectedProto == VaultProtocolType.RDP && activeRdpTab == 3) {
+                if (isRdpOrWts && activeRdpTab == 3) {
                     RdpOptionSwitchRow(
                         label = strings.rdpOptClearType,
                         checked = enableFontSmoothing,
@@ -1418,6 +1478,257 @@ fun NewOrEditConnectionDialog(
                     }
                 }
 
+                // File Transfer (SFTP / FTP / FTPS / SCP) Configuration Section
+                if (selectedProto == VaultProtocolType.SFTP ||
+                    selectedProto == VaultProtocolType.FTP ||
+                    selectedProto == VaultProtocolType.FTPS ||
+                    selectedProto == VaultProtocolType.SCP
+                ) {
+                    HorizontalDivider()
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = MaterialTheme.colorScheme.surfaceContainer,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedTextField(
+                                value = ftRemoteDir,
+                                onValueChange = { ftRemoteDir = it },
+                                label = { Text("Initial Remote Directory (blank = login home / PWD)") },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            if (selectedProto == VaultProtocolType.FTP || selectedProto == VaultProtocolType.FTPS) {
+                                RdpOptionSwitchRow("Passive Data Channel (EPSV / PASV)", ftPassiveMode) {
+                                    ftPassiveMode = it
+                                }
+                            }
+                            if (selectedProto == VaultProtocolType.FTPS) {
+                                RdpOptionSwitchRow("Implicit TLS (TCP 990) — off for Explicit AUTH TLS (TCP 21)", ftImplicitTls) { implicit ->
+                                    ftImplicitTls = implicit
+                                    if (implicit && ftPortText == "21") ftPortText = "990"
+                                    if (!implicit && ftPortText == "990") ftPortText = "21"
+                                }
+                                RdpOptionSwitchRow("Strict TLS Certificate Verification", ftVerifyTls) {
+                                    ftVerifyTls = it
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // VNC & Apple Screen Sharing (ARD) Configuration Section
+                if (selectedProto == VaultProtocolType.VNC ||
+                    selectedProto == VaultProtocolType.APPLE_SCREEN_SHARING
+                ) {
+                    HorizontalDivider()
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = MaterialTheme.colorScheme.surfaceContainer,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            RdpOptionSwitchRow("Apple Screen Sharing (ARD Type 30 DH-AES Auth)", vncArdAuth) {
+                                vncArdAuth = it
+                            }
+                            RdpOptionSwitchRow("Shared Session (Keep Existing Viewers)", vncSharedSession) {
+                                vncSharedSession = it
+                            }
+                            RdpOptionSwitchRow("View Only (Read-Only Observe Mode)", vncViewOnly) {
+                                vncViewOnly = it
+                            }
+                        }
+                    }
+                }
+
+                // Isolated Web Page Configuration Section
+                if (selectedProto == VaultProtocolType.WEB_PAGE) {
+                    HorizontalDivider()
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = MaterialTheme.colorScheme.surfaceContainer,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            RdpOptionSwitchRow("Accept Self-Signed / Internal LAN Certificates", webIgnoreSelfSigned) {
+                                webIgnoreSelfSigned = it
+                            }
+                            RdpOptionSwitchRow("Auto-Fill Login Forms", webAutoFill) {
+                                webAutoFill = it
+                            }
+                            RdpOptionSwitchRow("Inject HTTP Basic Auth Challenge", webInjectBasicAuth) {
+                                webInjectBasicAuth = it
+                            }
+                        }
+                    }
+                }
+
+                // Cloud & Hypervisor Management Configuration Section
+                if (selectedProto == VaultProtocolType.VMWARE_VSPHERE ||
+                    selectedProto == VaultProtocolType.PROXMOX_VE ||
+                    selectedProto == VaultProtocolType.HYPER_V ||
+                    selectedProto == VaultProtocolType.AWS_EC2 ||
+                    selectedProto == VaultProtocolType.AZURE_VM
+                ) {
+                    HorizontalDivider()
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = MaterialTheme.colorScheme.surfaceContainer,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedTextField(
+                                value = cloudRegionOrCluster,
+                                onValueChange = { cloudRegionOrCluster = it },
+                                label = {
+                                    Text(
+                                        when (selectedProto) {
+                                            VaultProtocolType.AWS_EC2 -> "AWS Region (e.g. us-east-1, eu-central-1)"
+                                            VaultProtocolType.AZURE_VM -> "Resource Group Filter (optional — blank lists all)"
+                                            else -> "Cluster / Datacenter / Node (optional)"
+                                        }
+                                    )
+                                },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            if (selectedProto == VaultProtocolType.AZURE_VM || selectedProto == VaultProtocolType.AWS_EC2) {
+                                OutlinedTextField(
+                                    value = cloudSubscriptionId,
+                                    onValueChange = { cloudSubscriptionId = it },
+                                    label = {
+                                        Text(
+                                            if (selectedProto == VaultProtocolType.AZURE_VM) {
+                                                "Azure Subscription ID"
+                                            } else {
+                                                "AWS Account ID / STS Session Token (optional)"
+                                            }
+                                        )
+                                    },
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            }
+                            if (selectedProto == VaultProtocolType.AZURE_VM ||
+                                selectedProto == VaultProtocolType.PROXMOX_VE ||
+                                selectedProto == VaultProtocolType.HYPER_V
+                            ) {
+                                OutlinedTextField(
+                                    value = cloudRealmOrTenant,
+                                    onValueChange = { cloudRealmOrTenant = it },
+                                    label = {
+                                        Text(
+                                            when (selectedProto) {
+                                                VaultProtocolType.AZURE_VM -> "Entra ID Tenant ID (for Service Principal OAuth2)"
+                                                VaultProtocolType.PROXMOX_VE -> "Proxmox Realm (pam / pve)"
+                                                else -> "Active Directory / NTLM Domain (optional)"
+                                            }
+                                        )
+                                    },
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            }
+                            OutlinedTextField(
+                                value = cloudApiEndpoint,
+                                onValueChange = { cloudApiEndpoint = it },
+                                label = { Text("Custom API Endpoint URL Override (optional)") },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            RdpOptionSwitchRow("Strict TLS Certificate Verification", cloudVerifyTls) {
+                                cloudVerifyTls = it
+                            }
+                        }
+                    }
+                }
+
+                // Network Utilities Configuration Section
+                if (selectedProto == VaultProtocolType.UTILITY_PING ||
+                    selectedProto == VaultProtocolType.UTILITY_TRACEROUTE ||
+                    selectedProto == VaultProtocolType.UTILITY_PORT_SCANNER ||
+                    selectedProto == VaultProtocolType.UTILITY_WAKE_ON_LAN
+                ) {
+                    HorizontalDivider()
+                    Surface(
+                        shape = RoundedCornerShape(14.dp),
+                        color = MaterialTheme.colorScheme.surfaceContainer,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            when (selectedProto) {
+                                VaultProtocolType.UTILITY_WAKE_ON_LAN -> {
+                                    OutlinedTextField(
+                                        value = netWolMac,
+                                        onValueChange = { netWolMac = it },
+                                        label = { Text("Target MAC Address (00:11:22:33:44:55)") },
+                                        singleLine = true,
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                    OutlinedTextField(
+                                        value = netWolBroadcast,
+                                        onValueChange = { netWolBroadcast = it },
+                                        label = { Text("Broadcast IP Address") },
+                                        singleLine = true,
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                }
+                                VaultProtocolType.UTILITY_PORT_SCANNER -> {
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        OutlinedTextField(
+                                            value = netPortStartText,
+                                            onValueChange = { netPortStartText = it.filter(Char::isDigit).take(5) },
+                                            label = { Text("Start Port") },
+                                            singleLine = true,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        OutlinedTextField(
+                                            value = netPortEndText,
+                                            onValueChange = { netPortEndText = it.filter(Char::isDigit).take(5) },
+                                            label = { Text("End Port") },
+                                            singleLine = true,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                    }
+                                }
+                                VaultProtocolType.UTILITY_TRACEROUTE -> {
+                                    OutlinedTextField(
+                                        value = netMaxHopsText,
+                                        onValueChange = { netMaxHopsText = it.filter(Char::isDigit).take(2) },
+                                        label = { Text("Max Hops (1–30)") },
+                                        singleLine = true,
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                }
+                                else -> {
+                                    OutlinedTextField(
+                                        value = netPingCountText,
+                                        onValueChange = { netPingCountText = it.filter(Char::isDigit).take(3) },
+                                        label = { Text("Ping Sample Count") },
+                                        singleLine = true,
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // Kubernetes Pod & Docker Container Exec Configuration Section
                 if (selectedProto == VaultProtocolType.KUBERNETES_POD ||
                     selectedProto == VaultProtocolType.DOCKER_CONTAINER
@@ -1437,6 +1748,21 @@ fun NewOrEditConnectionDialog(
                             modifier = Modifier.padding(10.dp),
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
+                            OutlinedTextField(
+                                value = containerEndpoint,
+                                onValueChange = { containerEndpoint = it },
+                                label = {
+                                    Text(
+                                        if (selectedProto == VaultProtocolType.KUBERNETES_POD) {
+                                            "Cluster API URL (blank uses Host field)"
+                                        } else {
+                                            "Docker Endpoint (unix:///var/run/docker.sock over SSH, or http://host:2375)"
+                                        }
+                                    )
+                                },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth()
+                            )
                             if (selectedProto == VaultProtocolType.KUBERNETES_POD) {
                                 OutlinedTextField(
                                     value = containerNamespace,
@@ -1452,15 +1778,24 @@ fun NewOrEditConnectionDialog(
                                 label = {
                                     Text(
                                         if (selectedProto == VaultProtocolType.KUBERNETES_POD) {
-                                            "Pod Name"
+                                            "Pod Name (blank discovers pods on connect)"
                                         } else {
-                                            "Docker Container Name / ID"
+                                            "Docker Container Name / ID (blank lists containers)"
                                         }
                                     )
                                 },
                                 singleLine = true,
                                 modifier = Modifier.fillMaxWidth()
                             )
+                            if (selectedProto == VaultProtocolType.KUBERNETES_POD) {
+                                OutlinedTextField(
+                                    value = containerSubName,
+                                    onValueChange = { containerSubName = it },
+                                    label = { Text("Container Name inside Multi-Container Pod (optional)") },
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            }
                             FlowRow(
                                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                                 verticalArrangement = Arrangement.spacedBy(6.dp)
@@ -1476,14 +1811,26 @@ fun NewOrEditConnectionDialog(
                             RdpOptionSwitchRow("Open Directly to Live Log Stream (--follow)", containerFollowLogs) {
                                 containerFollowLogs = it
                             }
+                            RdpOptionSwitchRow("Strict TLS Certificate Verification", containerVerifyTls) {
+                                containerVerifyTls = it
+                            }
                         }
                     }
                 }
             }
         },
         confirmButton = {
+            val resolvedSaveHost = when {
+                host.isNotBlank() -> host.trim()
+                selectedProto == VaultProtocolType.AWS_EC2 ->
+                    "ec2.${cloudRegionOrCluster.trim().ifBlank { "us-east-1" }}.amazonaws.com"
+                selectedProto == VaultProtocolType.AZURE_VM -> "management.azure.com"
+                selectedProto == VaultProtocolType.UTILITY_WAKE_ON_LAN && netWolMac.isNotBlank() ->
+                    netWolMac.trim()
+                else -> ""
+            }
             Button(
-                enabled = name.isNotBlank() && host.isNotBlank(),
+                enabled = name.isNotBlank() && resolvedSaveHost.isNotBlank(),
                 onClick = {
                     val configuredSettings: ProtocolSpecificSettings = when (selectedProto) {
                         VaultProtocolType.RDP,
@@ -1541,7 +1888,7 @@ fun NewOrEditConnectionDialog(
                                 .copy(port = sshPortText.toIntOrNull()?.takeIf { it in 1..65535 } ?: 23)
 
                         VaultProtocolType.SERIAL -> initialSerial.copy(
-                            devicePathHint = host.trim(),
+                            devicePathHint = resolvedSaveHost,
                             baudRate = serialBaudRate,
                             parity = serialParity,
                             flowControl = serialFlowControl,
@@ -1550,81 +1897,160 @@ fun NewOrEditConnectionDialog(
                         )
 
                         VaultProtocolType.KUBERNETES_POD,
-                        VaultProtocolType.DOCKER_CONTAINER -> initialContainer.copy(
-                            clusterOrSocketEndpoint = if (host.startsWith("http")) host.trim() else "https://${host.trim()}",
-                            namespace = containerNamespace.trim().ifBlank { "default" },
-                            podOrContainerName = containerTargetName.trim().ifBlank { host.trim() },
-                            shellCommand = containerShell,
-                            followLogsOnOpen = containerFollowLogs
-                        )
+                        VaultProtocolType.DOCKER_CONTAINER -> {
+                            val rawCluster = containerEndpoint.trim()
+                            val resolvedCluster = when {
+                                rawCluster.isNotBlank() -> rawCluster
+                                resolvedSaveHost.startsWith("http://", ignoreCase = true) ||
+                                    resolvedSaveHost.startsWith("https://", ignoreCase = true) ||
+                                    resolvedSaveHost.startsWith("tcp://", ignoreCase = true) ||
+                                    resolvedSaveHost.startsWith("unix://", ignoreCase = true) ||
+                                    resolvedSaveHost.startsWith("ssh://", ignoreCase = true) -> resolvedSaveHost
+                                resolvedSaveHost.endsWith(":2375") -> "http://$resolvedSaveHost"
+                                selectedProto == VaultProtocolType.DOCKER_CONTAINER -> "unix:///var/run/docker.sock"
+                                else -> "https://$resolvedSaveHost"
+                            }
+                            initialContainer.copy(
+                                clusterOrSocketEndpoint = resolvedCluster,
+                                namespace = containerNamespace.trim().ifBlank { "default" },
+                                podOrContainerName = containerTargetName.trim(),
+                                subContainerName = containerSubName.trim(),
+                                shellCommand = containerShell,
+                                followLogsOnOpen = containerFollowLogs,
+                                verifyTls = containerVerifyTls
+                            )
+                        }
 
                         VaultProtocolType.SFTP, VaultProtocolType.FTP,
                         VaultProtocolType.FTPS, VaultProtocolType.SCP -> {
                             val defaultFtPort = when (selectedProto) {
                                 VaultProtocolType.FTP -> 21
-                                VaultProtocolType.FTPS -> 990
+                                VaultProtocolType.FTPS -> if (ftImplicitTls) 990 else 21
                                 else -> 22
                             }
-                            ((initialConnection?.settings as? ProtocolSpecificSettings.FileTransfer)
-                                ?: ProtocolSpecificSettings.FileTransfer(port = defaultFtPort))
-                                .copy(port = ftPortText.toIntOrNull()?.takeIf { it in 1..65535 } ?: defaultFtPort)
+                            initialFt.copy(
+                                port = ftPortText.toIntOrNull()?.takeIf { it in 1..65535 } ?: defaultFtPort,
+                                initialRemoteDirectory = ftRemoteDir.trim(),
+                                ftpsImplicitTls = if (selectedProto == VaultProtocolType.FTPS) ftImplicitTls else false,
+                                passiveMode = ftPassiveMode,
+                                verifyTls = ftVerifyTls
+                            )
                         }
 
                         VaultProtocolType.VNC, VaultProtocolType.APPLE_SCREEN_SHARING ->
-                            ((initialConnection?.settings as? ProtocolSpecificSettings.Vnc)
-                                ?: ProtocolSpecificSettings.Vnc(
-                                    appleArdDiffieHellmanAuth = selectedProto == VaultProtocolType.APPLE_SCREEN_SHARING
-                                ))
-                                .copy(port = vncPortText.toIntOrNull()?.takeIf { it in 1..65535 } ?: 5900)
+                            initialVnc.copy(
+                                port = vncPortText.toIntOrNull()?.takeIf { it in 1..65535 } ?: 5900,
+                                appleArdDiffieHellmanAuth = vncArdAuth || selectedProto == VaultProtocolType.APPLE_SCREEN_SHARING,
+                                sharedSession = vncSharedSession,
+                                viewOnly = vncViewOnly
+                            )
 
                         VaultProtocolType.WEB_PAGE -> {
-                            val normalizedUrl = if (host.startsWith("http")) host.trim() else "https://${host.trim()}"
-                            ((initialConnection?.settings as? ProtocolSpecificSettings.WebPage)
-                                ?: ProtocolSpecificSettings.WebPage(url = normalizedUrl))
-                                .copy(url = normalizedUrl)
+                            val normalizedUrl = if (resolvedSaveHost.startsWith("http", ignoreCase = true)) {
+                                resolvedSaveHost
+                            } else {
+                                "https://$resolvedSaveHost"
+                            }
+                            initialWeb.copy(
+                                url = normalizedUrl,
+                                autoFillEnabled = webAutoFill,
+                                injectHttpBasicAuth = webInjectBasicAuth,
+                                ignoreSelfSignedInternalCert = webIgnoreSelfSigned
+                            )
                         }
 
                         VaultProtocolType.HYPER_V -> {
-                            val trimmedHost = host.trim()
-                            val existingCloud = initialConnection?.settings as? ProtocolSpecificSettings.CloudVirtualization
+                            val customApi = cloudApiEndpoint.trim()
                             val customUrl = when {
-                                trimmedHost.startsWith("http://", ignoreCase = true) ||
-                                    trimmedHost.startsWith("https://", ignoreCase = true) -> trimmedHost
-                                existingCloud != null -> {
-                                    val existing = existingCloud.apiEndpointUrl.trim()
-                                    if (existing.contains(":5985") || existing.contains(":5986")) existing else ""
-                                }
+                                customApi.startsWith("http://", ignoreCase = true) ||
+                                    customApi.startsWith("https://", ignoreCase = true) ->
+                                    if (customApi.contains(":5985") || customApi.contains(":5986")) customApi else ""
+                                resolvedSaveHost.startsWith("http://", ignoreCase = true) ||
+                                    resolvedSaveHost.startsWith("https://", ignoreCase = true) -> resolvedSaveHost
                                 else -> ""
                             }
-                            (existingCloud ?: ProtocolSpecificSettings.CloudVirtualization(apiEndpointUrl = customUrl))
-                                .copy(apiEndpointUrl = customUrl)
+                            initialCloud.copy(
+                                apiEndpointUrl = customUrl,
+                                regionOrCluster = cloudRegionOrCluster.trim(),
+                                subscriptionOrAccountId = cloudSubscriptionId.trim(),
+                                realmOrTenant = cloudRealmOrTenant.trim(),
+                                verifyTls = cloudVerifyTls
+                            )
                         }
 
                         VaultProtocolType.PROXMOX_VE -> {
-                            val trimmedHost = host.trim()
+                            val customApi = cloudApiEndpoint.trim()
+                            val baseTarget = customApi.ifBlank { resolvedSaveHost }
                             val normalizedUrl = when {
-                                trimmedHost.startsWith("http://", ignoreCase = true) ||
-                                    trimmedHost.startsWith("https://", ignoreCase = true) -> trimmedHost
-                                ':' in trimmedHost -> "https://$trimmedHost"
-                                else -> "https://$trimmedHost:8006"
+                                baseTarget.startsWith("http://", ignoreCase = true) ||
+                                    baseTarget.startsWith("https://", ignoreCase = true) -> {
+                                    val afterScheme = baseTarget.substringAfter("://").substringBefore('/')
+                                    if (afterScheme.substringAfterLast(']').contains(':')) baseTarget else "${baseTarget.trimEnd('/')}:8006"
+                                }
+                                baseTarget.substringAfterLast(']').contains(':') -> "https://$baseTarget"
+                                else -> "https://$baseTarget:8006"
                             }
-                            ((initialConnection?.settings as? ProtocolSpecificSettings.CloudVirtualization)
-                                ?: ProtocolSpecificSettings.CloudVirtualization(apiEndpointUrl = normalizedUrl))
-                                .copy(apiEndpointUrl = normalizedUrl)
+                            initialCloud.copy(
+                                apiEndpointUrl = normalizedUrl,
+                                regionOrCluster = cloudRegionOrCluster.trim(),
+                                subscriptionOrAccountId = cloudSubscriptionId.trim(),
+                                realmOrTenant = cloudRealmOrTenant.trim().ifBlank { "pam" },
+                                verifyTls = cloudVerifyTls
+                            )
                         }
 
-                        VaultProtocolType.VMWARE_VSPHERE, VaultProtocolType.AWS_EC2,
+                        VaultProtocolType.VMWARE_VSPHERE -> {
+                            val customApi = cloudApiEndpoint.trim()
+                            val baseTarget = customApi.ifBlank { resolvedSaveHost }
+                            val normalizedUrl = if (baseTarget.startsWith("http", ignoreCase = true)) {
+                                baseTarget
+                            } else {
+                                "https://$baseTarget"
+                            }
+                            initialCloud.copy(
+                                apiEndpointUrl = normalizedUrl,
+                                regionOrCluster = cloudRegionOrCluster.trim(),
+                                subscriptionOrAccountId = cloudSubscriptionId.trim(),
+                                realmOrTenant = cloudRealmOrTenant.trim(),
+                                verifyTls = cloudVerifyTls
+                            )
+                        }
+
+                        VaultProtocolType.AWS_EC2,
                         VaultProtocolType.AZURE_VM -> {
-                            val normalizedUrl = if (host.startsWith("http")) host.trim() else "https://${host.trim()}"
-                            ((initialConnection?.settings as? ProtocolSpecificSettings.CloudVirtualization)
-                                ?: ProtocolSpecificSettings.CloudVirtualization(apiEndpointUrl = normalizedUrl))
-                                .copy(apiEndpointUrl = normalizedUrl)
+                            val explicitCustomEndpoint = cloudApiEndpoint.trim().takeIf {
+                                it.startsWith("http://", ignoreCase = true) ||
+                                    it.startsWith("https://", ignoreCase = true)
+                            }.orEmpty()
+                            val defaultRegion = if (selectedProto == VaultProtocolType.AWS_EC2) {
+                                cloudRegionOrCluster.trim().ifBlank { "us-east-1" }
+                            } else {
+                                cloudRegionOrCluster.trim()
+                            }
+                            initialCloud.copy(
+                                apiEndpointUrl = explicitCustomEndpoint,
+                                regionOrCluster = defaultRegion,
+                                subscriptionOrAccountId = cloudSubscriptionId.trim(),
+                                realmOrTenant = cloudRealmOrTenant.trim(),
+                                verifyTls = cloudVerifyTls
+                            )
                         }
 
                         VaultProtocolType.UTILITY_PING, VaultProtocolType.UTILITY_TRACEROUTE,
-                        VaultProtocolType.UTILITY_PORT_SCANNER, VaultProtocolType.UTILITY_WAKE_ON_LAN ->
-                            (initialConnection?.settings as? ProtocolSpecificSettings.NetUtility)
-                                ?: ProtocolSpecificSettings.NetUtility()
+                        VaultProtocolType.UTILITY_PORT_SCANNER, VaultProtocolType.UTILITY_WAKE_ON_LAN -> {
+                            val startPort = netPortStartText.toIntOrNull()?.coerceIn(1, 65535) ?: 1
+                            val endPort = (netPortEndText.toIntOrNull()?.coerceIn(1, 65535) ?: 1024).coerceAtLeast(startPort)
+                            initialNet.copy(
+                                pingCount = netPingCountText.toIntOrNull()?.coerceIn(1, 100) ?: 4,
+                                tracerouteMaxHops = netMaxHopsText.toIntOrNull()?.coerceIn(1, 30) ?: 30,
+                                portScanRangeStart = startPort,
+                                portScanRangeEnd = endPort,
+                                wolMacAddress = netWolMac.trim().ifBlank {
+                                    if (selectedProto == VaultProtocolType.UTILITY_WAKE_ON_LAN) resolvedSaveHost else ""
+                                },
+                                wolBroadcastAddress = netWolBroadcast.trim().ifBlank { "255.255.255.255" }
+                            )
+                        }
                     }
 
                     val baseInheritable = initialConnection?.inheritable ?: InheritableProperties()
@@ -1646,14 +2072,14 @@ fun NewOrEditConnectionDialog(
                     val savedConn = (initialConnection?.copy(
                         parentFolderId = selectedFolderId,
                         name = name.trim(),
-                        host = host.trim(),
+                        host = resolvedSaveHost,
                         protocol = selectedProto,
                         inheritable = resolvedInheritable,
                         settings = configuredSettings
                     ) ?: VaultConnection(
                         parentFolderId = selectedFolderId,
                         name = name.trim(),
-                        host = host.trim(),
+                        host = resolvedSaveHost,
                         protocol = selectedProto,
                         osFamily = if (selectedProto == VaultProtocolType.RDP ||
                             selectedProto == VaultProtocolType.WINDOWS_TERMINAL_SERVICES ||
@@ -1742,6 +2168,8 @@ fun CredentialEditorDialog(
     var credDomain by remember(existingCredential) { mutableStateOf(existingCredential?.domain.orEmpty()) }
     var credUser by remember(existingCredential) { mutableStateOf(existingCredential?.username.orEmpty()) }
     var credSecret by remember(existingCredential) { mutableStateOf(existingCredential?.secretPassword.orEmpty()) }
+    var credPrivateKeyPem by remember(existingCredential) { mutableStateOf(existingCredential?.privateKeyPem.orEmpty()) }
+    var credKeyPassphrase by remember(existingCredential) { mutableStateOf(existingCredential?.keyPassphrase.orEmpty()) }
     var credTotpSecret by remember(existingCredential) { mutableStateOf(existingCredential?.totpSecretBase32.orEmpty()) }
     var credKind by remember(existingCredential) {
         mutableStateOf(existingCredential?.sourceKind ?: CredentialSourceKind.VAULT_INTERNAL)
@@ -1771,16 +2199,17 @@ fun CredentialEditorDialog(
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     listOf(
-                        CredentialSourceKind.VAULT_INTERNAL,
-                        CredentialSourceKind.ONEPASSWORD_CONNECT,
-                        CredentialSourceKind.BITWARDEN_VAULT,
-                        CredentialSourceKind.KEEPASS_KDBX,
-                        CredentialSourceKind.HARDWARE_FIDO2_PASSKEY
-                    ).forEach { kind ->
+                        CredentialSourceKind.VAULT_INTERNAL to "VAULT",
+                        CredentialSourceKind.SSH_KEY_PAIR to "SSH KEY",
+                        CredentialSourceKind.ONEPASSWORD_CONNECT to "1PASSWORD",
+                        CredentialSourceKind.BITWARDEN_VAULT to "BITWARDEN",
+                        CredentialSourceKind.KEEPASS_KDBX to "KEEPASS",
+                        CredentialSourceKind.HARDWARE_FIDO2_PASSKEY to "FIDO2"
+                    ).forEach { (kind, label) ->
                         NexusChoiceChip(
                             selected = credKind == kind,
                             onClick = { credKind = kind },
-                            label = kind.name.substringBefore('_')
+                            label = label
                         )
                     }
                 }
@@ -1813,6 +2242,29 @@ fun CredentialEditorDialog(
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
+                if (credKind == CredentialSourceKind.SSH_KEY_PAIR ||
+                    credKind == CredentialSourceKind.VAULT_INTERNAL ||
+                    credPrivateKeyPem.isNotBlank()
+                ) {
+                    OutlinedTextField(
+                        value = credPrivateKeyPem,
+                        onValueChange = { credPrivateKeyPem = it },
+                        label = { Text("SSH Private Key (OpenSSH / PEM — Optional)") },
+                        minLines = 2,
+                        maxLines = 5,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    if (credPrivateKeyPem.isNotBlank() || credKind == CredentialSourceKind.SSH_KEY_PAIR) {
+                        OutlinedTextField(
+                            value = credKeyPassphrase,
+                            onValueChange = { credKeyPassphrase = it },
+                            label = { Text("SSH Private Key Passphrase (Optional)") },
+                            visualTransformation = PasswordVisualTransformation(),
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                }
                 OutlinedTextField(
                     value = credTotpSecret,
                     onValueChange = { credTotpSecret = it },
@@ -1826,16 +2278,28 @@ fun CredentialEditorDialog(
             Button(
                 enabled = credName.isNotBlank(),
                 onClick = {
+                    val isExternalVaultKind = credKind != CredentialSourceKind.VAULT_INTERNAL &&
+                        credKind != CredentialSourceKind.SSH_KEY_PAIR
+                    val effectiveKind = if (credKind == CredentialSourceKind.VAULT_INTERNAL &&
+                        credPrivateKeyPem.trim().isNotBlank() &&
+                        credSecret.isBlank()
+                    ) {
+                        CredentialSourceKind.SSH_KEY_PAIR
+                    } else {
+                        credKind
+                    }
                     val saved = if (existingCredential != null) {
                         existingCredential.copy(
                             parentFolderId = null,
                             name = credName.trim(),
-                            sourceKind = credKind,
+                            sourceKind = effectiveKind,
                             domain = credDomain.trim(),
                             username = credUser.trim(),
                             secretPassword = credSecret,
+                            privateKeyPem = credPrivateKeyPem.trim(),
+                            keyPassphrase = credKeyPassphrase,
                             totpSecretBase32 = credTotpSecret.trim(),
-                            externalReferenceUri = if (credKind != CredentialSourceKind.VAULT_INTERNAL) {
+                            externalReferenceUri = if (isExternalVaultKind) {
                                 credUser.trim()
                             } else {
                                 existingCredential.externalReferenceUri
@@ -1845,12 +2309,14 @@ fun CredentialEditorDialog(
                         VaultCredential(
                             parentFolderId = null,
                             name = credName.trim(),
-                            sourceKind = credKind,
+                            sourceKind = effectiveKind,
                             domain = credDomain.trim(),
                             username = credUser.trim(),
                             secretPassword = credSecret,
+                            privateKeyPem = credPrivateKeyPem.trim(),
+                            keyPassphrase = credKeyPassphrase,
                             totpSecretBase32 = credTotpSecret.trim(),
-                            externalReferenceUri = if (credKind != CredentialSourceKind.VAULT_INTERNAL) {
+                            externalReferenceUri = if (isExternalVaultKind) {
                                 credUser.trim()
                             } else {
                                 ""

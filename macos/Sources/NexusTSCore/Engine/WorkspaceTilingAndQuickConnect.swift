@@ -493,13 +493,36 @@ public enum QuickConnectParser {
             hostPort = String(hostPort[..<slashIdx])
         }
 
+        if lower.hasPrefix("wol://") {
+            let mac = String(input.dropFirst("wol://".count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !mac.isEmpty else { return nil }
+            var net = NetUtilityProtocolSettings()
+            net.wolMacAddress = mac
+            return ParsedQuickConnectTarget(
+                displayName: "WoL \(mac)",
+                host: "255.255.255.255",
+                port: 9,
+                username: nil,
+                domain: nil,
+                protocolType: .UTILITY_WAKE_ON_LAN,
+                settings: .netUtility(net)
+            )
+        }
+
         var host = hostPort
         var explicitPort: Int? = nil
-        if !hostPort.hasPrefix("["), let colonIdx = hostPort.lastIndex(of: ":") {
-            let portCandidate = String(hostPort[hostPort.index(after: colonIdx)...])
-            if let p = Int(portCandidate), p > 0 && p <= 65535 {
+        if hostPort.hasPrefix("["), let closeIdx = hostPort.firstIndex(of: "]") {
+            host = String(hostPort[hostPort.index(after: hostPort.startIndex)..<closeIdx])
+            let afterBracket = hostPort[hostPort.index(after: closeIdx)...]
+            if afterBracket.hasPrefix(":"), let p = Int(afterBracket.dropFirst()), p > 0 && p <= 65535 {
                 explicitPort = p
-                host = String(hostPort[..<colonIdx])
+            }
+        } else if let colonIdx = hostPort.lastIndex(of: ":") {
+            let prefix = hostPort[..<colonIdx]
+            let portCandidate = String(hostPort[hostPort.index(after: colonIdx)...])
+            if !prefix.contains(":"), let p = Int(portCandidate), p > 0 && p <= 65535 {
+                explicitPort = p
+                host = String(prefix)
             }
         }
         guard !host.isEmpty, !host.contains(" ") else { return nil }
@@ -515,9 +538,11 @@ public enum QuickConnectParser {
             case "scp": return .SCP
             case "vnc": return .VNC
             case "ard", "screensharing": return .APPLE_SCREEN_SHARING
-            case "vsphere": return .VMWARE_VSPHERE
+            case "vsphere", "esxi": return .VMWARE_VSPHERE
             case "pve", "proxmox": return .PROXMOX_VE
             case "hyperv": return .HYPER_V
+            case "ec2", "aws": return .AWS_EC2
+            case "azure": return .AZURE_VM
             case "ping": return .UTILITY_PING
             case "trace", "traceroute": return .UTILITY_TRACEROUTE
             case "scan": return .UTILITY_PORT_SCANNER
@@ -525,9 +550,13 @@ public enum QuickConnectParser {
             default:
                 if let p = explicitPort {
                     switch p {
-                    case 3389: return .RDP
+                    case 3389, 2179: return .RDP
                     case 5900: return .VNC
                     case 23: return .TELNET
+                    case 21: return .FTP
+                    case 990: return .FTPS
+                    case 8006: return .PROXMOX_VE
+                    case 5985, 5986: return .HYPER_V
                     case 443, 8080, 8443: return .WEB_PAGE
                     case 22: return .SSH
                     default:
@@ -539,7 +568,8 @@ public enum QuickConnectParser {
         }()
 
         let port = explicitPort ?? (scheme == "ftpes" ? 21 : proto.defaultPort)
-        var settings = proto.defaultSettings(host: proto == .WEB_PAGE ? "https://\(host):\(port)" : host)
+        let formattedHost = host.contains(":") ? "[\(host)]" : host
+        var settings = proto.defaultSettings(host: proto == .WEB_PAGE ? "https://\(formattedHost):\(port)" : host)
         switch settings {
         case .ssh(var s): s.port = port; settings = .ssh(s)
         case .rdp(var s): s.port = port; settings = .rdp(s)

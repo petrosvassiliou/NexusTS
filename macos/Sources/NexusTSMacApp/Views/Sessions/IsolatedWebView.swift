@@ -112,6 +112,13 @@ public struct IsolatedWebSessionView: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                     Spacer()
+                    if browserController.canBypassCertificateError {
+                        Button("Trust Certificate & Reload") {
+                            browserController.trustCertificateForSessionAndReload(fallbackUrlString: urlInputText)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.mini)
+                    }
                     Button("Retry") {
                         browserController.load(urlString: urlInputText)
                     }
@@ -148,12 +155,14 @@ final class IsolatedWebController: NSObject, ObservableObject, WKNavigationDeleg
     @Published var canGoForward: Bool = false
     @Published var isLoading: Bool = false
     @Published var lastNavigationError: String? = nil
+    @Published var canBypassCertificateError: Bool = false
 
     var webView: WKWebView?
     private var pendingURL: URL? = nil
     var settings = WebPageProtocolSettings()
     var effectiveUsername: String = ""
     var effectivePassword: String = ""
+    var runtimeTrustSelfSignedCert: Bool = false
     var onUrlChanged: ((String) -> Void)?
 
     func attach(webView: WKWebView) {
@@ -165,12 +174,33 @@ final class IsolatedWebController: NSObject, ObservableObject, WKNavigationDeleg
         }
     }
 
-    func load(urlString: String) {
-        let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        let normalized = trimmed.contains("://") ? trimmed : "https://\(trimmed)"
-        guard let url = URL(string: normalized) else { return }
+    static func normalizeWebUrlString(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        if trimmed.contains("://") { return trimmed }
+        let colonCount = trimmed.filter { $0 == ":" }.count
+        if colonCount >= 2 && !trimmed.hasPrefix("[") {
+            return "https://[\(trimmed)]"
+        }
+        return "https://\(trimmed)"
+    }
+
+    func trustCertificateForSessionAndReload(fallbackUrlString: String) {
+        runtimeTrustSelfSignedCert = true
+        canBypassCertificateError = false
         lastNavigationError = nil
+        if let currentUrl = webView?.url {
+            webView?.load(URLRequest(url: currentUrl))
+        } else {
+            load(urlString: fallbackUrlString)
+        }
+    }
+
+    func load(urlString: String) {
+        let normalized = Self.normalizeWebUrlString(urlString)
+        guard !normalized.isEmpty, let url = URL(string: normalized) else { return }
+        lastNavigationError = nil
+        canBypassCertificateError = false
         if let webView {
             pendingURL = nil
             webView.load(URLRequest(url: url))
@@ -261,6 +291,7 @@ final class IsolatedWebController: NSObject, ObservableObject, WKNavigationDeleg
         Task { @MainActor in
             self.isLoading = true
             self.lastNavigationError = nil
+            self.canBypassCertificateError = false
         }
     }
 
@@ -287,10 +318,15 @@ final class IsolatedWebController: NSObject, ObservableObject, WKNavigationDeleg
         didFailProvisionalNavigation navigation: WKNavigation!,
         withError error: Error
     ) {
+        let nsErr = error as NSError
         Task { @MainActor in
             self.isLoading = false
-            if (error as NSError).code != NSURLErrorCancelled {
+            if nsErr.code != NSURLErrorCancelled {
                 self.lastNavigationError = error.localizedDescription
+                let isCertErr = (-1206 ... -1201).contains(nsErr.code)
+                if isCertErr && self.settings.pinnedCertSha256.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    self.canBypassCertificateError = true
+                }
             }
         }
     }
@@ -300,9 +336,10 @@ final class IsolatedWebController: NSObject, ObservableObject, WKNavigationDeleg
         didFail navigation: WKNavigation!,
         withError error: Error
     ) {
+        let nsErr = error as NSError
         Task { @MainActor in
             self.isLoading = false
-            if (error as NSError).code != NSURLErrorCancelled {
+            if nsErr.code != NSURLErrorCancelled {
                 self.lastNavigationError = error.localizedDescription
             }
         }
@@ -341,7 +378,7 @@ final class IsolatedWebController: NSObject, ObservableObject, WKNavigationDeleg
                         self.lastNavigationError = "TLS certificate SHA-256 fingerprint did not match pinned hash."
                         completionHandler(.cancelAuthenticationChallenge, nil)
                     }
-                } else if self.settings.ignoreSelfSignedInternalCert {
+                } else if self.settings.ignoreSelfSignedInternalCert || self.runtimeTrustSelfSignedCert {
                     completionHandler(.useCredential, URLCredential(trust: trust))
                 } else {
                     completionHandler(.performDefaultHandling, nil)

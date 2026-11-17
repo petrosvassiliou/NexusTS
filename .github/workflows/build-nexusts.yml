@@ -21,7 +21,7 @@ on:
       release_tag:
         description: "Tag name when publishing via workflow_dispatch"
         required: false
-        default: "v0.8.7"
+        default: "v0.8.8"
         type: string
 
 permissions:
@@ -319,7 +319,7 @@ jobs:
           set -euo pipefail
           TAG_NAME="${GITHUB_REF_NAME}"
           if [[ "${TAG_NAME}" != v* ]]; then
-            TAG_NAME="${{ inputs.release_tag || 'v0.8.7' }}"
+            TAG_NAME="${{ inputs.release_tag || 'v0.8.8' }}"
           fi
           echo "tag_name=${TAG_NAME}" >> "${GITHUB_OUTPUT}"
 
@@ -346,7 +346,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.stage.outputs.tag_name }}
-          name: "NexusTS ${{ steps.stage.outputs.tag_name }} — Native Microsoft Hyper-V Multi-Transport Inventory & FreeRDP VMConnect (TCP 2179)"
+          name: "NexusTS ${{ steps.stage.outputs.tag_name }} — Complete 23-Protocol Wire, TLS, Auth & Royal TS Round-Trip Verification"
           draft: false
           prerelease: ${{ contains(steps.stage.outputs.tag_name, '-') }}
           generate_release_notes: true
@@ -354,23 +354,25 @@ jobs:
             ## NexusTS ${{ steps.stage.outputs.tag_name }} (`com.nexusts.app` / `com.nexusts.app.macos`)
             **Native Remote Management & Connection Manager for Googlebook OS, Android Tablets & macOS**
 
-            > **Microsoft Hyper-V & FreeRDP VMConnect Release (`0.8.7` / `versionCode = 10807`)**: Delivers full Royal TS / Royal TSX **Microsoft Hyper-V** parity across macOS and Android — featuring **3-tier live Hyper-V VM inventory & power management** (`WinRM HTTP :5985` with NTLMv2 + `[MS-WSMV]` SPNEGO RC4 message sealing, `WinRM HTTPS :5986` with NTLMv2 + self-signed TLS trust, and `OpenSSH :22` PowerShell fallback), **native FreeRDP 3.12 `VMConnect` (`TCP 2179` + Preconnection PDU v2)** with **Basic & Enhanced Session Mode** (`;EnhancedMode=1`), automatic healing of legacy poisoned Hyper-V endpoints, live Hyper-V port diagnostics, and full Royal TS `.rtsz` / `.rtsx` `<RoyalHyperVConnection>` & `<RoyalRDSConnection>` (`HyperVMode=1/2`) import/export.
+            > **Complete 23-Protocol Verification & Hardening Release (`0.8.8` / `versionCode = 10808`)**: Exhaustively audits, fixes, and loopback-verifies all **23 `VaultProtocolType` protocols** across the native Rust protocol engines, macOS Universal2 app, and Android / Googlebook OS app — including standalone **ESXi VIM SOAP `/sdk`**, **Proxmox VE API Tokens (`PVEAPIToken=`) & LXC shutdown**, **AWS EC2 SigV4 + IAM STS `X-Amz-Security-Token`**, **Azure ARM Entra ID OAuth2 + NIC Public IP resolution**, **Explicit FTPS (`:21` `AUTH TLS` + TLS session resumption on passive data sockets)**, **SSH `keyboard-interactive` MFA + port forward release**, **VNC Type 2 vs Apple Screen Sharing ARD Type 30**, **Kubernetes multi-container `-c` / Docker `:2375`/`:2376`**, and lossless **23-protocol Royal TS `.rtsz` / `.rtsx` round-trips**.
 
             ### Signed Deliverables (100% In-Place Upgrade Compatible)
-            - **`NexusTS-${{ steps.stage.outputs.tag_name }}-googlebook-android-release.apk`**: Cryptographically signed (APK Signature Scheme v2/v3/v4, RSA-4096) universal `arm64-v8a` + `x86_64` APK with 16 KB ELF page alignment (`0x4000`) and 100% Google Play Protect compliance (`versionCode = 10807`).
+            - **`NexusTS-${{ steps.stage.outputs.tag_name }}-googlebook-android-release.apk`**: Cryptographically signed (APK Signature Scheme v2/v3/v4, RSA-4096) universal `arm64-v8a` + `x86_64` APK with 16 KB ELF page alignment (`0x4000`) and 100% Google Play Protect compliance (`versionCode = 10808`).
             - **`NexusTS-${{ steps.stage.outputs.tag_name }}-playstore-release.aab`**: Signed Android App Bundle for optional Managed Google Play / internal distribution.
             - **`NexusTS-${{ steps.stage.outputs.tag_name }}-macOS-Universal.zip` & `.dmg`**: Self-contained Universal2 (`arm64` + `x86_64`) macOS application bundle statically linking OpenSSL 3.4 + Cisco OpenH264 2.5.0 + FreeRDP 3.12 (`.zip` powers one-click in-app updates without downloading a `.dmg`).
             - **`nexusts-upload-certificate.pem` & `oauth-and-mdm-registration.json`**: Public X.509 upload certificate (`SHA-1: A6:AF:15:A9:BF:0B:FE:38:D4:66:46:3E:3E:72:A6:5B:4F:9C:4D:F6`, `SHA-256: 4A:BD:80:F1:20:14:B9:88:09:1C:97:92:2F:87:02:D1:BF:B7:93:9C:73:B6:9A:DB:1A:9B:76:30:6A:30:27:82`) and Managed Google Play `app_restrictions` template.
 
             ### Highlights in ${{ steps.stage.outputs.tag_name }}
-            - **3-Tier Microsoft Hyper-V Live VM Inventory & Power Actions (`Start`, `Turn Off`, `Save`, `Restart`)**:
-              - Queries `root/virtualization/v2/Msvm_ComputerSystem` over **WinRM HTTP `:5985/wsman`** using native Rust NTLMv2 + `[MS-WSMV]` `application/HTTP-SPNEGO-session-encrypted` RC4 sealing (works out of the box on Windows Server & Windows 10/11 Hyper-V hosts without lowering `AllowUnencrypted`), automatically falling back to **WinRM HTTPS `:5986/wsman`** (NTLMv2 + self-signed TLS trust) and **OpenSSH `:22` PowerShell** (`Get-VM`, `Start-VM`, `Stop-VM`, `Save-VM`, `Restart-VM`).
-              - Eliminates hardcoded `:8006` / `:443` Hyper-V endpoint bugs and auto-heals legacy saved `.nxts` vault connections on open.
-            - **Native FreeRDP 3.12 Hyper-V `VMConnect` (`TCP 2179` + Preconnection PDU v2)**:
-              - Connects directly to Hyper-V virtual machine consoles over `TCP 2179` (`FreeRDP_SendPreconnectionPdu`, `FreeRDP_PreconnectionBlob`, `NegotiateSecurityLayer = FALSE`) in both **Basic Console** (`<VM-GUID>`) and **VMBus Enhanced Session Mode** (`<VM-GUID>;EnhancedMode=1`), inheriting Hyper-V host credentials automatically.
-              - Adds live Hyper-V TCP port diagnostics (`2179`, `5985`, `5986`, `22`, `3389`), direct **Connect by VM GUID (Port 2179)**, and **Host Desktop (RDP 3389)** in the Hyper-V session view, plus dedicated `Hyper-V VM ID (GUID)` & `Enhanced Session Mode` fields in the RDP Connection Editor.
-            - **Royal TS `.rtsz` / `.rtsx` Hyper-V Host & VM Instance Parity**:
-              - Imports and exports `<RoyalHyperVConnection>` and `<RoyalRDSConnection>` (`HyperVMode=1` Host Inventory & `HyperVMode=2` VM Console with `HyperVInstance`, `HyperVPort`, and `HyperVEnhancedSessionMode`) across macOS and Android.
+            - **Cloud & Hypervisor Multi-Transport Wire Fixes (`VMWARE_VSPHERE`, `PROXMOX_VE`, `AWS_EC2`, `AZURE_VM`, `HYPER_V`)**:
+              - **VMware vSphere & Standalone ESXi**: Adds automatic fallback from vCenter REST (`/api/session` & CIS `/rest/com/vmware/cis/session`) to **Standalone ESXi VIM SOAP XML (`POST /sdk`)** (`RetrieveServiceContent`, `Login`, `CreateContainerView`, `RetrievePropertiesEx`, and `PowerOnVM_Task`/`PowerOffVM_Task`/`SuspendVM_Task`/`ResetVM_Task`), plus guest IP/OS resolution for one-click RDP/SSH launch.
+              - **Proxmox VE**: Normalizes bare hosts/URLs to `:8006`, supports both `PVEAuthCookie` + `CSRFPreventionToken` tickets and **`PVEAPIToken=user@realm!tokenid=secret`** headers, and dispatches `shutdown` for LXC containers vs `suspend` for QEMU VMs.
+              - **AWS EC2**: Full `AWS4-HMAC-SHA256` query signing with IAM STS temporary `X-Amz-Security-Token`, `<platformDetails>Windows</platformDetails>` -> RDP detection, XML `<Code>`/`<Message>` fault surfacing, and live `StartInstances`/`StopInstances`/`RebootInstances` actions.
+              - **Microsoft Azure VM**: Entra ID OAuth2 `client_credentials` token exchange (`tenantId|clientId` or `RealmOrDomain`), `Bearer ` prefix deduplication, subscription-wide `statusOnly=true` fallback, and NIC -> Public IP resolution.
+            - **Terminal, Transfer, VNC/ARD, Web, Network Diagnostics & Containers**:
+              - **SSH / Telnet / Serial**: Adds SSH `keyboard-interactive` PAM/MFA authentication, releases local TCP port-forward listeners cleanly on disconnect, preserves Telnet `IAC` `0xFF` escaping & split negotiation frames, and supports live macOS POSIX `cu.*` + Android USB CDC-ACM/FTDI/CP210x/CH34x UART consoles.
+              - **SFTP / SCP / FTP / Explicit & Implicit FTPS**: Adds passive/active mode toggle, NAT `PASV` host fallback, `MLSD` UTC `modify=` + Windows/Unix `LIST` spaces support, and **Explicit FTPS (`:21` `AUTH TLS` + `PBSZ 0` + `PROT P`) with TLS session resumption** on passive data sockets.
+              - **VNC & Apple Screen Sharing (`ARD`)**: Selects DES VNC Auth (Type 2) for standard VNC even when a vault credential carries a username, and Apple Remote Desktop DH+AES (Type 30) for `APPLE_SCREEN_SHARING`, while enforcing `viewOnly` input suppression in Rust.
+              - **Kubernetes, Docker, Web Console & Net Utilities**: Adds multi-container pod `-c` target selection, Docker `tcp://`/`:2375`/`:2376` scheme selection, permissive HTTP cleartext support on Android (`usesCleartextTraffic="true"`), IPv4/IPv6 Traceroute + WoL `SecureOn`, and lossless **23-protocol Royal TS `.rtsz` / `.rtsx`** import/export.
           files: release-assets/*
 
       - name: Check Optional Google Play Service Account Secret

@@ -128,8 +128,13 @@ class SerialUtf8LineAssembler {
         while (charBuf.hasRemaining()) {
             when (val ch = charBuf.get()) {
                 '\r' -> Unit
+                '\b' -> {
+                    if (lineBuffer.isNotEmpty()) {
+                        lineBuffer.setLength(lineBuffer.length - 1)
+                    }
+                }
                 '\n' -> {
-                    emitted += lineBuffer.toString()
+                    emitted += stripAnsiControlSequences(lineBuffer.toString())
                     lineBuffer.setLength(0)
                 }
                 else -> lineBuffer.append(ch)
@@ -141,9 +146,9 @@ class SerialUtf8LineAssembler {
     @Synchronized
     fun flushPartialLine(): String? {
         if (lineBuffer.isEmpty()) return null
-        val partial = lineBuffer.toString()
+        val partial = stripAnsiControlSequences(lineBuffer.toString())
         lineBuffer.setLength(0)
-        return partial
+        return partial.ifEmpty { null }
     }
 
     @Synchronized
@@ -151,6 +156,17 @@ class SerialUtf8LineAssembler {
         decoder.reset()
         carryBytes = ByteArray(0)
         lineBuffer.setLength(0)
+    }
+
+    companion object {
+        private val ansiEscapeRegex = Regex(
+            "\u001B(?:\\[[0-?]*[ -/]*[@-~]|\\][^\u0007\u001B]*(?:\u0007|\u001B\\\\)|[@-Z\\\\-_])"
+        )
+
+        fun stripAnsiControlSequences(raw: String): String {
+            if (!raw.contains('\u001B')) return raw
+            return ansiEscapeRegex.replace(raw, "")
+        }
     }
 }
 
@@ -680,6 +696,7 @@ fun UsbSerialConsoleView(
     var dtrEnabled by remember(initialSettings) { mutableStateOf(initialSettings.dtrEnabled) }
     var rtsEnabled by remember(initialSettings) { mutableStateOf(initialSettings.rtsEnabled) }
     var baudMenuExpanded by remember { mutableStateOf(false) }
+    var adapterMenuExpanded by remember { mutableStateOf(false) }
     var adapters by remember(initialSettings.usbVendorIdFilter, initialSettings.devicePathHint) {
         mutableStateOf(
             driver.listCompatibleAdapters(
@@ -687,6 +704,9 @@ fun UsbSerialConsoleView(
                 devicePathHint = initialSettings.devicePathHint
             )
         )
+    }
+    var selectedAdapterName by remember(adapters) {
+        mutableStateOf(adapters.firstOrNull()?.deviceName.orEmpty())
     }
     var hardwareConnected by remember { mutableStateOf(false) }
     var rxBytes by remember { mutableLongStateOf(0L) }
@@ -779,8 +799,8 @@ fun UsbSerialConsoleView(
                 )
             }
             adapters = discovered
-            val first = discovered.firstOrNull()
-            if (first == null) {
+            val chosen = discovered.firstOrNull { it.deviceName == selectedAdapterName } ?: discovered.firstOrNull()
+            if (chosen == null) {
                 hardwareConnected = false
                 val filterNote = if (cfg.usbVendorIdFilter > 0) {
                     " matching VID 0x${cfg.usbVendorIdFilter.toString(16)}"
@@ -789,7 +809,8 @@ fun UsbSerialConsoleView(
                 }
                 appendConsoleLineOnMain("[USB Scan] 0 physical USB-C UART adapters attached$filterNote.")
             } else {
-                openAdapterSessionAsync(first.deviceName)
+                selectedAdapterName = chosen.deviceName
+                openAdapterSessionAsync(chosen.deviceName)
             }
         }
     }
@@ -862,6 +883,33 @@ fun UsbSerialConsoleView(
                     style = NexusTheme.monospace.keycapShortcut,
                     color = if (hardwareConnected) NexusTheme.extendedColors.statusConnected else MaterialTheme.colorScheme.onSurface
                 )
+
+                if (adapters.size > 1) {
+                    androidx.compose.foundation.layout.Box {
+                        val activeDesc = adapters.firstOrNull { it.deviceName == selectedAdapterName } ?: adapters.first()
+                        OutlinedButton(onClick = { adapterMenuExpanded = true }) {
+                            Text(
+                                "${activeDesc.chipsetLabel.substringBefore(' ')} (${activeDesc.deviceName.substringAfterLast('/')})",
+                                style = MaterialTheme.typography.labelSmall
+                            )
+                        }
+                        DropdownMenu(
+                            expanded = adapterMenuExpanded,
+                            onDismissRequest = { adapterMenuExpanded = false }
+                        ) {
+                            adapters.forEach { adapter ->
+                                DropdownMenuItem(
+                                    text = { Text("${adapter.chipsetLabel} • ${adapter.deviceName}") },
+                                    onClick = {
+                                        selectedAdapterName = adapter.deviceName
+                                        adapterMenuExpanded = false
+                                        openAdapterSessionAsync(adapter.deviceName)
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
 
                 // Baud Rate Selector
                 androidx.compose.foundation.layout.Box {
@@ -998,12 +1046,26 @@ fun UsbSerialConsoleView(
             }
         }
 
-        // Interactive Serial Frame Input Bar
+        // Interactive Serial Frame Input Bar + Control Byte Quick-Send Strip
         Surface(
             color = MaterialTheme.colorScheme.surfaceContainerLow,
             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)),
             modifier = Modifier.fillMaxWidth()
         ) {
+            val sendRawControlByte: (Byte, String) -> Unit = { byteVal, label ->
+                scope.launch {
+                    val written = withContext(Dispatchers.IO) {
+                        driver.writeBytes(byteArrayOf(byteVal))
+                    }
+                    if (written >= 0) {
+                        txBytes += written
+                        appendConsoleLineOnMain("uart> <$label>")
+                    } else {
+                        appendConsoleLineOnMain("[UART Disconnected] Attach & open a USB-C UART adapter before transmitting.")
+                    }
+                }
+            }
+
             val dispatchSerialFrame: () -> Unit = {
                 val textSnapshot = commandText
                 if (textSnapshot.isNotEmpty() || initialSettings.lineEnding.isNotEmpty()) {
@@ -1028,24 +1090,57 @@ fun UsbSerialConsoleView(
                 }
             }
 
-            Row(
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 12.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                OutlinedTextField(
-                    value = commandText,
-                    onValueChange = { commandText = it },
-                    placeholder = { Text("Send serial command (e.g. show version, confreg 0x2142)…", style = MaterialTheme.typography.bodySmall) },
-                    singleLine = true,
-                    modifier = Modifier.weight(1f)
-                )
-                Button(onClick = dispatchSerialFrame) {
-                    Icon(Icons.AutoMirrored.Outlined.Send, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("TX")
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    NexusActionChip(
+                        onClick = { sendRawControlByte(0x03, "Ctrl+C") },
+                        label = "Ctrl+C",
+                        monospace = true
+                    )
+                    NexusActionChip(
+                        onClick = { sendRawControlByte(0x1B, "ESC") },
+                        label = "ESC",
+                        monospace = true
+                    )
+                    NexusActionChip(
+                        onClick = { sendRawControlByte(0x09, "TAB") },
+                        label = "TAB",
+                        monospace = true
+                    )
+                    NexusActionChip(
+                        onClick = { consoleLines.clear() },
+                        label = "Clear"
+                    )
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedTextField(
+                        value = commandText,
+                        onValueChange = { commandText = it },
+                        placeholder = { Text("Send serial command (e.g. show version, confreg 0x2142)…", style = MaterialTheme.typography.bodySmall) },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Button(onClick = dispatchSerialFrame) {
+                        Icon(Icons.AutoMirrored.Outlined.Send, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("TX")
+                    }
                 }
             }
         }

@@ -950,4 +950,736 @@ final class LoopbackWireProtocolTests: XCTestCase {
         XCTAssertEqual(hvItems.first?.addressOrNode, "hv01.corp.local")
         XCTAssertEqual(hvItems.first?.consoleProtocol, .RDP)
     }
+
+    // MARK: - POSIX HTTP/1.1 Loopback Helpers for Cloud & Virtualization Wire Tests
+
+    private struct CapturedHttpRequest: Sendable {
+        let method: String
+        let path: String
+        let headers: [String: String]
+        let body: String
+    }
+
+    private static func readHttpRequest(_ fd: Int32) -> CapturedHttpRequest? {
+        var data = Data()
+        var headerEndIndex: Int? = nil
+        var chunk = [UInt8](repeating: 0, count: 2048)
+
+        while headerEndIndex == nil {
+            let n = Darwin.recv(fd, &chunk, chunk.count, 0)
+            if n > 0 {
+                data.append(contentsOf: chunk.prefix(n))
+                if let range = data.range(of: Data([0x0D, 0x0A, 0x0D, 0x0A])) {
+                    headerEndIndex = range.upperBound
+                }
+            } else if n < 0 && errno == EINTR {
+                continue
+            } else {
+                return nil
+            }
+        }
+
+        guard let bodyStart = headerEndIndex else { return nil }
+        let headerText = String(decoding: data[..<(bodyStart - 4)], as: UTF8.self)
+        let lines = headerText.components(separatedBy: "\r\n")
+        guard let requestLine = lines.first else { return nil }
+        let reqParts = requestLine.split(separator: " ")
+        guard reqParts.count >= 2 else { return nil }
+        let method = String(reqParts[0])
+        let path = String(reqParts[1])
+
+        var headers: [String: String] = [:]
+        for line in lines.dropFirst() {
+            if let colon = line.firstIndex(of: ":") {
+                let key = line[..<colon].trimmingCharacters(in: .whitespaces).lowercased()
+                let value = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+                headers[key] = value
+            }
+        }
+
+        let contentLength = Int(headers["content-length"] ?? "0") ?? 0
+        while data.count - bodyStart < contentLength {
+            let n = Darwin.recv(fd, &chunk, chunk.count, 0)
+            if n > 0 {
+                data.append(contentsOf: chunk.prefix(n))
+            } else if n < 0 && errno == EINTR {
+                continue
+            } else {
+                break
+            }
+        }
+
+        let bodyEnd = min(data.count, bodyStart + contentLength)
+        let body = String(decoding: data[bodyStart..<bodyEnd], as: UTF8.self)
+        return CapturedHttpRequest(method: method, path: path, headers: headers, body: body)
+    }
+
+    private static func sendHttpResponse(
+        _ fd: Int32,
+        status: Int,
+        statusText: String = "OK",
+        contentType: String = "application/json; charset=utf-8",
+        extraHeaders: [String: String] = [:],
+        body: String
+    ) {
+        let bodyBytes = Array(body.utf8)
+        var head = "HTTP/1.1 \(status) \(statusText)\r\n"
+        head += "Content-Type: \(contentType)\r\n"
+        head += "Content-Length: \(bodyBytes.count)\r\n"
+        head += "Connection: close\r\n"
+        for (k, v) in extraHeaders {
+            head += "\(k): \(v)\r\n"
+        }
+        head += "\r\n"
+        _ = sendAll(fd, Array(head.utf8))
+        _ = sendAll(fd, bodyBytes)
+    }
+
+    // MARK: - 9. Standalone ESXi VIM SOAP (`/sdk`) Fallback & PowerOnVM_Task
+
+    func testEsxiStandaloneVimSoapSdkFallbackAndPowerOnTask() async throws {
+        let listener = try Self.makeLoopbackListener()
+        defer { listener.close() }
+
+        final class SoapRecorder: @unchecked Sendable {
+            let lock = NSLock()
+            var requests: [CapturedHttpRequest] = []
+        }
+        let recorder = SoapRecorder()
+        let serverDone = expectation(description: "ESXi VIM SOAP loopback server finished")
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            var shouldContinue = true
+            while shouldContinue {
+                let fd = Self.acceptSocket(listener.fd, timeoutSeconds: 5)
+                if fd < 0 { break }
+                guard let req = Self.readHttpRequest(fd) else {
+                    Darwin.close(fd)
+                    continue
+                }
+                recorder.lock.lock()
+                recorder.requests.append(req)
+                recorder.lock.unlock()
+
+                if req.path == "/api/session" || req.path == "/rest/com/vmware/cis/session" {
+                    Self.sendHttpResponse(fd, status: 404, statusText: "Not Found", body: "{}")
+                } else if req.path == "/sdk" {
+                    if req.body.contains("RetrieveServiceContent") {
+                        let xml = """
+                        <?xml version="1.0" encoding="UTF-8"?>
+                        <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">
+                          <soapenv:Body>
+                            <RetrieveServiceContentResponse xmlns="urn:vim25">
+                              <returnval>
+                                <rootFolder type="Folder">ha-folder-root</rootFolder>
+                                <propertyCollector type="PropertyCollector">ha-property-collector</propertyCollector>
+                                <viewManager type="ViewManager">ha-view-mgr</viewManager>
+                                <sessionManager type="SessionManager">ha-sessionmgr</sessionManager>
+                              </returnval>
+                            </RetrieveServiceContentResponse>
+                          </soapenv:Body>
+                        </soapenv:Envelope>
+                        """
+                        Self.sendHttpResponse(
+                            fd,
+                            status: 200,
+                            contentType: "text/xml; charset=utf-8",
+                            extraHeaders: ["Set-Cookie": "vmware_soap_session=\"esxi-mac-cookie\"; Path=/; HttpOnly"],
+                            body: xml
+                        )
+                    } else if req.body.contains("<urn:Login>") {
+                        let xml = """
+                        <?xml version="1.0" encoding="UTF-8"?>
+                        <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">
+                          <soapenv:Body><LoginResponse xmlns="urn:vim25"><returnval><key>s1</key></returnval></LoginResponse></soapenv:Body>
+                        </soapenv:Envelope>
+                        """
+                        Self.sendHttpResponse(fd, status: 200, contentType: "text/xml; charset=utf-8", body: xml)
+                    } else if req.body.contains("CreateContainerView") {
+                        let xml = """
+                        <?xml version="1.0" encoding="UTF-8"?>
+                        <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">
+                          <soapenv:Body><CreateContainerViewResponse xmlns="urn:vim25"><returnval type="ContainerView">session[view-mac]</returnval></CreateContainerViewResponse></soapenv:Body>
+                        </soapenv:Envelope>
+                        """
+                        Self.sendHttpResponse(fd, status: 200, contentType: "text/xml; charset=utf-8", body: xml)
+                    } else if req.body.contains("RetrievePropertiesEx") {
+                        let xml = """
+                        <?xml version="1.0" encoding="UTF-8"?>
+                        <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">
+                          <soapenv:Body>
+                            <RetrievePropertiesExResponse xmlns="urn:vim25">
+                              <returnval>
+                                <objects>
+                                  <obj type="VirtualMachine">vm-42</obj>
+                                  <propSet><name>name</name><val>prod-esxi-win2022</val></propSet>
+                                  <propSet><name>runtime.powerState</name><val>poweredOn</val></propSet>
+                                  <propSet><name>config.hardware.numCPU</name><val>8</val></propSet>
+                                  <propSet><name>config.hardware.memoryMB</name><val>16384</val></propSet>
+                                  <propSet><name>guest.ipAddress</name><val>10.99.4.25</val></propSet>
+                                  <propSet><name>guest.guestFullName</name><val>Microsoft Windows Server 2022 (64-bit)</val></propSet>
+                                </objects>
+                              </returnval>
+                            </RetrievePropertiesExResponse>
+                          </soapenv:Body>
+                        </soapenv:Envelope>
+                        """
+                        Self.sendHttpResponse(fd, status: 200, contentType: "text/xml; charset=utf-8", body: xml)
+                    } else if req.body.contains("PowerOnVM_Task") {
+                        let xml = """
+                        <?xml version="1.0" encoding="UTF-8"?>
+                        <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/">
+                          <soapenv:Body><PowerOnVM_TaskResponse xmlns="urn:vim25"><returnval type="Task">haTask-42</returnval></PowerOnVM_TaskResponse></soapenv:Body>
+                        </soapenv:Envelope>
+                        """
+                        Self.sendHttpResponse(fd, status: 200, contentType: "text/xml; charset=utf-8", body: xml)
+                        shouldContinue = false
+                    }
+                } else {
+                    Self.sendHttpResponse(fd, status: 404, statusText: "Not Found", body: "{}")
+                }
+                Darwin.close(fd)
+            }
+            serverDone.fulfill()
+        }
+
+        let conn = VaultConnection(
+            name: "Standalone ESXi",
+            host: "127.0.0.1",
+            protocolType: .VMWARE_VSPHERE,
+            settings: .cloudVirtualization(CloudVirtualizationProtocolSettings(
+                apiEndpointUrl: "http://127.0.0.1:\(listener.port)",
+                verifyTls: false
+            ))
+        )
+        let cred = VaultCredential(name: "ESXi Root", username: "root", secretPassword: "esxi-secret-password")
+
+        let vms = try await CloudHypervisorClient.fetchInventory(connection: conn, credential: cred)
+        XCTAssertEqual(vms.count, 1)
+        XCTAssertEqual(vms.first?.id, "vm-42")
+        XCTAssertEqual(vms.first?.name, "prod-esxi-win2022")
+        XCTAssertEqual(vms.first?.powerState, "POWERED_ON")
+        XCTAssertEqual(vms.first?.addressOrNode, "10.99.4.25")
+        XCTAssertEqual(vms.first?.cpuSummary, "8 vCPU")
+        XCTAssertEqual(vms.first?.memorySummary, "16384 MiB")
+        XCTAssertEqual(vms.first?.consoleProtocol, .RDP)
+
+        let msg = try await CloudHypervisorClient.performCloudPowerAction(
+            connection: conn,
+            credential: cred,
+            vmId: "vm-42",
+            vmName: "prod-esxi-win2022",
+            action: .start
+        )
+        XCTAssertTrue(msg.contains("PowerOnVM_Task"))
+        await fulfillment(of: [serverDone], timeout: 5.0)
+
+        recorder.lock.lock()
+        let captured = recorder.requests
+        recorder.lock.unlock()
+
+        XCTAssertTrue(captured.contains(where: { $0.path == "/sdk" && $0.body.contains("RetrievePropertiesEx") && ($0.headers["cookie"] ?? "").contains("esxi-mac-cookie") }))
+        XCTAssertTrue(captured.contains(where: { $0.path == "/sdk" && $0.body.contains("<urn:PowerOnVM_Task><urn:_this type=\"VirtualMachine\">vm-42</urn:_this></urn:PowerOnVM_Task>") }))
+    }
+
+    // MARK: - 10. Proxmox VE API Token (`PVEAPIToken=`), Port 8006 & Container Workload Endpoints
+
+    func testProxmoxApiTokenPort8006NormalizationAndContainerWorkloadEndpoints() async throws {
+        XCTAssertEqual(
+            CloudHypervisorClient.resolveProxmoxBaseUrl(apiEndpointUrl: "", connectionHost: "pve01.corp.local"),
+            "https://pve01.corp.local:8006"
+        )
+        XCTAssertEqual(
+            CloudHypervisorClient.resolveProxmoxBaseUrl(apiEndpointUrl: "https://pve02.corp.local", connectionHost: ""),
+            "https://pve02.corp.local:8006"
+        )
+        XCTAssertEqual(
+            ContainerWorkloadClient.resolveDockerHttpBaseUrl(endpoint: "tcp://10.0.0.50:2376", remoteHost: "", verifyTls: false),
+            "https://10.0.0.50:2376"
+        )
+        XCTAssertEqual(
+            ContainerWorkloadClient.resolveDockerHttpBaseUrl(endpoint: "tcp://10.0.0.50:2375", remoteHost: "", verifyTls: false),
+            "http://10.0.0.50:2375"
+        )
+        let k8sCmd = ContainerWorkloadClient.buildSafeExecCommand(
+            protocolType: .KUBERNETES_POD,
+            settings: ContainerExecProtocolSettings(
+                clusterOrSocketEndpoint: "https://10.0.0.10:6443",
+                namespace: "prod",
+                podOrContainerName: "api-pod-0",
+                subContainerName: "envoy-sidecar",
+                shellCommand: "/bin/sh",
+                verifyTls: false
+            )
+        )
+        XCTAssertTrue(k8sCmd.contains("--insecure-skip-tls-verify=true"))
+        XCTAssertTrue(k8sCmd.contains("-c 'envoy-sidecar'"))
+
+        let listener = try Self.makeLoopbackListener()
+        defer { listener.close() }
+
+        final class PveRecorder: @unchecked Sendable {
+            let lock = NSLock()
+            var requests: [CapturedHttpRequest] = []
+        }
+        let recorder = PveRecorder()
+        let serverDone = expectation(description: "Proxmox loopback server completed")
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            for idx in 0..<2 {
+                let fd = Self.acceptSocket(listener.fd, timeoutSeconds: 5)
+                guard fd >= 0 else { break }
+                if let req = Self.readHttpRequest(fd) {
+                    recorder.lock.lock()
+                    recorder.requests.append(req)
+                    recorder.lock.unlock()
+
+                    if idx == 0 {
+                        let json = """
+                        {"data":[{"vmid":104,"name":"edge-lxc","status":"running","node":"pve01","type":"lxc","maxcpu":4,"maxmem":4294967296}]}
+                        """
+                        Self.sendHttpResponse(fd, status: 200, body: json)
+                    } else {
+                        Self.sendHttpResponse(fd, status: 200, body: "{\"data\":\"UPID:pve01:00001\"}")
+                    }
+                }
+                Darwin.close(fd)
+            }
+            serverDone.fulfill()
+        }
+
+        let pveConn = VaultConnection(
+            name: "Proxmox Cluster",
+            host: "127.0.0.1",
+            protocolType: .PROXMOX_VE,
+            settings: .cloudVirtualization(CloudVirtualizationProtocolSettings(
+                apiEndpointUrl: "http://127.0.0.1:\(listener.port)",
+                realmOrDomain: "pam",
+                verifyTls: false
+            ))
+        )
+        let apiTokenCred = VaultCredential(
+            name: "PVE Token",
+            username: "root!nexus",
+            secretPassword: "11111111-2222-3333-4444-555555555555"
+        )
+
+        let vms = try await CloudHypervisorClient.fetchInventory(connection: pveConn, credential: apiTokenCred)
+        XCTAssertEqual(vms.count, 1)
+        XCTAssertEqual(vms.first?.id, "pve01/lxc/104")
+        XCTAssertEqual(vms.first?.name, "edge-lxc")
+
+        _ = try await CloudHypervisorClient.performCloudPowerAction(
+            connection: pveConn,
+            credential: apiTokenCred,
+            vmId: "pve01/lxc/104",
+            vmName: "edge-lxc",
+            action: .save
+        )
+        await fulfillment(of: [serverDone], timeout: 5.0)
+
+        recorder.lock.lock()
+        let reqs = recorder.requests
+        recorder.lock.unlock()
+
+        XCTAssertEqual(reqs.count, 2)
+        XCTAssertEqual(reqs[0].path, "/api2/json/cluster/resources?type=vm")
+        XCTAssertEqual(reqs[0].headers["authorization"], "PVEAPIToken=root@pam!nexus=11111111-2222-3333-4444-555555555555")
+        XCTAssertEqual(reqs[1].path, "/api2/json/nodes/pve01/lxc/104/status/shutdown")
+    }
+
+    // MARK: - 11. AWS EC2 SigV4 Loopback + STS Token + `<platformDetails>Windows</platformDetails>` + XML Faults
+
+    func testAwsEc2SigV4StsSessionTokenWindowsRdpAndXmlFaultHandling() async throws {
+        let listener = try Self.makeLoopbackListener()
+        defer { listener.close() }
+
+        final class Ec2Recorder: @unchecked Sendable {
+            let lock = NSLock()
+            var requests: [CapturedHttpRequest] = []
+        }
+        let recorder = Ec2Recorder()
+        let serverDone = expectation(description: "EC2 SigV4 loopback server completed")
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            for idx in 0..<2 {
+                let fd = Self.acceptSocket(listener.fd, timeoutSeconds: 5)
+                guard fd >= 0 else { break }
+                if let req = Self.readHttpRequest(fd) {
+                    recorder.lock.lock()
+                    recorder.requests.append(req)
+                    recorder.lock.unlock()
+
+                    if idx == 0 {
+                        let xml = """
+                        <?xml version="1.0" encoding="UTF-8"?>
+                        <DescribeInstancesResponse xmlns="http://ec2.amazonaws.com/doc/2016-11-15/">
+                          <reservationSet>
+                            <item>
+                              <instancesSet>
+                                <item>
+                                  <instanceId>i-09988776655443322</instanceId>
+                                  <instanceState><code>16</code><name>running</name></instanceState>
+                                  <instanceType>m6i.xlarge</instanceType>
+                                  <ipAddress>54.210.12.34</ipAddress>
+                                  <platformDetails>Windows with SQL Server Enterprise</platformDetails>
+                                  <tagSet><item><key>Name</key><value>win-sql-primary</value></item></tagSet>
+                                </item>
+                              </instancesSet>
+                            </item>
+                          </reservationSet>
+                        </DescribeInstancesResponse>
+                        """
+                        Self.sendHttpResponse(fd, status: 200, contentType: "text/xml; charset=utf-8", body: xml)
+                    } else {
+                        let fault = """
+                        <?xml version="1.0" encoding="UTF-8"?>
+                        <Response><Errors><Error><Code>AuthFailure</Code><Message>AWS was not able to validate the provided access credentials</Message></Error></Errors></Response>
+                        """
+                        Self.sendHttpResponse(fd, status: 401, statusText: "Unauthorized", contentType: "text/xml; charset=utf-8", body: fault)
+                    }
+                }
+                Darwin.close(fd)
+            }
+            serverDone.fulfill()
+        }
+
+        let stsToken = "FwoGZXIvYXdzEBYaDH99887766554433221100AABBCCDDEEFFGGHHIIJJKKLLMMNNOOPPQQRRSSTTUUVV"
+        let ec2Conn = VaultConnection(
+            name: "AWS EU Central",
+            host: "eu-central-1",
+            protocolType: .AWS_EC2,
+            settings: .cloudVirtualization(CloudVirtualizationProtocolSettings(
+                apiEndpointUrl: "http://127.0.0.1:\(listener.port)",
+                regionOrCluster: "eu-central-1",
+                subscriptionOrAccountId: stsToken,
+                verifyTls: false
+            ))
+        )
+        let ec2Cred = VaultCredential(
+            name: "STS Role",
+            username: "ASIAEXAMPLEKEY123456",
+            secretPassword: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+        )
+
+        let instances = try await CloudHypervisorClient.fetchInventory(connection: ec2Conn, credential: ec2Cred)
+        XCTAssertEqual(instances.count, 1)
+        XCTAssertEqual(instances.first?.id, "i-09988776655443322")
+        XCTAssertEqual(instances.first?.name, "win-sql-primary")
+        XCTAssertEqual(instances.first?.addressOrNode, "54.210.12.34")
+        XCTAssertEqual(instances.first?.consoleProtocol, .RDP)
+
+        do {
+            _ = try await CloudHypervisorClient.fetchInventory(connection: ec2Conn, credential: ec2Cred)
+            XCTFail("Expected AuthFailure error on HTTP 401")
+        } catch {
+            XCTAssertTrue("\(error)".contains("AuthFailure"))
+        }
+
+        await fulfillment(of: [serverDone], timeout: 5.0)
+
+        recorder.lock.lock()
+        let firstReq = recorder.requests.first
+        recorder.lock.unlock()
+
+        let authHdr = firstReq?.headers["authorization"] ?? ""
+        XCTAssertTrue(authHdr.hasPrefix("AWS4-HMAC-SHA256 Credential=ASIAEXAMPLEKEY123456/"))
+        XCTAssertTrue(authHdr.contains("/eu-central-1/ec2/aws4_request"))
+        XCTAssertTrue(authHdr.contains("SignedHeaders=content-type;host;x-amz-date;x-amz-security-token"))
+        XCTAssertEqual(firstReq?.headers["x-amz-security-token"], stsToken)
+        XCTAssertEqual(firstReq?.body, "Action=DescribeInstances&Version=2016-11-15")
+    }
+
+    // MARK: - 12. Azure ARM Loopback (`Bearer ` Deduplication, `statusOnly=true` & NIC Public IP Resolution)
+
+    func testAzureArmBearerDeduplicationStatusOnlyAndNicPublicIpResolution() async throws {
+        let listener = try Self.makeLoopbackListener()
+        defer { listener.close() }
+
+        final class AzureRecorder: @unchecked Sendable {
+            let lock = NSLock()
+            var requests: [CapturedHttpRequest] = []
+        }
+        let recorder = AzureRecorder()
+        let serverDone = expectation(description: "Azure ARM loopback server completed")
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            for _ in 0..<3 {
+                let fd = Self.acceptSocket(listener.fd, timeoutSeconds: 5)
+                guard fd >= 0 else { break }
+                if let req = Self.readHttpRequest(fd) {
+                    recorder.lock.lock()
+                    recorder.requests.append(req)
+                    recorder.lock.unlock()
+
+                    if req.path.contains("/providers/Microsoft.Compute/virtualMachines") {
+                        let json = """
+                        {
+                          "value": [{
+                            "id": "/subscriptions/sub-123/resourceGroups/rg-prod/providers/Microsoft.Compute/virtualMachines/az-win-01",
+                            "name": "az-win-01",
+                            "location": "westeurope",
+                            "properties": {
+                              "hardwareProfile": { "vmSize": "Standard_D4s_v5" },
+                              "storageProfile": { "osDisk": { "osType": "Windows" } },
+                              "networkProfile": {
+                                "networkInterfaces": [{
+                                  "id": "/subscriptions/sub-123/resourceGroups/rg-prod/providers/Microsoft.Network/networkInterfaces/nic-01"
+                                }]
+                              },
+                              "instanceView": {
+                                "statuses": [{ "code": "PowerState/running", "displayStatus": "VM running" }]
+                              }
+                            }
+                          }]
+                        }
+                        """
+                        Self.sendHttpResponse(fd, status: 200, body: json)
+                    } else if req.path.contains("/networkInterfaces/nic-01") {
+                        let json = """
+                        {
+                          "properties": {
+                            "ipConfigurations": [{
+                              "properties": {
+                                "privateIPAddress": "10.20.0.4",
+                                "publicIPAddress": {
+                                  "id": "/subscriptions/sub-123/resourceGroups/rg-prod/providers/Microsoft.Network/publicIPAddresses/pip-01"
+                                }
+                              }
+                            }]
+                          }
+                        }
+                        """
+                        Self.sendHttpResponse(fd, status: 200, body: json)
+                    } else if req.path.contains("/publicIPAddresses/pip-01") {
+                        let json = """
+                        { "properties": { "ipAddress": "20.50.100.7" } }
+                        """
+                        Self.sendHttpResponse(fd, status: 200, body: json)
+                    }
+                }
+                Darwin.close(fd)
+            }
+            serverDone.fulfill()
+        }
+
+        let rawJwt = "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.eyJhdWQiOiJodHRwczovL21hbmFnZW1lbnQuYXp1cmUuY29tIn0.sig"
+        let azConn = VaultConnection(
+            name: "Azure Prod Subscription",
+            host: "sub-123",
+            protocolType: .AZURE_VM,
+            settings: .cloudVirtualization(CloudVirtualizationProtocolSettings(
+                apiEndpointUrl: "http://127.0.0.1:\(listener.port)",
+                regionOrCluster: "",
+                subscriptionOrAccountId: "sub-123",
+                verifyTls: false
+            ))
+        )
+        let azCred = VaultCredential(
+            name: "Prefixed Bearer Token",
+            secretPassword: "Bearer \(rawJwt)"
+        )
+
+        let vms = try await CloudHypervisorClient.fetchInventory(connection: azConn, credential: azCred)
+        await fulfillment(of: [serverDone], timeout: 5.0)
+
+        XCTAssertEqual(vms.count, 1)
+        XCTAssertEqual(vms.first?.name, "az-win-01")
+        XCTAssertEqual(vms.first?.powerState, "RUNNING")
+        XCTAssertEqual(vms.first?.addressOrNode, "20.50.100.7")
+        XCTAssertEqual(vms.first?.cpuSummary, "Standard_D4s_v5")
+        XCTAssertEqual(vms.first?.consoleProtocol, .RDP)
+
+        recorder.lock.lock()
+        let reqs = recorder.requests
+        recorder.lock.unlock()
+
+        XCTAssertEqual(reqs.count, 3)
+        XCTAssertTrue(reqs[0].path.contains("statusOnly=true"))
+        XCTAssertEqual(reqs[0].headers["authorization"], "Bearer \(rawJwt)")
+    }
+
+    // MARK: - 13. RFB 3.8 Security Negotiation: Standard VNC (Type 2) vs Apple Screen Sharing ARD (Type 30)
+
+    func testRfbSecuritySelectionPrefersVncAuthWhenStandardVncAndArdWhenAppleScreenSharing() throws {
+        let listener = try Self.makeLoopbackListener()
+        defer { listener.close() }
+
+        final class SecChoiceRecorder: @unchecked Sendable {
+            let lock = NSLock()
+            var chosenTypes: [UInt8] = []
+        }
+        let recorder = SecChoiceRecorder()
+        let serverDone = expectation(description: "Dual-security RFB server completed")
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            for _ in 0..<2 {
+                let fd = Self.acceptSocket(listener.fd, timeoutSeconds: 5)
+                guard fd >= 0 else { break }
+
+                if Self.sendAll(fd, Array("RFB 003.008\n".utf8)),
+                   Self.recvExact(fd, count: 12) != nil,
+                   Self.sendAll(fd, [2, 30, 2]), // Offer [ARD=30, VNCAuth=2]
+                   let chosen = Self.recvExact(fd, count: 1)?.first {
+                    recorder.lock.lock()
+                    recorder.chosenTypes.append(chosen)
+                    recorder.lock.unlock()
+
+                    if chosen == 2 {
+                        // Complete DES 16-byte challenge/response + SecurityResult OK + ServerInit
+                        let challenge = [UInt8](repeating: 0xAA, count: 16)
+                        if Self.sendAll(fd, challenge),
+                           Self.recvExact(fd, count: 16) != nil,
+                           Self.sendAll(fd, [0, 0, 0, 0]),
+                           Self.recvExact(fd, count: 1) != nil {
+                            let serverInit: [UInt8] = [
+                                0, 2, 0, 2,
+                                32, 24, 0, 1,
+                                0, 255, 0, 255, 0, 255,
+                                16, 8, 0,
+                                0, 0, 0,
+                                0, 0, 0, 3,
+                                0x56, 0x4E, 0x43
+                            ]
+                            _ = Self.sendAll(fd, serverInit)
+                            _ = Self.recvExact(fd, count: 1)
+                        }
+                    }
+                }
+                Darwin.close(fd)
+            }
+            serverDone.fulfill()
+        }
+
+        // 1. Standard VNC passes empty username -> must pick Security Type 2 (DES VNC Auth), NOT ARD 30
+        let standardVnc = try NativeLiveVncSession.connect(
+            host: "127.0.0.1",
+            port: listener.port,
+            username: "",
+            password: "vncpassword"
+        )
+        standardVnc.disconnect()
+
+        // 2. Apple Screen Sharing passes username -> must pick Security Type 30 (Apple ARD DH)
+        _ = try? NativeLiveVncSession.connect(
+            host: "127.0.0.1",
+            port: listener.port,
+            username: "macadmin",
+            password: "ardpassword"
+        )
+
+        wait(for: [serverDone], timeout: 5.0)
+        recorder.lock.lock()
+        let chosen = recorder.chosenTypes
+        recorder.lock.unlock()
+        XCTAssertEqual(chosen, [2, 30])
+    }
+
+    // MARK: - 14. Lossless 23-Protocol Royal TS `.rtsx` XML & `.rtsz` ZIP Archive Round-Trip
+
+    func testAll23VaultProtocolsRoundTripLosslesslyThroughRtsxAndRtsz() throws {
+        XCTAssertEqual(VaultProtocolType.allCases.count, 23)
+
+        var rdpHv = RdpProtocolSettings(
+            port: 2179,
+            hyperVVmId: "8d3a21e0-1111-4b22-9999-acde48001122",
+            hyperVEnhancedSession: true
+        )
+        rdpHv.ignoreCertificateWarnings = true
+
+        let connections: [VaultConnection] = [
+            VaultConnection(name: "01-RDP-VMConnect", host: "hv01.corp.local", protocolType: .RDP, settings: .rdp(rdpHv)),
+            VaultConnection(name: "02-WTS", host: "rds01.corp.local", protocolType: .WINDOWS_TERMINAL_SERVICES, settings: .rdp(RdpProtocolSettings(port: 3390))),
+            VaultConnection(name: "03-SSH", host: "bastion.corp.local", protocolType: .SSH, settings: .ssh(SshProtocolSettings(port: 2222))),
+            VaultConnection(name: "04-Telnet", host: "core-sw01.corp.local", protocolType: .TELNET, settings: .ssh(SshProtocolSettings(port: 2323))),
+            VaultConnection(name: "05-Serial", host: "/dev/cu.usbserial-FTDI", protocolType: .SERIAL, settings: .serialUart(SerialUartProtocolSettings(baudRate: 57600, devicePathHint: "/dev/cu.usbserial-FTDI"))),
+            VaultConnection(name: "06-SFTP", host: "sftp.corp.local", protocolType: .SFTP, settings: .fileTransfer(FileTransferProtocolSettings(port: 2022, initialRemoteDirectory: "/var/log"))),
+            VaultConnection(name: "07-FTP-Active", host: "ftp.corp.local", protocolType: .FTP, settings: .fileTransfer(FileTransferProtocolSettings(port: 2121, passiveMode: false))),
+            VaultConnection(name: "08-FTPS-Explicit", host: "ftps.corp.local", protocolType: .FTPS, settings: .fileTransfer(FileTransferProtocolSettings(port: 21, ftpsImplicitTls: false, passiveMode: true, verifyTls: true))),
+            VaultConnection(name: "09-SCP", host: "scp.corp.local", protocolType: .SCP, settings: .fileTransfer(FileTransferProtocolSettings(port: 2200, preserveTimestamps: false))),
+            VaultConnection(name: "10-VNC", host: "kvm01.corp.local", protocolType: .VNC, settings: .vnc(VncProtocolSettings(port: 5901, viewOnly: true, appleArdDiffieHellmanAuth: false))),
+            VaultConnection(name: "11-ARD", host: "macmini.corp.local", protocolType: .APPLE_SCREEN_SHARING, settings: .vnc(VncProtocolSettings(port: 5900, appleArdDiffieHellmanAuth: true))),
+            VaultConnection(name: "12-Web", host: "https://idrac.corp.local:8443/login", protocolType: .WEB_PAGE, settings: .webPage(WebPageProtocolSettings(url: "https://idrac.corp.local:8443/login", ignoreSelfSignedInternalCert: false))),
+            VaultConnection(name: "13-vSphere", host: "esxi01.corp.local", protocolType: .VMWARE_VSPHERE, settings: .cloudVirtualization(CloudVirtualizationProtocolSettings(apiEndpointUrl: "https://esxi01.corp.local", verifyTls: true))),
+            VaultConnection(name: "14-Proxmox", host: "pve01.corp.local", protocolType: .PROXMOX_VE, settings: .cloudVirtualization(CloudVirtualizationProtocolSettings(apiEndpointUrl: "https://pve01.corp.local:8006", realmOrDomain: "pve", verifyTls: false))),
+            VaultConnection(name: "15-HyperV", host: "hv01.corp.local", protocolType: .HYPER_V, settings: .cloudVirtualization(CloudVirtualizationProtocolSettings(apiEndpointUrl: "", realmOrDomain: "CORP", verifyTls: false))),
+            VaultConnection(name: "16-AWS-EC2", host: "eu-west-1", protocolType: .AWS_EC2, settings: .cloudVirtualization(CloudVirtualizationProtocolSettings(apiEndpointUrl: "", regionOrCluster: "eu-west-1", subscriptionOrAccountId: "123456789012", verifyTls: true))),
+            VaultConnection(name: "17-Azure-VM", host: "00000000-1111-2222-3333-444444444444", protocolType: .AZURE_VM, settings: .cloudVirtualization(CloudVirtualizationProtocolSettings(apiEndpointUrl: "https://management.azure.com", regionOrCluster: "rg-prod", subscriptionOrAccountId: "00000000-1111-2222-3333-444444444444", realmOrDomain: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", verifyTls: true))),
+            VaultConnection(name: "18-Ping", host: "1.1.1.1", protocolType: .UTILITY_PING, settings: .netUtility(NetUtilityProtocolSettings(pingCount: 25))),
+            VaultConnection(name: "19-Traceroute", host: "8.8.8.8", protocolType: .UTILITY_TRACEROUTE, settings: .netUtility(NetUtilityProtocolSettings(tracerouteMaxHops: 42))),
+            VaultConnection(name: "20-PortScan", host: "10.0.0.1", protocolType: .UTILITY_PORT_SCANNER, settings: .netUtility(NetUtilityProtocolSettings(portScanRangeStart: 20, portScanRangeEnd: 443, portScanConcurrency: 64))),
+            VaultConnection(name: "21-WoL", host: "192.168.10.255", protocolType: .UTILITY_WAKE_ON_LAN, settings: .netUtility(NetUtilityProtocolSettings(wolMacAddress: "AA:BB:CC:DD:EE:FF", wolBroadcastAddress: "192.168.10.255", wolUdpPort: 7))),
+            VaultConnection(name: "22-K8s-Pod", host: "k8s.corp.local", protocolType: .KUBERNETES_POD, settings: .containerExec(ContainerExecProtocolSettings(clusterOrSocketEndpoint: "https://k8s.corp.local:6443", namespace: "observability", podOrContainerName: "otel-collector-0", subContainerName: "envoy-proxy", verifyTls: true))),
+            VaultConnection(name: "23-Docker", host: "docker01.corp.local", protocolType: .DOCKER_CONTAINER, settings: .containerExec(ContainerExecProtocolSettings(clusterOrSocketEndpoint: "tcp://docker01.corp.local:2376", podOrContainerName: "traefik-edge", verifyTls: true)))
+        ]
+
+        XCTAssertEqual(Set(connections.map(\.protocolType)), Set(VaultProtocolType.allCases))
+
+        let sourceDoc = NxtsVaultDocument(
+            name: "All 23 Protocols Verification Vault",
+            connections: connections
+        )
+
+        for (format, fileName) in [(VaultExportFormat.rtsx, "all23.rtsx"), (VaultExportFormat.rtsz, "all23.rtsz")] {
+            let exported = try VaultDocumentExporter.export(document: sourceDoc, format: format)
+            let summary = try EnterpriseVaultFormatImporter.importData(exported, fileName: fileName)
+            let imported = summary.document
+
+            XCTAssertEqual(imported.connections.count, 23, "Mismatch in \(fileName)")
+            XCTAssertEqual(Set(imported.connections.map(\.protocolType)), Set(VaultProtocolType.allCases), "Missing protocol in \(fileName)")
+
+            let byProto = Dictionary(uniqueKeysWithValues: imported.connections.map { ($0.protocolType, $0) })
+
+            if case .rdp(let rdp) = byProto[.RDP]?.settings {
+                XCTAssertEqual(rdp.effectiveRdpPort, 2179)
+                XCTAssertEqual(rdp.hyperVVmId, "8d3a21e0-1111-4b22-9999-acde48001122")
+                XCTAssertTrue(rdp.hyperVEnhancedSession)
+            } else { XCTFail("Expected RDP settings in \(fileName)") }
+
+            if case .fileTransfer(let ftp) = byProto[.FTP]?.settings {
+                XCTAssertEqual(ftp.port, 2121)
+                XCTAssertFalse(ftp.passiveMode)
+            } else { XCTFail("Expected FTP settings in \(fileName)") }
+
+            if case .fileTransfer(let ftps) = byProto[.FTPS]?.settings {
+                XCTAssertEqual(ftps.port, 21)
+                XCTAssertFalse(ftps.ftpsImplicitTls)
+                XCTAssertTrue(ftps.verifyTls)
+            } else { XCTFail("Expected FTPS settings in \(fileName)") }
+
+            if case .fileTransfer(let scp) = byProto[.SCP]?.settings {
+                XCTAssertEqual(scp.port, 2200)
+                XCTAssertFalse(scp.preserveTimestamps)
+            } else { XCTFail("Expected SCP settings in \(fileName)") }
+
+            if case .vnc(let vnc) = byProto[.VNC]?.settings,
+               case .vnc(let ard) = byProto[.APPLE_SCREEN_SHARING]?.settings {
+                XCTAssertFalse(vnc.appleArdDiffieHellmanAuth)
+                XCTAssertTrue(vnc.viewOnly)
+                XCTAssertTrue(ard.appleArdDiffieHellmanAuth)
+            } else { XCTFail("Expected VNC & ARD settings in \(fileName)") }
+
+            if case .webPage(let wp) = byProto[.WEB_PAGE]?.settings {
+                XCTAssertEqual(wp.url, "https://idrac.corp.local:8443/login")
+                XCTAssertFalse(wp.ignoreSelfSignedInternalCert)
+            } else { XCTFail("Expected WebPage settings in \(fileName)") }
+
+            if case .cloudVirtualization(let hv) = byProto[.HYPER_V]?.settings,
+               case .cloudVirtualization(let ec2) = byProto[.AWS_EC2]?.settings {
+                XCTAssertEqual(hv.apiEndpointUrl, "")
+                XCTAssertEqual(hv.realmOrDomain, "CORP")
+                XCTAssertEqual(ec2.apiEndpointUrl, "")
+                XCTAssertEqual(ec2.regionOrCluster, "eu-west-1")
+                XCTAssertTrue(ec2.verifyTls)
+            } else { XCTFail("Expected Hyper-V & EC2 settings in \(fileName)") }
+
+            if case .containerExec(let k8s) = byProto[.KUBERNETES_POD]?.settings,
+               case .containerExec(let docker) = byProto[.DOCKER_CONTAINER]?.settings {
+                XCTAssertEqual(k8s.subContainerName, "envoy-proxy")
+                XCTAssertTrue(k8s.verifyTls)
+                XCTAssertEqual(docker.clusterOrSocketEndpoint, "tcp://docker01.corp.local:2376")
+                XCTAssertTrue(docker.verifyTls)
+            } else { XCTFail("Expected K8s & Docker settings in \(fileName)") }
+        }
+    }
 }

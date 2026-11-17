@@ -761,9 +761,14 @@ pub fn build_rfb_pointer_event(button_mask: u8, x: u16, y: u16) -> [u8; 6] {
     pkt
 }
 
-/// Encodes an RFB ClientCutText (msg type 6).
+/// Encodes an RFB ClientCutText (msg type 6), normalizing `\r\n` to `\n` per RFC 6143 §7.5.6.
 pub fn build_rfb_client_cut_text(text: &str) -> Vec<u8> {
-    let bytes = text.as_bytes();
+    let normalized = if text.contains('\r') {
+        text.replace("\r\n", "\n").replace('\r', "\n")
+    } else {
+        text.to_string()
+    };
+    let bytes = normalized.as_bytes();
     let mut pkt = Vec::with_capacity(8 + bytes.len());
     pkt.extend_from_slice(&[6, 0, 0, 0]);
     pkt.extend_from_slice(&(bytes.len() as u32).to_be_bytes());

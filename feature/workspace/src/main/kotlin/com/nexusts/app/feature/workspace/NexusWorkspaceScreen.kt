@@ -1989,7 +1989,7 @@ fun ActiveProtocolSessionDispatcher(
 
         SessionProtocolKind.KUBERNETES_POD, SessionProtocolKind.DOCKER_CONTAINER -> {
             val containerSettings = (conn?.settings as? ProtocolSpecificSettings.ContainerExec)
-                ?: ProtocolSpecificSettings.ContainerExec(podOrContainerName = tab.subtitleHost)
+                ?: ProtocolSpecificSettings.ContainerExec(clusterOrSocketEndpoint = tab.subtitleHost)
             KubernetesAndContainerTerminalView(
                 isKubernetes = tab.protocol == SessionProtocolKind.KUBERNETES_POD,
                 endpointHost = tab.subtitleHost,
@@ -2061,7 +2061,9 @@ fun ActiveProtocolSessionDispatcher(
                 else -> VaultProtocolType.PROXMOX_VE
             }
             val defaultEndpoint = when (resolvedCloudProto) {
-                VaultProtocolType.HYPER_V -> ""
+                VaultProtocolType.HYPER_V,
+                VaultProtocolType.AWS_EC2,
+                VaultProtocolType.AZURE_VM -> ""
                 VaultProtocolType.PROXMOX_VE -> "https://${tab.subtitleHost}:8006"
                 else -> "https://${tab.subtitleHost}"
             }
@@ -2074,18 +2076,37 @@ fun ActiveProtocolSessionDispatcher(
                 settings = cloudSettings,
                 secret = secret,
                 openConsoleCallback = { vmName, vmIp, vmProto ->
+                    val targetEndpoint = vmIp.ifBlank { effectiveHost }
+                    val guestInheritable = if (resolvedCloudProto == VaultProtocolType.AWS_EC2 ||
+                        resolvedCloudProto == VaultProtocolType.AZURE_VM
+                    ) {
+                        (conn?.inheritable ?: InheritableProperties()).copy(
+                            credentialMode = com.nexusts.app.core.vault.model.InheritanceMode.INHERIT_FROM_PARENT,
+                            explicitCredentialId = null
+                        )
+                    } else {
+                        conn?.inheritable ?: InheritableProperties()
+                    }
                     val dynamicVmConn = VaultConnection(
                         parentFolderId = conn?.parentFolderId,
                         name = vmName,
-                        host = vmIp.ifBlank { effectiveHost },
+                        host = targetEndpoint,
                         protocol = vmProto,
                         osFamily = if (vmProto == VaultProtocolType.RDP || vmProto == VaultProtocolType.WINDOWS_TERMINAL_SERVICES) "Windows" else "Linux",
-                        inheritable = conn?.inheritable ?: InheritableProperties(),
+                        inheritable = guestInheritable,
                         settings = when (vmProto) {
                             VaultProtocolType.RDP,
                             VaultProtocolType.WINDOWS_TERMINAL_SERVICES -> ProtocolSpecificSettings.Rdp()
                             VaultProtocolType.VNC -> ProtocolSpecificSettings.Vnc(appleArdDiffieHellmanAuth = false)
                             VaultProtocolType.APPLE_SCREEN_SHARING -> ProtocolSpecificSettings.Vnc(appleArdDiffieHellmanAuth = true)
+                            VaultProtocolType.WEB_PAGE -> ProtocolSpecificSettings.WebPage(
+                                url = if (targetEndpoint.startsWith("http", ignoreCase = true)) {
+                                    targetEndpoint
+                                } else {
+                                    "https://$targetEndpoint"
+                                },
+                                ignoreSelfSignedInternalCert = true
+                            )
                             VaultProtocolType.TELNET -> ProtocolSpecificSettings.Ssh(port = 23)
                             else -> ProtocolSpecificSettings.Ssh()
                         }
@@ -7631,7 +7652,7 @@ private fun PlayProtectAutoUpdateDialog(
                                     ).trim()
                                     else -> String.format(
                                         strings.autoUpdateUpToDateFormat,
-                                        uiState.updateCurrentVersion.ifBlank { "0.8.7" }
+                                        uiState.updateCurrentVersion.ifBlank { "0.8.8" }
                                     )
                                 },
                                 style = MaterialTheme.typography.titleSmall,
@@ -7646,7 +7667,7 @@ private fun PlayProtectAutoUpdateDialog(
                                 ""
                             }
                             Text(
-                                text = "Installed: v${uiState.updateCurrentVersion.ifBlank { "0.8.7" }}  →  Latest: ${uiState.updateLatestTag.ifBlank { "current" }}$sizeMb",
+                                text = "Installed: v${uiState.updateCurrentVersion.ifBlank { "0.8.8" }}  →  Latest: ${uiState.updateLatestTag.ifBlank { "current" }}$sizeMb",
                                 style = NexusTheme.monospace.keycapShortcut,
                                 color = MaterialTheme.colorScheme.secondary
                             )

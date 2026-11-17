@@ -20,6 +20,21 @@ pub struct FtpControlReply {
 struct FtpControlChannel {
     stream: BufReader<TcpStream>,
     peer_ip: IpAddr,
+    epsv_supported: bool,
+    mlsd_supported: bool,
+}
+
+fn is_rfc1918_or_link_local_v4(ip: std::net::Ipv4Addr) -> bool {
+    ip.is_private()
+        || ip.is_link_local()
+        || (ip.octets()[0] == 100 && (ip.octets()[1] & 0xC0) == 64)
+}
+
+fn peer_is_public_or_different_family(peer_ip: IpAddr) -> bool {
+    match peer_ip {
+        IpAddr::V4(v4) => !v4.is_loopback() && !is_rfc1918_or_link_local_v4(v4),
+        IpAddr::V6(v6) => !v6.is_loopback(),
+    }
 }
 
 impl FtpControlChannel {
@@ -102,18 +117,27 @@ impl FtpControlChannel {
 
     async fn open_passive_data_stream(&mut self) -> Result<TcpStream, WireTransferError> {
         // 1. Try RFC 2428 EPSV first (IPv4 & IPv6 NAT-friendly)
-        let epsv_reply = self.send_command("EPSV").await?;
-        if epsv_reply.code == 229 {
-            let last_line = epsv_reply.text.lines().last().unwrap_or(&epsv_reply.text);
-            let port = parse_ftp_epsv_port(last_line)?;
-            let addr = SocketAddr::new(self.peer_ip, port);
-            let data_stream =
-                tokio::time::timeout(Duration::from_secs(15), TcpStream::connect(addr))
-                    .await
-                    .map_err(|_| {
-                        WireTransferError::Ftp(format!("Timed out connecting EPSV data port {addr}"))
-                    })??;
-            return Ok(data_stream);
+        let mut last_epsv_code = 0u16;
+        if self.epsv_supported {
+            let epsv_reply = self.send_command("EPSV").await?;
+            last_epsv_code = epsv_reply.code;
+            if epsv_reply.code == 229 {
+                let last_line = epsv_reply.text.lines().last().unwrap_or(&epsv_reply.text);
+                let port = parse_ftp_epsv_port(last_line)?;
+                let addr = SocketAddr::new(self.peer_ip, port);
+                let data_stream =
+                    tokio::time::timeout(Duration::from_secs(15), TcpStream::connect(addr))
+                        .await
+                        .map_err(|_| {
+                            WireTransferError::Ftp(format!(
+                                "Timed out connecting EPSV data port {addr}"
+                            ))
+                        })??;
+                return Ok(data_stream);
+            }
+            if matches!(epsv_reply.code, 500 | 501 | 502 | 504 | 522) {
+                self.epsv_supported = false;
+            }
         }
 
         // 2. Fall back to RFC 959 PASV
@@ -121,30 +145,49 @@ impl FtpControlChannel {
         if pasv_reply.code != 227 {
             return Err(WireTransferError::Ftp(format!(
                 "Passive mode rejected (EPSV={}, PASV={}): {}",
-                epsv_reply.code, pasv_reply.code, pasv_reply.text
+                last_epsv_code, pasv_reply.code, pasv_reply.text
             )));
         }
 
         let last_line = pasv_reply.text.lines().last().unwrap_or(&pasv_reply.text);
         let (pasv_ipv4, port) = parse_ftp_pasv_endpoint(last_line)?;
 
-        // Substitute control peer IP if PASV returns 0.0.0.0, or 127.0.0.1 on a remote non-loopback host
+        // Substitute control peer IP if PASV returns 0.0.0.0, 127.0.0.1 on non-loopback peer,
+        // or unroutable RFC1918/CGNAT/link-local IP when control peer is public/IPv6
         let pasv_ip = IpAddr::V4(pasv_ipv4);
         let resolved_ip = if pasv_ipv4.is_unspecified()
             || (pasv_ipv4.is_loopback() && !self.peer_ip.is_loopback())
+            || (is_rfc1918_or_link_local_v4(pasv_ipv4)
+                && peer_is_public_or_different_family(self.peer_ip))
         {
             self.peer_ip
         } else {
             pasv_ip
         };
 
-        let addr = SocketAddr::new(resolved_ip, port);
-        let data_stream = tokio::time::timeout(Duration::from_secs(15), TcpStream::connect(addr))
-            .await
-            .map_err(|_| {
-                WireTransferError::Ftp(format!("Timed out connecting PASV data port {addr}"))
-            })??;
-        Ok(data_stream)
+        let primary_addr = SocketAddr::new(resolved_ip, port);
+        match tokio::time::timeout(Duration::from_secs(8), TcpStream::connect(primary_addr)).await {
+            Ok(Ok(s)) => Ok(s),
+            _ if resolved_ip != self.peer_ip => {
+                // Split-horizon / Docker bridge / NAT fallback to control peer IP
+                let fallback_addr = SocketAddr::new(self.peer_ip, port);
+                let s = tokio::time::timeout(
+                    Duration::from_secs(10),
+                    TcpStream::connect(fallback_addr),
+                )
+                .await
+                .map_err(|_| {
+                    WireTransferError::Ftp(format!(
+                        "Timed out connecting PASV data port {primary_addr} (and NAT fallback {fallback_addr})"
+                    ))
+                })??;
+                Ok(s)
+            }
+            Ok(Err(e)) => Err(e.into()),
+            Err(_) => Err(WireTransferError::Ftp(format!(
+                "Timed out connecting PASV data port {primary_addr}"
+            ))),
+        }
     }
 }
 
@@ -177,6 +220,8 @@ impl NexusFtpClient {
         let mut ctrl = FtpControlChannel {
             stream: BufReader::new(tcp),
             peer_ip,
+            epsv_supported: true,
+            mlsd_supported: true,
         };
 
         let banner = ctrl.read_reply().await?;
@@ -271,47 +316,67 @@ impl NexusFtpClient {
             trimmed.to_string()
         };
 
-        // 1. Attempt RFC 3659 MLSD first
-        let mut mlsd_data = ctrl.open_passive_data_stream().await?;
-        let mlsd_cmd = if trimmed.is_empty() || trimmed == "." {
-            String::from("MLSD")
-        } else {
-            format!("MLSD {trimmed}")
-        };
-        let mlsd_reply = ctrl.send_command(&mlsd_cmd).await?;
+        // 1. Attempt RFC 3659 MLSD first if supported
+        if ctrl.mlsd_supported {
+            let mut mlsd_data = ctrl.open_passive_data_stream().await?;
+            let mlsd_cmd = if trimmed.is_empty() || trimmed == "." {
+                String::from("MLSD")
+            } else {
+                format!("MLSD {trimmed}")
+            };
+            let mlsd_reply = ctrl.send_command(&mlsd_cmd).await?;
 
-        if mlsd_reply.code == 125 || mlsd_reply.code == 150 {
-            let mut raw = Vec::new();
-            mlsd_data.read_to_end(&mut raw).await?;
+            if mlsd_reply.code == 125 || mlsd_reply.code == 150 {
+                let mut raw = Vec::new();
+                tokio::time::timeout(Duration::from_secs(30), mlsd_data.read_to_end(&mut raw))
+                    .await
+                    .map_err(|_| WireTransferError::Ftp("Timed out reading FTP MLSD data".into()))??;
+                drop(mlsd_data);
+                let done = ctrl.read_reply().await?;
+                if !(200..300).contains(&done.code) {
+                    return Err(WireTransferError::Ftp(format!(
+                        "FTP MLSD transfer failed ({}): {}",
+                        done.code, done.text
+                    )));
+                }
+                let text = String::from_utf8_lossy(&raw);
+                return Ok(parse_ftp_mlsd_listing(&parent_dir, &text));
+            }
+
             drop(mlsd_data);
-            let done = ctrl.read_reply().await?;
-            if !(200..300).contains(&done.code) {
+            if matches!(mlsd_reply.code, 500 | 501 | 502 | 503 | 504 | 550 | 450) {
+                ctrl.mlsd_supported = false;
+            } else {
                 return Err(WireTransferError::Ftp(format!(
-                    "FTP MLSD transfer failed ({}): {}",
-                    done.code, done.text
+                    "FTP MLSD rejected ({}): {}",
+                    mlsd_reply.code, mlsd_reply.text
                 )));
             }
-            let text = String::from_utf8_lossy(&raw);
-            return Ok(parse_ftp_mlsd_listing(&parent_dir, &text));
-        }
-
-        drop(mlsd_data);
-        if !matches!(mlsd_reply.code, 500 | 501 | 502 | 504 | 421) {
-            return Err(WireTransferError::Ftp(format!(
-                "FTP MLSD rejected ({}): {}",
-                mlsd_reply.code, mlsd_reply.text
-            )));
         }
 
         // 2. Cleanly fall back to RFC 959 LIST (UNIX `ls -la` + Windows/IIS DOS parser)
+        let mut prev_pwd: Option<String> = None;
+        let use_cwd_for_list = !trimmed.is_empty() && trimmed != "." && trimmed.contains(' ');
+        if use_cwd_for_list {
+            if let Ok(pwd_rep) = ctrl.send_command("PWD").await {
+                if (200..300).contains(&pwd_rep.code) {
+                    prev_pwd = extract_quoted_ftp_path(&pwd_rep.text);
+                }
+            }
+            let _ = ctrl.send_command(&format!("CWD {trimmed}")).await;
+        }
+
         let mut list_data = ctrl.open_passive_data_stream().await?;
-        let list_cmd = if trimmed.is_empty() || trimmed == "." {
+        let list_cmd = if trimmed.is_empty() || trimmed == "." || use_cwd_for_list {
             String::from("LIST")
         } else {
             format!("LIST {trimmed}")
         };
         let list_reply = ctrl.send_command(&list_cmd).await?;
         if list_reply.code != 125 && list_reply.code != 150 {
+            if let Some(prev) = prev_pwd {
+                let _ = ctrl.send_command(&format!("CWD {prev}")).await;
+            }
             return Err(WireTransferError::Ftp(format!(
                 "FTP LIST failed ({}): {}",
                 list_reply.code, list_reply.text
@@ -319,10 +384,15 @@ impl NexusFtpClient {
         }
 
         let mut raw = Vec::new();
-        list_data.read_to_end(&mut raw).await?;
+        tokio::time::timeout(Duration::from_secs(30), list_data.read_to_end(&mut raw))
+            .await
+            .map_err(|_| WireTransferError::Ftp("Timed out reading FTP LIST data".into()))??;
         drop(list_data);
 
         let done = ctrl.read_reply().await?;
+        if let Some(prev) = prev_pwd {
+            let _ = ctrl.send_command(&format!("CWD {prev}")).await;
+        }
         if !(200..300).contains(&done.code) {
             return Err(WireTransferError::Ftp(format!(
                 "FTP LIST completion failed ({}): {}",
@@ -346,7 +416,12 @@ impl NexusFtpClient {
         }
 
         let mut payload = Vec::new();
-        data_stream.read_to_end(&mut payload).await?;
+        tokio::time::timeout(
+            Duration::from_secs(120),
+            data_stream.read_to_end(&mut payload),
+        )
+        .await
+        .map_err(|_| WireTransferError::Ftp("Timed out reading FTP RETR stream".into()))??;
         drop(data_stream);
 
         let done = ctrl.read_reply().await?;
@@ -374,9 +449,14 @@ impl NexusFtpClient {
             )));
         }
 
-        data_stream.write_all(data).await?;
-        data_stream.flush().await?;
-        let _ = data_stream.shutdown().await;
+        tokio::time::timeout(Duration::from_secs(120), async {
+            data_stream.write_all(data).await?;
+            data_stream.flush().await?;
+            let _ = data_stream.shutdown().await;
+            Ok::<(), std::io::Error>(())
+        })
+        .await
+        .map_err(|_| WireTransferError::Ftp("Timed out writing FTP STOR stream".into()))??;
         drop(data_stream);
 
         let done = ctrl.read_reply().await?;
@@ -402,22 +482,37 @@ impl NexusFtpClient {
         }
     }
 
-    pub async fn remove_entry(&self, remote_path: &str) -> Result<(), WireTransferError> {
-        let mut ctrl = self.inner.lock().await;
-        let dele = ctrl.send_command(&format!("DELE {remote_path}")).await?;
-        if (200..300).contains(&dele.code) {
-            return Ok(());
-        }
-        // Fall back to RMD if entry is a directory
-        let rmd = ctrl.send_command(&format!("RMD {remote_path}")).await?;
-        if (200..300).contains(&rmd.code) {
-            Ok(())
-        } else {
-            Err(WireTransferError::Ftp(format!(
-                "FTP remove failed (DELE={}, RMD={}): {}",
-                dele.code, rmd.code, rmd.text
-            )))
-        }
+    pub fn remove_entry<'a>(
+        &'a self,
+        remote_path: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), WireTransferError>> + Send + 'a>> {
+        Box::pin(async move {
+            {
+                let mut ctrl = self.inner.lock().await;
+                let dele = ctrl.send_command(&format!("DELE {remote_path}")).await?;
+                if (200..300).contains(&dele.code) {
+                    return Ok(());
+                }
+                let rmd = ctrl.send_command(&format!("RMD {remote_path}")).await?;
+                if (200..300).contains(&rmd.code) {
+                    return Ok(());
+                }
+            }
+            let children = self.list_directory(remote_path).await?;
+            for child in children {
+                self.remove_entry(&child.full_path).await?;
+            }
+            let mut ctrl = self.inner.lock().await;
+            let rmd = ctrl.send_command(&format!("RMD {remote_path}")).await?;
+            if (200..300).contains(&rmd.code) {
+                Ok(())
+            } else {
+                Err(WireTransferError::Ftp(format!(
+                    "FTP RMD failed ({}): {}",
+                    rmd.code, rmd.text
+                )))
+            }
+        })
     }
 
     pub async fn rename(&self, old_path: &str, new_path: &str) -> Result<(), WireTransferError> {

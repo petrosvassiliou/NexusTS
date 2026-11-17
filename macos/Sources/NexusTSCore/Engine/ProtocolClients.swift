@@ -287,63 +287,148 @@ public enum CloudHypervisorClient {
         return (rawUser, cred.secretPassword, resolvedDom == "." ? "" : resolvedDom)
     }
 
+    public static func resolveProxmoxBaseUrl(apiEndpointUrl: String, connectionHost: String) -> String {
+        let cleanHost = extractBareHostname(connectionHost)
+        var ep = apiEndpointUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        if ep.lowercased().contains("localhost") && !cleanHost.isEmpty && cleanHost.lowercased() != "localhost" {
+            ep = ""
+        }
+        if ep.isEmpty {
+            guard !cleanHost.isEmpty else { return "" }
+            let bracketed = cleanHost.contains(":") ? "[\(cleanHost)]" : cleanHost
+            return "https://\(bracketed):8006"
+        }
+        if !ep.lowercased().hasPrefix("http://") && !ep.lowercased().hasPrefix("https://") {
+            ep = "https://\(ep)"
+        }
+        if let comps = URLComponents(string: ep), comps.port == nil, let h = comps.host, !h.isEmpty {
+            var updated = comps
+            updated.port = 8006
+            if let built = updated.string {
+                return built.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            }
+        }
+        return ep
+    }
+
+    public static func resolveVsphereBaseUrl(apiEndpointUrl: String, connectionHost: String) -> String {
+        let cleanHost = extractBareHostname(connectionHost)
+        var ep = apiEndpointUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        if ep.lowercased().contains("localhost") && !cleanHost.isEmpty && cleanHost.lowercased() != "localhost" {
+            ep = ""
+        }
+        if ep.isEmpty {
+            guard !cleanHost.isEmpty else { return "" }
+            let bracketed = cleanHost.contains(":") ? "[\(cleanHost)]" : cleanHost
+            return "https://\(bracketed)"
+        }
+        if !ep.lowercased().hasPrefix("http://") && !ep.lowercased().hasPrefix("https://") {
+            ep = "https://\(ep)"
+        }
+        if ep.lowercased().hasSuffix("/sdk") {
+            ep = String(ep.dropLast(4))
+        }
+        return ep.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    }
+
+    private static func formatProxmoxApiTokenHeader(username: String, secret: String, defaultRealm: String) -> String {
+        if secret.hasPrefix("PVEAPIToken=") {
+            return secret
+        }
+        let realm = defaultRealm.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "pam" : defaultRealm.trimmingCharacters(in: .whitespacesAndNewlines)
+        var tokenId = username.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let bangIdx = tokenId.firstIndex(of: "!") {
+            let userPart = String(tokenId[..<bangIdx])
+            let tokPart = String(tokenId[tokenId.index(after: bangIdx)...])
+            if !userPart.contains("@") {
+                tokenId = "\(userPart)@\(realm)!\(tokPart)"
+            }
+        }
+        return "PVEAPIToken=\(tokenId)=\(secret)"
+    }
+
+    private static func authenticateProxmoxRequest(
+        base: String,
+        cfg: CloudVirtualizationProtocolSettings,
+        credential: VaultCredential?,
+        urlSession: URLSession
+    ) async throws -> (authHeader: String?, cookieHeader: String?, csrfToken: String?) {
+        guard let cred = credential, !cred.secretPassword.isEmpty else {
+            return (nil, nil, nil)
+        }
+        let realm = cfg.realmOrDomain.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "pam"
+            : cfg.realmOrDomain.trimmingCharacters(in: .whitespacesAndNewlines)
+        if cred.username.contains("!") || cred.secretPassword.hasPrefix("PVEAPIToken=") {
+            let hdr = formatProxmoxApiTokenHeader(username: cred.username, secret: cred.secretPassword, defaultRealm: realm)
+            return (hdr, nil, nil)
+        }
+        guard let ticketUrl = URL(string: "\(base)/api2/json/access/ticket") else {
+            throw NativeBridgeError.networkUtilityError("Invalid Proxmox ticket URL for \(base)")
+        }
+        let userWithRealm = cred.username.contains("@") ? cred.username : "\(cred.username)@\(realm)"
+        var ticketReq = URLRequest(url: ticketUrl)
+        ticketReq.httpMethod = "POST"
+        ticketReq.setValue("application/x-www-form-urlencoded; charset=utf-8", forHTTPHeaderField: "Content-Type")
+        var formComps = URLComponents()
+        formComps.queryItems = [
+            URLQueryItem(name: "username", value: userWithRealm),
+            URLQueryItem(name: "password", value: cred.secretPassword)
+        ]
+        ticketReq.httpBody = Data((formComps.percentEncodedQuery ?? "").utf8)
+        let (ticketData, ticketResp) = try await urlSession.data(for: ticketReq)
+        if let http = ticketResp as? HTTPURLResponse, http.statusCode >= 400 {
+            throw NativeBridgeError.authenticationFailed("Proxmox authentication failed (HTTP \(http.statusCode)) for \(userWithRealm).")
+        }
+        struct PveTicketResp: Decodable {
+            struct TicketPayload: Decodable {
+                let ticket: String?
+                let CSRFPreventionToken: String?
+            }
+            let data: TicketPayload?
+        }
+        let parsed = try JSONDecoder().decode(PveTicketResp.self, from: ticketData)
+        guard let ticket = parsed.data?.ticket, !ticket.isEmpty else {
+            throw NativeBridgeError.authenticationFailed("Proxmox ticket response did not contain a valid PVEAuthCookie.")
+        }
+        return (nil, "PVEAuthCookie=\(ticket)", parsed.data?.CSRFPreventionToken)
+    }
+
     public static func fetchInventory(
         connection: VaultConnection,
         credential: VaultCredential?
     ) async throws -> [CloudVmInventoryItem] {
         guard case .cloudVirtualization(let cfg) = connection.settings else { return [] }
-        let base = cfg.apiEndpointUrl.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         let urlSession = ConfigurableTlsUrlSession.session(verifyTls: cfg.verifyTls)
 
         switch connection.protocolType {
         case .PROXMOX_VE:
-            guard let url = URL(string: "\(base)/api2/json/cluster/resources?type=vm") else { return [] }
-            var req = URLRequest(url: url)
-            if let cred = credential, !cred.secretPassword.isEmpty {
-                if cred.username.contains("!") || cred.secretPassword.hasPrefix("PVEAPIToken=") {
-                    let headerVal = cred.secretPassword.hasPrefix("PVEAPIToken=")
-                        ? cred.secretPassword
-                        : "PVEAPIToken=\(cred.username)=\(cred.secretPassword)"
-                    req.setValue(headerVal, forHTTPHeaderField: "Authorization")
-                } else if let ticketUrl = URL(string: "\(base)/api2/json/access/ticket") {
-                    let realm = cfg.realmOrDomain.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                        ? "pam"
-                        : cfg.realmOrDomain.trimmingCharacters(in: .whitespacesAndNewlines)
-                    let userWithRealm = cred.username.contains("@") ? cred.username : "\(cred.username)@\(realm)"
-                    var ticketReq = URLRequest(url: ticketUrl)
-                    ticketReq.httpMethod = "POST"
-                    ticketReq.setValue("application/x-www-form-urlencoded; charset=utf-8", forHTTPHeaderField: "Content-Type")
-                    var formComps = URLComponents()
-                    formComps.queryItems = [
-                        URLQueryItem(name: "username", value: userWithRealm),
-                        URLQueryItem(name: "password", value: cred.secretPassword)
-                    ]
-                    ticketReq.httpBody = Data((formComps.percentEncodedQuery ?? "").utf8)
-                    let (ticketData, _) = try await urlSession.data(for: ticketReq)
-                    struct PveTicketResp: Decodable {
-                        struct TicketPayload: Decodable {
-                            let ticket: String?
-                            let CSRFPreventionToken: String?
-                        }
-                        let data: TicketPayload?
-                    }
-                    if let ticketResp = try? JSONDecoder().decode(PveTicketResp.self, from: ticketData),
-                       let ticket = ticketResp.data?.ticket,
-                       !ticket.isEmpty {
-                        req.setValue("PVEAuthCookie=\(ticket)", forHTTPHeaderField: "Cookie")
-                        if let csrf = ticketResp.data?.CSRFPreventionToken, !csrf.isEmpty {
-                            req.setValue(csrf, forHTTPHeaderField: "CSRFPreventionToken")
-                        }
-                    }
-                }
+            let base = resolveProxmoxBaseUrl(apiEndpointUrl: cfg.apiEndpointUrl, connectionHost: connection.host)
+            guard !base.isEmpty, let url = URL(string: "\(base)/api2/json/cluster/resources?type=vm") else {
+                throw NativeBridgeError.networkUtilityError("Proxmox VE host or API URL is empty. Edit the connection and set your Proxmox node IP or FQDN.")
             }
-            let (data, _) = try await urlSession.data(for: req)
+            let auth = try await authenticateProxmoxRequest(base: base, cfg: cfg, credential: credential, urlSession: urlSession)
+            var req = URLRequest(url: url)
+            if let authHdr = auth.authHeader { req.setValue(authHdr, forHTTPHeaderField: "Authorization") }
+            if let cookie = auth.cookieHeader { req.setValue(cookie, forHTTPHeaderField: "Cookie") }
+            if let csrf = auth.csrfToken { req.setValue(csrf, forHTTPHeaderField: "CSRFPreventionToken") }
+
+            let (data, resp) = try await urlSession.data(for: req)
+            if let http = resp as? HTTPURLResponse, http.statusCode >= 400 {
+                if http.statusCode == 401 || http.statusCode == 403 {
+                    throw NativeBridgeError.authenticationFailed("Proxmox VE rejected credentials (HTTP \(http.statusCode)). Verify realm (pam/pve) or API token privileges.")
+                }
+                throw NativeBridgeError.networkUtilityError("Proxmox VE API returned HTTP \(http.statusCode).")
+            }
             struct PveResp: Decodable {
                 struct Item: Decodable {
                     let vmid: Int?
                     let name: String?
                     let status: String?
                     let node: String?
+                    let type: String?
                     let maxcpu: Int?
                     let maxmem: Int64?
                 }
@@ -352,91 +437,53 @@ public enum CloudHypervisorClient {
             let decoded = try JSONDecoder().decode(PveResp.self, from: data)
             return (decoded.data ?? []).map { vm in
                 let idStr = "\(vm.vmid ?? 100)"
+                let vmType = (vm.type ?? "qemu").lowercased()
+                let node = vm.node ?? extractBareHostname(connection.host)
                 let memGb = Double(vm.maxmem ?? 0) / (1024 * 1024 * 1024)
                 return CloudVmInventoryItem(
-                    id: idStr,
+                    id: "\(node)/\(vmType)/\(idStr)",
                     name: vm.name ?? "vm-\(idStr)",
                     powerState: (vm.status ?? "unknown").uppercased(),
-                    addressOrNode: vm.node ?? connection.host,
-                    cpuSummary: "\(vm.maxcpu ?? 2) vCPU",
+                    addressOrNode: node,
+                    cpuSummary: "\(vm.maxcpu ?? 2) vCPU (\(vmType.uppercased()))",
                     memorySummary: String(format: "%.1f GiB", memGb),
-                    consoleProtocol: .VNC
+                    consoleProtocol: .WEB_PAGE
                 )
             }
 
         case .VMWARE_VSPHERE:
-            guard let sessionUrl = URL(string: "\(base)/api/session"),
-                  let vmUrl = URL(string: "\(base)/api/vcenter/vm") else { return [] }
-            var authReq = URLRequest(url: sessionUrl)
-            authReq.httpMethod = "POST"
-            if let cred = credential {
-                let basic = Data("\(cred.username):\(cred.secretPassword)".utf8).base64EncodedString()
-                authReq.setValue("Basic \(basic)", forHTTPHeaderField: "Authorization")
+            let base = resolveVsphereBaseUrl(apiEndpointUrl: cfg.apiEndpointUrl, connectionHost: connection.host)
+            guard !base.isEmpty else {
+                throw NativeBridgeError.networkUtilityError("vSphere / ESXi host address is empty. Edit the connection and enter your vCenter or ESXi hostname/IP.")
             }
-            let (tokData, _) = try await urlSession.data(for: authReq)
-            let token = String(data: tokData, encoding: .utf8)?.trimmingCharacters(in: CharacterSet(charactersIn: "\"\n ")) ?? ""
-
-            var listReq = URLRequest(url: vmUrl)
-            listReq.setValue(token, forHTTPHeaderField: "vmware-api-session-id")
-            let (vmData, _) = try await urlSession.data(for: listReq)
-            struct VsphereVm: Decodable {
-                let vm: String?
-                let name: String?
-                let power_state: String?
-                let cpu_count: Int?
-                let memory_size_MiB: Int?
-            }
-            let vms = (try? JSONDecoder().decode([VsphereVm].self, from: vmData)) ?? []
-            return vms.map { item in
-                CloudVmInventoryItem(
-                    id: item.vm ?? UUID().uuidString,
-                    name: item.name ?? "vSphere VM",
-                    powerState: item.power_state ?? "POWERED_ON",
-                    addressOrNode: connection.host,
-                    cpuSummary: "\(item.cpu_count ?? 2) vCPU",
-                    memorySummary: "\(item.memory_size_MiB ?? 4096) MiB",
-                    consoleProtocol: .SSH
-                )
-            }
+            return try await fetchVsphereOrEsxiInventory(base: base, fallbackHost: extractBareHostname(connection.host), credential: credential, urlSession: urlSession)
 
         case .AWS_EC2:
-            let region = cfg.regionOrCluster.isEmpty ? "eu-central-1" : cfg.regionOrCluster
+            let cleanHost = connection.host.trimmingCharacters(in: .whitespacesAndNewlines)
+            let region: String = {
+                let r = cfg.regionOrCluster.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !r.isEmpty { return r }
+                if !cleanHost.isEmpty && !cleanHost.hasPrefix("http") && !cleanHost.contains(".") { return cleanHost }
+                return "us-east-1"
+            }()
+            let sessionToken: String? = {
+                let ext = (credential?.externalReferenceUri ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                if ext.hasPrefix("sts:") { return String(ext.dropFirst(4)) }
+                let sub = cfg.subscriptionOrAccountId.trimmingCharacters(in: .whitespacesAndNewlines)
+                if sub.count > 40 { return sub }
+                return nil
+            }()
             return try await describeEc2InstancesSigV4(
                 region: region,
                 accessKeyId: credential?.username ?? "",
-                secretAccessKey: credential?.secretPassword ?? ""
+                secretAccessKey: credential?.secretPassword ?? "",
+                sessionToken: sessionToken,
+                endpointOverride: cfg.apiEndpointUrl,
+                verifyTls: cfg.verifyTls
             )
 
         case .AZURE_VM:
-            let subId = cfg.subscriptionOrAccountId
-            guard let url = URL(string: "https://management.azure.com/subscriptions/\(subId)/providers/Microsoft.Compute/virtualMachines?api-version=2024-03-01") else {
-                return []
-            }
-            var req = URLRequest(url: url)
-            if let token = credential?.secretPassword, !token.isEmpty {
-                req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-            }
-            let (data, _) = try await urlSession.data(for: req)
-            struct AzureList: Decodable {
-                struct VM: Decodable {
-                    let id: String?
-                    let name: String?
-                    let location: String?
-                }
-                let value: [VM]?
-            }
-            let list = try JSONDecoder().decode(AzureList.self, from: data)
-            return (list.value ?? []).map { vm in
-                CloudVmInventoryItem(
-                    id: vm.id ?? UUID().uuidString,
-                    name: vm.name ?? "Azure VM",
-                    powerState: "RUNNING",
-                    addressOrNode: vm.location ?? "westeurope",
-                    cpuSummary: "Standard_D4s_v5",
-                    memorySummary: "16 GiB",
-                    consoleProtocol: .SSH
-                )
-            }
+            return try await fetchAzureArmInventory(connection: connection, cfg: cfg, credential: credential, urlSession: urlSession)
 
         case .HYPER_V:
             return try await fetchHyperVMultiTransportInventory(
@@ -448,6 +495,716 @@ public enum CloudHypervisorClient {
         default:
             return []
         }
+    }
+
+    public static func performCloudPowerAction(
+        connection: VaultConnection,
+        credential: VaultCredential?,
+        vmId: String,
+        vmName: String,
+        action: HyperVPowerAction
+    ) async throws -> String {
+        if connection.protocolType == .HYPER_V {
+            return try await performHyperVPowerAction(
+                connection: connection,
+                credential: credential,
+                vmId: vmId,
+                vmName: vmName,
+                action: action
+            )
+        }
+        guard case .cloudVirtualization(let cfg) = connection.settings else {
+            throw NativeBridgeError.networkUtilityError("Missing cloud virtualization configuration.")
+        }
+        let urlSession = ConfigurableTlsUrlSession.session(verifyTls: cfg.verifyTls)
+
+        switch connection.protocolType {
+        case .PROXMOX_VE:
+            let base = resolveProxmoxBaseUrl(apiEndpointUrl: cfg.apiEndpointUrl, connectionHost: connection.host)
+            let auth = try await authenticateProxmoxRequest(base: base, cfg: cfg, credential: credential, urlSession: urlSession)
+            let parts = vmId.split(separator: "/").map(String.init)
+            let node = parts.count >= 3 ? parts[0] : extractBareHostname(connection.host)
+            let kind = parts.count >= 3 ? parts[1] : "qemu"
+            let numericId = parts.last ?? vmId
+            let pveVerb: String = {
+                switch action {
+                case .start: return "start"
+                case .stop: return "stop"
+                case .save: return kind == "lxc" ? "shutdown" : "suspend"
+                case .reboot: return "reboot"
+                }
+            }()
+            guard let url = URL(string: "\(base)/api2/json/nodes/\(node)/\(kind)/\(numericId)/status/\(pveVerb)") else {
+                throw NativeBridgeError.networkUtilityError("Invalid Proxmox power URL.")
+            }
+            var req = URLRequest(url: url)
+            req.httpMethod = "POST"
+            if let authHdr = auth.authHeader { req.setValue(authHdr, forHTTPHeaderField: "Authorization") }
+            if let cookie = auth.cookieHeader { req.setValue(cookie, forHTTPHeaderField: "Cookie") }
+            if let csrf = auth.csrfToken { req.setValue(csrf, forHTTPHeaderField: "CSRFPreventionToken") }
+            let (_, resp) = try await urlSession.data(for: req)
+            if let http = resp as? HTTPURLResponse, http.statusCode >= 400 {
+                throw NativeBridgeError.networkUtilityError("Proxmox \(pveVerb) failed (HTTP \(http.statusCode)).")
+            }
+            return "Proxmox \(action.displayTitle) dispatched for \(vmName) (\(kind)/\(numericId))."
+
+        case .VMWARE_VSPHERE:
+            let base = resolveVsphereBaseUrl(apiEndpointUrl: cfg.apiEndpointUrl, connectionHost: connection.host)
+            return try await performVsphereOrEsxiPowerAction(
+                base: base,
+                vmId: vmId,
+                vmName: vmName,
+                action: action,
+                credential: credential,
+                urlSession: urlSession
+            )
+
+        case .AWS_EC2:
+            let cleanHost = connection.host.trimmingCharacters(in: .whitespacesAndNewlines)
+            let region = cfg.regionOrCluster.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? ((!cleanHost.isEmpty && !cleanHost.contains(".")) ? cleanHost : "us-east-1")
+                : cfg.regionOrCluster.trimmingCharacters(in: .whitespacesAndNewlines)
+            let ec2Action: String = {
+                switch action {
+                case .start: return "StartInstances"
+                case .stop, .save: return "StopInstances"
+                case .reboot: return "RebootInstances"
+                }
+            }()
+            let sessionToken: String? = {
+                let ext = (credential?.externalReferenceUri ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                if ext.hasPrefix("sts:") { return String(ext.dropFirst(4)) }
+                let sub = cfg.subscriptionOrAccountId.trimmingCharacters(in: .whitespacesAndNewlines)
+                return sub.count > 40 ? sub : nil
+            }()
+            _ = try await executeEc2SignedQuery(
+                region: region,
+                accessKeyId: credential?.username ?? "",
+                secretAccessKey: credential?.secretPassword ?? "",
+                sessionToken: sessionToken,
+                formBody: "Action=\(ec2Action)&InstanceId.1=\(vmId)&Version=2016-11-15",
+                endpointOverride: cfg.apiEndpointUrl,
+                verifyTls: cfg.verifyTls
+            )
+            return "AWS EC2 \(ec2Action) dispatched for \(vmName) (\(vmId))."
+
+        case .AZURE_VM:
+            let token = try await resolveAzureBearerToken(cfg: cfg, credential: credential, urlSession: urlSession)
+            let armBase = resolveAzureArmBaseUrl(cfg: cfg)
+            let armVerb: String = {
+                switch action {
+                case .start: return "start"
+                case .stop: return "powerOff"
+                case .save: return "deallocate"
+                case .reboot: return "restart"
+                }
+            }()
+            let resourcePath = vmId.hasPrefix("/") ? vmId : "/subscriptions/\(cfg.subscriptionOrAccountId)/providers/Microsoft.Compute/virtualMachines/\(vmId)"
+            guard let url = URL(string: "\(armBase)\(resourcePath)/\(armVerb)?api-version=2023-09-01") else {
+                throw NativeBridgeError.networkUtilityError("Invalid Azure ARM power URL.")
+            }
+            var req = URLRequest(url: url)
+            req.httpMethod = "POST"
+            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            req.setValue("0", forHTTPHeaderField: "Content-Length")
+            let (respData, resp) = try await urlSession.data(for: req)
+            if let http = resp as? HTTPURLResponse, http.statusCode >= 400 {
+                let errText = String(data: respData, encoding: .utf8) ?? ""
+                throw NativeBridgeError.networkUtilityError("Azure \(armVerb) failed (HTTP \(http.statusCode)): \(errText.prefix(200))")
+            }
+            return "Azure \(armVerb) dispatched for \(vmName)."
+
+        default:
+            throw NativeBridgeError.networkUtilityError("Power actions are not supported for \(connection.protocolType.displayName).")
+        }
+    }
+
+    // MARK: - VMware vCenter REST (7/8 & 6.5 CIS) + Standalone ESXi VIM SOAP (`/sdk`)
+
+    private static func fetchVsphereOrEsxiInventory(
+        base: String,
+        fallbackHost: String,
+        credential: VaultCredential?,
+        urlSession: URLSession
+    ) async throws -> [CloudVmInventoryItem] {
+        let basicHeader: String? = credential.map {
+            "Basic " + Data("\($0.username):\($0.secretPassword)".utf8).base64EncodedString()
+        }
+
+        // 1. Try vCenter 7.0 / 8.0 REST API (`/api/session` + `/api/vcenter/vm`)
+        if let sessionUrl = URL(string: "\(base)/api/session"),
+           let vmUrl = URL(string: "\(base)/api/vcenter/vm") {
+            var authReq = URLRequest(url: sessionUrl)
+            authReq.httpMethod = "POST"
+            if let basicHeader { authReq.setValue(basicHeader, forHTTPHeaderField: "Authorization") }
+            if let (tokData, resp) = try? await urlSession.data(for: authReq),
+               let http = resp as? HTTPURLResponse {
+                if http.statusCode == 401 || http.statusCode == 403 {
+                    throw NativeBridgeError.authenticationFailed("vSphere REST authentication failed (HTTP \(http.statusCode)).")
+                }
+                if (200..<300).contains(http.statusCode) {
+                    let token = String(data: tokData, encoding: .utf8)?.trimmingCharacters(in: CharacterSet(charactersIn: "\"\r\n ")) ?? ""
+                    var listReq = URLRequest(url: vmUrl)
+                    listReq.setValue(token, forHTTPHeaderField: "vmware-api-session-id")
+                    let (vmData, listResp) = try await urlSession.data(for: listReq)
+                    if let lHttp = listResp as? HTTPURLResponse, (200..<300).contains(lHttp.statusCode) {
+                        struct VsphereVm: Decodable {
+                            let vm: String?
+                            let name: String?
+                            let power_state: String?
+                            let cpu_count: Int?
+                            let memory_size_MiB: Int?
+                        }
+                        struct GuestIdent: Decodable {
+                            let ip_address: String?
+                            let family: String?
+                        }
+                        let vms = (try? JSONDecoder().decode([VsphereVm].self, from: vmData)) ?? []
+                        var out: [CloudVmInventoryItem] = []
+                        for item in vms {
+                            let moid = item.vm ?? UUID().uuidString
+                            var guestIp = ""
+                            var consoleProto: VaultProtocolType = .WEB_PAGE
+                            if (item.power_state ?? "").uppercased().contains("ON"),
+                               let guestUrl = URL(string: "\(base)/api/vcenter/vm/\(moid)/guest/identity") {
+                                var gReq = URLRequest(url: guestUrl)
+                                gReq.setValue(token, forHTTPHeaderField: "vmware-api-session-id")
+                                if let (gData, gResp) = try? await urlSession.data(for: gReq),
+                                   let gHttp = gResp as? HTTPURLResponse, (200..<300).contains(gHttp.statusCode),
+                                   let ident = try? JSONDecoder().decode(GuestIdent.self, from: gData),
+                                   let ip = ident.ip_address, !ip.isEmpty {
+                                    guestIp = ip
+                                    consoleProto = (ident.family ?? "").uppercased().contains("WIN") ? .RDP : .SSH
+                                }
+                            }
+                            out.append(CloudVmInventoryItem(
+                                id: moid,
+                                name: item.name ?? "vSphere VM",
+                                powerState: item.power_state ?? "POWERED_ON",
+                                addressOrNode: guestIp.isEmpty ? fallbackHost : guestIp,
+                                cpuSummary: "\(item.cpu_count ?? 2) vCPU",
+                                memorySummary: "\(item.memory_size_MiB ?? 4096) MiB",
+                                consoleProtocol: consoleProto
+                            ))
+                        }
+                        return out
+                    }
+                }
+            }
+        }
+
+        // 2. Try vCenter 6.5 / 6.7 CIS REST API (`/rest/com/vmware/cis/session` + `/rest/vcenter/vm`)
+        if let cisUrl = URL(string: "\(base)/rest/com/vmware/cis/session"),
+           let cisVmUrl = URL(string: "\(base)/rest/vcenter/vm") {
+            var cisReq = URLRequest(url: cisUrl)
+            cisReq.httpMethod = "POST"
+            if let basicHeader { cisReq.setValue(basicHeader, forHTTPHeaderField: "Authorization") }
+            if let (tokData, resp) = try? await urlSession.data(for: cisReq),
+               let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) {
+                struct CisToken: Decodable { let value: String? }
+                if let tok = (try? JSONDecoder().decode(CisToken.self, from: tokData))?.value, !tok.isEmpty {
+                    var listReq = URLRequest(url: cisVmUrl)
+                    listReq.setValue(tok, forHTTPHeaderField: "vmware-api-session-id")
+                    let (vmData, _) = try await urlSession.data(for: listReq)
+                    struct CisVmList: Decodable {
+                        struct Item: Decodable {
+                            let vm: String?
+                            let name: String?
+                            let power_state: String?
+                            let cpu_count: Int?
+                            let memory_size_MiB: Int?
+                        }
+                        let value: [Item]?
+                    }
+                    let list = try JSONDecoder().decode(CisVmList.self, from: vmData)
+                    return (list.value ?? []).map { item in
+                        CloudVmInventoryItem(
+                            id: item.vm ?? UUID().uuidString,
+                            name: item.name ?? "vSphere VM",
+                            powerState: item.power_state ?? "POWERED_ON",
+                            addressOrNode: fallbackHost,
+                            cpuSummary: "\(item.cpu_count ?? 2) vCPU",
+                            memorySummary: "\(item.memory_size_MiB ?? 4096) MiB",
+                            consoleProtocol: .WEB_PAGE
+                        )
+                    }
+                }
+            }
+        }
+
+        // 3. Standalone ESXi Host VIM SOAP XML API (`POST <base>/sdk`)
+        return try await fetchEsxiSoapInventory(base: base, fallbackHost: fallbackHost, credential: credential, urlSession: urlSession)
+    }
+
+    private static func esxiSoapPost(
+        sdkUrl: URL,
+        soapBody: String,
+        cookie: String?,
+        urlSession: URLSession
+    ) async throws -> (xml: String, setCookie: String?) {
+        let envelope = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:urn="urn:vim25">
+          <soapenv:Body>\(soapBody)</soapenv:Body>
+        </soapenv:Envelope>
+        """
+        var req = URLRequest(url: sdkUrl)
+        req.httpMethod = "POST"
+        req.setValue("text/xml; charset=utf-8", forHTTPHeaderField: "Content-Type")
+        req.setValue("\"urn:vim25/7.0\"", forHTTPHeaderField: "SOAPAction")
+        if let cookie, !cookie.isEmpty {
+            req.setValue(cookie, forHTTPHeaderField: "Cookie")
+        }
+        req.httpBody = Data(envelope.utf8)
+        let (data, resp) = try await urlSession.data(for: req)
+        let xml = String(data: data, encoding: .utf8) ?? ""
+        if let http = resp as? HTTPURLResponse {
+            if xml.contains("InvalidLogin") || http.statusCode == 401 {
+                throw NativeBridgeError.authenticationFailed("ESXi / vSphere VIM SOAP login rejected credentials.")
+            }
+            if http.statusCode >= 500, let fault = extractXmlTagValue(xml, tag: "faultstring") {
+                throw NativeBridgeError.networkUtilityError("ESXi SOAP Fault: \(fault)")
+            } else if http.statusCode >= 400 {
+                throw NativeBridgeError.networkUtilityError("ESXi /sdk endpoint returned HTTP \(http.statusCode).")
+            }
+            let rawSetCookie = http.value(forHTTPHeaderField: "Set-Cookie")
+            let sessionCookie = rawSetCookie?.split(separator: ";").first.map(String.init)
+            return (xml, sessionCookie)
+        }
+        return (xml, nil)
+    }
+
+    private static func extractXmlTagValue(_ xml: String, tag: String) -> String? {
+        guard let open = xml.range(of: "<\(tag)", options: .caseInsensitive),
+              let gt = xml[open.upperBound...].firstIndex(of: ">") else { return nil }
+        let afterGt = xml.index(after: gt)
+        guard let close = xml[afterGt...].range(of: "</\(tag)>", options: .caseInsensitive) else { return nil }
+        return String(xml[afterGt..<close.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func loginEsxiSoapSession(
+        sdkUrl: URL,
+        credential: VaultCredential?,
+        urlSession: URLSession
+    ) async throws -> (sessionCookie: String, rootFolderMoId: String, propCollectorMoId: String, viewMgrMoId: String) {
+        let scBody = """
+        <urn:RetrieveServiceContent>
+          <urn:_this type="ServiceInstance">ServiceInstance</urn:_this>
+        </urn:RetrieveServiceContent>
+        """
+        let (scXml, initialCookie) = try await esxiSoapPost(sdkUrl: sdkUrl, soapBody: scBody, cookie: nil, urlSession: urlSession)
+        let sessionMgr = extractXmlTagValue(scXml, tag: "sessionManager") ?? "ha-sessionmgr"
+        let rootFolder = extractXmlTagValue(scXml, tag: "rootFolder") ?? "ha-folder-root"
+        let propCollector = extractXmlTagValue(scXml, tag: "propertyCollector") ?? "ha-property-collector"
+        let viewMgr = extractXmlTagValue(scXml, tag: "viewManager") ?? "ha-view-manager"
+
+        let user = xmlEscape(credential?.username ?? "root")
+        let pass = xmlEscape(credential?.secretPassword ?? "")
+        let loginBody = """
+        <urn:Login>
+          <urn:_this type="SessionManager">\(xmlEscape(sessionMgr))</urn:_this>
+          <urn:userName>\(user)</urn:userName>
+          <urn:password>\(pass)</urn:password>
+        </urn:Login>
+        """
+        let (_, loginCookie) = try await esxiSoapPost(sdkUrl: sdkUrl, soapBody: loginBody, cookie: initialCookie, urlSession: urlSession)
+        let activeCookie = loginCookie ?? initialCookie ?? ""
+        return (activeCookie, rootFolder, propCollector, viewMgr)
+    }
+
+    private static func fetchEsxiSoapInventory(
+        base: String,
+        fallbackHost: String,
+        credential: VaultCredential?,
+        urlSession: URLSession
+    ) async throws -> [CloudVmInventoryItem] {
+        guard let sdkUrl = URL(string: "\(base)/sdk") else {
+            throw NativeBridgeError.networkUtilityError("Invalid ESXi SDK URL: \(base)/sdk")
+        }
+        let session = try await loginEsxiSoapSession(sdkUrl: sdkUrl, credential: credential, urlSession: urlSession)
+        let createViewBody = """
+        <urn:CreateContainerView>
+          <urn:_this type="ViewManager">\(xmlEscape(session.viewMgrMoId))</urn:_this>
+          <urn:container type="Folder">\(xmlEscape(session.rootFolderMoId))</urn:container>
+          <urn:type>VirtualMachine</urn:type>
+          <urn:recursive>true</urn:recursive>
+        </urn:CreateContainerView>
+        """
+        let (viewXml, _) = try await esxiSoapPost(sdkUrl: sdkUrl, soapBody: createViewBody, cookie: session.sessionCookie, urlSession: urlSession)
+        let containerViewId = extractXmlTagValue(viewXml, tag: "returnval") ?? "session[0]"
+
+        let retrieveBody = """
+        <urn:RetrievePropertiesEx>
+          <urn:_this type="PropertyCollector">\(xmlEscape(session.propCollectorMoId))</urn:_this>
+          <urn:specSet>
+            <urn:propSet>
+              <urn:type>VirtualMachine</urn:type>
+              <urn:pathSet>name</urn:pathSet>
+              <urn:pathSet>runtime.powerState</urn:pathSet>
+              <urn:pathSet>config.hardware.numCPU</urn:pathSet>
+              <urn:pathSet>config.hardware.memoryMB</urn:pathSet>
+              <urn:pathSet>guest.ipAddress</urn:pathSet>
+              <urn:pathSet>guest.guestFullName</urn:pathSet>
+            </urn:propSet>
+            <urn:objectSet>
+              <urn:obj type="ContainerView">\(xmlEscape(containerViewId))</urn:obj>
+              <urn:skip>true</urn:skip>
+              <urn:selectSet xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="urn:TraversalSpec">
+                <urn:name>traverseView</urn:name>
+                <urn:type>ContainerView</urn:type>
+                <urn:path>view</urn:path>
+                <urn:skip>false</urn:skip>
+              </urn:selectSet>
+            </urn:objectSet>
+          </urn:specSet>
+          <urn:options/>
+        </urn:RetrievePropertiesEx>
+        """
+        let (propsXml, _) = try await esxiSoapPost(sdkUrl: sdkUrl, soapBody: retrieveBody, cookie: session.sessionCookie, urlSession: urlSession)
+        return parseEsxiSoapPropertiesXml(propsXml, fallbackHost: fallbackHost)
+    }
+
+    public static func parseEsxiSoapPropertiesXml(_ xml: String, fallbackHost: String) -> [CloudVmInventoryItem] {
+        final class EsxiPropsDelegate: NSObject, XMLParserDelegate {
+            let fallbackHost: String
+            var items: [CloudVmInventoryItem] = []
+            private var insideObjects = false
+            private var insidePropSet = false
+            private var currentText = ""
+            private var moid = ""
+            private var propName = ""
+            private var props: [String: String] = [:]
+
+            init(fallbackHost: String) { self.fallbackHost = fallbackHost }
+
+            private func localName(_ raw: String) -> String {
+                raw.split(separator: ":").last.map(String.init) ?? raw
+            }
+
+            func parser(_ parser: XMLParser, didStartElement elementName: String, namespaceURI: String?, qualifiedName qName: String?, attributes attributeDict: [String: String] = [:]) {
+                let local = localName(qName ?? elementName)
+                currentText = ""
+                if local == "objects" {
+                    insideObjects = true
+                    moid = ""
+                    props = [:]
+                } else if insideObjects && local == "propSet" {
+                    insidePropSet = true
+                    propName = ""
+                }
+            }
+
+            func parser(_ parser: XMLParser, foundCharacters string: String) {
+                currentText += string
+            }
+
+            func parser(_ parser: XMLParser, didEndElement elementName: String, namespaceURI: String?, qualifiedName qName: String?) {
+                let local = localName(qName ?? elementName)
+                let val = currentText.trimmingCharacters(in: .whitespacesAndNewlines)
+                if insidePropSet {
+                    if local == "name" {
+                        propName = val
+                    } else if local == "val" && !propName.isEmpty {
+                        props[propName] = val
+                    } else if local == "propSet" {
+                        insidePropSet = false
+                    }
+                } else if insideObjects {
+                    if local == "obj" {
+                        moid = val
+                    } else if local == "objects" {
+                        insideObjects = false
+                        guard !moid.isEmpty else { return }
+                        let rawPower = (props["runtime.powerState"] ?? "poweredOff").lowercased()
+                        let powerState: String = {
+                            if rawPower.contains("on") { return "POWERED_ON" }
+                            if rawPower.contains("suspend") { return "SUSPENDED" }
+                            return "POWERED_OFF"
+                        }()
+                        let guestIp = props["guest.ipAddress"] ?? ""
+                        let guestOs = (props["guest.guestFullName"] ?? "").lowercased()
+                        let proto: VaultProtocolType = guestIp.isEmpty
+                            ? .WEB_PAGE
+                            : (guestOs.contains("win") ? .RDP : .SSH)
+                        items.append(CloudVmInventoryItem(
+                            id: moid,
+                            name: props["name"] ?? "ESXi VM \(moid)",
+                            powerState: powerState,
+                            addressOrNode: guestIp.isEmpty ? fallbackHost : guestIp,
+                            cpuSummary: "\(props["config.hardware.numCPU"] ?? "2") vCPU",
+                            memorySummary: "\(props["config.hardware.memoryMB"] ?? "4096") MiB",
+                            consoleProtocol: proto
+                        ))
+                    }
+                }
+                currentText = ""
+            }
+        }
+        guard let data = xml.data(using: .utf8), !data.isEmpty else { return [] }
+        let parser = XMLParser(data: data)
+        parser.shouldProcessNamespaces = false
+        let delegate = EsxiPropsDelegate(fallbackHost: fallbackHost)
+        parser.delegate = delegate
+        _ = parser.parse()
+        return delegate.items
+    }
+
+    private static func performVsphereOrEsxiPowerAction(
+        base: String,
+        vmId: String,
+        vmName: String,
+        action: HyperVPowerAction,
+        credential: VaultCredential?,
+        urlSession: URLSession
+    ) async throws -> String {
+        let restAction: String = {
+            switch action {
+            case .start: return "start"
+            case .stop: return "stop"
+            case .save: return "suspend"
+            case .reboot: return "reset"
+            }
+        }()
+        if let sessionUrl = URL(string: "\(base)/api/session"),
+           let powerUrl = URL(string: "\(base)/api/vcenter/vm/\(vmId)/power?action=\(restAction)") {
+            var authReq = URLRequest(url: sessionUrl)
+            authReq.httpMethod = "POST"
+            if let cred = credential {
+                let basic = Data("\(cred.username):\(cred.secretPassword)".utf8).base64EncodedString()
+                authReq.setValue("Basic \(basic)", forHTTPHeaderField: "Authorization")
+            }
+            if let (tokData, resp) = try? await urlSession.data(for: authReq),
+               let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) {
+                let token = String(data: tokData, encoding: .utf8)?.trimmingCharacters(in: CharacterSet(charactersIn: "\"\r\n ")) ?? ""
+                var pReq = URLRequest(url: powerUrl)
+                pReq.httpMethod = "POST"
+                pReq.setValue(token, forHTTPHeaderField: "vmware-api-session-id")
+                let (_, pResp) = try await urlSession.data(for: pReq)
+                if let pHttp = pResp as? HTTPURLResponse, (200..<300).contains(pHttp.statusCode) {
+                    return "vSphere \(action.displayTitle) dispatched for \(vmName)."
+                }
+            }
+        }
+
+        guard let sdkUrl = URL(string: "\(base)/sdk") else {
+            throw NativeBridgeError.networkUtilityError("Invalid ESXi SDK URL.")
+        }
+        let session = try await loginEsxiSoapSession(sdkUrl: sdkUrl, credential: credential, urlSession: urlSession)
+        let soapTask: String = {
+            switch action {
+            case .start: return "PowerOnVM_Task"
+            case .stop: return "PowerOffVM_Task"
+            case .save: return "SuspendVM_Task"
+            case .reboot: return "ResetVM_Task"
+            }
+        }()
+        let taskBody = "<urn:\(soapTask)><urn:_this type=\"VirtualMachine\">\(xmlEscape(vmId))</urn:_this></urn:\(soapTask)>"
+        _ = try await esxiSoapPost(sdkUrl: sdkUrl, soapBody: taskBody, cookie: session.sessionCookie, urlSession: urlSession)
+        return "ESXi \(soapTask) dispatched for \(vmName)."
+    }
+
+    // MARK: - Azure Resource Manager (OAuth2 Client Credentials + Bearer + statusOnly + NIC IP Resolution)
+
+    private static func resolveAzureArmBaseUrl(cfg: CloudVirtualizationProtocolSettings) -> String {
+        let ep = cfg.apiEndpointUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        if ep.isEmpty || ep.lowercased().contains("localhost:") {
+            return "https://management.azure.com"
+        }
+        if ep.lowercased().hasPrefix("http://") || ep.lowercased().hasPrefix("https://") {
+            return ep
+        }
+        return "https://management.azure.com"
+    }
+
+    private static func resolveAzureBearerToken(
+        cfg: CloudVirtualizationProtocolSettings,
+        credential: VaultCredential?,
+        urlSession: URLSession
+    ) async throws -> String {
+        guard let cred = credential else {
+            throw NativeBridgeError.authenticationFailed("Azure VM requires a Vault Credential (Entra ID Service Principal Client ID + Secret, or Bearer Token).")
+        }
+        let secret = cred.secretPassword.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !secret.isEmpty else {
+            throw NativeBridgeError.authenticationFailed("Azure credential secret/token is empty.")
+        }
+        if secret.hasPrefix("eyJ") && secret.contains(".") {
+            return secret
+        }
+        if secret.lowercased().hasPrefix("bearer ") {
+            return String(secret.dropFirst(7)).trimmingCharacters(in: .whitespaces)
+        }
+
+        let rawUser = cred.username.trimmingCharacters(in: .whitespacesAndNewlines)
+        var tenantId = cfg.realmOrDomain.trimmingCharacters(in: .whitespacesAndNewlines)
+        if tenantId == "pam" { tenantId = "" }
+        if tenantId.isEmpty { tenantId = cred.domain.trimmingCharacters(in: .whitespacesAndNewlines) }
+        var clientId = rawUser
+        if rawUser.contains("|") {
+            let parts = rawUser.split(separator: "|", maxSplits: 1).map(String.init)
+            if tenantId.isEmpty { tenantId = parts[0] }
+            clientId = parts[1]
+        }
+        if tenantId.isEmpty || clientId.isEmpty {
+            return secret
+        }
+
+        let tokenEndpoint: URL = {
+            let armBase = resolveAzureArmBaseUrl(cfg: cfg)
+            if armBase.contains("127.0.0.1") || armBase.contains("localhost") {
+                return URL(string: "\(armBase)/\(tenantId)/oauth2/v2.0/token")!
+            }
+            return URL(string: "https://login.microsoftonline.com/\(tenantId)/oauth2/v2.0/token")!
+        }()
+        var req = URLRequest(url: tokenEndpoint)
+        req.httpMethod = "POST"
+        req.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        var form = URLComponents()
+        form.queryItems = [
+            URLQueryItem(name: "grant_type", value: "client_credentials"),
+            URLQueryItem(name: "client_id", value: clientId),
+            URLQueryItem(name: "client_secret", value: secret),
+            URLQueryItem(name: "scope", value: "https://management.azure.com/.default")
+        ]
+        req.httpBody = Data((form.percentEncodedQuery ?? "").utf8)
+        let (data, resp) = try await urlSession.data(for: req)
+        if let http = resp as? HTTPURLResponse, http.statusCode >= 400 {
+            throw NativeBridgeError.authenticationFailed("Azure Entra ID OAuth2 token exchange failed (HTTP \(http.statusCode)).")
+        }
+        struct OAuthResp: Decodable { let access_token: String? }
+        guard let tok = (try? JSONDecoder().decode(OAuthResp.self, from: data))?.access_token, !tok.isEmpty else {
+            throw NativeBridgeError.authenticationFailed("Azure OAuth2 response did not contain an access_token.")
+        }
+        return tok
+    }
+
+    private static func fetchAzureArmInventory(
+        connection: VaultConnection,
+        cfg: CloudVirtualizationProtocolSettings,
+        credential: VaultCredential?,
+        urlSession: URLSession
+    ) async throws -> [CloudVmInventoryItem] {
+        let subId = cfg.subscriptionOrAccountId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? connection.host.trimmingCharacters(in: .whitespacesAndNewlines)
+            : cfg.subscriptionOrAccountId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !subId.isEmpty else {
+            throw NativeBridgeError.networkUtilityError("Azure Subscription ID is empty. Edit the connection and enter your Subscription GUID.")
+        }
+        let token = try await resolveAzureBearerToken(cfg: cfg, credential: credential, urlSession: urlSession)
+        let armBase = resolveAzureArmBaseUrl(cfg: cfg)
+        let rg = cfg.regionOrCluster.trimmingCharacters(in: .whitespacesAndNewlines)
+        let listUrlStr = rg.isEmpty
+            ? "\(armBase)/subscriptions/\(subId)/providers/Microsoft.Compute/virtualMachines?api-version=2023-09-01&statusOnly=true"
+            : "\(armBase)/subscriptions/\(subId)/resourceGroups/\(rg)/providers/Microsoft.Compute/virtualMachines?api-version=2023-09-01"
+        guard let url = URL(string: listUrlStr) else { return [] }
+
+        var req = URLRequest(url: url)
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let (data, resp) = try await urlSession.data(for: req)
+        if let http = resp as? HTTPURLResponse, http.statusCode >= 400 {
+            let errBody = String(data: data, encoding: .utf8) ?? ""
+            if http.statusCode == 401 || http.statusCode == 403 {
+                throw NativeBridgeError.authenticationFailed("Azure ARM authentication rejected (HTTP \(http.statusCode)): \(errBody.prefix(200))")
+            }
+            throw NativeBridgeError.networkUtilityError("Azure ARM returned HTTP \(http.statusCode): \(errBody.prefix(200))")
+        }
+
+        struct AzureList: Decodable {
+            struct VM: Decodable {
+                struct Props: Decodable {
+                    struct Hardware: Decodable { let vmSize: String? }
+                    struct Storage: Decodable {
+                        struct OsDisk: Decodable { let osType: String? }
+                        let osDisk: OsDisk?
+                    }
+                    struct NetProfile: Decodable {
+                        struct NicRef: Decodable { let id: String? }
+                        let networkInterfaces: [NicRef]?
+                    }
+                    struct InstanceView: Decodable {
+                        struct Status: Decodable { let code: String?; let displayStatus: String? }
+                        let statuses: [Status]?
+                    }
+                    let hardwareProfile: Hardware?
+                    let storageProfile: Storage?
+                    let networkProfile: NetProfile?
+                    let instanceView: InstanceView?
+                }
+                let id: String?
+                let name: String?
+                let location: String?
+                let properties: Props?
+            }
+            let value: [VM]?
+        }
+        struct AzureNic: Decodable {
+            struct Props: Decodable {
+                struct IpCfg: Decodable {
+                    struct IpProps: Decodable {
+                        struct PubRef: Decodable { let id: String? }
+                        let privateIPAddress: String?
+                        let publicIPAddress: PubRef?
+                    }
+                    let properties: IpProps?
+                }
+                let ipConfigurations: [IpCfg]?
+            }
+            let properties: Props?
+        }
+        struct AzurePublicIp: Decodable {
+            struct Props: Decodable { let ipAddress: String? }
+            let properties: Props?
+        }
+
+        let list = try JSONDecoder().decode(AzureList.self, from: data)
+        var items: [CloudVmInventoryItem] = []
+        for vm in (list.value ?? []) {
+            let vmId = vm.id ?? UUID().uuidString
+            let powerCode = vm.properties?.instanceView?.statuses?
+                .first(where: { ($0.code ?? "").lowercased().hasPrefix("powerstate/") })?.code ?? ""
+            let powerState: String = {
+                let lower = powerCode.lowercased()
+                if lower.contains("running") { return "RUNNING" }
+                if lower.contains("deallocat") { return "DEALLOCATED" }
+                if lower.contains("stopped") { return "STOPPED" }
+                return powerCode.isEmpty ? "RUNNING" : powerCode.replacingOccurrences(of: "PowerState/", with: "").uppercased()
+            }()
+            var resolvedIp = ""
+            if let nicId = vm.properties?.networkProfile?.networkInterfaces?.first?.id,
+               let nicUrl = URL(string: "\(armBase)\(nicId)?api-version=2023-09-01") {
+                var nicReq = URLRequest(url: nicUrl)
+                nicReq.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+                if let (nicData, nicResp) = try? await urlSession.data(for: nicReq),
+                   let nHttp = nicResp as? HTTPURLResponse, (200..<300).contains(nHttp.statusCode),
+                   let nic = try? JSONDecoder().decode(AzureNic.self, from: nicData),
+                   let ipProps = nic.properties?.ipConfigurations?.first?.properties {
+                    resolvedIp = ipProps.privateIPAddress ?? ""
+                    if let pubId = ipProps.publicIPAddress?.id,
+                       let pubUrl = URL(string: "\(armBase)\(pubId)?api-version=2023-09-01") {
+                        var pubReq = URLRequest(url: pubUrl)
+                        pubReq.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+                        if let (pubData, _) = try? await urlSession.data(for: pubReq),
+                           let pub = try? JSONDecoder().decode(AzurePublicIp.self, from: pubData),
+                           let pubIp = pub.properties?.ipAddress, !pubIp.isEmpty {
+                            resolvedIp = pubIp
+                        }
+                    }
+                }
+            }
+            let osType = (vm.properties?.storageProfile?.osDisk?.osType ?? "Linux").lowercased()
+            let proto: VaultProtocolType = osType.contains("win") ? .RDP : .SSH
+            items.append(CloudVmInventoryItem(
+                id: vmId,
+                name: vm.name ?? "Azure VM",
+                powerState: powerState,
+                addressOrNode: resolvedIp.isEmpty ? (vm.location ?? "") : resolvedIp,
+                cpuSummary: vm.properties?.hardwareProfile?.vmSize ?? "Standard_D2s_v5",
+                memorySummary: vm.location ?? "Azure",
+                consoleProtocol: proto
+            ))
+        }
+        return items
     }
 
     // MARK: - Hyper-V Multi-Transport Engine (WinRM 5985 NTLMv2+SPNEGO Sealing -> WinRM 5986 HTTPS NTLMv2 -> OpenSSH 22 PowerShell)
@@ -1279,55 +2036,134 @@ public enum CloudHypervisorClient {
         return delegate.items
     }
 
-    /// Signs and dispatches an AWS EC2 `DescribeInstances` query using full AWS Signature v4 (`AWS4-HMAC-SHA256`).
+    /// Signs and dispatches an AWS EC2 `DescribeInstances` query using full AWS Signature v4 (`AWS4-HMAC-SHA256`),
+    /// supporting temporary IAM STS `SessionToken` (`X-Amz-Security-Token`), custom VPC/loopback endpoints, and TLS toggles.
     public static func describeEc2InstancesSigV4(
         region: String,
         accessKeyId: String,
-        secretAccessKey: String
+        secretAccessKey: String,
+        sessionToken: String? = nil,
+        endpointOverride: String = "",
+        verifyTls: Bool = true
     ) async throws -> [CloudVmInventoryItem] {
-        guard !accessKeyId.isEmpty, !secretAccessKey.isEmpty else { return [] }
-        let host = "ec2.\(region).amazonaws.com"
-        let endpoint = URL(string: "https://\(host)/")!
-        let body = "Action=DescribeInstances&Version=2016-11-15"
-        let bodyData = Data(body.utf8)
+        guard !accessKeyId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !secretAccessKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw NativeBridgeError.authenticationFailed(
+                "AWS EC2 requires an IAM Access Key ID (Username) and Secret Access Key (Password)."
+            )
+        }
+        let xml = try await executeEc2SignedQuery(
+            region: region,
+            accessKeyId: accessKeyId,
+            secretAccessKey: secretAccessKey,
+            sessionToken: sessionToken,
+            formBody: "Action=DescribeInstances&Version=2016-11-15",
+            endpointOverride: endpointOverride,
+            verifyTls: verifyTls
+        )
+        return parseEc2InstancesXml(xml)
+    }
+
+    public static func executeEc2SignedQuery(
+        region: String,
+        accessKeyId: String,
+        secretAccessKey: String,
+        sessionToken: String? = nil,
+        formBody: String,
+        endpointOverride: String = "",
+        verifyTls: Bool = true
+    ) async throws -> String {
+        let cleanAccessKey = accessKeyId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanSecretKey = secretAccessKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanAccessKey.isEmpty, !cleanSecretKey.isEmpty else {
+            throw NativeBridgeError.authenticationFailed(
+                "AWS EC2 requires an IAM Access Key ID (Username) and Secret Access Key (Password)."
+            )
+        }
+        let cleanRegion = region.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "us-east-1" : region.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let endpoint: URL = {
+            let trimmedEp = endpointOverride.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmedEp.isEmpty,
+               trimmedEp.lowercased() != "https://localhost:8006",
+               (trimmedEp.lowercased().hasPrefix("http://") || trimmedEp.lowercased().hasPrefix("https://")),
+               var comps = URLComponents(string: trimmedEp) {
+                if comps.path.isEmpty { comps.path = "/" }
+                if let built = comps.url { return built }
+            }
+            return URL(string: "https://ec2.\(cleanRegion).amazonaws.com/")!
+        }()
+
+        let hostHeader: String = {
+            let h = endpoint.host ?? "ec2.\(cleanRegion).amazonaws.com"
+            if let port = endpoint.port {
+                let defaultPort = (endpoint.scheme?.lowercased() == "http") ? 80 : 443
+                if port != defaultPort {
+                    return "\(h):\(port)"
+                }
+            }
+            return h
+        }()
+        let canonicalUri = endpoint.path.isEmpty ? "/" : endpoint.path
+        let bodyData = Data(formBody.utf8)
 
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = TimeZone(secondsFromGMT: 0)
         formatter.dateFormat = "yyyyMMdd'T'HHmmss'Z'"
-        let now = Date()
-        let amzDate = formatter.string(from: now)
+        let amzDate = formatter.string(from: Date())
         let dateStamp = String(amzDate.prefix(8))
 
+        let cleanToken = (sessionToken ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let payloadHash = SHA256.hash(data: bodyData).map { String(format: "%02x", $0) }.joined()
-        let canonicalHeaders = "content-type:application/x-www-form-urlencoded; charset=utf-8\nhost:\(host)\nx-amz-date:\(amzDate)\n"
-        let signedHeaders = "content-type;host;x-amz-date"
-        let canonicalRequest = "POST\n/\n\n\(canonicalHeaders)\n\(signedHeaders)\n\(payloadHash)"
+
+        let canonicalHeaders: String
+        let signedHeaders: String
+        if !cleanToken.isEmpty {
+            canonicalHeaders = "content-type:application/x-www-form-urlencoded; charset=utf-8\nhost:\(hostHeader)\nx-amz-date:\(amzDate)\nx-amz-security-token:\(cleanToken)\n"
+            signedHeaders = "content-type;host;x-amz-date;x-amz-security-token"
+        } else {
+            canonicalHeaders = "content-type:application/x-www-form-urlencoded; charset=utf-8\nhost:\(hostHeader)\nx-amz-date:\(amzDate)\n"
+            signedHeaders = "content-type;host;x-amz-date"
+        }
+
+        let canonicalRequest = "POST\n\(canonicalUri)\n\n\(canonicalHeaders)\n\(signedHeaders)\n\(payloadHash)"
         let canonicalHash = SHA256.hash(data: Data(canonicalRequest.utf8)).map { String(format: "%02x", $0) }.joined()
 
-        let credentialScope = "\(dateStamp)/\(region)/ec2/aws4_request"
+        let credentialScope = "\(dateStamp)/\(cleanRegion)/ec2/aws4_request"
         let stringToSign = "AWS4-HMAC-SHA256\n\(amzDate)\n\(credentialScope)\n\(canonicalHash)"
 
         func hmac(_ key: Data, _ msg: String) -> Data {
             Data(HMAC<SHA256>.authenticationCode(for: Data(msg.utf8), using: SymmetricKey(data: key)))
         }
-        let kDate = hmac(Data("AWS4\(secretAccessKey)".utf8), dateStamp)
-        let kRegion = hmac(kDate, region)
+        let kDate = hmac(Data("AWS4\(cleanSecretKey)".utf8), dateStamp)
+        let kRegion = hmac(kDate, cleanRegion)
         let kService = hmac(kRegion, "ec2")
         let kSigning = hmac(kService, "aws4_request")
         let signature = hmac(kSigning, stringToSign).map { String(format: "%02x", $0) }.joined()
 
-        let authHeader = "AWS4-HMAC-SHA256 Credential=\(accessKeyId)/\(credentialScope), SignedHeaders=\(signedHeaders), Signature=\(signature)"
+        let authHeader = "AWS4-HMAC-SHA256 Credential=\(cleanAccessKey)/\(credentialScope), SignedHeaders=\(signedHeaders), Signature=\(signature)"
         var req = URLRequest(url: endpoint)
         req.httpMethod = "POST"
         req.setValue("application/x-www-form-urlencoded; charset=utf-8", forHTTPHeaderField: "Content-Type")
         req.setValue(amzDate, forHTTPHeaderField: "X-Amz-Date")
+        if !cleanToken.isEmpty {
+            req.setValue(cleanToken, forHTTPHeaderField: "X-Amz-Security-Token")
+        }
         req.setValue(authHeader, forHTTPHeaderField: "Authorization")
         req.httpBody = bodyData
 
-        let (xmlData, _) = try await ConfigurableTlsUrlSession.session(verifyTls: true).data(for: req)
+        let (xmlData, resp) = try await ConfigurableTlsUrlSession.session(verifyTls: verifyTls).data(for: req)
         let xml = String(data: xmlData, encoding: .utf8) ?? ""
-        return parseEc2InstancesXml(xml)
+        if let http = resp as? HTTPURLResponse, http.statusCode >= 400 {
+            let awsCode = extractXmlTagValue(xml, tag: "Code") ?? "HTTP_\(http.statusCode)"
+            let awsMsg = extractXmlTagValue(xml, tag: "Message") ?? String(xml.prefix(200))
+            if http.statusCode == 401 || http.statusCode == 403 || awsCode.contains("Auth") || awsCode.contains("Signature") {
+                throw NativeBridgeError.authenticationFailed("AWS EC2 \(awsCode): \(awsMsg)")
+            }
+            throw NativeBridgeError.networkUtilityError("AWS EC2 \(awsCode) (HTTP \(http.statusCode)): \(awsMsg)")
+        }
+        return xml
     }
 
     /// Depth-aware XMLParser for AWS EC2 `DescribeInstancesResponse` preserving instance fields
@@ -1348,6 +2184,7 @@ public enum CloudHypervisorClient {
             private var currentPublicIp: String = ""
             private var currentNameTag: String = ""
             private var currentPlatform: String = ""
+            private var currentPlatformDetails: String = ""
 
             private var currentTagKey: String = ""
             private var currentTagValue: String = ""
@@ -1377,6 +2214,7 @@ public enum CloudHypervisorClient {
                     currentPublicIp = ""
                     currentNameTag = ""
                     currentPlatform = ""
+                    currentPlatformDetails = ""
                 } else if let instDepth = instanceItemDepth,
                           tagItemDepth == nil,
                           pathStack.count == instDepth + 2,
@@ -1428,6 +2266,8 @@ public enum CloudHypervisorClient {
                             currentPublicIp = val
                         case "platform":
                             currentPlatform = val
+                        case "platformDetails":
+                            currentPlatformDetails = val
                         default:
                             break
                         }
@@ -1439,9 +2279,11 @@ public enum CloudHypervisorClient {
                     } else if depth == instDepth && local == "item" {
                         if !currentInstanceId.isEmpty {
                             let displayName = currentNameTag.isEmpty ? currentInstanceId : currentNameTag
-                            let ip = currentPrivateIp.isEmpty ? currentPublicIp : currentPrivateIp
+                            let ip = currentPublicIp.isEmpty ? currentPrivateIp : currentPublicIp
                             let state = currentStateName.isEmpty ? "RUNNING" : currentStateName.uppercased()
-                            let cProto: VaultProtocolType = currentPlatform.lowercased().contains("windows") ? .RDP : .SSH
+                            let isWin = currentPlatform.lowercased().contains("windows")
+                                || currentPlatformDetails.lowercased().contains("windows")
+                            let cProto: VaultProtocolType = isWin ? .RDP : .SSH
                             items.append(CloudVmInventoryItem(
                                 id: currentInstanceId,
                                 name: displayName,
@@ -1473,7 +2315,7 @@ public enum CloudHypervisorClient {
     }
 }
 
-// MARK: - 3. Kubernetes Pod & Docker Container Workload Client (Async POSIX AF_UNIX + Safe Shell Escaping)
+// MARK: - 3. Kubernetes Pod & Docker Container Workload Client (Async POSIX AF_UNIX + SSH + Kubeconfig + Safe Shell Escaping)
 
 public struct ContainerWorkloadSummary: Identifiable, Equatable, Hashable, Sendable {
     public let id: String
@@ -1498,10 +2340,128 @@ public enum ContainerWorkloadClient {
         "'" + argument.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
-    /// Builds an injection-safe `kubectl exec` or `docker exec` command string.
+    /// Auto-discovers active local Docker Unix sockets on macOS (Docker Desktop, OrbStack, Colima, Rancher Desktop).
+    public static func resolveDockerUnixSocketPath(preferredEndpoint: String) -> String? {
+        let trimmed = preferredEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+            if trimmed.hasPrefix("unix://") || trimmed.hasPrefix("/") {
+                let candidate = trimmed.replacingOccurrences(of: "unix://", with: "")
+                if FileManager.default.fileExists(atPath: candidate) {
+                    return candidate
+                }
+                if trimmed != "unix:///var/run/docker.sock" && trimmed != "/var/run/docker.sock" {
+                    return candidate
+                }
+            } else {
+                return nil
+            }
+        }
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let candidates = [
+            "/var/run/docker.sock",
+            "\(home)/.docker/run/docker.sock",
+            "\(home)/.orbstack/run/docker.sock",
+            "\(home)/.colima/default/docker.sock",
+            "\(home)/.rd/docker.sock"
+        ]
+        for path in candidates where FileManager.default.fileExists(atPath: path) {
+            return path
+        }
+        return nil
+    }
+
+    /// Normalizes a Docker TCP/HTTP/HTTPS endpoint or returns `nil` if empty / Unix / SSH.
+    public static func resolveDockerHttpBaseUrl(endpoint: String, remoteHost: String, verifyTls: Bool) -> String? {
+        let trimmed = endpoint.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.lowercased().hasPrefix("http://") || trimmed.lowercased().hasPrefix("https://") {
+            return trimmed.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        }
+        if trimmed.lowercased().hasPrefix("tcp://") {
+            let rest = String(trimmed.dropFirst(6)).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            let scheme = (verifyTls || rest.hasSuffix(":2376")) ? "https" : "http"
+            return "\(scheme)://\(rest)"
+        }
+        if !trimmed.isEmpty && !trimmed.hasPrefix("unix://") && !trimmed.hasPrefix("/") && !trimmed.lowercased().hasPrefix("ssh://") {
+            let scheme = (verifyTls || trimmed.hasSuffix(":2376")) ? "https" : "http"
+            return "\(scheme)://\(trimmed.trimmingCharacters(in: CharacterSet(charactersIn: "/")))"
+        }
+        let hostTrimmed = remoteHost.trimmingCharacters(in: .whitespacesAndNewlines)
+        if hostTrimmed.contains(":2375") || hostTrimmed.contains(":2376") {
+            let scheme = (verifyTls || hostTrimmed.hasSuffix(":2376")) ? "https" : "http"
+            return "\(scheme)://\(hostTrimmed)"
+        }
+        return nil
+    }
+
+    private static func isRemoteDockerHost(_ host: String) -> Bool {
+        let h = host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return !h.isEmpty && h != "localhost" && h != "127.0.0.1" && h != "::1" && !h.hasPrefix("/")
+    }
+
+    /// Parses `~/.kube/config` to extract a server endpoint and optional bearer token when `clusterOrSocketEndpoint` is empty.
+    public static func resolveKubernetesConfig(
+        settings: ContainerExecProtocolSettings,
+        remoteHost: String,
+        bearerToken: String
+    ) -> (baseUrl: String, bearerToken: String) {
+        let cleanToken: String = {
+            let t = bearerToken.trimmingCharacters(in: .whitespacesAndNewlines)
+            if t.lowercased().hasPrefix("bearer ") {
+                return String(t.dropFirst(7)).trimmingCharacters(in: .whitespaces)
+            }
+            return t
+        }()
+
+        let rawEp = settings.clusterOrSocketEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        if !rawEp.isEmpty && rawEp.lowercased() != "https://kubernetes.default.svc:6443" {
+            let normalizedEp = (rawEp.lowercased().hasPrefix("http://") || rawEp.lowercased().hasPrefix("https://"))
+                ? rawEp
+                : "https://\(rawEp)"
+            return (normalizedEp, cleanToken)
+        }
+
+        let cleanHost = remoteHost.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !cleanHost.isEmpty && cleanHost != "localhost" && !cleanHost.contains(" ") {
+            if cleanHost.lowercased().hasPrefix("http://") || cleanHost.lowercased().hasPrefix("https://") {
+                return (cleanHost.trimmingCharacters(in: CharacterSet(charactersIn: "/")), cleanToken)
+            }
+            if cleanHost.contains(".") || cleanHost.contains(":") {
+                let withPort = cleanHost.contains(":") ? cleanHost : "\(cleanHost):6443"
+                return ("https://\(withPort)", cleanToken)
+            }
+        }
+
+        let kubeconfigPath = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".kube/config").path
+        if let rawYaml = try? String(contentsOfFile: kubeconfigPath, encoding: .utf8) {
+            var discoveredServer = ""
+            var discoveredToken = ""
+            for rawLine in rawYaml.components(separatedBy: .newlines) {
+                let line = rawLine.trimmingCharacters(in: .whitespaces)
+                if discoveredServer.isEmpty && line.hasPrefix("server:") {
+                    let val = String(line.dropFirst(7)).trimmingCharacters(in: CharacterSet(charactersIn: " \"'"))
+                    if val.hasPrefix("http://") || val.hasPrefix("https://") {
+                        discoveredServer = val.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                    }
+                } else if discoveredToken.isEmpty && line.hasPrefix("token:") {
+                    discoveredToken = String(line.dropFirst(6)).trimmingCharacters(in: CharacterSet(charactersIn: " \"'"))
+                }
+            }
+            if !discoveredServer.isEmpty {
+                return (discoveredServer, cleanToken.isEmpty ? discoveredToken : cleanToken)
+            }
+        }
+
+        return (rawEp.isEmpty ? "https://127.0.0.1:6443" : rawEp, cleanToken)
+    }
+
+    /// Builds an injection-safe `kubectl exec` or `docker exec` (local or SSH remote) command string.
     public static func buildSafeExecCommand(
         protocolType: VaultProtocolType,
-        settings: ContainerExecProtocolSettings
+        settings: ContainerExecProtocolSettings,
+        remoteSshHost: String = "",
+        remoteSshUser: String = ""
     ) -> String {
         let rawTokens = settings.shellCommand
             .split(whereSeparator: { $0.isWhitespace })
@@ -1510,13 +2470,21 @@ public enum ContainerWorkloadClient {
             .map { shellEscapeSingleQuoted($0) }
             .joined(separator: " ")
 
-        let target = settings.podOrContainerName.isEmpty ? "pod" : settings.podOrContainerName
+        let target = settings.podOrContainerName.isEmpty ? "container" : settings.podOrContainerName
         if protocolType == .KUBERNETES_POD {
             var parts: [String] = ["kubectl"]
             let ctx = settings.contextName.trimmingCharacters(in: .whitespacesAndNewlines)
             if !ctx.isEmpty {
                 parts.append("--context")
                 parts.append(shellEscapeSingleQuoted(ctx))
+            }
+            let ep = settings.clusterOrSocketEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !ep.isEmpty && ep.lowercased() != "https://kubernetes.default.svc:6443" {
+                parts.append("--server")
+                parts.append(shellEscapeSingleQuoted(ep))
+                if !settings.verifyTls {
+                    parts.append("--insecure-skip-tls-verify=true")
+                }
             }
             let ns = settings.namespace.isEmpty ? "default" : settings.namespace
             parts.append("-n")
@@ -1533,18 +2501,45 @@ public enum ContainerWorkloadClient {
             parts.append(shellTokens)
             return parts.joined(separator: " ")
         } else {
-            return "docker exec -it \(shellEscapeSingleQuoted(target)) \(shellTokens)"
+            let dockerExec = "docker exec -it \(shellEscapeSingleQuoted(target)) \(shellTokens)"
+            let ep = settings.clusterOrSocketEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
+            if ep.lowercased().hasPrefix("ssh://") {
+                let sshDest = String(ep.dropFirst(6)).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                return "ssh -t \(shellEscapeSingleQuoted(sshDest)) \(shellEscapeSingleQuoted(dockerExec))"
+            }
+            if resolveDockerHttpBaseUrl(endpoint: ep, remoteHost: remoteSshHost, verifyTls: settings.verifyTls) == nil,
+               resolveDockerUnixSocketPath(preferredEndpoint: ep) == nil,
+               isRemoteDockerHost(remoteSshHost) {
+                let cleanHost = remoteSshHost.trimmingCharacters(in: .whitespacesAndNewlines)
+                let cleanUser = remoteSshUser.trimmingCharacters(in: .whitespacesAndNewlines)
+                let dest = cleanUser.isEmpty ? cleanHost : "\(cleanUser)@\(cleanHost)"
+                return "ssh -t \(shellEscapeSingleQuoted(dest)) \(shellEscapeSingleQuoted(dockerExec))"
+            }
+            return dockerExec
         }
     }
 
     public static func listWorkloads(
         protocolType: VaultProtocolType,
         settings: ContainerExecProtocolSettings,
-        bearerToken: String = ""
+        bearerToken: String = "",
+        remoteHost: String = "",
+        sshCredential: VaultCredential? = nil
     ) async throws -> [ContainerWorkloadSummary] {
         if protocolType == .DOCKER_CONTAINER {
+            let ep = settings.clusterOrSocketEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
+            let useSshDocker = ep.lowercased().hasPrefix("ssh://")
+                || (resolveDockerHttpBaseUrl(endpoint: ep, remoteHost: remoteHost, verifyTls: settings.verifyTls) == nil
+                    && resolveDockerUnixSocketPath(preferredEndpoint: ep) == nil
+                    && isRemoteDockerHost(remoteHost))
+
+            if useSshDocker {
+                return try await listDockerWorkloadsOverSsh(endpoint: ep, remoteHost: remoteHost, credential: sshCredential)
+            }
+
             let data = try await dockerRequest(
-                endpoint: settings.clusterOrSocketEndpoint,
+                endpoint: ep,
+                remoteHost: remoteHost,
                 path: "/containers/json?all=true",
                 verifyTls: settings.verifyTls
             )
@@ -1554,7 +2549,7 @@ public enum ContainerWorkloadClient {
                 let Image: String?
                 let State: String?
             }
-            let list = (try? JSONDecoder().decode([DockerContainer].self, from: data)) ?? []
+            let list = try JSONDecoder().decode([DockerContainer].self, from: data)
             return list.map { c in
                 let rawName = c.Names?.first?.trimmingCharacters(in: CharacterSet(charactersIn: "/")) ?? String((c.Id ?? "container").prefix(12))
                 return ContainerWorkloadSummary(
@@ -1565,14 +2560,23 @@ public enum ContainerWorkloadClient {
                 )
             }
         } else {
-            let base = settings.clusterOrSocketEndpoint.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            let resolvedK8s = resolveKubernetesConfig(settings: settings, remoteHost: remoteHost, bearerToken: bearerToken)
             let ns = encodePathSegment(settings.namespace.isEmpty ? "default" : settings.namespace)
-            guard let url = URL(string: "\(base)/api/v1/namespaces/\(ns)/pods") else { return [] }
-            var req = URLRequest(url: url)
-            if !bearerToken.isEmpty {
-                req.setValue("Bearer \(bearerToken)", forHTTPHeaderField: "Authorization")
+            guard let url = URL(string: "\(resolvedK8s.baseUrl)/api/v1/namespaces/\(ns)/pods") else {
+                throw NativeBridgeError.networkUtilityError("Invalid Kubernetes API endpoint: \(resolvedK8s.baseUrl)")
             }
-            let (data, _) = try await ConfigurableTlsUrlSession.session(verifyTls: settings.verifyTls).data(for: req)
+            var req = URLRequest(url: url)
+            if !resolvedK8s.bearerToken.isEmpty {
+                req.setValue("Bearer \(resolvedK8s.bearerToken)", forHTTPHeaderField: "Authorization")
+            }
+            let (data, resp) = try await ConfigurableTlsUrlSession.session(verifyTls: settings.verifyTls).data(for: req)
+            if let http = resp as? HTTPURLResponse, http.statusCode >= 400 {
+                let msg = String(data: data, encoding: .utf8) ?? ""
+                if http.statusCode == 401 || http.statusCode == 403 {
+                    throw NativeBridgeError.authenticationFailed("Kubernetes API rejected token (HTTP \(http.statusCode)): \(msg.prefix(180))")
+                }
+                throw NativeBridgeError.networkUtilityError("Kubernetes API error (HTTP \(http.statusCode)): \(msg.prefix(180))")
+            }
             struct K8sPodList: Decodable {
                 struct Item: Decodable {
                     struct Meta: Decodable { let name: String?; let namespace: String? }
@@ -1598,23 +2602,37 @@ public enum ContainerWorkloadClient {
     public static func fetchLogs(
         protocolType: VaultProtocolType,
         settings: ContainerExecProtocolSettings,
-        bearerToken: String = ""
+        bearerToken: String = "",
+        remoteHost: String = "",
+        sshCredential: VaultCredential? = nil
     ) async throws -> String {
-        let target = settings.podOrContainerName
+        let target = settings.podOrContainerName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !target.isEmpty else { return "" }
         if protocolType == .DOCKER_CONTAINER {
+            let ep = settings.clusterOrSocketEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
+            let useSshDocker = ep.lowercased().hasPrefix("ssh://")
+                || (resolveDockerHttpBaseUrl(endpoint: ep, remoteHost: remoteHost, verifyTls: settings.verifyTls) == nil
+                    && resolveDockerUnixSocketPath(preferredEndpoint: ep) == nil
+                    && isRemoteDockerHost(remoteHost))
+
+            if useSshDocker {
+                let cmd = "docker logs --tail \(max(10, settings.logTailLines)) \(shellEscapeSingleQuoted(target)) 2>&1"
+                return try await runDockerSshCommand(endpoint: ep, remoteHost: remoteHost, credential: sshCredential, command: cmd)
+            }
+
             let encodedTarget = encodePathSegment(target)
             let raw = try await dockerRequest(
-                endpoint: settings.clusterOrSocketEndpoint,
+                endpoint: ep,
+                remoteHost: remoteHost,
                 path: "/containers/\(encodedTarget)/logs?stdout=1&stderr=1&tail=\(max(10, settings.logTailLines))",
                 verifyTls: settings.verifyTls
             )
             return stripDockerMultiplexHeaders(raw)
         } else {
-            let base = settings.clusterOrSocketEndpoint.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            let resolvedK8s = resolveKubernetesConfig(settings: settings, remoteHost: remoteHost, bearerToken: bearerToken)
             let ns = encodePathSegment(settings.namespace.isEmpty ? "default" : settings.namespace)
             let pod = encodePathSegment(target)
-            var comps = URLComponents(string: "\(base)/api/v1/namespaces/\(ns)/pods/\(pod)/log")
+            var comps = URLComponents(string: "\(resolvedK8s.baseUrl)/api/v1/namespaces/\(ns)/pods/\(pod)/log")
             var queryItems = [URLQueryItem(name: "tailLines", value: "\(max(10, settings.logTailLines))")]
             if !settings.subContainerName.isEmpty {
                 queryItems.append(URLQueryItem(name: "container", value: settings.subContainerName))
@@ -1622,12 +2640,71 @@ public enum ContainerWorkloadClient {
             comps?.queryItems = queryItems
             guard let url = comps?.url else { return "" }
             var req = URLRequest(url: url)
-            if !bearerToken.isEmpty {
-                req.setValue("Bearer \(bearerToken)", forHTTPHeaderField: "Authorization")
+            if !resolvedK8s.bearerToken.isEmpty {
+                req.setValue("Bearer \(resolvedK8s.bearerToken)", forHTTPHeaderField: "Authorization")
             }
-            let (data, _) = try await ConfigurableTlsUrlSession.session(verifyTls: settings.verifyTls).data(for: req)
+            let (data, resp) = try await ConfigurableTlsUrlSession.session(verifyTls: settings.verifyTls).data(for: req)
+            if let http = resp as? HTTPURLResponse, http.statusCode >= 400 {
+                let msg = String(data: data, encoding: .utf8) ?? ""
+                throw NativeBridgeError.networkUtilityError("Kubernetes pod logs failed (HTTP \(http.statusCode)): \(msg.prefix(180))")
+            }
             return String(data: data, encoding: .utf8) ?? ""
         }
+    }
+
+    private static func listDockerWorkloadsOverSsh(
+        endpoint: String,
+        remoteHost: String,
+        credential: VaultCredential?
+    ) async throws -> [ContainerWorkloadSummary] {
+        let cmd = "docker ps -a --format '{{.ID}}\\t{{.Names}}\\t{{.Image}}\\t{{.State}}'"
+        let output = try await runDockerSshCommand(endpoint: endpoint, remoteHost: remoteHost, credential: credential, command: cmd)
+        var results: [ContainerWorkloadSummary] = []
+        for rawLine in output.components(separatedBy: .newlines) {
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !line.isEmpty else { continue }
+            let cols = line.split(separator: "\t", omittingEmptySubsequences: false).map(String.init)
+            guard cols.count >= 4 else { continue }
+            let id = String(cols[0].prefix(12))
+            let name = cols[1].isEmpty ? id : cols[1]
+            results.append(ContainerWorkloadSummary(
+                id: id,
+                name: name,
+                namespaceOrImage: cols[2].isEmpty ? "oci:latest" : cols[2],
+                status: cols[3].isEmpty ? "RUNNING" : cols[3].uppercased()
+            ))
+        }
+        return results
+    }
+
+    private static func runDockerSshCommand(
+        endpoint: String,
+        remoteHost: String,
+        credential: VaultCredential?,
+        command: String
+    ) async throws -> String {
+        var sshHost = remoteHost.trimmingCharacters(in: .whitespacesAndNewlines)
+        var sshPort: UInt16 = 22
+        var sshUser = credential?.username.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if endpoint.lowercased().hasPrefix("ssh://"), let url = URL(string: endpoint) {
+            if let h = url.host, !h.isEmpty { sshHost = h }
+            if let p = url.port, p > 0 { sshPort = UInt16(clamping: p) }
+            if let u = url.user, !u.isEmpty { sshUser = u }
+        } else if sshHost.contains("@") {
+            let parts = sshHost.split(separator: "@", maxSplits: 1).map(String.init)
+            if sshUser.isEmpty { sshUser = parts[0] }
+            sshHost = parts[1]
+        }
+        if sshUser.isEmpty { sshUser = "root" }
+        let pem = (credential?.privateKeyPem ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let auth: SshFfiConnectPayload.Auth = !pem.isEmpty
+            ? .privateKeyPem(pem: pem, passphrase: (credential?.keyPassphrase ?? "").isEmpty ? nil : credential?.keyPassphrase)
+            : .password(credential?.secretPassword ?? "")
+
+        let spec = SshFfiConnectPayload(host: sshHost, port: sshPort, username: sshUser, auth: auth)
+        return try await Task.detached(priority: .userInitiated) {
+            try NativeSshSession.execCommand(spec: spec, command: command, timeoutSecs: 15)
+        }.value
     }
 
     public static func stripDockerMultiplexHeaders(_ data: Data) -> String {
@@ -1652,18 +2729,26 @@ public enum ContainerWorkloadClient {
             : (String(data: out, encoding: .utf8) ?? "")
     }
 
-    private static func dockerRequest(endpoint: String, path: String, verifyTls: Bool) async throws -> Data {
-        if endpoint.hasPrefix("unix://") || endpoint.hasPrefix("/") {
-            let sockPath = endpoint.replacingOccurrences(of: "unix://", with: "")
-            return try await Task.detached(priority: .userInitiated) {
-                try performUnixDomainHttpGet(socketPath: sockPath, requestPath: path)
-            }.value
-        } else {
-            let base = endpoint.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-            guard let url = URL(string: "\(base)\(path)") else { return Data() }
-            let (data, _) = try await ConfigurableTlsUrlSession.session(verifyTls: verifyTls).data(from: url)
+    private static func dockerRequest(endpoint: String, remoteHost: String, path: String, verifyTls: Bool) async throws -> Data {
+        if let httpBase = resolveDockerHttpBaseUrl(endpoint: endpoint, remoteHost: remoteHost, verifyTls: verifyTls) {
+            guard let url = URL(string: "\(httpBase)\(path)") else {
+                throw NativeBridgeError.networkUtilityError("Invalid Docker HTTP endpoint: \(httpBase)")
+            }
+            let (data, resp) = try await ConfigurableTlsUrlSession.session(verifyTls: verifyTls).data(from: url)
+            if let http = resp as? HTTPURLResponse, http.statusCode >= 400 {
+                let msg = String(data: data, encoding: .utf8) ?? ""
+                throw NativeBridgeError.networkUtilityError("Docker Engine HTTP \(http.statusCode): \(msg.prefix(180))")
+            }
             return data
         }
+        guard let sockPath = resolveDockerUnixSocketPath(preferredEndpoint: endpoint) else {
+            throw NativeBridgeError.networkUtilityError(
+                "No local Docker socket found (/var/run/docker.sock, ~/.docker/run/docker.sock, ~/.orbstack/run/docker.sock, ~/.colima/default/docker.sock). Start Docker Desktop/OrbStack or specify a remote SSH/TCP host."
+            )
+        }
+        return try await Task.detached(priority: .userInitiated) {
+            try performUnixDomainHttpGet(socketPath: sockPath, requestPath: path)
+        }.value
     }
 
     private static func performUnixDomainHttpGet(socketPath: String, requestPath: String) throws -> Data {
@@ -1748,10 +2833,17 @@ public enum ContainerWorkloadClient {
         }
         let headerStr = String(decoding: rawResp[..<sepRange.lowerBound], as: UTF8.self)
         let bodySlice = Data(rawResp[sepRange.upperBound...])
-        if headerStr.lowercased().contains("transfer-encoding: chunked") {
-            return decodeChunkedHttpBody(bodySlice)
+        let decodedBody = headerStr.lowercased().contains("transfer-encoding: chunked")
+            ? decodeChunkedHttpBody(bodySlice)
+            : bodySlice
+        if let firstLine = headerStr.components(separatedBy: "\r\n").first {
+            let parts = firstLine.split(separator: " ")
+            if parts.count >= 2, let code = Int(parts[1]), code >= 400 {
+                let errText = String(data: decodedBody, encoding: .utf8) ?? ""
+                throw NativeBridgeError.networkUtilityError("Docker socket HTTP \(code): \(errText.prefix(180))")
+            }
         }
-        return bodySlice
+        return decodedBody
     }
 
     private static func decodeChunkedHttpBody(_ chunked: Data) -> Data {
@@ -1782,7 +2874,7 @@ public enum ContainerWorkloadClient {
     }
 }
 
-// MARK: - 4. Native macOS FTPS Client (Implicit TLS :990 & Explicit AUTH TLS :21 + PBSZ 0 + PROT P)
+// MARK: - 4. Native macOS FTPS Client (Implicit TLS :990 & Explicit AUTH TLS :21 + PBSZ 0 + PROT P + Session Reuse)
 
 private final class FtpsTlsSocketStream {
     private var fd: Int32
@@ -1805,8 +2897,9 @@ private final class FtpsTlsSocketStream {
         hints.ai_protocol = IPPROTO_TCP
 
         var res: UnsafeMutablePointer<addrinfo>? = nil
+        let cleanHost = host.trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
         let portStr = "\(port == 0 ? 990 : port)"
-        let gai = getaddrinfo(host, portStr, &hints, &res)
+        let gai = getaddrinfo(cleanHost, portStr, &hints, &res)
         guard gai == 0, let head = res else {
             throw NativeBridgeError.ftpsError("DNS resolution failed for \(host):\(portStr)")
         }
@@ -1893,7 +2986,7 @@ private final class FtpsTlsSocketStream {
         return noErr
     }
 
-    func enableTls(peerHost: String, verifyTls: Bool) throws {
+    func enableTls(peerHost: String, verifyTls: Bool, sessionPeerId: String = "") throws {
         guard sslContext == nil else { return }
         guard fd >= 0 else {
             throw NativeBridgeError.ftpsError("Socket closed before TLS handshake")
@@ -1919,6 +3012,13 @@ private final class FtpsTlsSocketStream {
         if !cleanHost.isEmpty {
             _ = cleanHost.withCString { cStr in
                 SSLSetPeerDomainName(ctx, cStr, strlen(cStr))
+            }
+        }
+        if !sessionPeerId.isEmpty {
+            // Enables TLS session resumption across FTPS control and passive data channels
+            // required by vsftpd (`require_ssl_reuse=YES`), ProFTPD, and FileZilla Server.
+            _ = sessionPeerId.withCString { cStr in
+                SSLSetPeerID(ctx, cStr, strlen(cStr))
             }
         }
         _ = SSLSetProtocolVersionMin(ctx, .tlsProtocol12)
@@ -2066,20 +3166,25 @@ public final class MacFtpsClient: RemoteFileTransferClient, @unchecked Sendable 
     private let host: String
     private let port: UInt16
     private let verifyTls: Bool
+    private let tlsSessionPeerId: String
     private let lock = NSLock()
     private var control: FtpsTlsSocketStream?
     private var protectDataChannel: Bool = true
+    private var epsvSupported: Bool = true
+    private var mlsdSupported: Bool = true
 
     private init(
         host: String,
         port: UInt16,
         verifyTls: Bool,
+        tlsSessionPeerId: String,
         control: FtpsTlsSocketStream,
         protectDataChannel: Bool
     ) {
         self.host = host
         self.port = port
         self.verifyTls = verifyTls
+        self.tlsSessionPeerId = tlsSessionPeerId
         self.control = control
         self.protectDataChannel = protectDataChannel
     }
@@ -2098,10 +3203,11 @@ public final class MacFtpsClient: RemoteFileTransferClient, @unchecked Sendable 
         verifyTls: Bool = true
     ) throws -> MacFtpsClient {
         let resolvedPort: UInt16 = port == 0 ? (implicitTls ? 990 : 21) : port
+        let sessionPeerId = "ftps:\(host):\(resolvedPort):\(UUID().uuidString)"
         let ctrl = try FtpsTlsSocketStream.connectTcp(host: host, port: resolvedPort)
         do {
             if implicitTls {
-                try ctrl.enableTls(peerHost: host, verifyTls: verifyTls)
+                try ctrl.enableTls(peerHost: host, verifyTls: verifyTls, sessionPeerId: sessionPeerId)
                 _ = try readReply(from: ctrl, expectedCodes: [220])
             } else {
                 _ = try readReply(from: ctrl, expectedCodes: [220])
@@ -2111,7 +3217,7 @@ public final class MacFtpsClient: RemoteFileTransferClient, @unchecked Sendable 
                     try sendCommand("AUTH SSL", on: ctrl)
                     _ = try readReply(from: ctrl, expectedCodes: [234])
                 }
-                try ctrl.enableTls(peerHost: host, verifyTls: verifyTls)
+                try ctrl.enableTls(peerHost: host, verifyTls: verifyTls, sessionPeerId: sessionPeerId)
             }
 
             let effectiveUser = username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "anonymous" : username
@@ -2141,6 +3247,7 @@ public final class MacFtpsClient: RemoteFileTransferClient, @unchecked Sendable 
                 host: host,
                 port: resolvedPort,
                 verifyTls: verifyTls,
+                tlsSessionPeerId: sessionPeerId,
                 control: ctrl,
                 protectDataChannel: dataProtected
             )
@@ -2181,11 +3288,27 @@ public final class MacFtpsClient: RemoteFileTransferClient, @unchecked Sendable 
         return (code, combined)
     }
 
+    private static func isUnroutableOrPrivateIpv4(_ ip: String) -> Bool {
+        let octets = ip.split(separator: ".").compactMap { Int($0) }
+        guard octets.count == 4 else { return false }
+        let (a, b) = (octets[0], octets[1])
+        return a == 0
+            || a == 10
+            || a == 127
+            || (a == 172 && (16...31).contains(b))
+            || (a == 192 && b == 168)
+            || (a == 169 && b == 254)
+            || (a == 100 && (64...127).contains(b))
+    }
+
     private func openPassiveDataSocket(on ctrl: FtpsTlsSocketStream) throws -> FtpsTlsSocketStream {
-        try Self.sendCommand("EPSV", on: ctrl)
-        let epsv = try Self.readReply(from: ctrl)
-        if epsv.code == 229, let dataPort = Self.parseEpsvPort(epsv.message) {
-            return try FtpsTlsSocketStream.connectTcp(host: host, port: dataPort)
+        if epsvSupported {
+            try Self.sendCommand("EPSV", on: ctrl)
+            let epsv = try Self.readReply(from: ctrl)
+            if epsv.code == 229, let dataPort = Self.parseEpsvPort(epsv.message) {
+                return try FtpsTlsSocketStream.connectTcp(host: host, port: dataPort)
+            }
+            epsvSupported = false
         }
 
         try Self.sendCommand("PASV", on: ctrl)
@@ -2193,8 +3316,17 @@ public final class MacFtpsClient: RemoteFileTransferClient, @unchecked Sendable 
         guard let (pasvHost, pasvPort) = Self.parsePasvAddress(pasv.message) else {
             throw NativeBridgeError.ftpsError("Unable to parse PASV reply: \(pasv.message)")
         }
-        let targetHost = (pasvHost == "0.0.0.0" || pasvHost.isEmpty) ? host : pasvHost
-        return try FtpsTlsSocketStream.connectTcp(host: targetHost, port: pasvPort)
+        let substituteControlHost = pasvHost.isEmpty
+            || pasvHost == "0.0.0.0"
+            || (Self.isUnroutableOrPrivateIpv4(pasvHost) && !Self.isUnroutableOrPrivateIpv4(host) && host != "localhost")
+        let primaryHost = substituteControlHost ? host : pasvHost
+        if let connected = try? FtpsTlsSocketStream.connectTcp(host: primaryHost, port: pasvPort) {
+            return connected
+        }
+        if primaryHost != host {
+            return try FtpsTlsSocketStream.connectTcp(host: host, port: pasvPort)
+        }
+        return try FtpsTlsSocketStream.connectTcp(host: primaryHost, port: pasvPort)
     }
 
     private static func parseEpsvPort(_ reply: String) -> UInt16? {
@@ -2221,10 +3353,7 @@ public final class MacFtpsClient: RemoteFileTransferClient, @unchecked Sendable 
         return (ip, port)
     }
 
-    public func pwd() throws -> String {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let ctrl = control else { throw NativeBridgeError.ftpsError("FTPS session closed") }
+    private func pwdUnlocked(on ctrl: FtpsTlsSocketStream) throws -> String {
         try Self.sendCommand("PWD", on: ctrl)
         let reply = try Self.readReply(from: ctrl, expectedCodes: [257])
         if let firstQuote = reply.message.firstIndex(of: "\""),
@@ -2234,60 +3363,123 @@ public final class MacFtpsClient: RemoteFileTransferClient, @unchecked Sendable 
         return "/"
     }
 
+    public func pwd() throws -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let ctrl = control else { throw NativeBridgeError.ftpsError("FTPS session closed") }
+        return try pwdUnlocked(on: ctrl)
+    }
+
     public func listDirectory(_ remotePath: String) throws -> [SftpRemoteEntry] {
         lock.lock()
         defer { lock.unlock() }
         guard let ctrl = control else { throw NativeBridgeError.ftpsError("FTPS session closed") }
 
-        let dir = remotePath.isEmpty ? "/" : remotePath
-        try Self.sendCommand("CWD \(dir)", on: ctrl)
-        _ = try Self.readReply(from: ctrl, expectedCodes: [250, 200])
-
-        let mlsdStream = try openPassiveDataSocket(on: ctrl)
-        try Self.sendCommand("MLSD", on: ctrl)
-        let mlsdPrelim = try Self.readReply(from: ctrl)
-        if mlsdPrelim.code == 125 || mlsdPrelim.code == 150 {
-            if protectDataChannel {
-                try mlsdStream.enableTls(peerHost: host, verifyTls: verifyTls)
-            }
-            let rawData = try mlsdStream.readAllUntilEof()
-            mlsdStream.close()
-            _ = try Self.readReply(from: ctrl, expectedCodes: [226, 250])
-            let rawText = String(decoding: rawData, as: UTF8.self)
-            return NativeNetworkDiagnostics.parseFtpMlsd(parentDir: dir, rawMlsd: rawText)
+        let trimmed = remotePath.trimmingCharacters(in: .whitespacesAndNewlines)
+        let dir: String
+        if trimmed.isEmpty || trimmed == "." {
+            dir = (try? pwdUnlocked(on: ctrl)) ?? "/"
+        } else {
+            dir = trimmed
+            try Self.sendCommand("CWD \(dir)", on: ctrl)
+            _ = try Self.readReply(from: ctrl, expectedCodes: [250, 200])
         }
-        mlsdStream.close()
+
+        if mlsdSupported {
+            let mlsdStream = try openPassiveDataSocket(on: ctrl)
+            try Self.sendCommand("MLSD", on: ctrl)
+            let mlsdPrelim = try Self.readReply(from: ctrl)
+            if mlsdPrelim.code == 125 || mlsdPrelim.code == 150 {
+                if protectDataChannel {
+                    try mlsdStream.enableTls(peerHost: host, verifyTls: verifyTls, sessionPeerId: tlsSessionPeerId)
+                }
+                let rawData = try mlsdStream.readAllUntilEof()
+                mlsdStream.close()
+                _ = try Self.readReply(from: ctrl, expectedCodes: [226, 250])
+                let rawText = String(decoding: rawData, as: UTF8.self)
+                return NativeNetworkDiagnostics.parseFtpMlsd(parentDir: dir, rawMlsd: rawText)
+            }
+            mlsdStream.close()
+            mlsdSupported = false
+        }
 
         let listStream = try openPassiveDataSocket(on: ctrl)
-        try Self.sendCommand("LIST -la", on: ctrl)
-        let listPrelim = try Self.readReply(from: ctrl, expectedCodes: [125, 150])
-        _ = listPrelim
+        try Self.sendCommand("LIST", on: ctrl)
+        _ = try Self.readReply(from: ctrl, expectedCodes: [125, 150])
         if protectDataChannel {
-            try listStream.enableTls(peerHost: host, verifyTls: verifyTls)
+            try listStream.enableTls(peerHost: host, verifyTls: verifyTls, sessionPeerId: tlsSessionPeerId)
         }
         let listData = try listStream.readAllUntilEof()
         listStream.close()
         _ = try Self.readReply(from: ctrl, expectedCodes: [226, 250])
-        return Self.parseUnixListOutput(parentDir: dir, rawList: String(decoding: listData, as: UTF8.self))
+        return Self.parseUnixOrDosListOutput(parentDir: dir, rawList: String(decoding: listData, as: UTF8.self))
     }
 
-    private static func parseUnixListOutput(parentDir: String, rawList: String) -> [SftpRemoteEntry] {
+    private static func parseUnixOrDosListOutput(parentDir: String, rawList: String) -> [SftpRemoteEntry] {
         let cleanParent = parentDir.hasSuffix("/") ? String(parentDir.dropLast()) : parentDir
+        let months: Set<String> = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
         var entries: [SftpRemoteEntry] = []
         for rawLine in rawList.components(separatedBy: .newlines) {
-            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !line.isEmpty, !line.lowercased().hasPrefix("total ") else { continue }
-            let cols = line.split(separator: " ", maxSplits: 8, omittingEmptySubsequences: true).map(String.init)
-            guard cols.count >= 9 else { continue }
-            let perms = cols[0]
-            var name = cols[8]
+            let line = rawLine.trimmingCharacters(in: CharacterSet(charactersIn: "\r\n"))
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard !trimmed.isEmpty, !trimmed.lowercased().hasPrefix("total ") else { continue }
+
+            // Windows IIS / MS-DOS `MM-DD-YY  HH:MMAM  <DIR>|size  filename`
+            if let firstChar = trimmed.first, firstChar.isNumber {
+                let dosTokens = trimmed.split(separator: " ", maxSplits: 3, omittingEmptySubsequences: true).map(String.init)
+                if dosTokens.count == 4, dosTokens[0].contains("-") {
+                    let isDir = dosTokens[2].uppercased() == "<DIR>"
+                    let size = isDir ? 0 : (UInt64(dosTokens[2]) ?? 0)
+                    let name = dosTokens[3]
+                    if name != "." && name != ".." && !name.isEmpty {
+                        let full = cleanParent.isEmpty ? "/\(name)" : "\(cleanParent)/\(name)"
+                        entries.append(SftpRemoteEntry(
+                            name: name,
+                            fullPath: full,
+                            isDirectory: isDir,
+                            isSymlink: false,
+                            sizeBytes: size,
+                            unixMode: isDir ? 0o755 : 0o644,
+                            modifiedEpochSec: 0,
+                            owner: "iis"
+                        ))
+                    }
+                    continue
+                }
+            }
+
+            // UNIX `drwxr-xr-x 2 owner [domain users] 4096 Nov 17 10:20 filename`
+            let words = trimmed.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
+            guard words.count >= 9 else { continue }
+            let perms = words[0]
+            var monthIdx: Int? = nil
+            for idx in 4..<(words.count - 2) {
+                if months.contains(words[idx].lowercased()) && UInt64(words[idx - 1]) != nil {
+                    monthIdx = idx
+                    break
+                }
+            }
+            let sizeIdx = (monthIdx ?? 5) - 1
+            let size = sizeIdx < words.count ? (UInt64(words[sizeIdx]) ?? 0) : 0
+            let nameTokenIdx = (monthIdx ?? 5) + 3
+            guard nameTokenIdx < words.count else { continue }
+            var name: String = words[nameTokenIdx...].joined(separator: " ")
+            if let mIdx = monthIdx, mIdx + 2 < words.count {
+                let timeOrYearToken = words[mIdx + 2]
+                if let mRange = trimmed.range(of: " \(words[mIdx]) "),
+                   let tRange = trimmed[mRange.upperBound...].range(of: timeOrYearToken) {
+                    let afterTime = trimmed[tRange.upperBound...].drop(while: { $0 == " " })
+                    if !afterTime.isEmpty {
+                        name = String(afterTime)
+                    }
+                }
+            }
             let isSymlink = perms.hasPrefix("l")
             if isSymlink, let arrow = name.range(of: " -> ") {
                 name = String(name[..<arrow.lowerBound])
             }
             if name == "." || name == ".." || name.isEmpty { continue }
             let isDir = perms.hasPrefix("d")
-            let size = UInt64(cols[4]) ?? 0
             let full = cleanParent.isEmpty ? "/\(name)" : "\(cleanParent)/\(name)"
             entries.append(SftpRemoteEntry(
                 name: name,
@@ -2297,7 +3489,7 @@ public final class MacFtpsClient: RemoteFileTransferClient, @unchecked Sendable 
                 sizeBytes: size,
                 unixMode: parseRwxMode(perms, isDir: isDir),
                 modifiedEpochSec: 0,
-                owner: cols[2]
+                owner: words[2]
             ))
         }
         return entries
@@ -2368,7 +3560,7 @@ public final class MacFtpsClient: RemoteFileTransferClient, @unchecked Sendable 
             try Self.sendCommand("RETR \(remotePath)", on: ctrl)
             _ = try Self.readReply(from: ctrl, expectedCodes: [125, 150])
             if protectDataChannel {
-                try dataStream.enableTls(peerHost: host, verifyTls: verifyTls)
+                try dataStream.enableTls(peerHost: host, verifyTls: verifyTls, sessionPeerId: tlsSessionPeerId)
             }
             let payload = try dataStream.readAllUntilEof()
             dataStream.close()
@@ -2389,7 +3581,7 @@ public final class MacFtpsClient: RemoteFileTransferClient, @unchecked Sendable 
             try Self.sendCommand("STOR \(remotePath)", on: ctrl)
             _ = try Self.readReply(from: ctrl, expectedCodes: [125, 150])
             if protectDataChannel {
-                try dataStream.enableTls(peerHost: host, verifyTls: verifyTls)
+                try dataStream.enableTls(peerHost: host, verifyTls: verifyTls, sessionPeerId: tlsSessionPeerId)
             }
             try dataStream.writeAll(data)
             dataStream.close()

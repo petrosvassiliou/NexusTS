@@ -160,8 +160,17 @@ class ProxmoxVeApiClient(
         return when {
             secret.password.startsWith("PVEAPIToken=", ignoreCase = true) ->
                 ProxmoxAuth.ApiToken(secret.password.trim())
-            secret.username.contains('!') ->
-                ProxmoxAuth.ApiToken("PVEAPIToken=${secret.username.trim()}=${secret.password}")
+            secret.username.contains('!') -> {
+                val raw = secret.username.trim()
+                val userPart = raw.substringBefore('!')
+                val tokenId = raw.substringAfter('!')
+                val qualifiedUser = if ('@' in userPart) {
+                    userPart
+                } else {
+                    "$userPart@${settings.realmOrDomain.ifBlank { "pam" }}"
+                }
+                ProxmoxAuth.ApiToken("PVEAPIToken=$qualifiedUser!$tokenId=${secret.password}")
+            }
             else ->
                 ProxmoxAuth.TicketCookie(
                     authenticateTicket(
@@ -194,7 +203,9 @@ class ProxmoxVeApiClient(
             val root = json.parseToJsonElement(resp.body?.string().orEmpty()).jsonObject
             val arr = root["data"]?.jsonArray ?: return emptyList()
             val effectiveHost = host.ifBlank {
-                base.removePrefix("https://").removePrefix("http://").substringBefore(':')
+                runCatching { URI(base).host }.getOrNull().orEmpty().ifBlank {
+                    base.removePrefix("https://").removePrefix("http://").substringBefore(':').substringBefore('/')
+                }
             }
             return arr.map { elem ->
                 val obj = elem.jsonObject
@@ -266,11 +277,11 @@ class ProxmoxVeApiClient(
 /**
  * Production REST / SOAP / SigV4 Client Hub for Enterprise Cloud & Virtualization Hypervisors:
  * - **Proxmox VE** (`/api2/json/access/ticket` + `/api2/json/cluster/resources` + `/status/{start|stop|reboot}`)
- * - **VMware vSphere / ESXi** (`/api/session` + `/api/vcenter/vm` + `/power?action=...`)
+ * - **VMware vSphere / ESXi** (`/api/session` + CIS 6.5 `/rest/com/vmware/cis/session` + standalone ESXi VIM SOAP `/sdk`)
  * - **AWS EC2** (`DescribeInstances` / `StartInstances` / `StopInstances` / `RebootInstances` signed via **AWS SigV4 `AWS4-HMAC-SHA256`**)
  * - **Microsoft Azure ARM** (`client_credentials` OAuth2 token exchange + `Microsoft.Compute/virtualMachines?api-version=2024-03-01&$expand=instanceView`)
  * - **Microsoft Hyper-V** (WinRM HTTP `5985` NTLMv2 + `[MS-WSMV]` SPNEGO Sealing, WinRM HTTPS `5986` NTLMv2, and OpenSSH `22` PowerShell)
- * - **Windows Terminal Services / RDS** (WinRM `Win32_TerminalServicesSession` active session listing & `Win32_Process/Create` logoff/disconnect)
+ * - **Windows Terminal Services / RDS** (Multi-transport WinRM `:5985`/`:5986` + SSH `quser` active session listing & `logoff`/`tsdiscon`)
  */
 object CloudVirtualizationHubClient {
 
@@ -297,9 +308,9 @@ object CloudVirtualizationHubClient {
                 VaultProtocolType.VMWARE_VSPHERE ->
                     fetchVsphereInventory(endpointHost, settings, secret, allowSelfSignedTls)
                 VaultProtocolType.AWS_EC2 ->
-                    fetchAwsEc2Inventory(settings, secret)
+                    fetchAwsEc2Inventory(endpointHost, settings, secret, allowSelfSignedTls)
                 VaultProtocolType.AZURE_VM ->
-                    fetchAzureVmInventory(settings, secret)
+                    fetchAzureVmInventory(settings, secret, allowSelfSignedTls)
                 VaultProtocolType.HYPER_V ->
                     fetchHyperVInventory(endpointHost, settings, secret, allowSelfSignedTls)
                 VaultProtocolType.WINDOWS_TERMINAL_SERVICES ->
@@ -326,9 +337,9 @@ object CloudVirtualizationHubClient {
                 VaultProtocolType.VMWARE_VSPHERE ->
                     controlVsphereVm(endpointHost, settings, secret, resource, action, allowSelfSignedTls)
                 VaultProtocolType.AWS_EC2 ->
-                    controlAwsEc2Instance(settings, secret, resource, action)
+                    controlAwsEc2Instance(endpointHost, settings, secret, resource, action, allowSelfSignedTls)
                 VaultProtocolType.AZURE_VM ->
-                    controlAzureVm(settings, secret, resource, action)
+                    controlAzureVm(settings, secret, resource, action, allowSelfSignedTls)
                 VaultProtocolType.HYPER_V ->
                     controlHyperVVm(endpointHost, settings, secret, resource, action, allowSelfSignedTls)
                 VaultProtocolType.WINDOWS_TERMINAL_SERVICES ->
@@ -345,14 +356,21 @@ object CloudVirtualizationHubClient {
         } else {
             "https://$raw"
         }
-        return withScheme
+        val cleaned = withScheme
             .trimEnd('/')
             .removeSuffix("/api2/json")
             .trimEnd('/')
+        val parsed = runCatching { URI(cleaned) }.getOrNull()
+        if (parsed != null && !parsed.host.isNullOrBlank() && parsed.port == -1) {
+            val hostBracketed = if (':' in parsed.host && !parsed.host.startsWith("[")) "[${parsed.host}]" else parsed.host
+            val pathSuffix = parsed.rawPath.orEmpty().trimEnd('/')
+            return "${parsed.scheme ?: "https"}://$hostBracketed:8006$pathSuffix"
+        }
+        return cleaned
     }
 
     // =========================================================================
-    // 2. VMware vSphere / ESXi Cis Session + vCenter REST API
+    // 2. VMware vSphere (vCenter 7/8 REST + CIS 6.5 REST) & Standalone ESXi VIM SOAP (`/sdk`)
     // =========================================================================
 
     private fun normalizeHttpsEndpoint(host: String, apiEndpointUrl: String): String {
@@ -362,26 +380,56 @@ object CloudVirtualizationHubClient {
         } else {
             "https://$raw"
         }
-        return withScheme.trimEnd('/')
+        return withScheme.trimEnd('/').removeSuffix("/ui").removeSuffix("/sdk").trimEnd('/')
     }
 
-    private fun acquireVsphereSessionToken(
+    private data class VsphereRestSession(val token: String, val legacyCis: Boolean)
+
+    private fun tryAcquireVsphereRestToken(
         base: String,
         secret: ResolvedSessionSecret,
         http: OkHttpClient
-    ): String {
+    ): VsphereRestSession? {
         val basic = Base64.getEncoder()
             .encodeToString("${secret.username}:${secret.password}".toByteArray(StandardCharsets.UTF_8))
-        val sessionReq = Request.Builder()
+
+        // 1. Modern vCenter 7.0 / 8.0 REST (/api/session)
+        val modernReq = Request.Builder()
             .url("$base/api/session")
             .header("Authorization", "Basic $basic")
             .post("".toRequestBody(null))
             .build()
-
-        http.newCall(sessionReq).execute().use { resp ->
-            if (!resp.isSuccessful) error("vSphere /api/session HTTP ${resp.code}")
-            return resp.body?.string().orEmpty().trim().trim('"')
+        http.newCall(modernReq).execute().use { resp ->
+            if (resp.isSuccessful) {
+                val tok = resp.body?.string().orEmpty().trim().trim('"')
+                if (tok.isNotBlank() && !tok.startsWith("<")) {
+                    return VsphereRestSession(token = tok, legacyCis = false)
+                }
+            } else if (resp.code == 401 || resp.code == 403) {
+                error("vSphere /api/session authentication failed (HTTP ${resp.code})")
+            }
         }
+
+        // 2. Legacy vCenter 6.5 / 6.7 CIS REST (/rest/com/vmware/cis/session)
+        val cisReq = Request.Builder()
+            .url("$base/rest/com/vmware/cis/session")
+            .header("Authorization", "Basic $basic")
+            .post("".toRequestBody(null))
+            .build()
+        http.newCall(cisReq).execute().use { resp ->
+            if (resp.isSuccessful) {
+                val raw = resp.body?.string().orEmpty()
+                val tok = runCatching {
+                    json.parseToJsonElement(raw).jsonObject["value"]?.jsonPrimitive?.contentOrNull
+                }.getOrNull()?.trim()
+                if (!tok.isNullOrBlank()) {
+                    return VsphereRestSession(token = tok, legacyCis = true)
+                }
+            } else if (resp.code == 401 || resp.code == 403) {
+                error("vSphere CIS session authentication failed (HTTP ${resp.code})")
+            }
+        }
+        return null
     }
 
     private fun fetchVsphereInventory(
@@ -392,34 +440,52 @@ object CloudVirtualizationHubClient {
     ): List<CloudManagedResource> {
         val http = clientFor(allowSelfSignedTls)
         val base = normalizeHttpsEndpoint(host, settings.apiEndpointUrl)
-        val token = acquireVsphereSessionToken(base, secret, http)
-        val req = Request.Builder()
-            .url("$base/api/vcenter/vm")
-            .header("vmware-api-session-id", token)
-            .get()
-            .build()
+        val restSession = runCatching { tryAcquireVsphereRestToken(base, secret, http) }
+            .getOrElse { err ->
+                if (err.message?.contains("authentication failed") == true) throw err
+                null
+            }
 
-        http.newCall(req).execute().use { resp ->
-            if (!resp.isSuccessful) error("vSphere /api/vcenter/vm HTTP ${resp.code}")
-            val arr = json.parseToJsonElement(resp.body?.string().orEmpty()).jsonArray
-            return arr.map { elem ->
-                val obj = elem.jsonObject
-                val vmId = obj["vm"]?.jsonPrimitive?.content.orEmpty()
-                val name = obj["name"]?.jsonPrimitive?.content ?: vmId
-                val state = obj["power_state"]?.jsonPrimitive?.content ?: "UNKNOWN"
-                val cpu = obj["cpu_count"]?.jsonPrimitive?.content ?: "2"
-                val memMib = obj["memory_size_MiB"]?.jsonPrimitive?.content?.toLongOrNull() ?: 4096L
-                CloudManagedResource(
-                    id = vmId,
-                    name = name,
-                    nodeOrZone = settings.regionOrCluster.ifBlank { "vCenter" },
-                    powerState = if (state.contains("POWERED_ON")) "RUNNING" else "STOPPED",
-                    cpuRamSummary = "$cpu vCPU • ${memMib / 1024} GB",
-                    addressOrSessionHost = host,
-                    preferredConsoleProtocol = VaultProtocolType.VNC
-                )
+        if (restSession != null) {
+            val vmUrl = if (restSession.legacyCis) "$base/rest/vcenter/vm" else "$base/api/vcenter/vm"
+            val req = Request.Builder()
+                .url(vmUrl)
+                .header("vmware-api-session-id", restSession.token)
+                .get()
+                .build()
+
+            http.newCall(req).execute().use { resp ->
+                if (resp.isSuccessful) {
+                    val bodyStr = resp.body?.string().orEmpty()
+                    val parsedElem = json.parseToJsonElement(bodyStr)
+                    val arr = when (parsedElem) {
+                        is JsonArray -> parsedElem
+                        is JsonObject -> parsedElem["value"]?.jsonArray ?: JsonArray(emptyList())
+                        else -> JsonArray(emptyList())
+                    }
+                    return arr.map { elem ->
+                        val obj = elem.jsonObject
+                        val vmId = obj["vm"]?.jsonPrimitive?.content.orEmpty()
+                        val name = obj["name"]?.jsonPrimitive?.content ?: vmId
+                        val state = obj["power_state"]?.jsonPrimitive?.content ?: "UNKNOWN"
+                        val cpu = obj["cpu_count"]?.jsonPrimitive?.content ?: "2"
+                        val memMib = obj["memory_size_MiB"]?.jsonPrimitive?.content?.toLongOrNull() ?: 4096L
+                        CloudManagedResource(
+                            id = vmId,
+                            name = name,
+                            nodeOrZone = settings.regionOrCluster.ifBlank { "vCenter" },
+                            powerState = if (state.contains("POWERED_ON", ignoreCase = true)) "RUNNING" else "STOPPED",
+                            cpuRamSummary = "$cpu vCPU • ${(memMib / 1024L).coerceAtLeast(1L)} GB",
+                            addressOrSessionHost = "$base/ui",
+                            preferredConsoleProtocol = VaultProtocolType.WEB_PAGE
+                        )
+                    }
+                }
             }
         }
+
+        // 3. Standalone ESXi Host (or vCenter) VIM 2.5 SOAP `/sdk` fallback
+        return fetchEsxiVimSoapInventory(base, settings, secret, http)
     }
 
     private fun controlVsphereVm(
@@ -432,50 +498,315 @@ object CloudVirtualizationHubClient {
     ): String {
         val http = clientFor(allowSelfSignedTls)
         val base = normalizeHttpsEndpoint(host, settings.apiEndpointUrl)
-        val token = acquireVsphereSessionToken(base, secret, http)
-        val act = when (action) {
-            VmPowerAction.START -> "start"
-            VmPowerAction.STOP -> "stop"
-            VmPowerAction.SAVE -> "suspend"
-            VmPowerAction.REBOOT -> "reset"
-        }
-        val req = Request.Builder()
-            .url("$base/api/vcenter/vm/${resource.id}/power?action=$act")
-            .header("vmware-api-session-id", token)
-            .post("".toRequestBody(null))
-            .build()
+        val restSession = runCatching { tryAcquireVsphereRestToken(base, secret, http) }.getOrNull()
+        if (restSession != null) {
+            val act = when (action) {
+                VmPowerAction.START -> "start"
+                VmPowerAction.STOP -> "stop"
+                VmPowerAction.SAVE -> "suspend"
+                VmPowerAction.REBOOT -> "reset"
+            }
+            val powerUrl = if (restSession.legacyCis) {
+                "$base/rest/vcenter/vm/${resource.id}/power/$act"
+            } else {
+                "$base/api/vcenter/vm/${resource.id}/power?action=$act"
+            }
+            val req = Request.Builder()
+                .url(powerUrl)
+                .header("vmware-api-session-id", restSession.token)
+                .post("".toRequestBody(null))
+                .build()
 
-        http.newCall(req).execute().use { resp ->
-            if (!resp.isSuccessful) error("vSphere power HTTP ${resp.code}")
-            return "vCenter VM ${resource.id} -> $act"
+            http.newCall(req).execute().use { resp ->
+                if (resp.isSuccessful) {
+                    return "vCenter VM ${resource.id} -> $act"
+                }
+            }
         }
+
+        return controlEsxiVimSoapVm(base, secret, resource, action, http)
+    }
+
+    private data class EsxiSoapSession(
+        val sdkUrl: String,
+        val cookieHeader: String,
+        val rootFolderRef: String,
+        val viewManagerRef: String,
+        val propertyCollectorRef: String
+    )
+
+    private fun postEsxiVimSoap(
+        sdkUrl: String,
+        soapAction: String,
+        innerBodyXml: String,
+        cookieHeader: String?,
+        http: OkHttpClient
+    ): Pair<String, List<String>> {
+        val envelope = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:vim25="urn:vim25" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+              <soapenv:Body>
+                $innerBodyXml
+              </soapenv:Body>
+            </soapenv:Envelope>
+        """.trimIndent()
+        val reqBuilder = Request.Builder()
+            .url(sdkUrl)
+            .header("Content-Type", "text/xml; charset=utf-8")
+            .header("SOAPAction", "\"$soapAction\"")
+            .post(envelope.toRequestBody("text/xml; charset=utf-8".toMediaType()))
+        if (!cookieHeader.isNullOrBlank()) {
+            reqBuilder.header("Cookie", cookieHeader)
+        }
+        http.newCall(reqBuilder.build()).execute().use { resp ->
+            val respXml = resp.body?.string().orEmpty()
+            if (!resp.isSuccessful) {
+                val fault = Regex("<faultstring>([^<]+)</faultstring>").find(respXml)?.groupValues?.get(1)
+                error("ESXi VIM SOAP HTTP ${resp.code}${if (!fault.isNullOrBlank()) ": ${unescapeXml(fault)}" else ""}")
+            }
+            val setCookies = resp.headers("Set-Cookie").map { it.substringBefore(';').trim() }.filter { it.isNotEmpty() }
+            return respXml to setCookies
+        }
+    }
+
+    private fun openEsxiSoapSession(
+        base: String,
+        secret: ResolvedSessionSecret,
+        http: OkHttpClient
+    ): EsxiSoapSession {
+        val sdkUrl = "$base/sdk"
+        val (scXml, scCookies) = postEsxiVimSoap(
+            sdkUrl = sdkUrl,
+            soapAction = "urn:vim25/6.5",
+            innerBodyXml = """
+                <RetrieveServiceContent xmlns="urn:vim25">
+                  <_this type="ServiceInstance">ServiceInstance</_this>
+                </RetrieveServiceContent>
+            """.trimIndent(),
+            cookieHeader = null,
+            http = http
+        )
+        val sessionMgr = Regex("<sessionManager[^>]*>([^<]+)</sessionManager>").find(scXml)?.groupValues?.get(1)?.trim()
+            ?: "ha-sessionmgr"
+        val rootFolder = Regex("<rootFolder[^>]*>([^<]+)</rootFolder>").find(scXml)?.groupValues?.get(1)?.trim()
+            ?: "ha-folder-root"
+        val viewMgr = Regex("<viewManager[^>]*>([^<]+)</viewManager>").find(scXml)?.groupValues?.get(1)?.trim()
+            ?: "ViewManager"
+        val propCol = Regex("<propertyCollector[^>]*>([^<]+)</propertyCollector>").find(scXml)?.groupValues?.get(1)?.trim()
+            ?: "ha-property-collector"
+
+        val (_, loginCookies) = postEsxiVimSoap(
+            sdkUrl = sdkUrl,
+            soapAction = "urn:vim25/6.5",
+            innerBodyXml = """
+                <Login xmlns="urn:vim25">
+                  <_this type="SessionManager">${escapeXml(sessionMgr)}</_this>
+                  <userName>${escapeXml(secret.username)}</userName>
+                  <password>${escapeXml(secret.password)}</password>
+                </Login>
+            """.trimIndent(),
+            cookieHeader = scCookies.joinToString("; ").ifBlank { null },
+            http = http
+        )
+        val mergedCookies = (loginCookies + scCookies).distinct().joinToString("; ")
+        return EsxiSoapSession(
+            sdkUrl = sdkUrl,
+            cookieHeader = mergedCookies,
+            rootFolderRef = rootFolder,
+            viewManagerRef = viewMgr,
+            propertyCollectorRef = propCol
+        )
+    }
+
+    private fun fetchEsxiVimSoapInventory(
+        base: String,
+        settings: ProtocolSpecificSettings.CloudVirtualization,
+        secret: ResolvedSessionSecret,
+        http: OkHttpClient
+    ): List<CloudManagedResource> {
+        val session = openEsxiSoapSession(base, secret, http)
+        val (viewXml, _) = postEsxiVimSoap(
+            sdkUrl = session.sdkUrl,
+            soapAction = "urn:vim25/6.5",
+            innerBodyXml = """
+                <CreateContainerView xmlns="urn:vim25">
+                  <_this type="ViewManager">${escapeXml(session.viewManagerRef)}</_this>
+                  <container type="Folder">${escapeXml(session.rootFolderRef)}</container>
+                  <type>VirtualMachine</type>
+                  <recursive>true</recursive>
+                </CreateContainerView>
+            """.trimIndent(),
+            cookieHeader = session.cookieHeader,
+            http = http
+        )
+        val containerViewId = Regex("<returnval[^>]*>([^<]+)</returnval>").find(viewXml)?.groupValues?.get(1)?.trim()
+            ?: "session-view-vm"
+
+        val (propsXml, _) = postEsxiVimSoap(
+            sdkUrl = session.sdkUrl,
+            soapAction = "urn:vim25/6.5",
+            innerBodyXml = """
+                <RetrievePropertiesEx xmlns="urn:vim25">
+                  <_this type="PropertyCollector">${escapeXml(session.propertyCollectorRef)}</_this>
+                  <specSet>
+                    <propSet>
+                      <type>VirtualMachine</type>
+                      <pathSet>name</pathSet>
+                      <pathSet>runtime.powerState</pathSet>
+                      <pathSet>config.hardware.numCPU</pathSet>
+                      <pathSet>config.hardware.memoryMB</pathSet>
+                      <pathSet>guest.ipAddress</pathSet>
+                      <pathSet>guest.guestFullName</pathSet>
+                    </propSet>
+                    <objectSet>
+                      <obj type="ContainerView">${escapeXml(containerViewId)}</obj>
+                      <skip>true</skip>
+                      <selectSet xsi:type="TraversalSpec">
+                        <name>traverseView</name>
+                        <type>ContainerView</type>
+                        <path>view</path>
+                        <skip>false</skip>
+                      </selectSet>
+                    </objectSet>
+                  </specSet>
+                  <options/>
+                </RetrievePropertiesEx>
+            """.trimIndent(),
+            cookieHeader = session.cookieHeader,
+            http = http
+        )
+
+        val objectRegex = Regex("<objects>(.*?)</objects>", setOf(RegexOption.DOT_MATCHES_ALL))
+        val objIdRegex = Regex("<obj[^>]*>([^<]+)</obj>")
+        val propSetRegex = Regex("<propSet>\\s*<name>([^<]+)</name>\\s*<val[^>]*>([^<]*)</val>\\s*</propSet>", setOf(RegexOption.DOT_MATCHES_ALL))
+        val nodeLabel = settings.regionOrCluster.ifBlank {
+            runCatching { URI(base).host }.getOrNull().orEmpty().ifBlank { "ESXi" }
+        }
+
+        return objectRegex.findAll(propsXml).mapNotNull { m ->
+            val block = m.groupValues[1]
+            val moId = objIdRegex.find(block)?.groupValues?.get(1)?.trim() ?: return@mapNotNull null
+            val props = mutableMapOf<String, String>()
+            for (pm in propSetRegex.findAll(block)) {
+                props[pm.groupValues[1].trim()] = unescapeXml(pm.groupValues[2].trim())
+            }
+            val vmName = props["name"].orEmpty().ifBlank { moId }
+            val rawState = props["runtime.powerState"].orEmpty()
+            val powerState = when {
+                rawState.contains("poweredOn", ignoreCase = true) -> "RUNNING"
+                rawState.contains("suspended", ignoreCase = true) -> "SAVED"
+                else -> "STOPPED"
+            }
+            val cpu = props["config.hardware.numCPU"].orEmpty().ifBlank { "2" }
+            val memMb = props["config.hardware.memoryMB"]?.toLongOrNull() ?: 4096L
+            val guestIp = props["guest.ipAddress"].orEmpty()
+            val guestOs = props["guest.guestFullName"].orEmpty()
+            val isWindows = guestOs.contains("windows", ignoreCase = true)
+            val consoleProto = when {
+                guestIp.isNotBlank() && isWindows -> VaultProtocolType.RDP
+                guestIp.isNotBlank() -> VaultProtocolType.SSH
+                else -> VaultProtocolType.WEB_PAGE
+            }
+            CloudManagedResource(
+                id = moId,
+                name = vmName,
+                nodeOrZone = nodeLabel,
+                powerState = powerState,
+                cpuRamSummary = "$cpu vCPU • ${(memMb / 1024L).coerceAtLeast(1L)} GB",
+                addressOrSessionHost = guestIp.ifBlank { "$base/ui" },
+                preferredConsoleProtocol = consoleProto
+            )
+        }.toList()
+    }
+
+    private fun controlEsxiVimSoapVm(
+        base: String,
+        secret: ResolvedSessionSecret,
+        resource: CloudManagedResource,
+        action: VmPowerAction,
+        http: OkHttpClient
+    ): String {
+        val session = openEsxiSoapSession(base, secret, http)
+        val soapMethod = when (action) {
+            VmPowerAction.START -> "PowerOnVM_Task"
+            VmPowerAction.STOP -> "PowerOffVM_Task"
+            VmPowerAction.SAVE -> "SuspendVM_Task"
+            VmPowerAction.REBOOT -> "ResetVM_Task"
+        }
+        postEsxiVimSoap(
+            sdkUrl = session.sdkUrl,
+            soapAction = "urn:vim25/6.5",
+            innerBodyXml = """
+                <$soapMethod xmlns="urn:vim25">
+                  <_this type="VirtualMachine">${escapeXml(resource.id)}</_this>
+                </$soapMethod>
+            """.trimIndent(),
+            cookieHeader = session.cookieHeader,
+            http = http
+        )
+        return "ESXi $soapMethod queued (${resource.name})"
     }
 
     // =========================================================================
     // 3. AWS EC2 Query API with Full AWS Signature Version 4 (`AWS4-HMAC-SHA256`)
     // =========================================================================
 
-    private fun fetchAwsEc2Inventory(
+    private fun resolveAwsEndpointOverride(endpointHost: String, apiEndpointUrl: String, region: String): String? {
+        val candidate = apiEndpointUrl.trim().takeIf {
+            it.startsWith("http://", ignoreCase = true) || it.startsWith("https://", ignoreCase = true)
+        }
+        if (candidate != null) return candidate
+        val cleanHost = endpointHost.trim()
+        if (cleanHost.startsWith("http://", ignoreCase = true) || cleanHost.startsWith("https://", ignoreCase = true)) {
+            return cleanHost
+        }
+        return null
+    }
+
+    private fun resolveAwsSessionToken(
         settings: ProtocolSpecificSettings.CloudVirtualization,
         secret: ResolvedSessionSecret
+    ): String {
+        if (secret.keyPassphrase.isNotBlank()) return secret.keyPassphrase.trim()
+        val subField = settings.subscriptionOrAccountId.trim()
+        if (subField.startsWith("IQo") || subField.startsWith("Fwo") || subField.length > 64) {
+            return subField
+        }
+        return ""
+    }
+
+    private fun fetchAwsEc2Inventory(
+        endpointHost: String,
+        settings: ProtocolSpecificSettings.CloudVirtualization,
+        secret: ResolvedSessionSecret,
+        allowSelfSignedTls: Boolean
     ): List<CloudManagedResource> {
-        val region = settings.regionOrCluster.ifBlank { "us-east-1" }
+        val region = settings.regionOrCluster.ifBlank {
+            if (endpointHost.matches(Regex("^[a-z]{2}-[a-z]+-\\d+$"))) endpointHost else "us-east-1"
+        }
         val xmlBody = executeAwsEc2SignedAction(
             region = region,
-            accessKeyId = secret.username,
-            secretAccessKey = secret.password,
-            formQuery = "Action=DescribeInstances&Version=2016-11-15"
+            accessKeyId = secret.username.trim(),
+            secretAccessKey = secret.password.trim(),
+            formQuery = "Action=DescribeInstances&Version=2016-11-15",
+            sessionToken = resolveAwsSessionToken(settings, secret),
+            endpointOverride = resolveAwsEndpointOverride(endpointHost, settings.apiEndpointUrl, region),
+            allowSelfSignedTls = allowSelfSignedTls
         )
         return parseEc2DescribeInstancesXml(xmlBody, region)
     }
 
     private fun controlAwsEc2Instance(
+        endpointHost: String,
         settings: ProtocolSpecificSettings.CloudVirtualization,
         secret: ResolvedSessionSecret,
         resource: CloudManagedResource,
-        action: VmPowerAction
+        action: VmPowerAction,
+        allowSelfSignedTls: Boolean
     ): String {
-        val region = settings.regionOrCluster.ifBlank { "us-east-1" }
+        val region = settings.regionOrCluster.ifBlank {
+            if (endpointHost.matches(Regex("^[a-z]{2}-[a-z]+-\\d+$"))) endpointHost else "us-east-1"
+        }
         val ec2Action = when (action) {
             VmPowerAction.START -> "StartInstances"
             VmPowerAction.STOP, VmPowerAction.SAVE -> "StopInstances"
@@ -483,25 +814,43 @@ object CloudVirtualizationHubClient {
         }
         executeAwsEc2SignedAction(
             region = region,
-            accessKeyId = secret.username,
-            secretAccessKey = secret.password,
-            formQuery = "Action=$ec2Action&InstanceId.1=${resource.id}&Version=2016-11-15"
+            accessKeyId = secret.username.trim(),
+            secretAccessKey = secret.password.trim(),
+            formQuery = "Action=$ec2Action&InstanceId.1=${resource.id}&Version=2016-11-15",
+            sessionToken = resolveAwsSessionToken(settings, secret),
+            endpointOverride = resolveAwsEndpointOverride(endpointHost, settings.apiEndpointUrl, region),
+            allowSelfSignedTls = allowSelfSignedTls
         )
         return "AWS EC2 $ec2Action -> ${resource.id}"
     }
 
     /**
-     * Complete AWS Signature Version 4 (`AWS4-HMAC-SHA256`) request signer for EC2 POST endpoints.
+     * Complete AWS Signature Version 4 (`AWS4-HMAC-SHA256`) request signer for EC2 POST endpoints,
+     * supporting STS temporary session tokens (`X-Amz-Security-Token`) and custom VPC / LocalStack / GovCloud endpoints.
      */
     internal fun executeAwsEc2SignedAction(
         region: String,
         accessKeyId: String,
         secretAccessKey: String,
-        formQuery: String
+        formQuery: String,
+        sessionToken: String = "",
+        endpointOverride: String? = null,
+        allowSelfSignedTls: Boolean = false
     ): String {
         val service = "ec2"
-        val host = "ec2.$region.amazonaws.com"
-        val endpoint = "https://$host/"
+        val defaultHost = if (region.startsWith("cn-")) {
+            "ec2.$region.amazonaws.com.cn"
+        } else {
+            "ec2.$region.amazonaws.com"
+        }
+        val resolvedEndpoint = endpointOverride?.trim()?.takeIf { it.isNotEmpty() } ?: "https://$defaultHost/"
+        val parsedUri = URI(if (resolvedEndpoint.endsWith("/")) resolvedEndpoint else "$resolvedEndpoint/")
+        val hostHeader = if (parsedUri.port > 0 && parsedUri.port != 80 && parsedUri.port != 443) {
+            "${parsedUri.host}:${parsedUri.port}"
+        } else {
+            parsedUri.host ?: defaultHost
+        }
+        val canonicalUriPath = parsedUri.rawPath?.ifEmpty { "/" } ?: "/"
         val contentType = "application/x-www-form-urlencoded; charset=utf-8"
 
         val now = Date()
@@ -515,9 +864,18 @@ object CloudVirtualizationHubClient {
         val dateStamp = dateStampFmt.format(now)
 
         val payloadHash = sha256Hex(formQuery.toByteArray(StandardCharsets.UTF_8))
-        val canonicalHeaders = "content-type:$contentType\nhost:$host\nx-amz-date:$amzDate\n"
-        val signedHeaders = "content-type;host;x-amz-date"
-        val canonicalRequest = "POST\n/\n\n$canonicalHeaders\n$signedHeaders\n$payloadHash"
+        val cleanToken = sessionToken.trim()
+        val canonicalHeaders = if (cleanToken.isNotEmpty()) {
+            "content-type:$contentType\nhost:$hostHeader\nx-amz-date:$amzDate\nx-amz-security-token:$cleanToken\n"
+        } else {
+            "content-type:$contentType\nhost:$hostHeader\nx-amz-date:$amzDate\n"
+        }
+        val signedHeaders = if (cleanToken.isNotEmpty()) {
+            "content-type;host;x-amz-date;x-amz-security-token"
+        } else {
+            "content-type;host;x-amz-date"
+        }
+        val canonicalRequest = "POST\n$canonicalUriPath\n\n$canonicalHeaders\n$signedHeaders\n$payloadHash"
 
         val credentialScope = "$dateStamp/$region/$service/aws4_request"
         val stringToSign = "AWS4-HMAC-SHA256\n$amzDate\n$credentialScope\n${sha256Hex(canonicalRequest.toByteArray(StandardCharsets.UTF_8))}"
@@ -532,18 +890,26 @@ object CloudVirtualizationHubClient {
         val authorizationHeader =
             "AWS4-HMAC-SHA256 Credential=$accessKeyId/$credentialScope, SignedHeaders=$signedHeaders, Signature=$signatureHex"
 
-        val req = Request.Builder()
-            .url(endpoint)
+        val reqBuilder = Request.Builder()
+            .url(parsedUri.toString())
             .header("Content-Type", contentType)
-            .header("Host", host)
+            .header("Host", hostHeader)
             .header("X-Amz-Date", amzDate)
             .header("Authorization", authorizationHeader)
             .post(formQuery.toRequestBody(contentType.toMediaType()))
-            .build()
+        if (cleanToken.isNotEmpty()) {
+            reqBuilder.header("X-Amz-Security-Token", cleanToken)
+        }
 
-        strictHttpClient.newCall(req).execute().use { resp ->
-            if (!resp.isSuccessful) error("AWS EC2 HTTP ${resp.code}")
-            return resp.body?.string().orEmpty()
+        clientFor(allowSelfSignedTls).newCall(reqBuilder.build()).execute().use { resp ->
+            val respBody = resp.body?.string().orEmpty()
+            if (!resp.isSuccessful) {
+                val errCode = Regex("<Code>([^<]+)</Code>").find(respBody)?.groupValues?.get(1)
+                val errMsg = Regex("<Message>([^<]+)</Message>").find(respBody)?.groupValues?.get(1)
+                val detail = listOfNotNull(errCode, errMsg?.let { unescapeXml(it) }).joinToString(": ")
+                error("AWS EC2 HTTP ${resp.code}${if (detail.isNotBlank()) " ($detail)" else ""}")
+            }
+            return respBody
         }
     }
 
@@ -557,6 +923,7 @@ object CloudVirtualizationHubClient {
         val azRegex = Regex("<placement>.*?<availabilityZone>([^<]+)</availabilityZone>.*?</placement>", setOf(RegexOption.DOT_MATCHES_ALL))
         val stateRegex = Regex("<instanceState>.*?<name>([^<]+)</name>.*?</instanceState>", setOf(RegexOption.DOT_MATCHES_ALL))
         val platformRegex = Regex("<platform>([^<]+)</platform>")
+        val platformDetailsRegex = Regex("<platformDetails>([^<]+)</platformDetails>")
         val tagSetRegex = Regex("<tagSet>(.*?)</tagSet>", setOf(RegexOption.DOT_MATCHES_ALL))
         val tagItemRegex = Regex("<item>(.*?)</item>", setOf(RegexOption.DOT_MATCHES_ALL))
         val tagKeyRegex = Regex("<key>([^<]*)</key>")
@@ -599,7 +966,8 @@ object CloudVirtualizationHubClient {
                 ?: "0.0.0.0"
             val az = azRegex.find(block)?.groupValues?.get(1)?.takeIf { it.isNotBlank() } ?: region
             val state = (stateRegex.find(block)?.groupValues?.get(1) ?: "running").uppercase(Locale.ROOT)
-            val isWindows = platformRegex.find(block)?.groupValues?.get(1)?.contains("windows", ignoreCase = true) == true
+            val isWindows = platformRegex.find(block)?.groupValues?.get(1)?.contains("windows", ignoreCase = true) == true ||
+                platformDetailsRegex.find(block)?.groupValues?.get(1)?.contains("windows", ignoreCase = true) == true
 
             results += CloudManagedResource(
                 id = instId,
@@ -641,6 +1009,18 @@ object CloudVirtualizationHubClient {
     // 4. Microsoft Azure Compute ARM REST API (`2024-03-01` + OAuth2 `client_credentials`)
     // =========================================================================
 
+    private fun resolveAzureArmBaseUrl(apiEndpointUrl: String): String {
+        val trimmed = apiEndpointUrl.trim().trimEnd('/')
+        if (trimmed.startsWith("http://", ignoreCase = true) || trimmed.startsWith("https://", ignoreCase = true)) {
+            val parsed = runCatching { URI(trimmed) }.getOrNull()
+            val h = parsed?.host.orEmpty()
+            if (h.contains('.') || h.equals("localhost", ignoreCase = true) || h == "127.0.0.1" || (parsed?.port ?: -1) > 0) {
+                return trimmed
+            }
+        }
+        return "https://management.azure.com"
+    }
+
     internal fun exchangeAzureAdClientCredentialsToken(
         tenantId: String,
         clientId: String,
@@ -672,43 +1052,110 @@ object CloudVirtualizationHubClient {
 
     private fun resolveAzureBearerToken(
         settings: ProtocolSpecificSettings.CloudVirtualization,
-        secret: ResolvedSessionSecret
+        secret: ResolvedSessionSecret,
+        armBase: String,
+        http: OkHttpClient
     ): String {
         val tenantCandidate = secret.domain.ifBlank {
             settings.realmOrDomain.takeIf { it.isNotBlank() && !it.equals("pam", ignoreCase = true) }.orEmpty()
         }
         return if (secret.username.isNotBlank() && tenantCandidate.isNotBlank()) {
+            val authority = if (armBase.contains("localhost") || armBase.contains("127.0.0.1")) {
+                armBase
+            } else {
+                "https://login.microsoftonline.com"
+            }
             exchangeAzureAdClientCredentialsToken(
                 tenantId = tenantCandidate,
                 clientId = secret.username,
-                clientSecret = secret.password
+                clientSecret = secret.password,
+                authorityBaseUrl = authority,
+                http = http
             )
         } else {
-            secret.password
+            secret.password.trim().removePrefix("Bearer ").removePrefix("bearer ").trim()
         }
+    }
+
+    private fun resolveAzureVmNicIpAddress(
+        armBase: String,
+        bearer: String,
+        props: JsonObject?,
+        http: OkHttpClient
+    ): String? {
+        val nics = (props?.get("networkProfile") as? JsonObject)?.get("networkInterfaces")?.jsonArray ?: return null
+        val firstNicId = nics.firstOrNull()?.jsonObject?.get("id")?.jsonPrimitive?.contentOrNull?.takeIf { it.startsWith("/") }
+            ?: return null
+        val nicReq = Request.Builder()
+            .url("$armBase$firstNicId?api-version=2024-01-01")
+            .header("Authorization", "Bearer $bearer")
+            .get()
+            .build()
+        return runCatching {
+            http.newCall(nicReq).execute().use { resp ->
+                if (!resp.isSuccessful) return@use null
+                val nicObj = json.parseToJsonElement(resp.body?.string().orEmpty()).jsonObject
+                val ipCfg = ((nicObj["properties"] as? JsonObject)?.get("ipConfigurations")?.jsonArray)
+                    ?.firstOrNull()?.jsonObject?.get("properties") as? JsonObject
+                    ?: return@use null
+                val pubIpId = (ipCfg["publicIPAddress"] as? JsonObject)?.get("id")?.jsonPrimitive?.contentOrNull
+                if (!pubIpId.isNullOrBlank() && pubIpId.startsWith("/")) {
+                    val pubIp = runCatching {
+                        val pubReq = Request.Builder()
+                            .url("$armBase$pubIpId?api-version=2024-01-01")
+                            .header("Authorization", "Bearer $bearer")
+                            .get()
+                            .build()
+                        http.newCall(pubReq).execute().use { pResp ->
+                            if (!pResp.isSuccessful) return@use null
+                            val pObj = json.parseToJsonElement(pResp.body?.string().orEmpty()).jsonObject
+                            (pObj["properties"] as? JsonObject)?.get("ipAddress")?.jsonPrimitive?.contentOrNull
+                        }
+                    }.getOrNull()
+                    if (!pubIp.isNullOrBlank()) return@use pubIp
+                }
+                ipCfg["privateIPAddress"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+            }
+        }.getOrNull()
     }
 
     private fun fetchAzureVmInventory(
         settings: ProtocolSpecificSettings.CloudVirtualization,
-        secret: ResolvedSessionSecret
+        secret: ResolvedSessionSecret,
+        allowSelfSignedTls: Boolean = false
     ): List<CloudManagedResource> {
         val subId = settings.subscriptionOrAccountId.trim()
         require(subId.isNotBlank()) { "Azure Subscription ID required" }
-        val bearer = resolveAzureBearerToken(settings, secret)
-        val armBase = settings.apiEndpointUrl.trim()
-            .takeIf { it.startsWith("http://", true) || it.startsWith("https://", true) }
-            ?.trimEnd('/')
-            ?: "https://management.azure.com"
-        val url = "$armBase/subscriptions/$subId/providers/Microsoft.Compute/virtualMachines?api-version=2024-03-01&\$expand=instanceView"
+        val http = clientFor(allowSelfSignedTls)
+        val armBase = resolveAzureArmBaseUrl(settings.apiEndpointUrl)
+        val bearer = resolveAzureBearerToken(settings, secret, armBase, http)
+        val primaryUrl = "$armBase/subscriptions/$subId/providers/Microsoft.Compute/virtualMachines?api-version=2024-03-01&\$expand=instanceView"
         val req = Request.Builder()
-            .url(url)
+            .url(primaryUrl)
             .header("Authorization", "Bearer $bearer")
             .get()
             .build()
 
-        strictHttpClient.newCall(req).execute().use { resp ->
-            if (!resp.isSuccessful) error("Azure ARM HTTP ${resp.code}")
-            val root = json.parseToJsonElement(resp.body?.string().orEmpty()).jsonObject
+        http.newCall(req).execute().use { resp ->
+            val rawBody = if (resp.isSuccessful) {
+                resp.body?.string().orEmpty()
+            } else if (resp.code == 400) {
+                // Azure subscription-wide list in newer tenants requires statusOnly=true instead of $expand=instanceView
+                val statusOnlyUrl = "$armBase/subscriptions/$subId/providers/Microsoft.Compute/virtualMachines?api-version=2024-03-01&statusOnly=true"
+                val fallbackReq = Request.Builder()
+                    .url(statusOnlyUrl)
+                    .header("Authorization", "Bearer $bearer")
+                    .get()
+                    .build()
+                http.newCall(fallbackReq).execute().use { fb ->
+                    if (!fb.isSuccessful) error("Azure ARM HTTP ${fb.code}")
+                    fb.body?.string().orEmpty()
+                }
+            } else {
+                error("Azure ARM HTTP ${resp.code}")
+            }
+
+            val root = json.parseToJsonElement(rawBody).jsonObject
             val arr = root["value"]?.jsonArray ?: return emptyList()
             return arr.map { elem ->
                 val obj = elem.jsonObject
@@ -723,6 +1170,7 @@ object CloudVirtualizationHubClient {
                 val osType = osDisk?.get("osType")?.jsonPrimitive?.content ?: "Linux"
                 val osProfile = props?.get("osProfile") as? JsonObject
                 val computerName = osProfile?.get("computerName")?.jsonPrimitive?.contentOrNull?.ifBlank { null } ?: name
+                val resolvedIp = resolveAzureVmNicIpAddress(armBase, bearer, props, http)
 
                 val statuses = (props?.get("instanceView") as? JsonObject)?.get("statuses")?.jsonArray
                 val powerCode = statuses
@@ -744,7 +1192,7 @@ object CloudVirtualizationHubClient {
                     nodeOrZone = location,
                     powerState = normalizedPowerState,
                     cpuRamSummary = "$vmSize ($osType)",
-                    addressOrSessionHost = computerName,
+                    addressOrSessionHost = resolvedIp ?: computerName,
                     preferredConsoleProtocol = if (osType.equals("Windows", ignoreCase = true)) {
                         VaultProtocolType.RDP
                     } else {
@@ -759,7 +1207,8 @@ object CloudVirtualizationHubClient {
         settings: ProtocolSpecificSettings.CloudVirtualization,
         secret: ResolvedSessionSecret,
         resource: CloudManagedResource,
-        action: VmPowerAction
+        action: VmPowerAction,
+        allowSelfSignedTls: Boolean = false
     ): String {
         val armAction = when (action) {
             VmPowerAction.START -> "start"
@@ -767,7 +1216,9 @@ object CloudVirtualizationHubClient {
             VmPowerAction.SAVE -> "deallocate"
             VmPowerAction.REBOOT -> "restart"
         }
-        val bearer = resolveAzureBearerToken(settings, secret)
+        val http = clientFor(allowSelfSignedTls)
+        val armBase = resolveAzureArmBaseUrl(settings.apiEndpointUrl)
+        val bearer = resolveAzureBearerToken(settings, secret, armBase, http)
         val resourcePath = if (resource.id.startsWith("/")) {
             resource.id
         } else {
@@ -775,10 +1226,6 @@ object CloudVirtualizationHubClient {
             val rg = settings.regionOrCluster.ifBlank { "default" }
             "/subscriptions/$subId/resourceGroups/$rg/providers/Microsoft.Compute/virtualMachines/${resource.id}"
         }
-        val armBase = settings.apiEndpointUrl.trim()
-            .takeIf { it.startsWith("http://", true) || it.startsWith("https://", true) }
-            ?.trimEnd('/')
-            ?: "https://management.azure.com"
         val url = "$armBase$resourcePath/$armAction?api-version=2024-03-01"
         val req = Request.Builder()
             .url(url)
@@ -786,7 +1233,7 @@ object CloudVirtualizationHubClient {
             .post("".toRequestBody(null))
             .build()
 
-        strictHttpClient.newCall(req).execute().use { resp ->
+        http.newCall(req).execute().use { resp ->
             if (!resp.isSuccessful) error("Azure VM $armAction HTTP ${resp.code}")
             return "Azure ARM $armAction accepted (${resource.name})"
         }
@@ -1476,71 +1923,145 @@ object CloudVirtualizationHubClient {
         error("Hyper-V ${action.name} failed across all transports: ${transportErrors.joinToString(" | ")}")
     }
 
+    private fun parseRdsWsmanSessionsXml(body: String, hostLabel: String): List<CloudManagedResource> {
+        extractWsmanFaultSummary(body)?.let { error("Windows TS WS-Man Fault: $it") }
+        val sidRegex = Regex("<(?:\\w+:)?SessionId>(\\d+)</(?:\\w+:)?SessionId>")
+        val userRegex = Regex("<(?:\\w+:)?UserName>([^<]*)</(?:\\w+:)?UserName>")
+        val stateRegex = Regex("<(?:\\w+:)?ConnectState>(\\d+)</(?:\\w+:)?ConnectState>")
+        val sids = sidRegex.findAll(body).map { it.groupValues[1] }.toList()
+        val users = userRegex.findAll(body).map { it.groupValues[1] }.toList()
+        val states = stateRegex.findAll(body).map { it.groupValues[1] }.toList()
+        return sids.mapIndexed { idx, sid ->
+            val u = users.getOrElse(idx) { "" }.trim().ifBlank { "Session-$sid" }
+            val stCode = states.getOrNull(idx)?.toIntOrNull()
+            val stateLabel = when (stCode) {
+                0 -> "ACTIVE"
+                4 -> "DISCONNECTED"
+                else -> "ACTIVE"
+            }
+            CloudManagedResource(
+                id = sid,
+                name = "${unescapeXml(u)} (Session #$sid)",
+                nodeOrZone = hostLabel,
+                powerState = stateLabel,
+                cpuRamSummary = "RDP-Tcp#$sid",
+                addressOrSessionHost = hostLabel,
+                preferredConsoleProtocol = VaultProtocolType.RDP,
+                isTerminalServicesSession = true
+            )
+        }
+    }
+
+    private fun parseQuserSessionsOutput(raw: String, hostLabel: String): List<CloudManagedResource> {
+        val results = mutableListOf<CloudManagedResource>()
+        for (rawLine in raw.lineSequence()) {
+            val line = rawLine.trimEnd('\r', '\n').trimStart(' ', '>')
+            if (line.isBlank() || line.startsWith("USERNAME", ignoreCase = true) || line.startsWith("SESSIONNAME", ignoreCase = true)) {
+                continue
+            }
+            val tokens = line.split(Regex("\\s+")).filter { it.isNotEmpty() }
+            if (tokens.size < 3) continue
+            val idIdx = tokens.indexOfFirst { it.all { ch -> ch.isDigit() } }
+            if (idIdx <= 0) continue
+            val sid = tokens[idIdx]
+            val user = tokens[0]
+            val sessName = if (idIdx >= 2) tokens[1] else "Disc"
+            val stateRaw = tokens.getOrElse(idIdx + 1) { "Active" }
+            val state = if (stateRaw.startsWith("Act", ignoreCase = true)) "ACTIVE" else "DISCONNECTED"
+            results += CloudManagedResource(
+                id = sid,
+                name = "$user (Session #$sid)",
+                nodeOrZone = hostLabel,
+                powerState = state,
+                cpuRamSummary = sessName,
+                addressOrSessionHost = hostLabel,
+                preferredConsoleProtocol = VaultProtocolType.RDP,
+                isTerminalServicesSession = true
+            )
+        }
+        return results
+    }
+
     private fun fetchWindowsTerminalServicesSessions(
         host: String,
         settings: ProtocolSpecificSettings.CloudVirtualization,
         secret: ResolvedSessionSecret,
         allowSelfSignedTls: Boolean
     ): List<CloudManagedResource> {
-        val http = clientFor(allowSelfSignedTls)
-        val url = normalizeWinRmUrl(host, settings.apiEndpointUrl)
+        val bareHost = extractBareHyperVHost(host.ifBlank { settings.apiEndpointUrl })
+        val identity = resolveWindowsIdentity(secret, settings.realmOrDomain)
         val resourceUri = "http://schemas.microsoft.com/wbem/wsman/1/wmi/root/cimv2/TerminalServices/Win32_TerminalServicesSession"
-        val soap = buildWinRmEnumerateSoap(toUrl = url, resourceUri = resourceUri)
-        val basic = Base64.getEncoder()
-            .encodeToString("${secret.username}:${secret.password}".toByteArray(StandardCharsets.UTF_8))
+        val explicitEndpoint = sanitizedHyperVEndpoint(settings.apiEndpointUrl, bareHost)
+        val httpsClient = clientFor(allowSelfSignedTls)
 
-        val req = Request.Builder()
-            .url(url)
-            .header("Authorization", "Basic $basic")
-            .post(soap.toRequestBody("application/soap+xml;charset=UTF-8".toMediaType()))
-            .build()
-
-        http.newCall(req).execute().use { resp ->
-            if (!resp.isSuccessful) error("Windows TS WinRM HTTP ${resp.code}")
-            val body = resp.body?.string().orEmpty()
-            val sidRegex = Regex("<(?:\\w+:)?SessionId>(\\d+)</(?:\\w+:)?SessionId>")
-            val userRegex = Regex("<(?:\\w+:)?UserName>([^<]+)</(?:\\w+:)?UserName>")
-            val sids = sidRegex.findAll(body).map { it.groupValues[1] }.toList()
-            val users = userRegex.findAll(body).map { it.groupValues[1] }.toList()
-            return sids.mapIndexed { idx, sid ->
-                val u = users.getOrElse(idx) { "Session-$sid" }
-                CloudManagedResource(
-                    id = sid,
-                    name = "${unescapeXml(u)} (Session #$sid)",
-                    nodeOrZone = host,
-                    powerState = "ACTIVE",
-                    cpuRamSummary = "RDP-Tcp#$sid",
-                    addressOrSessionHost = host,
-                    preferredConsoleProtocol = VaultProtocolType.RDP,
-                    isTerminalServicesSession = true
-                )
+        if (explicitEndpoint.isNotBlank()) {
+            val parsed = runCatching { URI(explicitEndpoint) }.getOrNull()
+            val scheme = parsed?.scheme?.lowercase(Locale.ROOT).orEmpty()
+            val endpointHost = parsed?.host?.takeIf { it.isNotBlank() } ?: bareHost
+            val endpointPath = parsed?.path?.takeIf { it.isNotBlank() } ?: "/wsman"
+            if (scheme == "http") {
+                val port = if (parsed != null && parsed.port > 0) parsed.port else 5985
+                val normPath = if (endpointPath.startsWith("/")) endpointPath else "/$endpointPath"
+                val toUrl = "http://$endpointHost:$port$normPath"
+                val soap = buildWinRmEnumerateSoap(toUrl = toUrl, resourceUri = resourceUri)
+                val xml = runCatching {
+                    VncNativeBridge.nativeWinrmWsmanPost(
+                        endpointHost, port, normPath, identity.username, identity.password, identity.domain, soap, 10_000
+                    )
+                }.getOrElse {
+                    postWsmanHttpsNtlmOrBasic(toUrl, endpointHost, soap, identity, httpsClient)
+                }
+                return parseRdsWsmanSessionsXml(xml, bareHost.ifBlank { endpointHost })
+            } else if (scheme == "https") {
+                val url = normalizeWinRmUrl(endpointHost, explicitEndpoint)
+                val soap = buildWinRmEnumerateSoap(toUrl = url, resourceUri = resourceUri)
+                val xml = postWsmanHttpsNtlmOrBasic(url, endpointHost, soap, identity, httpsClient)
+                return parseRdsWsmanSessionsXml(xml, bareHost.ifBlank { endpointHost })
             }
         }
+
+        val transportErrors = mutableListOf<String>()
+        if (identity.username.isNotBlank()) {
+            // Tier 1: WinRM HTTP :5985 NTLMv2 + SPNEGO sealing
+            runCatching {
+                val toUrl = "http://$bareHost:5985/wsman"
+                val soap = buildWinRmEnumerateSoap(toUrl = toUrl, resourceUri = resourceUri)
+                val xml = VncNativeBridge.nativeWinrmWsmanPost(
+                    bareHost, 5985, "/wsman", identity.username, identity.password, identity.domain, soap, 10_000
+                )
+                parseRdsWsmanSessionsXml(xml, bareHost)
+            }.onSuccess { return it }
+                .onFailure { transportErrors += "WinRM :5985 (${it.message})" }
+
+            // Tier 2: WinRM HTTPS :5986 NTLMv2 + Basic fallback
+            runCatching {
+                val url = "https://$bareHost:5986/wsman"
+                val soap = buildWinRmEnumerateSoap(toUrl = url, resourceUri = resourceUri)
+                val xml = postWsmanHttpsNtlmOrBasic(url, bareHost, soap, identity, clientFor(allowSelfSignedTls = true))
+                parseRdsWsmanSessionsXml(xml, bareHost)
+            }.onSuccess { return it }
+                .onFailure { transportErrors += "WinRM :5986 (${it.message})" }
+        }
+
+        // Tier 3: SSH :22 quser / query session fallback
+        runCatching {
+            val out = runHyperVSshPowerShell(bareHost, identity, "quser")
+            parseQuserSessionsOutput(out, bareHost)
+        }.onSuccess { return it }
+            .onFailure { transportErrors += "SSH :22 (${it.message})" }
+
+        error("Windows Terminal Services session query failed on $bareHost: ${transportErrors.joinToString(" • ")}")
     }
 
-    private fun disconnectOrLogoffRdsSession(
-        host: String,
-        settings: ProtocolSpecificSettings.CloudVirtualization,
-        secret: ResolvedSessionSecret,
-        resource: CloudManagedResource,
-        action: VmPowerAction,
-        allowSelfSignedTls: Boolean
-    ): String {
-        val http = clientFor(allowSelfSignedTls)
-        val url = normalizeWinRmUrl(host, settings.apiEndpointUrl)
-        val basic = Base64.getEncoder()
-            .encodeToString("${secret.username}:${secret.password}".toByteArray(StandardCharsets.UTF_8))
-        val numericSessionId = resource.id.filter { it.isDigit() }
-            .ifBlank { error("Invalid RDS Session ID: ${resource.id}") }
-        val cmd = if (action == VmPowerAction.STOP) "logoff $numericSessionId" else "tsdiscon $numericSessionId"
+    private fun buildWin32ProcessCreateSoap(toUrl: String, cmd: String): String {
         val resourceUri = "http://schemas.microsoft.com/wbem/wsman/1/wmi/root/cimv2/Win32_Process"
-        val soap = """
+        return """
             <s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"
                         xmlns:wsa="http://schemas.xmlsoap.org/ws/2004/08/addressing"
                         xmlns:wsman="http://schemas.dmtf.org/wbem/wsman/1/wsman.xsd"
                         xmlns:p="$resourceUri">
               <s:Header>
-                <wsa:To>${escapeXml(url)}</wsa:To>
+                <wsa:To>${escapeXml(toUrl)}</wsa:To>
                 <wsman:ResourceURI s:mustUnderstand="true">$resourceUri</wsman:ResourceURI>
                 <wsa:Action s:mustUnderstand="true">$resourceUri/Create</wsa:Action>
                 <wsman:MaxEnvelopeSize s:mustUnderstand="true">153600</wsman:MaxEnvelopeSize>
@@ -1557,17 +2078,78 @@ object CloudVirtualizationHubClient {
               </s:Body>
             </s:Envelope>
         """.trimIndent()
+    }
 
-        val req = Request.Builder()
-            .url(url)
-            .header("Authorization", "Basic $basic")
-            .post(soap.toRequestBody("application/soap+xml;charset=UTF-8".toMediaType()))
-            .build()
+    private fun disconnectOrLogoffRdsSession(
+        host: String,
+        settings: ProtocolSpecificSettings.CloudVirtualization,
+        secret: ResolvedSessionSecret,
+        resource: CloudManagedResource,
+        action: VmPowerAction,
+        allowSelfSignedTls: Boolean
+    ): String {
+        val bareHost = extractBareHyperVHost(host.ifBlank { settings.apiEndpointUrl })
+        val identity = resolveWindowsIdentity(secret, settings.realmOrDomain)
+        val numericSessionId = resource.id.filter { it.isDigit() }
+            .ifBlank { error("Invalid RDS Session ID: ${resource.id}") }
+        val cmd = if (action == VmPowerAction.STOP) "logoff $numericSessionId" else "tsdiscon $numericSessionId"
+        val explicitEndpoint = sanitizedHyperVEndpoint(settings.apiEndpointUrl, bareHost)
+        val httpsClient = clientFor(allowSelfSignedTls)
 
-        http.newCall(req).execute().use { resp ->
-            if (!resp.isSuccessful) error("RDS session control HTTP ${resp.code}")
-            return "RDS executed '$cmd' on $host"
+        if (explicitEndpoint.isNotBlank()) {
+            val parsed = runCatching { URI(explicitEndpoint) }.getOrNull()
+            val scheme = parsed?.scheme?.lowercase(Locale.ROOT).orEmpty()
+            val endpointHost = parsed?.host?.takeIf { it.isNotBlank() } ?: bareHost
+            val endpointPath = parsed?.path?.takeIf { it.isNotBlank() } ?: "/wsman"
+            if (scheme == "http") {
+                val port = if (parsed != null && parsed.port > 0) parsed.port else 5985
+                val normPath = if (endpointPath.startsWith("/")) endpointPath else "/$endpointPath"
+                val toUrl = "http://$endpointHost:$port$normPath"
+                val soap = buildWin32ProcessCreateSoap(toUrl, cmd)
+                runCatching {
+                    VncNativeBridge.nativeWinrmWsmanPost(
+                        endpointHost, port, normPath, identity.username, identity.password, identity.domain, soap, 10_000
+                    )
+                }.getOrElse {
+                    postWsmanHttpsNtlmOrBasic(toUrl, endpointHost, soap, identity, httpsClient)
+                }
+                return "RDS executed '$cmd' on $endpointHost"
+            } else if (scheme == "https") {
+                val url = normalizeWinRmUrl(endpointHost, explicitEndpoint)
+                val soap = buildWin32ProcessCreateSoap(url, cmd)
+                postWsmanHttpsNtlmOrBasic(url, endpointHost, soap, identity, httpsClient)
+                return "RDS executed '$cmd' on $endpointHost"
+            }
         }
+
+        val transportErrors = mutableListOf<String>()
+        if (identity.username.isNotBlank()) {
+            runCatching {
+                val toUrl = "http://$bareHost:5985/wsman"
+                val soap = buildWin32ProcessCreateSoap(toUrl, cmd)
+                VncNativeBridge.nativeWinrmWsmanPost(
+                    bareHost, 5985, "/wsman", identity.username, identity.password, identity.domain, soap, 10_000
+                )
+                "RDS executed '$cmd' on $bareHost"
+            }.onSuccess { return it }
+                .onFailure { transportErrors += "WinRM :5985 (${it.message})" }
+
+            runCatching {
+                val url = "https://$bareHost:5986/wsman"
+                val soap = buildWin32ProcessCreateSoap(url, cmd)
+                postWsmanHttpsNtlmOrBasic(url, bareHost, soap, identity, clientFor(allowSelfSignedTls = true))
+                "RDS executed '$cmd' on $bareHost"
+            }.onSuccess { return it }
+                .onFailure { transportErrors += "WinRM :5986 (${it.message})" }
+        }
+
+        runCatching {
+            runHyperVSshPowerShell(bareHost, identity, cmd)
+            "RDS executed '$cmd' (SSH) on $bareHost"
+        }.onSuccess { return it }
+            .onFailure { transportErrors += "SSH :22 (${it.message})" }
+
+        error("RDS session control failed on $bareHost: ${transportErrors.joinToString(" • ")}")
     }
 
     private fun buildWinRmEnumerateSoap(toUrl: String, resourceUri: String): String = """

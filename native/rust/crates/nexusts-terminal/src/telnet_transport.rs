@@ -225,6 +225,51 @@ pub fn escape_telnet_data(data: &[u8]) -> Vec<u8> {
     out
 }
 
+/// Normalizes interactive terminal input for RFC 854 NVT Telnet (`\r` not followed by `\n` or `\0` -> `\r\n`)
+/// and escapes `0xFF` -> `0xFF 0xFF`.
+pub fn encode_telnet_nvt_input(data: &[u8], binary_tx: bool) -> Vec<u8> {
+    if binary_tx {
+        return escape_telnet_data(data);
+    }
+    let mut out = Vec::with_capacity(data.len() + 8);
+    let mut idx = 0;
+    while idx < data.len() {
+        let b = data[idx];
+        if b == TELNET_IAC {
+            out.push(TELNET_IAC);
+            out.push(TELNET_IAC);
+        } else if b == b'\r' {
+            out.push(b'\r');
+            let next = data.get(idx + 1).copied();
+            if next != Some(b'\n') && next != Some(0) {
+                out.push(b'\n');
+            }
+        } else {
+            out.push(b);
+        }
+        idx += 1;
+    }
+    out
+}
+
+fn strip_nvt_cr_nul(clean: Vec<u8>) -> Vec<u8> {
+    if !clean.windows(2).any(|w| w == b"\r\0") {
+        return clean;
+    }
+    let mut out = Vec::with_capacity(clean.len());
+    let mut i = 0;
+    while i < clean.len() {
+        if clean[i] == b'\r' && clean.get(i + 1) == Some(&0) {
+            out.push(b'\r');
+            i += 2;
+        } else {
+            out.push(clean[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
 fn format_host_port(host: &str, port: u16) -> String {
     let clean = host.trim().trim_start_matches('[').trim_end_matches(']');
     if clean.contains(':') {
@@ -235,7 +280,7 @@ fn format_host_port(host: &str, port: u16) -> String {
 }
 
 enum TelnetCommand {
-    WriteRaw(Vec<u8>),
+    WriteInput(Vec<u8>),
     Resize { cols: u16, rows: u16 },
     Disconnect,
 }
@@ -251,7 +296,7 @@ pub struct ActiveTelnetSession {
 }
 
 impl ActiveTelnetSession {
-    /// Connects to a remote Telnet endpoint (default port `23` if `port == 0`).
+    /// Connects to a remote Telnet endpoint (default port `23` if `port == 0`) with a 15-second connect timeout.
     pub async fn connect(
         host: &str,
         port: u16,
@@ -261,7 +306,14 @@ impl ActiveTelnetSession {
     ) -> Result<Self, io::Error> {
         let effective_port = if port == 0 { 23 } else { port };
         let target = format_host_port(host, effective_port);
-        let stream = TcpStream::connect(&target).await?;
+        let stream = tokio::time::timeout(Duration::from_secs(15), TcpStream::connect(&target))
+            .await
+            .map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!("Telnet connection timed out to {target}"),
+                )
+            })??;
         let _ = stream.set_nodelay(true);
 
         let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<TelnetCommand>();
@@ -284,7 +336,9 @@ impl ActiveTelnetSession {
                 tokio::select! {
                     maybe_cmd = cmd_rx.recv() => {
                         match maybe_cmd {
-                            Some(TelnetCommand::WriteRaw(wire_bytes)) => {
+                            Some(TelnetCommand::WriteInput(raw_input)) => {
+                                let binary_tx = parser.local_will[TELNET_OPT_BINARY as usize];
+                                let wire_bytes = encode_telnet_nvt_input(&raw_input, binary_tx);
                                 if let Err(e) = writer.write_all(&wire_bytes).await {
                                     if let Ok(mut guard) = err_clone.lock() {
                                         *guard = e.to_string();
@@ -295,14 +349,16 @@ impl ActiveTelnetSession {
                             }
                             Some(TelnetCommand::Resize { cols, rows }) => {
                                 parser.set_dimensions(cols, rows);
-                                let naws_pkt = build_telnet_naws_packet(cols.max(1), rows.max(1));
-                                if let Err(e) = writer.write_all(&naws_pkt).await {
-                                    if let Ok(mut guard) = err_clone.lock() {
-                                        *guard = e.to_string();
+                                if parser.is_naws_enabled() {
+                                    let naws_pkt = build_telnet_naws_packet(cols.max(1), rows.max(1));
+                                    if let Err(e) = writer.write_all(&naws_pkt).await {
+                                        if let Ok(mut guard) = err_clone.lock() {
+                                            *guard = e.to_string();
+                                        }
+                                        break;
                                     }
-                                    break;
+                                    let _ = writer.flush().await;
                                 }
-                                let _ = writer.flush().await;
                             }
                             Some(TelnetCommand::Disconnect) | None => {
                                 let _ = writer.shutdown().await;
@@ -314,7 +370,12 @@ impl ActiveTelnetSession {
                         match read_res {
                             Ok(0) => break,
                             Ok(n) => {
-                                let (clean, replies) = parser.feed(&buf[..n]);
+                                let (raw_clean, replies) = parser.feed(&buf[..n]);
+                                let clean = if parser.remote_do[TELNET_OPT_BINARY as usize] {
+                                    raw_clean
+                                } else {
+                                    strip_nvt_cr_nul(raw_clean)
+                                };
                                 if !replies.is_empty() {
                                     if let Err(e) = writer.write_all(&replies).await {
                                         if let Ok(mut guard) = err_clone.lock() {
@@ -356,7 +417,8 @@ impl ActiveTelnetSession {
         })
     }
 
-    /// Escapes any `0xFF` bytes per RFC 854 and queues `data` to the remote Telnet socket.
+    /// Normalizes RFC 854 NVT line endings (`\r` -> `\r\n` unless BINARY mode is negotiated),
+    /// escapes any `0xFF` bytes, and queues `data` to the remote Telnet socket.
     pub fn write_stdin(&self, data: &[u8]) -> bool {
         if data.is_empty() {
             return self.is_connected();
@@ -364,8 +426,9 @@ impl ActiveTelnetSession {
         if !self.is_connected() {
             return false;
         }
-        let escaped = escape_telnet_data(data);
-        self.cmd_tx.send(TelnetCommand::WriteRaw(escaped)).is_ok()
+        self.cmd_tx
+            .send(TelnetCommand::WriteInput(data.to_vec()))
+            .is_ok()
     }
 
     /// Sends a live `IAC SB NAWS` window-size frame (with RFC 855 `0xFF` byte doubling).
@@ -533,5 +596,21 @@ mod tests {
 
         session.disconnect();
         assert!(!session.is_connected());
+    }
+
+    #[test]
+    fn nvt_cr_lf_and_cr_nul_normalization() {
+        assert_eq!(
+            encode_telnet_nvt_input(b"enable\rshow ip int br\r\n", false),
+            b"enable\r\nshow ip int br\r\n"
+        );
+        assert_eq!(
+            encode_telnet_nvt_input(b"raw\r\xff", true),
+            b"raw\r\xff\xff"
+        );
+        assert_eq!(
+            strip_nvt_cr_nul(b"Router#\r\0prompt\r\nok".to_vec()),
+            b"Router#\rprompt\r\nok".to_vec()
+        );
     }
 }

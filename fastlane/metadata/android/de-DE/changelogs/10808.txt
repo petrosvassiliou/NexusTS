@@ -1,0 +1,1 @@
+• v0.8.8: Vollständige 23-Protokoll-Prüfung & Fehlerbehebung — ESXi VIM SOAP /sdk, Proxmox API-Token & LXC, AWS EC2 SigV4 + STS, Azure ARM OAuth2 + öffentliche IP, Explizites FTPS mit TLS-Session-Wiederverwendung, SSH Keyboard-Interactive, VNC/ARD-Authentifizierung sowie Royal TS .rtsz/.rtsx

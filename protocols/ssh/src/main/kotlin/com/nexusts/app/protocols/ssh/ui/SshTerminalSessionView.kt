@@ -125,14 +125,21 @@ private fun buildColoredTerminalRow(
                 val rawFg24 = ((attr ushr 32).toInt()) and 0x00FF_FFFF
                 val rawBg24 = ((attr ushr 8).toInt()) and 0x00FF_FFFF
                 val fgRgb24 = if (inverse) rawBg24 else rawFg24
-                val fgColor = if (fgRgb24 != 0 || inverse) {
-                    Color(0xFF000000.toInt() or fgRgb24)
-                } else {
-                    defaultFg
+                val bgRgb24 = if (inverse) rawFg24 else rawBg24
+                val fgColor = when {
+                    fgRgb24 != 0 -> Color(0xFF000000.toInt() or fgRgb24)
+                    inverse -> Color(0xFF0E131F)
+                    else -> defaultFg
+                }
+                val bgColor = when {
+                    bgRgb24 != 0 -> Color(0xFF000000.toInt() or bgRgb24)
+                    inverse -> defaultFg
+                    else -> Color.Unspecified
                 }
                 addStyle(
                     style = SpanStyle(
                         color = fgColor,
+                        background = bgColor,
                         fontWeight = if (bold) FontWeight.Bold else null,
                         fontStyle = if (italic) FontStyle.Italic else null,
                         textDecoration = if (underline) TextDecoration.Underline else null
@@ -502,12 +509,24 @@ fun SshTerminalSessionView(
                     monospace = true,
                     showCheckmarkWhenSelected = false
                 )
-                TerminalSpecialKeyButton("↑") { dispatchTerminalBytes("\u001b[A".toByteArray()) }
-                TerminalSpecialKeyButton("↓") { dispatchTerminalBytes("\u001b[B".toByteArray()) }
-                TerminalSpecialKeyButton("←") { dispatchTerminalBytes("\u001b[D".toByteArray()) }
-                TerminalSpecialKeyButton("→") { dispatchTerminalBytes("\u001b[C".toByteArray()) }
-                TerminalSpecialKeyButton("Home") { dispatchTerminalBytes("\u001b[H".toByteArray()) }
-                TerminalSpecialKeyButton("End") { dispatchTerminalBytes("\u001b[F".toByteArray()) }
+                TerminalSpecialKeyButton("↑") {
+                    dispatchTerminalBytes((if (controller.isApplicationCursorKeys()) "\u001bOA" else "\u001b[A").toByteArray())
+                }
+                TerminalSpecialKeyButton("↓") {
+                    dispatchTerminalBytes((if (controller.isApplicationCursorKeys()) "\u001bOB" else "\u001b[B").toByteArray())
+                }
+                TerminalSpecialKeyButton("←") {
+                    dispatchTerminalBytes((if (controller.isApplicationCursorKeys()) "\u001bOD" else "\u001b[D").toByteArray())
+                }
+                TerminalSpecialKeyButton("→") {
+                    dispatchTerminalBytes((if (controller.isApplicationCursorKeys()) "\u001bOC" else "\u001b[C").toByteArray())
+                }
+                TerminalSpecialKeyButton("Home") {
+                    dispatchTerminalBytes((if (controller.isApplicationCursorKeys()) "\u001bOH" else "\u001b[H").toByteArray())
+                }
+                TerminalSpecialKeyButton("End") {
+                    dispatchTerminalBytes((if (controller.isApplicationCursorKeys()) "\u001bOF" else "\u001b[F").toByteArray())
+                }
                 TerminalSpecialKeyButton("PgUp") {
                     scrollOffsetLines = (scrollOffsetLines + (snapshot.rows / 2).coerceAtLeast(1)).coerceIn(0, maxScrollLines)
                     controller.sendUserBytes("\u001b[5~".toByteArray())

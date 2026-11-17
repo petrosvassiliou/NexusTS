@@ -666,13 +666,21 @@ fn negotiate_rfb_version(banner: &[u8; 12]) -> Result<(u16, &'static [u8; 12], &
     }
 }
 
-fn select_security_type(
+const RFB_PSEUDO_LAST_RECT: i32 = -224;
+const RFB_PSEUDO_CURSOR: i32 = -239;
+const RFB_PSEUDO_X_CURSOR: i32 = -240;
+const RFB_PSEUDO_DESKTOP_NAME: i32 = -307;
+const RFB_PSEUDO_EXTENDED_DESKTOP_SIZE: i32 = -308;
+
+pub fn select_security_type(
     offered: &[u8],
     username: &str,
     password: &str,
 ) -> Result<u8, VncError> {
-    let has_ard_creds = !username.is_empty() || !password.is_empty();
-    if has_ard_creds && offered.contains(&RFB_SEC_APPLE_ARD) {
+    // Apple Remote Desktop (Type 30) requires a non-empty macOS system username;
+    // when username is empty (standard VNC password-only mode on macOS Screen Sharing),
+    // prefer Type 2 (VNC DES Auth) so VNC password connections succeed!
+    if !username.trim().is_empty() && offered.contains(&RFB_SEC_APPLE_ARD) {
         return Ok(RFB_SEC_APPLE_ARD);
     }
     if !password.is_empty() && offered.contains(&RFB_SEC_VNC_AUTH) {
@@ -681,11 +689,16 @@ fn select_security_type(
     if offered.contains(&RFB_SEC_NONE) {
         return Ok(RFB_SEC_NONE);
     }
+    if offered.contains(&RFB_SEC_VNC_AUTH) {
+        return Ok(RFB_SEC_VNC_AUTH);
+    }
     if offered.contains(&RFB_SEC_APPLE_ARD) {
         return Ok(RFB_SEC_APPLE_ARD);
     }
-    if offered.contains(&RFB_SEC_VNC_AUTH) {
-        return Ok(RFB_SEC_VNC_AUTH);
+    if offered.contains(&RFB_SEC_VENCRYPT) {
+        return Err(VncError::AuthFailed(
+            "Server requires VeNCrypt/TLS (type 19); enable standard VNC Auth (type 2) or Apple ARD (type 30) on server".into(),
+        ));
     }
     Err(VncError::AuthFailed(format!(
         "Server offered unsupported security types: {offered:?}"
@@ -739,6 +752,7 @@ async fn run_rfb_reader_loop<R: AsyncRead + Unpin>(
                 // FramebufferUpdate: [padding: u8, num_rects: u16 BE]
                 let _pad = reader.read_u8().await?;
                 let num_rects = reader.read_u16().await?;
+                let mut resized_in_frame = false;
 
                 for _ in 0..num_rects {
                     let x = reader.read_u16().await?;
@@ -748,9 +762,47 @@ async fn run_rfb_reader_loop<R: AsyncRead + Unpin>(
                     let encoding = reader.read_i32().await?;
 
                     match encoding {
+                        RFB_PSEUDO_LAST_RECT => {
+                            break;
+                        }
                         RFB_PSEUDO_DESKTOP_SIZE => {
                             if let Ok(mut fb) = framebuffer.lock() {
                                 fb.resize(u32::from(w.max(1)), u32::from(h.max(1)));
+                            }
+                            resized_in_frame = true;
+                        }
+                        RFB_PSEUDO_EXTENDED_DESKTOP_SIZE => {
+                            let num_screens = reader.read_u8().await? as usize;
+                            let mut pad3 = [0u8; 3];
+                            reader.read_exact(&mut pad3).await?;
+                            let mut screens = vec![0u8; num_screens * 16];
+                            reader.read_exact(&mut screens).await?;
+                            if let Ok(mut fb) = framebuffer.lock() {
+                                fb.resize(u32::from(w.max(1)), u32::from(h.max(1)));
+                            }
+                            resized_in_frame = true;
+                        }
+                        RFB_PSEUDO_DESKTOP_NAME => {
+                            let name_len = (reader.read_u32().await? as usize).min(4096);
+                            let mut name_buf = vec![0u8; name_len];
+                            reader.read_exact(&mut name_buf).await?;
+                        }
+                        RFB_PSEUDO_CURSOR => {
+                            let bpp = framebuffer
+                                .lock()
+                                .map(|fb| fb.pixel_format.bytes_per_pixel())
+                                .unwrap_or(4);
+                            let px_bytes = (w as usize) * (h as usize) * bpp;
+                            let mask_bytes = ((w as usize + 7) / 8) * (h as usize);
+                            let mut skip = vec![0u8; px_bytes + mask_bytes];
+                            reader.read_exact(&mut skip).await?;
+                        }
+                        RFB_PSEUDO_X_CURSOR => {
+                            if w > 0 && h > 0 {
+                                let row_bytes = (w as usize + 7) / 8;
+                                let skip_len = 6 + 2 * row_bytes * (h as usize);
+                                let mut skip = vec![0u8; skip_len];
+                                reader.read_exact(&mut skip).await?;
                             }
                         }
                         RFB_ENCODING_RAW => {
@@ -803,6 +855,9 @@ async fn run_rfb_reader_loop<R: AsyncRead + Unpin>(
                                 fb.apply_zrle_rect(x, y, w, h, &zbuf)?;
                             }
                         }
+                        other if other < 0 => {
+                            // Zero-payload RFB pseudo-encoding notification (e.g. Apple ARD / QEMU status)
+                        }
                         other => {
                             return Err(VncError::InvalidEncoding(format!(
                                 "Server sent unrequested RFB encoding {other}"
@@ -816,7 +871,7 @@ async fn run_rfb_reader_loop<R: AsyncRead + Unpin>(
                     .lock()
                     .map(|fb| (fb.width as u16, fb.height as u16))
                     .unwrap_or((1, 1));
-                let next_req = build_rfb_update_request(true, 0, 0, cur_w, cur_h);
+                let next_req = build_rfb_update_request(!resized_in_frame, 0, 0, cur_w, cur_h);
                 let _ = outbound_tx.send(next_req.to_vec());
             }
             1 => {
@@ -1070,10 +1125,10 @@ mod tests {
             upd2.extend_from_slice(clip);
             sock.write_all(&upd2).await.unwrap();
 
-            // Read incremental FramebufferUpdateRequest #3 (10B) + PointerEvent (6B) + KeyEvent (8B)
+            // Read non-incremental FramebufferUpdateRequest #3 after DesktopSize resize (10B) + PointerEvent (6B) + KeyEvent (8B)
             let mut req3 = [0u8; 10];
             sock.read_exact(&mut req3).await.unwrap();
-            assert_eq!(&req3[0..2], &[3, 1]);
+            assert_eq!(req3, [3, 0, 0, 0, 0, 0, 0, 6, 0, 4]);
 
             let mut ptr_pkt = [0u8; 6];
             sock.read_exact(&mut ptr_pkt).await.unwrap();
@@ -1229,5 +1284,22 @@ mod tests {
 
         client.disconnect();
         server_task.await.unwrap();
+    }
+
+    #[test]
+    fn security_type_selection_prefers_vnc_when_username_empty_and_ard_when_username_set() {
+        // macOS Screen Sharing offers [30 (Apple ARD), 2 (VNC Auth)]
+        assert_eq!(
+            select_security_type(&[30, 2], "", "vnc-only-password").unwrap(),
+            RFB_SEC_VNC_AUTH
+        );
+        assert_eq!(
+            select_security_type(&[30, 2], "   ", "vnc-only-password").unwrap(),
+            RFB_SEC_VNC_AUTH
+        );
+        assert_eq!(
+            select_security_type(&[30, 2], "admin", "macos-password").unwrap(),
+            RFB_SEC_APPLE_ARD
+        );
     }
 }

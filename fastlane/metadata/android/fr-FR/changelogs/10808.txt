@@ -1,0 +1,1 @@
+• v0.8.8 : Vérification complète des 23 protocoles — ESXi VIM SOAP /sdk, jeton API Proxmox & LXC, AWS EC2 SigV4 + STS, Azure ARM OAuth2 + IP publique, FTPS explicite avec réutilisation TLS, SSH keyboard-interactive, VNC/Apple ARD, K8s/Docker et compatibilité complète Royal TS .rtsz/.rtsx

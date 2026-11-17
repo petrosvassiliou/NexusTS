@@ -870,7 +870,7 @@ class NexusWorkspaceViewModel @Inject constructor(
                     ?: "/home/googlebook/Downloads",
                 initialRemotePathHint = ftSettings?.initialRemoteDirectory.orEmpty(),
                 ftpsImplicitTls = ftSettings?.ftpsImplicitTls ?: (proto == VaultProtocolType.FTPS && effectivePort == 990),
-                allowInsecureTls = true,
+                allowInsecureTls = !(ftSettings?.verifyTls ?: false),
                 bastionHost = bastionHost,
                 bastionPort = bastionPort,
                 bastionUsername = bastionUser,

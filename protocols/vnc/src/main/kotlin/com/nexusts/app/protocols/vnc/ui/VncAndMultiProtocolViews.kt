@@ -31,6 +31,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Send
 import androidx.compose.material.icons.outlined.CloudQueue
+import androidx.compose.material.icons.outlined.ContentPaste
 import androidx.compose.material.icons.outlined.Keyboard
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.NetworkCheck
@@ -75,6 +76,8 @@ import androidx.compose.ui.input.pointer.isSecondaryPressed
 import androidx.compose.ui.input.pointer.isTertiaryPressed
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
@@ -121,10 +124,12 @@ fun VncSessionCanvasView(
     adHocPort: Int? = null,
     retainedClient: VncRfbSessionClient? = null
 ) {
+    val clipboard = LocalClipboardManager.current
     val client = remember(retainedClient) { retainedClient ?: VncRfbSessionClient() }
     val sessionState by client.state.collectAsState()
     val frameBitmap by client.frameBitmap.collectAsState()
     val frameRevision by client.frameRevision.collectAsState()
+    val remoteClipboardText by client.remoteClipboard.collectAsState()
 
     val effectivePort = adHocPort ?: settings.port
     val effectiveArd = isAppleScreenSharing || settings.appleArdDiffieHellmanAuth
@@ -155,6 +160,13 @@ fun VncSessionCanvasView(
     val latestSessionState by rememberUpdatedState(sessionState)
     val latestRightClick by rememberUpdatedState(rightClickToggle)
     val latestViewOnly by rememberUpdatedState(settings.viewOnly)
+    val latestEffectiveArd by rememberUpdatedState(effectiveArd)
+
+    LaunchedEffect(remoteClipboardText) {
+        if (remoteClipboardText.isNotEmpty()) {
+            clipboard.setText(AnnotatedString(remoteClipboardText))
+        }
+    }
 
     DisposableEffect(client, retainedClient) {
         onDispose {
@@ -181,7 +193,7 @@ fun VncSessionCanvasView(
             port = effectivePort,
             password = vncPassword,
             preferZrle = preferZrle,
-            username = vncUsername,
+            username = if (effectiveArd) vncUsername else "",
             sharedSession = settings.sharedSession,
             viewOnly = settings.viewOnly,
             isAppleScreenSharing = effectiveArd,
@@ -213,8 +225,11 @@ fun VncSessionCanvasView(
                     if (native.action != AndroidKeyEvent.ACTION_DOWN && native.action != AndroidKeyEvent.ACTION_UP) {
                         return@onKeyEvent false
                     }
-                    val keysym = VncNativeBridge.mapAndroidKeyCodeToX11Keysym(native.keyCode, native.unicodeChar)
-                        ?: return@onKeyEvent false
+                    val keysym = when {
+                        latestEffectiveArd && native.keyCode == AndroidKeyEvent.KEYCODE_META_LEFT -> 0xFFE7
+                        latestEffectiveArd && native.keyCode == AndroidKeyEvent.KEYCODE_META_RIGHT -> 0xFFE8
+                        else -> VncNativeBridge.mapAndroidKeyCodeToX11Keysym(native.keyCode, native.unicodeChar)
+                    } ?: return@onKeyEvent false
                     client.sendKeyEvent(down = native.action == AndroidKeyEvent.ACTION_DOWN, keysym = keysym)
                     true
                 }
@@ -442,8 +457,8 @@ fun VncSessionCanvasView(
                                 monospace = true
                             )
                             NexusActionChip(
-                                onClick = { client.sendKeyTap(0xFFEB) },
-                                label = "Super/Win",
+                                onClick = { client.sendKeyTap(if (effectiveArd) 0xFFE7 else 0xFFEB) },
+                                label = if (effectiveArd) "Cmd (⌘)" else "Super/Win",
                                 monospace = true
                             )
                             NexusActionChip(
@@ -454,6 +469,16 @@ fun VncSessionCanvasView(
                             NexusActionChip(
                                 onClick = { client.sendKeyTap(0xFF08) },
                                 label = "Bksp",
+                                monospace = true
+                            )
+                            NexusActionChip(
+                                onClick = {
+                                    clipboard.getText()?.text?.takeIf { it.isNotEmpty() }?.let { clip ->
+                                        client.sendClientCutText(clip)
+                                    }
+                                },
+                                leadingIcon = Icons.Outlined.ContentPaste,
+                                label = "Paste Clip",
                                 monospace = true
                             )
                         }
@@ -579,28 +604,38 @@ private fun escJs(raw: String): String = buildString(raw.length + 8) {
     }
 }
 
-internal fun normalizeWebSessionUrl(
+fun normalizeWebSessionUrl(
     configuredUrl: String,
     adHocHost: String? = null,
     adHocPort: Int? = null
 ): String {
     val rawCandidate = if (!adHocHost.isNullOrBlank()) {
         val h = adHocHost.trim()
-        if (adHocPort != null && !h.contains("://") && !h.substringAfterLast(']').contains(':')) {
+        val isBareIpv6 = !h.contains("://") && !h.startsWith("[") && h.count { it == ':' } >= 2
+        val hostFormatted = if (isBareIpv6) "[$h]" else h
+        if (adHocPort != null && !hostFormatted.contains("://") && !hostFormatted.substringAfterLast(']').contains(':')) {
             val scheme = if (adHocPort == 80) "http://" else "https://"
-            "$scheme$h:$adHocPort"
+            "$scheme$hostFormatted:$adHocPort"
         } else {
-            h
+            hostFormatted
         }
     } else {
         configuredUrl.trim()
     }
     if (rawCandidate.isBlank()) return ""
-    return when {
-        rawCandidate.startsWith("https://", ignoreCase = true) ||
-            rawCandidate.startsWith("http://", ignoreCase = true) ||
-            rawCandidate.startsWith("about:", ignoreCase = true) -> rawCandidate
-        else -> "https://$rawCandidate"
+    if (rawCandidate.startsWith("https://", ignoreCase = true) ||
+        rawCandidate.startsWith("http://", ignoreCase = true) ||
+        rawCandidate.startsWith("about:", ignoreCase = true)
+    ) {
+        return rawCandidate
+    }
+    val slashIdx = rawCandidate.indexOf('/')
+    val hostPart = if (slashIdx >= 0) rawCandidate.substring(0, slashIdx) else rawCandidate
+    val pathPart = if (slashIdx >= 0) rawCandidate.substring(slashIdx) else ""
+    return if (!hostPart.startsWith("[") && hostPart.count { it == ':' } >= 2) {
+        "https://[$hostPart]$pathPart"
+    } else {
+        "https://$rawCandidate"
     }
 }
 
@@ -669,6 +704,8 @@ fun IsolatedWebSessionView(
 
     var webViewRef by remember { mutableStateOf<WebView?>(null) }
     var tlsPinErrorBanner by remember(effectiveUrl, settings.pinnedCertSha256) { mutableStateOf("") }
+    var untrustedCertBanner by remember(effectiveUrl, settings.ignoreSelfSignedInternalCert) { mutableStateOf("") }
+    var sessionTrustedSslOverride by remember(effectiveUrl) { mutableStateOf(false) }
     var pendingPassword by remember(secret.password, effectiveUrl) {
         mutableStateOf<String?>(secret.password.takeIf { it.isNotEmpty() })
     }
@@ -676,6 +713,7 @@ fun IsolatedWebSessionView(
     val latestSettings by rememberUpdatedState(settings)
     val latestSecret by rememberUpdatedState(secret)
     val latestEffectiveUrl by rememberUpdatedState(effectiveUrl)
+    val latestTrustedSslOverride by rememberUpdatedState(sessionTrustedSslOverride)
     val attemptedHttpAuthScopes = remember(effectiveUrl, secret.username, secret.password) {
         mutableSetOf<Pair<String, String>>()
     }
@@ -763,7 +801,7 @@ fun IsolatedWebSessionView(
                             imageVector = Icons.Outlined.Lock,
                             contentDescription = null,
                             modifier = Modifier.size(15.dp),
-                            tint = if (tlsPinErrorBanner.isNotBlank()) {
+                            tint = if (tlsPinErrorBanner.isNotBlank() || untrustedCertBanner.isNotBlank()) {
                                 NexusTheme.extendedColors.statusDisconnected
                             } else {
                                 NexusTheme.extendedColors.webAccent
@@ -781,6 +819,22 @@ fun IsolatedWebSessionView(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
+                        if (untrustedCertBanner.isNotBlank() && tlsPinErrorBanner.isBlank()) {
+                            NexusActionChip(
+                                onClick = {
+                                    sessionTrustedSslOverride = true
+                                    untrustedCertBanner = ""
+                                    webViewRef?.let { wv ->
+                                        if (latestEffectiveUrl.isNotBlank()) {
+                                            wv.loadUrl(latestEffectiveUrl)
+                                        } else {
+                                            wv.reload()
+                                        }
+                                    }
+                                },
+                                label = "Trust Certificate & Reload"
+                            )
+                        }
                         NexusActionChip(
                             onClick = { webViewRef?.let { injectAutoFillJs(it, true) } },
                             label = autoFillActionLabel
@@ -789,6 +843,7 @@ fun IsolatedWebSessionView(
                             onClick = {
                                 attemptedHttpAuthScopes.clear()
                                 tlsPinErrorBanner = ""
+                                untrustedCertBanner = ""
                                 pendingPassword = latestSecret.password.takeIf { it.isNotEmpty() }
                                 webViewRef?.let { wv ->
                                     if (latestEffectiveUrl.isNotBlank() && wv.url == "about:blank") {
@@ -804,9 +859,10 @@ fun IsolatedWebSessionView(
                         }
                     }
                 }
-                if (tlsPinErrorBanner.isNotBlank()) {
+                val activeSslNotice = tlsPinErrorBanner.ifBlank { untrustedCertBanner }
+                if (activeSslNotice.isNotBlank()) {
                     Text(
-                        text = tlsPinErrorBanner,
+                        text = activeSslNotice,
                         style = NexusTheme.monospace.keycapShortcut,
                         color = Color(0xFFFF6E6E),
                         modifier = Modifier.padding(start = 12.dp, end = 12.dp, bottom = 6.dp)
@@ -853,6 +909,7 @@ fun IsolatedWebSessionView(
                                 val leafCert = error?.certificate?.x509Certificate
                                 if (verifyPinnedCertificateSha256(leafCert, cfg.pinnedCertSha256)) {
                                     tlsPinErrorBanner = ""
+                                    untrustedCertBanner = ""
                                     handler?.proceed()
                                 } else {
                                     tlsPinErrorBanner = "TLS Certificate Pin Mismatch — connection blocked"
@@ -860,9 +917,11 @@ fun IsolatedWebSessionView(
                                 }
                                 return
                             }
-                            if (cfg.ignoreSelfSignedInternalCert) {
+                            if (cfg.ignoreSelfSignedInternalCert || latestTrustedSslOverride) {
+                                untrustedCertBanner = ""
                                 handler?.proceed()
                             } else {
+                                untrustedCertBanner = "Self-signed or untrusted TLS certificate blocked — tap 'Trust Certificate & Reload' to proceed"
                                 handler?.cancel()
                             }
                         }
@@ -903,6 +962,7 @@ fun IsolatedWebSessionView(
                     webView.tag = effectiveUrl
                     attemptedHttpAuthScopes.clear()
                     tlsPinErrorBanner = ""
+                    untrustedCertBanner = ""
                     pendingPassword = latestSecret.password.takeIf { it.isNotEmpty() }
                     webView.loadUrl(effectiveUrl)
                 }
@@ -964,7 +1024,13 @@ fun CloudHypervisorConsoleView(
                 settings
             }
             CloudVirtualizationHubClient
-                .listInventory(protocol, endpointHost, effectiveSettings, secret)
+                .listInventory(
+                    protocol = protocol,
+                    endpointHost = endpointHost,
+                    settings = effectiveSettings,
+                    secret = secret,
+                    allowSelfSignedTls = !settings.verifyTls
+                )
                 .onSuccess { liveList ->
                     instances.clear()
                     instances.addAll(liveList)
@@ -980,7 +1046,15 @@ fun CloudHypervisorConsoleView(
         }
     }
 
-    LaunchedEffect(protocol, endpointHost, sanitizedEndpoint, settings.subscriptionOrAccountId, secret.username, secret.password) {
+    LaunchedEffect(
+        protocol,
+        endpointHost,
+        sanitizedEndpoint,
+        settings.subscriptionOrAccountId,
+        settings.verifyTls,
+        secret.username,
+        secret.password
+    ) {
         if (endpointHost.isNotBlank() || sanitizedEndpoint.isNotBlank() || settings.subscriptionOrAccountId.isNotBlank()) {
             refreshLiveInventory()
         }
@@ -1150,7 +1224,7 @@ fun CloudHypervisorConsoleView(
             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(instances, key = { it.id }) { vm ->
                     val isRunning = vm.powerState == "RUNNING" || vm.powerState == "ACTIVE"
-                    val isSaved = vm.powerState == "SAVED" || vm.powerState == "PAUSED"
+                    val isSaved = vm.powerState == "SAVED" || vm.powerState == "PAUSED" || vm.powerState == "SUSPENDED"
                     val invokePowerAction: (VmPowerAction) -> Unit = { desired ->
                         scope.launch {
                             val effectiveSettings = if (isHyperV && sanitizedEndpoint != settings.apiEndpointUrl) {
@@ -1159,7 +1233,15 @@ fun CloudHypervisorConsoleView(
                                 settings
                             }
                             CloudVirtualizationHubClient
-                                .executePowerOrSessionAction(protocol, endpointHost, effectiveSettings, secret, vm, desired)
+                                .executePowerOrSessionAction(
+                                    protocol = protocol,
+                                    endpointHost = endpointHost,
+                                    settings = effectiveSettings,
+                                    secret = secret,
+                                    resource = vm,
+                                    action = desired,
+                                    allowSelfSignedTls = !settings.verifyTls
+                                )
                                 .onSuccess { msg ->
                                     statusBanner = msg
                                     isErrorBanner = false
@@ -1170,7 +1252,7 @@ fun CloudHypervisorConsoleView(
                                                 vm.isTerminalServicesSession && desired == VmPowerAction.STOP -> "LOGGED OFF"
                                                 vm.isTerminalServicesSession -> "DISCONNECTED"
                                                 desired == VmPowerAction.START || desired == VmPowerAction.REBOOT -> "RUNNING"
-                                                desired == VmPowerAction.SAVE -> "SAVED"
+                                                desired == VmPowerAction.SAVE -> if (isHyperV) "SAVED" else "SUSPENDED"
                                                 else -> "STOPPED"
                                             }
                                         )
@@ -1229,10 +1311,10 @@ fun CloudHypervisorConsoleView(
                                         modifier = Modifier.size(16.dp)
                                     )
                                 }
-                                if (isHyperV && isRunning) {
+                                if (!vm.isTerminalServicesSession && isRunning) {
                                     NexusActionChip(
                                         onClick = { invokePowerAction(VmPowerAction.SAVE) },
-                                        label = "Save"
+                                        label = if (isHyperV) "Save" else "Suspend"
                                     )
                                     NexusActionChip(
                                         onClick = { invokePowerAction(VmPowerAction.REBOOT) },

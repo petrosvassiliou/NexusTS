@@ -108,7 +108,8 @@ object AdHocConnectionSyntaxParser {
         "ssh", "rdp", "wts", "ts", "sftp", "scp", "ftp", "ftps", "vnc",
         "ard", "screensharing", "telnet", "serial", "k8s", "kubectl", "docker",
         "http", "https", "ping", "traceroute", "tracert", "mtr",
-        "portscan", "scan", "wol", "wakeonlan", "proxmox", "pve", "vsphere", "esxi", "hyperv"
+        "portscan", "scan", "wol", "wakeonlan", "proxmox", "pve", "vsphere", "esxi", "hyperv",
+        "ec2", "aws", "azure"
     )
 
     fun parseOrNull(rawQuery: String): QuickConnectCandidate? {
@@ -127,11 +128,16 @@ object AdHocConnectionSyntaxParser {
             } else {
                 val inferredEndpoint = parseAuthorityEndpoint(remainder.substringBefore('?'))
                 val inferredProto = when (inferredEndpoint?.port) {
-                    3389 -> "rdp"
+                    3389, 2179 -> "rdp"
                     5900, 5901 -> "vnc"
                     23 -> "telnet"
+                    21 -> "ftp"
+                    990 -> "ftps"
+                    8006 -> "proxmox"
+                    5985, 5986 -> "hyperv"
+                    2375, 2376 -> "docker"
                     80 -> "http"
-                    443, 8006, 8443 -> "https"
+                    443, 8443 -> "https"
                     else -> if (inferredEndpoint?.domain != null) "rdp" else "ssh"
                 }
                 inferredProto to remainder
@@ -163,7 +169,7 @@ object AdHocConnectionSyntaxParser {
 
         // 2. Shorthand command syntax: "ssh root@10.20.0.5:2222", "ping 1.1.1.1", "traceroute 8.8.8.8"
         val shorthandRegex = Regex(
-            "^(ssh|rdp|wts|ts|sftp|scp|ftp|ftps|vnc|ard|screensharing|telnet|serial|k8s|kubectl|docker|ping|traceroute|tracert|mtr|portscan|scan|wol|wakeonlan|proxmox|pve|vsphere|esxi|hyperv)\\s+([^\\s]+)$",
+            "^(ssh|rdp|wts|ts|sftp|scp|ftp|ftps|vnc|ard|screensharing|telnet|serial|k8s|kubectl|docker|ping|traceroute|tracert|mtr|portscan|scan|wol|wakeonlan|proxmox|pve|vsphere|esxi|hyperv|ec2|aws|azure)\\s+([^\\s]+)$",
             RegexOption.IGNORE_CASE
         )
         shorthandRegex.matchEntire(trimmed)?.let { match ->
@@ -189,7 +195,7 @@ object AdHocConnectionSyntaxParser {
 
         // 3. Explicit protocol URI: "ssh://...", "rdp://...", "ping://...", "ard://...", "https://..."
         val uriRegex = Regex(
-            "^(ssh|rdp|wts|ts|sftp|scp|ftp|ftps|vnc|ard|screensharing|telnet|serial|k8s|kubectl|docker|http|https|ping|traceroute|tracert|mtr|portscan|scan|wol|wakeonlan|proxmox|pve|vsphere|esxi|hyperv)://(.+)$",
+            "^(ssh|rdp|wts|ts|sftp|scp|ftp|ftps|vnc|ard|screensharing|telnet|serial|k8s|kubectl|docker|http|https|ping|traceroute|tracert|mtr|portscan|scan|wol|wakeonlan|proxmox|pve|vsphere|esxi|hyperv|ec2|aws|azure)://(.+)$",
             RegexOption.IGNORE_CASE
         )
         uriRegex.matchEntire(trimmed)?.let { match ->
@@ -223,11 +229,13 @@ object AdHocConnectionSyntaxParser {
             val endpoint = parseAuthorityEndpoint(trimmed)
             if (endpoint != null && endpoint.host.isNotBlank() && !endpoint.username.isNullOrBlank()) {
                 val (inferredProto, inferredSubtype) = when {
-                    endpoint.port == 3389 || endpoint.domain != null -> SessionProtocolKind.RDP to "RDP"
+                    endpoint.port == 3389 || endpoint.port == 2179 || endpoint.domain != null -> SessionProtocolKind.RDP to "RDP"
                     endpoint.port == 5900 || endpoint.port == 5901 -> SessionProtocolKind.VNC to "VNC"
                     endpoint.port == 23 -> SessionProtocolKind.TELNET to "TELNET"
                     endpoint.port == 21 -> SessionProtocolKind.FTP to "FTP"
                     endpoint.port == 990 -> SessionProtocolKind.FTPS to "FTPS"
+                    endpoint.port == 8006 -> SessionProtocolKind.PROXMOX_VE to "PROXMOX_VE"
+                    endpoint.port == 5985 || endpoint.port == 5986 -> SessionProtocolKind.HYPER_V to "HYPER_V"
                     else -> SessionProtocolKind.SSH to "SSH"
                 }
                 return QuickConnectCandidate(
@@ -330,6 +338,8 @@ object AdHocConnectionSyntaxParser {
         "proxmox", "pve" -> SessionProtocolKind.PROXMOX_VE
         "vsphere", "esxi" -> SessionProtocolKind.VMWARE_VSPHERE
         "hyperv" -> SessionProtocolKind.HYPER_V
+        "ec2", "aws" -> SessionProtocolKind.AWS_EC2
+        "azure" -> SessionProtocolKind.AZURE_VM
         else -> SessionProtocolKind.WEB_PAGE
     }
 
@@ -354,6 +364,8 @@ object AdHocConnectionSyntaxParser {
         "proxmox", "pve" -> "PROXMOX_VE"
         "vsphere", "esxi" -> "VMWARE_VSPHERE"
         "hyperv" -> "HYPER_V"
+        "ec2", "aws" -> "AWS_EC2"
+        "azure" -> "AZURE_VM"
         else -> "WEB_PAGE"
     }
 }

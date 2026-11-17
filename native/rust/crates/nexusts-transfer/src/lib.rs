@@ -1199,4 +1199,19 @@ type=file;size=65536;modify=20261112183000;UNIX.mode=0640; vault-backup.nxts\n";
         ftp_leg.disconnect().await.unwrap();
         abort_legacy.abort();
     }
+
+    #[test]
+    fn mlsd_modify_timestamp_and_unix_domain_users_group_spaces() {
+        let mlsd = "type=file;size=2048;modify=20261117153045;unix.mode=0644; space_prefixed.txt\r\n";
+        let parsed = parse_ftp_mlsd_listing("/srv", mlsd);
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].name, "space_prefixed.txt");
+        assert!(parsed[0].modified_epoch_sec > 1_700_000_000);
+
+        let ls = "-rw-r----- 1 corp\\jdoe domain users 8192 Nov 17 15:30 quarterly report.pdf\n";
+        let ls_parsed = wire_clients::parse_ftp_list_output("/share", ls);
+        assert_eq!(ls_parsed.len(), 1);
+        assert_eq!(ls_parsed[0].name, "quarterly report.pdf");
+        assert_eq!(ls_parsed[0].size_bytes, 8192);
+    }
 }

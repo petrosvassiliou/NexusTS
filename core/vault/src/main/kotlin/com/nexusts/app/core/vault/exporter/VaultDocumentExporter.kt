@@ -472,6 +472,8 @@ class VaultDocumentExporter {
                 appendXmlTag("ShowHiddenDotfiles", settings.showHiddenDotfiles.toString(), indent)
                 appendXmlTag("MaxConcurrentTransfers", settings.maxConcurrentTransfers.toString(), indent)
                 appendXmlTag("FtpsImplicitTls", settings.ftpsImplicitTls.toString(), indent)
+                appendXmlTag("PassiveMode", settings.passiveMode.toString(), indent)
+                appendXmlTag("VerifyTls", settings.verifyTls.toString(), indent)
             }
             is ProtocolSpecificSettings.Vnc -> {
                 appendXmlTag("VNCPort", settings.port.toString(), indent)
@@ -537,6 +539,7 @@ class VaultDocumentExporter {
                 }
                 appendXmlTag("RealmOrDomain", settings.realmOrDomain, indent)
                 appendXmlTag("AutoSyncDynamicInventory", settings.autoSyncDynamicInventory.toString(), indent)
+                appendXmlTag("VerifyTls", settings.verifyTls.toString(), indent)
             }
             is ProtocolSpecificSettings.NetUtility -> {
                 appendXmlTag("PingCount", settings.pingCount.toString(), indent)
@@ -571,16 +574,20 @@ class VaultDocumentExporter {
         }
 
     private fun royalTagForProtocol(protocol: VaultProtocolType): String = when (protocol) {
-        VaultProtocolType.RDP, VaultProtocolType.WINDOWS_TERMINAL_SERVICES -> "RoyalRDSConnection"
-        VaultProtocolType.SSH, VaultProtocolType.TELNET, VaultProtocolType.SERIAL,
-        VaultProtocolType.KUBERNETES_POD, VaultProtocolType.DOCKER_CONTAINER,
+        VaultProtocolType.RDP -> "RoyalRDSConnection"
+        VaultProtocolType.WINDOWS_TERMINAL_SERVICES -> "RoyalWindowsTerminalServicesConnection"
+        VaultProtocolType.SSH -> "RoyalSSHConnection"
+        VaultProtocolType.TELNET -> "RoyalTelnetConnection"
+        VaultProtocolType.SERIAL -> "RoyalSerialPortConnection"
+        VaultProtocolType.KUBERNETES_POD, VaultProtocolType.DOCKER_CONTAINER -> "RoyalContainerConnection"
         VaultProtocolType.UTILITY_PING, VaultProtocolType.UTILITY_TRACEROUTE,
-        VaultProtocolType.UTILITY_PORT_SCANNER, VaultProtocolType.UTILITY_WAKE_ON_LAN -> "RoyalSSHConnection"
+        VaultProtocolType.UTILITY_PORT_SCANNER, VaultProtocolType.UTILITY_WAKE_ON_LAN -> "RoyalNetworkUtilityConnection"
         VaultProtocolType.SFTP, VaultProtocolType.FTP, VaultProtocolType.FTPS, VaultProtocolType.SCP -> "RoyalFileTransferConnection"
         VaultProtocolType.VNC, VaultProtocolType.APPLE_SCREEN_SHARING -> "RoyalVNCConnection"
         VaultProtocolType.WEB_PAGE -> "RoyalWebPageConnection"
-        VaultProtocolType.VMWARE_VSPHERE, VaultProtocolType.PROXMOX_VE,
-        VaultProtocolType.AWS_EC2, VaultProtocolType.AZURE_VM -> "RoyalVMwareConnection"
+        VaultProtocolType.VMWARE_VSPHERE -> "RoyalVMwareConnection"
+        VaultProtocolType.PROXMOX_VE -> "RoyalProxmoxConnection"
+        VaultProtocolType.AWS_EC2, VaultProtocolType.AZURE_VM -> "RoyalCloudConnection"
         VaultProtocolType.HYPER_V -> "RoyalHyperVConnection"
     }
 

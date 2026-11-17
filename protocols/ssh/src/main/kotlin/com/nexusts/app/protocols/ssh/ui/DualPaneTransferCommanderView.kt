@@ -263,7 +263,7 @@ class TransferCommanderSessionController(
 
     var localPath by mutableStateOf("")
     var remotePath by mutableStateOf(
-        initialRemotePathHint.trim().takeIf { it.isNotEmpty() }?.let { "/" + it.trim('/') } ?: "/"
+        initialRemotePathHint.trim().takeIf { it.isNotEmpty() }?.let { "/" + it.trim('/') } ?: ""
     )
     var selectedLocal by mutableStateOf<CommanderFileItem?>(null)
     var selectedRemote by mutableStateOf<CommanderFileItem?>(null)
@@ -333,7 +333,7 @@ class TransferCommanderSessionController(
         if (usesJvmFtpBackend) {
             val existing = jvmFtpClient
             if (existing != null && existing.isConnected) {
-                return remotePath
+                return remotePath.ifBlank { "/" }
             }
             val mode = when {
                 protocolType == VaultProtocolType.FTPS && (ftpsImplicitTls || port == 990) ->
@@ -360,12 +360,12 @@ class TransferCommanderSessionController(
                     remotePath = serverPwd.ifBlank { "/" }
                 }
             }
-            return remotePath
+            return remotePath.ifBlank { "/" }
         }
 
         if (usesNativeRustBackend) {
             if (nativeHandle > 0L) {
-                return remotePath
+                return remotePath.ifBlank { "/" }
             }
             val protoName = when (protocolType) {
                 VaultProtocolType.SCP -> "SCP"
@@ -397,12 +397,10 @@ class TransferCommanderSessionController(
                 remoteInitialized = true
                 if (initialRemotePathHint.isBlank()) {
                     val pwd = SshNativeBridge.nativeTransferPwd(handle)
-                    if (pwd.isNotBlank()) {
-                        remotePath = pwd
-                    }
+                    remotePath = pwd.ifBlank { "/" }
                 }
             }
-            return remotePath
+            return remotePath.ifBlank { "/" }
         }
 
         throw IOException("Native ${protocolType.name} transport library is not loaded on this host JVM")
@@ -412,8 +410,9 @@ class TransferCommanderSessionController(
         val outcome = withContext(Dispatchers.IO) {
             ioMutex.withLock {
                 runCatching {
+                    val wasInitialized = remoteInitialized
                     val initialResolved = ensureRemoteConnectedLocked()
-                    val effectiveTarget = if (!remoteInitialized || targetPath.isBlank()) {
+                    val effectiveTarget = if ((!wasInitialized && initialRemotePathHint.isBlank()) || targetPath.isBlank()) {
                         initialResolved
                     } else {
                         targetPath
@@ -891,7 +890,8 @@ fun DualPaneTransferCommanderView(
                 secret = secret,
                 initialLocalPathHint = ftSettings?.initialLocalDirectory?.ifBlank { initialLocalPath } ?: initialLocalPath,
                 initialRemotePathHint = ftSettings?.initialRemoteDirectory?.ifBlank { initialRemotePath } ?: initialRemotePath,
-                ftpsImplicitTls = ftSettings?.ftpsImplicitTls ?: false
+                ftpsImplicitTls = ftSettings?.ftpsImplicitTls ?: false,
+                allowInsecureTls = !(ftSettings?.verifyTls ?: false)
             )
         }
     }

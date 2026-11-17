@@ -67,8 +67,15 @@ private struct TerminalLiveWorkspaceBody: View {
                                 }
 
                                 ForEach(Array(controller.snapshot.visibleLines.enumerated()), id: \.offset) { rowIdx, line in
+                                    let gridCols = max(1, controller.snapshot.cols)
+                                    let attrStart = rowIdx * gridCols
+                                    let attrEnd = min(controller.snapshot.packedRgbaAttrs.count, attrStart + gridCols)
+                                    let rowAttrs: ArraySlice<UInt64> = (attrStart < attrEnd)
+                                        ? controller.snapshot.packedRgbaAttrs[attrStart..<attrEnd]
+                                        : []
                                     TerminalRowLineView(
                                         line: line,
+                                        rowAttrs: rowAttrs,
                                         rowIndex: rowIdx,
                                         cursorCol: controller.snapshot.cursorCol,
                                         isCursorRow: controller.snapshot.cursorVisible && controller.snapshot.cursorRow == rowIdx,
@@ -286,17 +293,81 @@ private struct TerminalLiveWorkspaceBody: View {
 
 private struct TerminalRowLineView: View {
     let line: String
+    let rowAttrs: ArraySlice<UInt64>
     let rowIndex: Int
     let cursorCol: Int
     let isCursorRow: Bool
     let fontSize: Double
     let lineHeight: Double
 
+    private static let defaultFgRgb: UInt64 = 0xE2E6F3
+    private static let defaultBgRgb: UInt64 = 0x090D16
+    private static let defaultPacked: UInt64 = (0xE2E6F3 << 32) | (0x090D16 << 8)
+
+    private static func swiftUiColor(rgb: UInt64) -> Color {
+        let r = Double((rgb >> 16) & 0xFF) / 255.0
+        let g = Double((rgb >> 8) & 0xFF) / 255.0
+        let b = Double(rgb & 0xFF) / 255.0
+        return Color(red: r, green: g, blue: b)
+    }
+
+    private func buildStyledLine() -> AttributedString {
+        guard !line.isEmpty else { return AttributedString(" ") }
+        if rowAttrs.isEmpty || rowAttrs.allSatisfy({ $0 == Self.defaultPacked }) {
+            var plain = AttributedString(line)
+            plain.foregroundColor = Color(red: 0.886, green: 0.902, blue: 0.953)
+            return plain
+        }
+
+        var result = AttributedString()
+        let chars = Array(line)
+        let attrBase = rowAttrs.startIndex
+        var idx = 0
+        while idx < chars.count {
+            let packed: UInt64 = (attrBase + idx < rowAttrs.endIndex)
+                ? rowAttrs[attrBase + idx]
+                : Self.defaultPacked
+            var runEnd = idx + 1
+            while runEnd < chars.count {
+                let nextPacked: UInt64 = (attrBase + runEnd < rowAttrs.endIndex)
+                    ? rowAttrs[attrBase + runEnd]
+                    : Self.defaultPacked
+                if nextPacked != packed { break }
+                runEnd += 1
+            }
+
+            var run = AttributedString(String(chars[idx..<runEnd]))
+            let rawFg = (packed >> 32) & 0x00FF_FFFF
+            let rawBg = (packed >> 8) & 0x00FF_FFFF
+            let bold = (packed & 0x01) != 0
+            let italic = (packed & 0x02) != 0
+            let underline = (packed & 0x04) != 0
+            let inverse = (packed & 0x08) != 0
+
+            let effectiveFg = inverse ? rawBg : rawFg
+            let effectiveBg = inverse ? rawFg : rawBg
+            run.foregroundColor = Self.swiftUiColor(rgb: effectiveFg)
+            if inverse || effectiveBg != Self.defaultBgRgb {
+                run.backgroundColor = Self.swiftUiColor(rgb: effectiveBg)
+            }
+            if bold || italic {
+                var font = Font.system(size: fontSize, weight: bold ? .bold : .regular, design: .monospaced)
+                if italic { font = font.italic() }
+                run.font = font
+            }
+            if underline {
+                run.underlineStyle = .single
+            }
+            result.append(run)
+            idx = runEnd
+        }
+        return result
+    }
+
     var body: some View {
         ZStack(alignment: .leading) {
-            Text(line.isEmpty ? " " : line)
+            Text(buildStyledLine())
                 .font(.system(size: fontSize, weight: .regular, design: .monospaced))
-                .foregroundStyle(Color(red: 0.90, green: 0.93, blue: 0.98))
                 .frame(maxWidth: .infinity, alignment: .leading)
 
             if isCursorRow {

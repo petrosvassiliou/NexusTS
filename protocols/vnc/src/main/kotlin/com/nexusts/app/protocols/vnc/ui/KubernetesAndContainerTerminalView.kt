@@ -52,6 +52,7 @@ import com.nexusts.app.core.ui.components.NexusChoiceChip
 import com.nexusts.app.core.ui.theme.NexusTheme
 import com.nexusts.app.core.vault.credentials.ResolvedSessionSecret
 import com.nexusts.app.core.vault.model.ProtocolSpecificSettings
+import com.nexusts.app.protocols.vnc.bridge.VncNativeBridge
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -112,21 +113,87 @@ internal fun buildWorkloadHttpClient(verifyTls: Boolean): OkHttpClient {
     return builder.build()
 }
 
-internal fun resolveWorkloadBaseEndpoint(
+private fun shSingleQuote(arg: String): String = "'" + arg.replace("'", "'\"'\"'") + "'"
+
+private fun stripBearerPrefix(rawToken: String): String {
+    val trimmed = rawToken.trim()
+    return if (trimmed.startsWith("Bearer ", ignoreCase = true)) {
+        trimmed.substring(7).trim()
+    } else {
+        trimmed
+    }
+}
+
+private fun parseSshHostAndPort(rawEndpoint: String): Pair<String, Int> {
+    val stripped = rawEndpoint.trim()
+        .removePrefix("ssh://")
+        .removePrefix("SSH://")
+        .substringAfterLast('@')
+        .substringBefore('/')
+    if (stripped.startsWith('[')) {
+        val closeIdx = stripped.indexOf(']')
+        if (closeIdx > 1) {
+            val h = stripped.substring(1, closeIdx)
+            val after = stripped.substring(closeIdx + 1)
+            val p = if (after.startsWith(':')) after.substring(1).toIntOrNull()?.takeIf { it in 1..65535 } ?: 22 else 22
+            return h to p
+        }
+    }
+    if (stripped.count { it == ':' } == 1) {
+        val h = stripped.substringBefore(':')
+        val p = stripped.substringAfter(':').toIntOrNull()?.takeIf { it in 1..65535 }
+        if (p != null && h.isNotBlank()) return h to p
+    }
+    return stripped to 22
+}
+
+fun resolveWorkloadBaseEndpoint(
     endpointHost: String,
-    clusterOrSocketEndpoint: String
+    clusterOrSocketEndpoint: String,
+    isKubernetes: Boolean = false
 ): String {
-    val raw = clusterOrSocketEndpoint.trim().ifBlank { endpointHost.trim() }
-    if (raw.isEmpty() || raw.startsWith("unix://", ignoreCase = true) || raw.startsWith("/")) {
+    val trimmedCluster = clusterOrSocketEndpoint.trim()
+    val trimmedHost = endpointHost.trim()
+    val isSocketOrSshUri = trimmedCluster.startsWith("unix://", ignoreCase = true) ||
+        trimmedCluster.startsWith("ssh://", ignoreCase = true) ||
+        trimmedCluster.startsWith("/")
+    val hostHasExplicitDaemonTcp = trimmedHost.startsWith("http://", ignoreCase = true) ||
+        trimmedHost.startsWith("https://", ignoreCase = true) ||
+        trimmedHost.startsWith("tcp://", ignoreCase = true) ||
+        trimmedHost.startsWith("ws://", ignoreCase = true) ||
+        trimmedHost.startsWith("wss://", ignoreCase = true) ||
+        trimmedHost.endsWith(":2375") ||
+        trimmedHost.endsWith(":2376") ||
+        trimmedHost.contains(":2375/") ||
+        trimmedHost.contains(":2376/")
+
+    val raw = when {
+        trimmedCluster.isNotBlank() && !isSocketOrSshUri -> trimmedCluster
+        isKubernetes -> trimmedHost
+        hostHasExplicitDaemonTcp -> trimmedHost
+        trimmedCluster.isBlank() -> trimmedHost
+        else -> ""
+    }
+    if (raw.isEmpty() ||
+        raw.startsWith("unix://", ignoreCase = true) ||
+        raw.startsWith("ssh://", ignoreCase = true) ||
+        raw.startsWith("/")
+    ) {
         return ""
     }
+    val normalized = if (raw.startsWith("tcp://", ignoreCase = true)) {
+        val rest = raw.substring(6)
+        if (rest.endsWith(":2375") || rest.contains(":2375/")) "http://$rest" else "https://$rest"
+    } else {
+        raw
+    }
     val withScheme = when {
-        raw.startsWith("http://", ignoreCase = true) ||
-            raw.startsWith("https://", ignoreCase = true) ||
-            raw.startsWith("ws://", ignoreCase = true) ||
-            raw.startsWith("wss://", ignoreCase = true) -> raw
-        raw.endsWith(":2375") -> "http://$raw"
-        else -> "https://$raw"
+        normalized.startsWith("http://", ignoreCase = true) ||
+            normalized.startsWith("https://", ignoreCase = true) ||
+            normalized.startsWith("ws://", ignoreCase = true) ||
+            normalized.startsWith("wss://", ignoreCase = true) -> normalized
+        normalized.endsWith(":2375") -> "http://$normalized"
+        else -> "https://$normalized"
     }
     return withScheme.trimEnd('/')
 }
@@ -267,12 +334,13 @@ class KubernetesExecClient(
             stderr = stderr,
             tty = tty
         )
+        val cleanToken = stripBearerPrefix(bearerToken)
         val reqBuilder = Request.Builder()
             .url(url)
             .header("Sec-WebSocket-Protocol", SUBPROTOCOL_V4)
             .header("X-Stream-Protocol-Version", SUBPROTOCOL_V4)
-        if (bearerToken.isNotBlank()) {
-            reqBuilder.header("Authorization", "Bearer $bearerToken")
+        if (cleanToken.isNotBlank()) {
+            reqBuilder.header("Authorization", "Bearer $cleanToken")
         }
 
         val openLatch = CountDownLatch(1)
@@ -443,8 +511,8 @@ internal fun stripDockerMultiplexedHeaders(raw: ByteArray): String {
 
 /**
  * Enterprise Kubernetes Pod (`KUBERNETES_POD`) & Docker Container (`DOCKER_CONTAINER`)
- * Interactive Exec Shell (`v4.channel.k8s.io` WebSocket + Docker Exec REST), Live Log Streamer,
- * & Workload Inventory Studio.
+ * Interactive Exec Shell (`v4.channel.k8s.io` WebSocket + Docker Exec REST + SSH `/var/run/docker.sock` CLI),
+ * Live Log Streamer, & Workload Inventory Studio.
  */
 @Composable
 fun KubernetesAndContainerTerminalView(
@@ -465,12 +533,8 @@ fun KubernetesAndContainerTerminalView(
     var activePaneTab by remember(settings.followLogsOnOpen) {
         mutableIntStateOf(if (settings.followLogsOnOpen) 1 else 0)
     }
-    var activeTarget by remember(settings, endpointHost) {
-        mutableStateOf(
-            settings.podOrContainerName.ifBlank {
-                endpointHost.substringAfterLast('/').takeIf { !it.contains(':') }.orEmpty()
-            }
-        )
+    var activeTarget by remember(settings.podOrContainerName) {
+        mutableStateOf(settings.podOrContainerName.trim())
     }
     var namespace by remember(settings) { mutableStateOf(settings.namespace.ifBlank { "default" }) }
     var logFilterQuery by remember { mutableStateOf("") }
@@ -500,22 +564,90 @@ fun KubernetesAndContainerTerminalView(
 
     val fetchLiveClusterTelemetry: () -> Unit = {
         scope.launch {
-            val baseEndpoint = resolveWorkloadBaseEndpoint(endpointHost, settings.clusterOrSocketEndpoint)
-            if (baseEndpoint.isBlank()) {
-                apiStatusBanner = "No HTTP/HTTPS cluster or Docker daemon TCP endpoint configured."
+            val baseEndpoint = resolveWorkloadBaseEndpoint(endpointHost, settings.clusterOrSocketEndpoint, isKubernetes)
+            val canUseSshDockerFallback = !isKubernetes &&
+                baseEndpoint.isBlank() &&
+                endpointHost.isNotBlank() &&
+                VncNativeBridge.isNativeLoaded &&
+                (secret.username.isNotBlank() || secret.privateKeyPem.isNotBlank())
+
+            if (baseEndpoint.isBlank() && !canUseSshDockerFallback) {
+                apiStatusBanner = if (!isKubernetes) {
+                    "Configure a Docker TCP endpoint (http://host:2375 or https://host:2376) or attach SSH credentials for /var/run/docker.sock."
+                } else {
+                    "No HTTP/HTTPS Kubernetes API server endpoint configured."
+                }
                 apiStatusIsError = true
                 return@launch
             }
 
+            val cleanToken = stripBearerPrefix(secret.password)
+            val attachHttpBearer = cleanToken.isNotBlank() && (isKubernetes || secret.username.isBlank())
+
             val result = withContext(Dispatchers.IO) {
                 runCatching {
+                    if (canUseSshDockerFallback) {
+                        val (sshHost, sshPort) = parseSshHostAndPort(endpointHost)
+                        val sshUser = secret.username.ifBlank { "root" }
+                        val dockerHostEnv = settings.clusterOrSocketEndpoint.trim()
+                            .takeIf { it.startsWith("unix://", ignoreCase = true) }
+                            ?.let { "DOCKER_HOST=${shSingleQuote(it)} " }
+                            .orEmpty()
+                        val rawPs = VncNativeBridge.nativeSshExecCommand(
+                            host = sshHost,
+                            port = sshPort,
+                            username = sshUser,
+                            password = secret.password,
+                            privateKeyPem = secret.privateKeyPem,
+                            passphrase = secret.keyPassphrase,
+                            command = "${dockerHostEnv}docker ps -a --format '{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.State}}'",
+                            timeoutSecs = 12
+                        )
+                        if (rawPs.startsWith("ERROR:")) {
+                            error(rawPs.removePrefix("ERROR:").trim())
+                        }
+                        val parsedList = rawPs.lines()
+                            .map { it.trim() }
+                            .filter { it.isNotEmpty() && '\t' in it }
+                            .map { row ->
+                                val cols = row.split('\t')
+                                val cid = cols.getOrNull(0).orEmpty()
+                                val cName = cols.getOrNull(1).orEmpty().ifBlank { cid }
+                                val image = cols.getOrNull(2).orEmpty()
+                                val state = cols.getOrNull(3) ?: "unknown"
+                                DiscoveredContainerWorkload(cid.ifBlank { cName }, cName, image, state)
+                            }
+                        val targetName = activeTarget.ifBlank { parsedList.firstOrNull()?.name.orEmpty() }
+                        val tailCount = settings.logTailLines.coerceAtLeast(1)
+                        val fetchedLogs = if (targetName.isNotBlank()) {
+                            val rawLogs = VncNativeBridge.nativeSshExecCommand(
+                                host = sshHost,
+                                port = sshPort,
+                                username = sshUser,
+                                password = secret.password,
+                                privateKeyPem = secret.privateKeyPem,
+                                passphrase = secret.keyPassphrase,
+                                command = "${dockerHostEnv}docker logs --tail $tailCount ${shSingleQuote(targetName)} 2>&1",
+                                timeoutSecs = 12
+                            )
+                            if (rawLogs.startsWith("ERROR:")) {
+                                emptyList()
+                            } else {
+                                rawLogs.lines().filter { it.isNotBlank() }.takeLast(tailCount)
+                            }
+                        } else {
+                            emptyList()
+                        }
+                        return@runCatching Triple(targetName, fetchedLogs, parsedList)
+                    }
+
                     val listUrl = if (isKubernetes) {
                         "$baseEndpoint/api/v1/namespaces/${URLEncoder.encode(namespace, "UTF-8")}/pods"
                     } else {
                         "$baseEndpoint/containers/json?all=true"
                     }
                     val listReq = Request.Builder().url(listUrl).get().apply {
-                        if (secret.password.isNotBlank()) header("Authorization", "Bearer ${secret.password}")
+                        if (attachHttpBearer) header("Authorization", "Bearer $cleanToken")
                     }.build()
                     val parsedList = mutableListOf<DiscoveredContainerWorkload>()
                     httpClient.newCall(listReq).execute().use { resp ->
@@ -567,8 +699,8 @@ fun KubernetesAndContainerTerminalView(
                             "$baseEndpoint/containers/${URLEncoder.encode(targetName, "UTF-8")}/logs?stdout=1&stderr=1&tail=$tailCount"
                         }
                         val reqBuilder = Request.Builder().url(logsUrl).get()
-                        if (secret.password.isNotBlank()) {
-                            reqBuilder.header("Authorization", "Bearer ${secret.password}")
+                        if (attachHttpBearer) {
+                            reqBuilder.header("Authorization", "Bearer $cleanToken")
                         }
                         httpClient.newCall(reqBuilder.build()).execute().use { resp ->
                             if (!resp.isSuccessful) {
@@ -598,7 +730,8 @@ fun KubernetesAndContainerTerminalView(
                 logLines.addAll(fetchedLogs)
                 workloads.clear()
                 workloads.addAll(parsedWorkloads)
-                apiStatusBanner = "Synced ${parsedWorkloads.size} workload(s) from $baseEndpoint"
+                val sourceDesc = baseEndpoint.ifBlank { "ssh://$endpointHost (docker.sock)" }
+                apiStatusBanner = "Synced ${parsedWorkloads.size} workload(s) from $sourceDesc"
                 apiStatusIsError = false
             }.onFailure { err ->
                 apiStatusBanner = "Telemetry sync failed: ${err.message ?: "endpoint unreachable"}"
@@ -619,18 +752,47 @@ fun KubernetesAndContainerTerminalView(
                 } else {
                     execLines += "$targetName# $cmd"
                     scope.launch {
-                        val baseEndpoint = resolveWorkloadBaseEndpoint(endpointHost, settings.clusterOrSocketEndpoint)
+                        val baseEndpoint = resolveWorkloadBaseEndpoint(endpointHost, settings.clusterOrSocketEndpoint, isKubernetes)
                         val shellBin = settings.shellCommand.ifBlank { "/bin/sh" }
+                        val cleanToken = stripBearerPrefix(secret.password)
+                        val attachHttpBearer = cleanToken.isNotBlank() && (isKubernetes || secret.username.isBlank())
+
                         val remoteResult = withContext(Dispatchers.IO) {
                             runCatching {
-                                if (baseEndpoint.isBlank()) error("No remote cluster/daemon endpoint configured")
+                                if (baseEndpoint.isBlank()) {
+                                    if (!isKubernetes && endpointHost.isNotBlank() && VncNativeBridge.isNativeLoaded &&
+                                        (secret.username.isNotBlank() || secret.privateKeyPem.isNotBlank())
+                                    ) {
+                                        val (sshHost, sshPort) = parseSshHostAndPort(endpointHost)
+                                        val sshUser = secret.username.ifBlank { "root" }
+                                        val dockerHostEnv = settings.clusterOrSocketEndpoint.trim()
+                                            .takeIf { it.startsWith("unix://", ignoreCase = true) }
+                                            ?.let { "DOCKER_HOST=${shSingleQuote(it)} " }
+                                            .orEmpty()
+                                        val sshOut = VncNativeBridge.nativeSshExecCommand(
+                                            host = sshHost,
+                                            port = sshPort,
+                                            username = sshUser,
+                                            password = secret.password,
+                                            privateKeyPem = secret.privateKeyPem,
+                                            passphrase = secret.keyPassphrase,
+                                            command = "${dockerHostEnv}docker exec ${shSingleQuote(targetName)} ${shSingleQuote(shellBin)} -c ${shSingleQuote(cmd)} 2>&1",
+                                            timeoutSecs = 20
+                                        )
+                                        if (sshOut.startsWith("ERROR:")) {
+                                            error(sshOut.removePrefix("ERROR:").trim())
+                                        }
+                                        return@runCatching sshOut.trimEnd()
+                                    }
+                                    error("No remote cluster/daemon endpoint configured")
+                                }
                                 if (isKubernetes) {
                                     val execRes = k8sExecClient.executeCommand(
                                         clusterEndpoint = baseEndpoint,
                                         namespace = namespace,
                                         podName = targetName,
                                         command = listOf(shellBin, "-c", cmd),
-                                        bearerToken = secret.password,
+                                        bearerToken = cleanToken,
                                         container = settings.subContainerName
                                     )
                                     buildString {
@@ -661,8 +823,8 @@ fun KubernetesAndContainerTerminalView(
                                         .url("$baseEndpoint/containers/${URLEncoder.encode(targetName, "UTF-8")}/exec")
                                         .post(createPayload.toRequestBody(jsonMedia))
                                         .apply {
-                                            if (secret.password.isNotBlank()) {
-                                                header("Authorization", "Bearer ${secret.password}")
+                                            if (attachHttpBearer) {
+                                                header("Authorization", "Bearer $cleanToken")
                                             }
                                         }
                                         .build()
@@ -676,8 +838,8 @@ fun KubernetesAndContainerTerminalView(
                                         .url("$baseEndpoint/exec/$execId/start")
                                         .post("""{"Detach":false,"Tty":false}""".toRequestBody(jsonMedia))
                                         .apply {
-                                            if (secret.password.isNotBlank()) {
-                                                header("Authorization", "Bearer ${secret.password}")
+                                            if (attachHttpBearer) {
+                                                header("Authorization", "Bearer $cleanToken")
                                             }
                                         }
                                         .build()
@@ -709,7 +871,7 @@ fun KubernetesAndContainerTerminalView(
         }
     }
 
-    LaunchedEffect(activeTarget, endpointHost, settings.clusterOrSocketEndpoint) {
+    LaunchedEffect(activeTarget, endpointHost, settings.clusterOrSocketEndpoint, secret.username, secret.password) {
         if (endpointHost.isNotBlank() || settings.clusterOrSocketEndpoint.isNotBlank()) {
             fetchLiveClusterTelemetry()
         }

@@ -584,11 +584,6 @@ pub extern "C" fn nexusts_ffi_ssh_connect_json(
             .filter(|s| !s.trim().is_empty())
             .and_then(|s| serde_json::from_str(s).ok());
 
-        let startup_cmd = spec
-            .startup_command
-            .clone()
-            .filter(|s| !s.trim().is_empty());
-
         let rt = tokio_runtime();
         let connect_res = rt.block_on(async move {
             let bastion_session = if let Some(bspec) = bastion_spec {
@@ -604,10 +599,6 @@ pub extern "C" fn nexusts_ffi_ssh_connect_json(
             if open_pty {
                 let (session, mut pty_channel) =
                     ActiveSshClientSession::connect(spec, bastion_session.as_ref()).await?;
-                if let Some(init_cmd) = startup_cmd {
-                    let line = format!("{init_cmd}\r");
-                    let _ = pty_channel.data(line.as_bytes()).await;
-                }
 
                 let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<SshActorCommand>();
                 let out_clone = Arc::clone(&output_buf);
@@ -1047,7 +1038,7 @@ pub extern "C" fn nexusts_ffi_sftp_list_dir_json(
     out_error: *mut *mut c_char,
 ) -> *mut c_char {
     catch_unwind(AssertUnwindSafe(|| unsafe {
-        let dir = opt_str_from_c(remote_dir_cstr).unwrap_or("/").to_string();
+        let dir = opt_str_from_c(remote_dir_cstr).unwrap_or("").to_string();
         let Some(client) = get_sftp_client(sftp_handle) else {
             write_out_error(out_error, "Unknown SFTP handle");
             return ptr::null_mut();
@@ -1311,7 +1302,7 @@ pub extern "C" fn nexusts_scp_list_dir_json(
     out_error: *mut *mut c_char,
 ) -> *mut c_char {
     catch_unwind(AssertUnwindSafe(|| unsafe {
-        let dir = opt_str_from_c(remote_dir_cstr).unwrap_or("/").to_string();
+        let dir = opt_str_from_c(remote_dir_cstr).unwrap_or("").to_string();
         let Some(client) = get_scp_client(scp_handle) else {
             write_out_error(out_error, "Unknown SCP handle");
             return ptr::null_mut();
@@ -1590,7 +1581,7 @@ pub extern "C" fn nexusts_ftp_list_dir_json(
     out_error: *mut *mut c_char,
 ) -> *mut c_char {
     catch_unwind(AssertUnwindSafe(|| unsafe {
-        let dir = opt_str_from_c(remote_dir_cstr).unwrap_or("/").to_string();
+        let dir = opt_str_from_c(remote_dir_cstr).unwrap_or("").to_string();
         let Some(client) = get_ftp_client(ftp_handle) else {
             write_out_error(out_error, "Unknown FTP handle");
             return ptr::null_mut();
@@ -2226,7 +2217,7 @@ pub extern "C" fn nexusts_net_tcp_ping_ms(
 ) -> i64 {
     catch_unwind(AssertUnwindSafe(|| unsafe {
         let host = opt_str_from_c(host_cstr).unwrap_or("").trim().to_string();
-        if host.is_empty() || port == 0 {
+        if host.is_empty() {
             return -1;
         }
         tokio_runtime()

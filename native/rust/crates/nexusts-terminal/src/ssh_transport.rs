@@ -142,26 +142,51 @@ async fn authenticate_keyboard_interactive_with_password(
     username: &str,
     password: &str,
 ) -> Result<bool, TransportError> {
+    if password.is_empty() {
+        return Ok(false);
+    }
     let fut = async {
         let mut step = handle
             .authenticate_keyboard_interactive_start(username, None::<String>)
             .await?;
 
-        for _ in 0..8 {
+        let mut password_sent = false;
+        for _ in 0..6 {
             match step {
                 KeyboardInteractiveAuthResponse::Success => return Ok(true),
-                KeyboardInteractiveAuthResponse::Failure => return Ok(false),
+                KeyboardInteractiveAuthResponse::Failure { .. } => return Ok(false),
                 KeyboardInteractiveAuthResponse::InfoRequest { prompts, .. } => {
-                    let responses: Vec<String> = prompts
-                        .iter()
-                        .map(|p| {
-                            if p.prompt.is_empty() {
-                                String::new()
-                            } else {
-                                password.to_string()
+                    if prompts.is_empty() {
+                        step = handle
+                            .authenticate_keyboard_interactive_respond(Vec::new())
+                            .await?;
+                        continue;
+                    }
+                    let mut responses = Vec::with_capacity(prompts.len());
+                    for p in &prompts {
+                        let lower = p.prompt.to_ascii_lowercase();
+                        if p.prompt.is_empty() {
+                            responses.push(String::new());
+                        } else if !p.echo
+                            || lower.contains("password")
+                            || lower.contains("passphrase")
+                        {
+                            if password_sent
+                                && (lower.contains("verification")
+                                    || lower.contains("otp")
+                                    || lower.contains("token")
+                                    || lower.contains("code"))
+                            {
+                                // Avoid sending the account password into a second-factor OTP prompt
+                                return Ok(false);
                             }
-                        })
-                        .collect();
+                            password_sent = true;
+                            responses.push(password.to_string());
+                        } else {
+                            // Echoed non-password prompt (e.g. OTP/username challenge) cannot be satisfied with password
+                            return Ok(false);
+                        }
+                    }
                     step = handle
                         .authenticate_keyboard_interactive_respond(responses)
                         .await?;
@@ -199,15 +224,48 @@ impl ActiveSshClientSession {
         };
 
         let effective_port = if spec.port == 0 { 22 } else { spec.port };
+        let connect_timeout = Duration::from_secs(15);
 
         let handle = if let Some(jump_host) = bastion {
-            let tunnel_channel = jump_host
-                .handle
-                .channel_open_direct_tcpip(&spec.host, u32::from(effective_port), "127.0.0.1", 0)
-                .await?;
-            client::connect_stream(config, tunnel_channel.into_stream(), handler).await?
+            let tunnel_channel = tokio::time::timeout(
+                connect_timeout,
+                jump_host.handle.channel_open_direct_tcpip(
+                    &spec.host,
+                    u32::from(effective_port),
+                    "127.0.0.1",
+                    0,
+                ),
+            )
+            .await
+            .map_err(|_| {
+                TransportError::Io(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    format!("Bastion tunnel timed out to {}:{}", spec.host, effective_port),
+                ))
+            })??;
+            tokio::time::timeout(
+                connect_timeout,
+                client::connect_stream(config, tunnel_channel.into_stream(), handler),
+            )
+            .await
+            .map_err(|_| {
+                TransportError::Io(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    format!("SSH handshake timed out via bastion to {}:{}", spec.host, effective_port),
+                ))
+            })??
         } else {
-            client::connect(config, (spec.host.as_str(), effective_port), handler).await?
+            tokio::time::timeout(
+                connect_timeout,
+                client::connect(config, (spec.host.as_str(), effective_port), handler),
+            )
+            .await
+            .map_err(|_| {
+                TransportError::Io(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    format!("SSH TCP connection timed out to {}:{}", spec.host, effective_port),
+                ))
+            })??
         };
         Ok(handle)
     }
@@ -225,8 +283,8 @@ impl ActiveSshClientSession {
                     .await?
                 {
                     true
-                } else {
-                    // Fallback to RFC 4256 keyboard-interactive for PAM / BSD / Linux OpenSSH servers.
+                } else if !password.is_empty() {
+                    // Fallback to RFC 4256 keyboard-interactive for PAM / BSD / Linux / ESXi / Proxmox OpenSSH servers.
                     // Note: russh 0.49 only initializes `CurrentRequest::KeyboardInteractive` when
                     // keyboard-interactive is the first auth request on a `Handle`, so we open a fresh
                     // transport handle for the PAM challenge-response exchange.
@@ -242,19 +300,33 @@ impl ActiveSshClientSession {
                     .await?;
                     handle = kbd_handle;
                     ok
+                } else {
+                    false
                 }
             }
             SshAuthMethod::PrivateKeyPem { pem, passphrase } => {
-                let key_pair = russh_keys::decode_secret_key(pem, passphrase.as_deref())?;
-                let hash_alg = if key_pair.algorithm().is_rsa() {
-                    Some(HashAlg::Sha256)
+                let key_arc = Arc::new(russh_keys::decode_secret_key(pem, passphrase.as_deref())?);
+                if key_arc.algorithm().is_rsa() {
+                    // Try modern rsa-sha2-512, then rsa-sha2-256, then legacy ssh-rsa for older appliances
+                    let mut ok = false;
+                    for alg in [Some(HashAlg::Sha512), Some(HashAlg::Sha256), None] {
+                        if let Ok(key_with_alg) = PrivateKeyWithHashAlg::new(Arc::clone(&key_arc), alg) {
+                            if let Ok(true) = handle
+                                .authenticate_publickey(&spec.username, key_with_alg)
+                                .await
+                            {
+                                ok = true;
+                                break;
+                            }
+                        }
+                    }
+                    ok
                 } else {
-                    None
-                };
-                let key_with_alg = PrivateKeyWithHashAlg::new(Arc::new(key_pair), hash_alg)?;
-                handle
-                    .authenticate_publickey(&spec.username, key_with_alg)
-                    .await?
+                    let key_with_alg = PrivateKeyWithHashAlg::new(key_arc, None)?;
+                    handle
+                        .authenticate_publickey(&spec.username, key_with_alg)
+                        .await?
+                }
             }
         };
 

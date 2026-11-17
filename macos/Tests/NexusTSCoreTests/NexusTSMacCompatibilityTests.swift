@@ -350,11 +350,11 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
     }
 
     func testV118LocalizationUpgradeVersionAndVaultReplacementCompatibility() throws {
-        XCTAssertEqual(MacGitHubReleaseUpdater.currentVersion, "0.8.7")
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.7", isNewerThan: "0.8.6"))
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.7", isNewerThan: "0.8.5"))
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.7", isNewerThan: "0.8.4"))
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.7", isNewerThan: "0.3.0-beta.6"))
+        XCTAssertEqual(MacGitHubReleaseUpdater.currentVersion, "0.8.8")
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.8", isNewerThan: "0.8.7"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.8", isNewerThan: "0.8.6"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.8", isNewerThan: "0.8.5"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.8", isNewerThan: "0.3.0-beta.6"))
         XCTAssertEqual(LocalizedWorkspaceStrings.catalog(for: .en).studios, "Manage")
         XCTAssertEqual(LocalizedWorkspaceStrings.catalog(for: .en).logOffSession, "Log Off Session")
 

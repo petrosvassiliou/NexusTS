@@ -27,6 +27,7 @@ private struct VncLiveWorkspaceBody: View {
 
     @State private var scaleToFit: Bool = true
     @State private var hasPresentedFrame: Bool = false
+    @State private var sendCommandShortcuts: Bool = false
 
     private var latestConnection: VaultConnection {
         store.activeConnections.first(where: { $0.id == tab.connection.id }) ?? tab.connection
@@ -39,7 +40,12 @@ private struct VncLiveWorkspaceBody: View {
         )
     }
 
+    private var isAppleScreenSharing: Bool {
+        latestConnection.protocolType == .APPLE_SCREEN_SHARING || vncSettings.appleArdDiffieHellmanAuth
+    }
+
     var body: some View {
+        let effectivePort = vncSettings.port > 0 ? vncSettings.port : 5900
         VStack(spacing: 0) {
             HStack(spacing: 10) {
                 Circle()
@@ -52,11 +58,11 @@ private struct VncLiveWorkspaceBody: View {
 
                 ProtocolSquircleIcon(protocolType: latestConnection.protocolType, size: 22)
 
-                Text(verbatim: "\(latestConnection.name) (\(latestConnection.host):\(String(vncSettings.port)))")
+                Text(verbatim: "\(latestConnection.name) (\(latestConnection.host):\(String(effectivePort)))")
                     .font(.callout.weight(.semibold))
                     .lineLimit(1)
 
-                if vncSettings.appleArdDiffieHellmanAuth {
+                if isAppleScreenSharing {
                     EnvironmentCapsuleBadge("ARD DH Auth")
                 }
 
@@ -74,6 +80,11 @@ private struct VncLiveWorkspaceBody: View {
                 .lineLimit(1)
 
                 Spacer()
+
+                Toggle("Send ⌘", isOn: $sendCommandShortcuts)
+                    .toggleStyle(.checkbox)
+                    .font(.caption)
+                    .help("Forward macOS Command (⌘) shortcuts to the remote Screen Sharing / VNC session")
 
                 Toggle("Fit", isOn: $scaleToFit)
                     .toggleStyle(.checkbox)
@@ -111,7 +122,8 @@ private struct VncLiveWorkspaceBody: View {
                         session: liveSession,
                         scaleToFit: scaleToFit,
                         viewOnly: vncSettings.viewOnly,
-                        captureRemoteShortcuts: store.remoteKeyCaptureEnabled,
+                        isAppleScreenSharing: isAppleScreenSharing,
+                        captureRemoteShortcuts: sendCommandShortcuts || store.remoteKeyCaptureEnabled,
                         onRuntimeUpdate: { connected, hasFrame, dimsText, errorText in
                             if hasPresentedFrame != hasFrame {
                                 hasPresentedFrame = hasFrame
@@ -134,7 +146,7 @@ private struct VncLiveWorkspaceBody: View {
                             .foregroundStyle(Color(nsColor: .systemPurple))
 
                         Text(
-                            latestConnection.protocolType == .APPLE_SCREEN_SHARING
+                            isAppleScreenSharing
                                 ? "Apple Remote Desktop (ARD) & Screen Sharing"
                                 : "RFB 3.8 Live VNC Framebuffer Engine"
                         )
@@ -180,6 +192,9 @@ private struct VncLiveWorkspaceBody: View {
                 }
             }
         }
+        .onAppear {
+            sendCommandShortcuts = isAppleScreenSharing || store.remoteKeyCaptureEnabled
+        }
     }
 
     private func launchNativeAppleScreenSharingApp() {
@@ -196,7 +211,7 @@ private struct VncLiveWorkspaceBody: View {
         } else if !pass.isEmpty {
             comps.password = pass
         }
-        comps.host = latestConnection.host
+        comps.host = latestConnection.host.trimmingCharacters(in: CharacterSet(charactersIn: "[] "))
         if vncSettings.port > 0 && vncSettings.port != 5900 {
             comps.port = vncSettings.port
         }
@@ -211,6 +226,7 @@ private struct VncInteractiveSurfaceRepresentable: NSViewRepresentable {
     let session: NativeLiveVncSession
     let scaleToFit: Bool
     let viewOnly: Bool
+    let isAppleScreenSharing: Bool
     let captureRemoteShortcuts: Bool
     let onRuntimeUpdate: (Bool, Bool, String?, String?) -> Void
 
@@ -221,6 +237,7 @@ private struct VncInteractiveSurfaceRepresentable: NSViewRepresentable {
             session: session,
             scaleToFit: scaleToFit,
             viewOnly: viewOnly,
+            isAppleScreenSharing: isAppleScreenSharing,
             captureRemoteShortcuts: captureRemoteShortcuts
         )
         return view
@@ -232,6 +249,7 @@ private struct VncInteractiveSurfaceRepresentable: NSViewRepresentable {
             session: session,
             scaleToFit: scaleToFit,
             viewOnly: viewOnly,
+            isAppleScreenSharing: isAppleScreenSharing,
             captureRemoteShortcuts: captureRemoteShortcuts
         )
     }
@@ -241,6 +259,7 @@ final class VncPointerAndKeyNSView: NSView {
     var session: NativeLiveVncSession?
     var scaleToFit: Bool = true
     var viewOnly: Bool = false
+    var isAppleScreenSharing: Bool = false
     var captureRemoteShortcuts: Bool = false
     var onRuntimeUpdate: ((Bool, Bool, String?, String?) -> Void)?
 
@@ -296,11 +315,13 @@ final class VncPointerAndKeyNSView: NSView {
         session: NativeLiveVncSession,
         scaleToFit: Bool,
         viewOnly: Bool,
+        isAppleScreenSharing: Bool,
         captureRemoteShortcuts: Bool
     ) {
         let changed = self.session !== session
         self.session = session
         self.viewOnly = viewOnly
+        self.isAppleScreenSharing = isAppleScreenSharing
         self.captureRemoteShortcuts = captureRemoteShortcuts
 
         if self.scaleToFit != scaleToFit {
@@ -552,10 +573,14 @@ final class VncPointerAndKeyNSView: NSView {
         case 0x3C: return 0xFFE2 // Shift_R
         case 0x3B: return 0xFFE3 // Control_L
         case 0x3E: return 0xFFE4 // Control_R
-        case 0x3A: return 0xFFE9 // Alt_L
-        case 0x3D: return 0xFFEA // Alt_R
-        case 0x37: return captureRemoteShortcuts ? 0xFFEB : nil // Super_L
-        case 0x36: return captureRemoteShortcuts ? 0xFFEC : nil // Super_R
+        case 0x3A: return 0xFFE9 // Alt_L (Option)
+        case 0x3D: return 0xFFEA // Alt_R (Option)
+        case 0x37:
+            guard captureRemoteShortcuts else { return nil }
+            return isAppleScreenSharing ? 0xFFE7 : 0xFFEB // Meta_L (macOS ARD Command) vs Super_L
+        case 0x36:
+            guard captureRemoteShortcuts else { return nil }
+            return isAppleScreenSharing ? 0xFFE8 : 0xFFEC // Meta_R vs Super_R
         case 0x39: return 0xFFE5 // Caps_Lock
         default:   return nil
         }
@@ -566,7 +591,9 @@ final class VncPointerAndKeyNSView: NSView {
             return special
         }
         let candidate: String? = {
-            if event.modifierFlags.contains(.control) || event.modifierFlags.contains(.option) {
+            if event.modifierFlags.contains(.control)
+                || event.modifierFlags.contains(.option)
+                || event.modifierFlags.contains(.command) {
                 return event.charactersIgnoringModifiers
             }
             return event.characters ?? event.charactersIgnoringModifiers
@@ -579,6 +606,14 @@ final class VncPointerAndKeyNSView: NSView {
             return 0x0100_0000 | v
         }
         return nil
+    }
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if !viewOnly && captureRemoteShortcuts && window?.firstResponder === self && event.modifierFlags.contains(.command) {
+            keyDown(with: event)
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
     }
 
     override func keyDown(with event: NSEvent) {
@@ -648,8 +683,8 @@ final class VncPointerAndKeyNSView: NSView {
                     case 0x3E: return 0xFFE4
                     case 0x3A: return 0xFFE9
                     case 0x3D: return 0xFFEA
-                    case 0x37: return 0xFFEB
-                    case 0x36: return 0xFFEC
+                    case 0x37: return isAppleScreenSharing ? 0xFFE7 : 0xFFEB
+                    case 0x36: return isAppleScreenSharing ? 0xFFE8 : 0xFFEC
                     default:   return nil
                     }
                 }()

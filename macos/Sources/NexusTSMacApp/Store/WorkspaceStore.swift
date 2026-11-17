@@ -521,7 +521,7 @@ public final class LiveTransferController: ObservableObject {
         self.localPath = ftSettings.initialLocalDirectory.isEmpty
             ? FileManager.default.homeDirectoryForCurrentUser.path
             : ftSettings.initialLocalDirectory
-        self.remotePath = ftSettings.initialRemoteDirectory.isEmpty ? "/" : ftSettings.initialRemoteDirectory
+        self.remotePath = ftSettings.initialRemoteDirectory
         refreshLocal()
         connect(connection: connection, credential: credential, bastionSpec: bastionSpec)
     }
@@ -604,7 +604,7 @@ public final class LiveTransferController: ObservableObject {
                             password: password
                         )
                     case .FTPS:
-                        let implicit = ftSettings.ftpsImplicitTls || port == 990
+                        let implicit = ftSettings.ftpsImplicitTls
                         transferClient = try MacFtpsClient.connect(
                             host: host,
                             port: port,
@@ -626,19 +626,24 @@ public final class LiveTransferController: ObservableObject {
                         }
                     }
 
-                    var targetDir = initialRemote.isEmpty ? "/" : initialRemote
-                    if targetDir == "~" || targetDir == "." {
-                        targetDir = (try? transferClient.pwd()) ?? "/"
+                    let trimmedInitial = initialRemote.trimmingCharacters(in: .whitespacesAndNewlines)
+                    var targetDir: String
+                    if trimmedInitial.isEmpty || trimmedInitial == "~" || trimmedInitial == "." {
+                        targetDir = (try? transferClient.pwd()) ?? ""
+                    } else {
+                        targetDir = trimmedInitial
                     }
                     do {
                         let listed = try transferClient.listDirectory(targetDir)
-                        return (sshSession, transferClient, targetDir, listed)
+                        let displayDir = targetDir.isEmpty ? ((try? transferClient.pwd()) ?? "/") : targetDir
+                        return (sshSession, transferClient, displayDir, listed)
                     } catch {
                         if let fallbackPwd = try? transferClient.pwd(), fallbackPwd != targetDir {
                             let listed = try transferClient.listDirectory(fallbackPwd)
                             return (sshSession, transferClient, fallbackPwd, listed)
                         }
-                        throw error
+                        let listedRoot = try transferClient.listDirectory("/")
+                        return (sshSession, transferClient, "/", listedRoot)
                     }
                 }.value
 
@@ -925,7 +930,8 @@ public final class LiveVncController: ObservableObject {
 
         let host = connection.host
         let port = UInt16(clamping: vncSettings.port > 0 ? vncSettings.port : 5900)
-        let user = effectiveUsername
+        let useArdAuth = connection.protocolType == .APPLE_SCREEN_SHARING || vncSettings.appleArdDiffieHellmanAuth
+        let user = useArdAuth ? effectiveUsername : ""
         let pass = effectivePassword
         let shared = vncSettings.sharedSession
         let viewOnly = vncSettings.viewOnly
