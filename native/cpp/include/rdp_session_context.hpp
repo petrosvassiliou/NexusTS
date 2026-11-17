@@ -536,9 +536,9 @@ private:
     std::atomic<bool> cliprdr_ready_{false};
     std::atomic<uint32_t> server_clip_caps_{0};
     std::atomic<uint32_t> server_fgd_format_id_{0};
-    void* cliprdr_context_{nullptr};
-    uint32_t next_client_clip_data_id_{1};
-    uint32_t next_client_stream_id_{1};
+    [[maybe_unused]] void* cliprdr_context_{nullptr};
+    [[maybe_unused]] uint32_t next_client_clip_data_id_{1};
+    [[maybe_unused]] uint32_t next_client_stream_id_{1};
     uint64_t next_remote_clip_batch_id_{1};
     std::unordered_map<uint32_t, std::shared_ptr<const std::vector<RdpClipboardFileEntry>>> locked_local_file_snapshots_;
     RemoteFileTransferState remote_file_transfer_{};
