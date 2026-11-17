@@ -867,6 +867,7 @@ class RtszDocumentImporter {
                 .ifBlank { elem.childText("VMId") }
                 .ifBlank { elem.childText("InstanceID") }
                 .trim()
+                .trim('{', '}', '"', '\'')
             val isHyperVVm = hvMode == "2" || hvInstance.isNotBlank()
             val port = if (isHyperVVm) {
                 elem.childInt("HyperVPort", "RDPPort", "Port", "ServerPort") ?: uriPortFallback ?: 2179

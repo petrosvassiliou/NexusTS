@@ -827,7 +827,7 @@ private final class RoyalTsXmlSAXParser: NSObject, XMLParserDelegate {
             case "RoyalRDSConnection", "RoyalWindowsTerminalServicesConnection", "RoyalTerminalServicesConnection":
                 let hyperVMode = (node.fields["HyperVMode"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
                 let vmGuid = (node.fields["HyperVInstance"] ?? node.fields["VMId"] ?? node.fields["InstanceID"] ?? "")
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: "{}\"'")))
                 let rawUri = node.fields["URI"] ?? ""
 
                 if hyperVMode == "1" || (hyperVMode.lowercased() == "true" && vmGuid.isEmpty) {
