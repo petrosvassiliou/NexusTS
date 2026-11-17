@@ -393,7 +393,15 @@ public struct RdpProtocolSettings: Codable, Equatable, Hashable, Sendable {
     public var hyperVVmId: String = ""
     public var hyperVEnhancedSession: Bool = false
 
-    public init() {}
+    public init(
+        port: Int = 3389,
+        hyperVVmId: String = "",
+        hyperVEnhancedSession: Bool = false
+    ) {
+        self.port = port
+        self.hyperVVmId = hyperVVmId
+        self.hyperVEnhancedSession = hyperVEnhancedSession
+    }
 
     enum CodingKeys: String, CodingKey {
         case port, connectToConsoleAdmin, hiDpiEnabled, desktopScaleFactorPercent, deviceScaleFactorPercent, hiDpiScaleCustomized

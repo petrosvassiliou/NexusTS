@@ -1444,7 +1444,7 @@ class EnterpriseVaultImporterTest {
         )
         assertTrue(rdpSettings.ignoreCertificateWarnings)
 
-        val exportedRtsx = exporter.exportToRtsxXml(imported)
+        val exportedRtsx = exporter.exportToRoyalTsXml(imported)
         assertTrue(exportedRtsx.contains("<RoyalHyperVConnection>"))
         assertTrue(exportedRtsx.contains("<HyperVInstance>11111111-2222-3333-4444-555555555555</HyperVInstance>"))
         assertTrue(exportedRtsx.contains("<HyperVEnhancedSessionMode>True</HyperVEnhancedSessionMode>"))

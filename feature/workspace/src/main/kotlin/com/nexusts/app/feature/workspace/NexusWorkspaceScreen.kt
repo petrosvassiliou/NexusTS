@@ -206,6 +206,7 @@ import com.nexusts.app.core.vault.importer.DetectedExternalVaultFormat
 import com.nexusts.app.core.vault.importer.RoyalTsImportPlacementMode
 import com.nexusts.app.core.vault.inheritance.EffectiveConnectionProfile
 import com.nexusts.app.core.vault.model.CustomPropertyEntry
+import com.nexusts.app.core.vault.model.InheritableProperties
 import com.nexusts.app.core.vault.model.InheritanceMode
 import com.nexusts.app.core.vault.model.ProtocolSpecificSettings
 import com.nexusts.app.core.vault.model.RdpAudioRedirectionMode

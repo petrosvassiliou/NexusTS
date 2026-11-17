@@ -237,7 +237,7 @@ public enum CloudHypervisorClient {
                 group.addTask {
                     let hit = NativeNetworkDiagnostics.probeTcpPort(host: cleanHost, port: item.0, timeoutMs: 650)
                     let isOpen = hit?.open ?? false
-                    let latency = hit?.latencyMs ?? 0
+                    let latency = hit?.connectLatencyMs ?? 0
                     return (idx, HyperVPortDiagnostic(port: item.0, serviceLabel: item.1, isOpen: isOpen, latencyMs: latency))
                 }
             }
@@ -1051,7 +1051,7 @@ public enum CloudHypervisorClient {
         let auth: SshFfiConnectPayload.Auth = !pem.isEmpty
             ? .privateKeyPem(
                 pem: pem,
-                passphrase: credential.privateKeyPassphrase.isEmpty ? nil : credential.privateKeyPassphrase
+                passphrase: credential.keyPassphrase.isEmpty ? nil : credential.keyPassphrase
             )
             : .password(identity.password)
 

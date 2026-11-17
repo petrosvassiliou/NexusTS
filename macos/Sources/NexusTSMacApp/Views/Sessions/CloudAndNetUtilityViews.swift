@@ -578,7 +578,9 @@ public struct CloudHypervisorSessionView: View {
             inheritable: parent.inheritable,
             settings: .rdp(rdpCfg)
         )
-        store.upsertConnection(saved)
+        store.commitMutation("Saved Hyper-V VM \(saved.name)") { doc in
+            doc.connections.append(saved)
+        }
         statusMessage = "Saved '\(vm.name)' (TCP 2179 VMConnect) to Vault."
     }
 
