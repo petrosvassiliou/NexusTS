@@ -785,11 +785,11 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
         XCTAssertEqual(avc444.gfxCodecProfile.nativeCode, 2)
         XCTAssertTrue(NativeRdpSession.usesH264Cap(settings: avc444))
 
-        // Legacy vault JSON without gfxCodecProfile migrates cleanly based on enableH264Avc444
+        // Pre-v0.8.5 saved vault JSON without gfxCodecProfile upgrades automatically to ADAPTIVE_PROGRESSIVE
         let legacyAvcTrueJson = Data(#"{"port":3389,"enableGfxPipeline":true,"enableH264Avc444":true}"#.utf8)
         let decodedLegacyAvc = try JSONDecoder().decode(RdpProtocolSettings.self, from: legacyAvcTrueJson)
-        XCTAssertEqual(decodedLegacyAvc.gfxCodecProfile, .AVC444_CHROMA)
-        XCTAssertTrue(decodedLegacyAvc.enableH264Avc444)
+        XCTAssertEqual(decodedLegacyAvc.gfxCodecProfile, .ADAPTIVE_PROGRESSIVE)
+        XCTAssertFalse(decodedLegacyAvc.enableH264Avc444)
 
         let legacyAvcFalseJson = Data(#"{"port":3389,"enableGfxPipeline":true,"enableH264Avc444":false}"#.utf8)
         let decodedLegacyProg = try JSONDecoder().decode(RdpProtocolSettings.self, from: legacyAvcFalseJson)

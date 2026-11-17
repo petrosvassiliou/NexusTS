@@ -409,9 +409,13 @@ public struct RdpProtocolSettings: Codable, Equatable, Hashable, Sendable {
         self.desktopScaleFactorPercent = try c.decodeIfPresent(Int.self, forKey: .desktopScaleFactorPercent) ?? 150
         self.deviceScaleFactorPercent = try c.decodeIfPresent(Int.self, forKey: .deviceScaleFactorPercent) ?? 100
         self.enableGfxPipeline = try c.decodeIfPresent(Bool.self, forKey: .enableGfxPipeline) ?? true
-        let decodedProfile = try c.decodeIfPresent(RdpGfxCodecProfile.self, forKey: .gfxCodecProfile) ?? .ADAPTIVE_PROGRESSIVE
-        self.gfxCodecProfile = decodedProfile
-        self.enableH264Avc444 = try c.decodeIfPresent(Bool.self, forKey: .enableH264Avc444) ?? (decodedProfile == .AVC444_CHROMA)
+        if let explicitProfile = try c.decodeIfPresent(RdpGfxCodecProfile.self, forKey: .gfxCodecProfile) {
+            self.gfxCodecProfile = explicitProfile
+            self.enableH264Avc444 = try c.decodeIfPresent(Bool.self, forKey: .enableH264Avc444) ?? (explicitProfile == .AVC444_CHROMA)
+        } else {
+            self.gfxCodecProfile = .ADAPTIVE_PROGRESSIVE
+            self.enableH264Avc444 = false
+        }
         self.enableRemoteFx = try c.decodeIfPresent(Bool.self, forKey: .enableRemoteFx) ?? true
         self.resizeBehavior = try c.decodeIfPresent(RdpResizeBehavior.self, forKey: .resizeBehavior) ?? .DYNAMIC_DISP_DVC
         self.customDesktopWidth = try c.decodeIfPresent(Int.self, forKey: .customDesktopWidth) ?? 1920

@@ -14,6 +14,7 @@ import com.nexusts.app.core.vault.model.NxtsVaultDocument
 import com.nexusts.app.core.vault.model.PortForwardKind
 import com.nexusts.app.core.vault.model.ProtocolSpecificSettings
 import com.nexusts.app.core.vault.model.RdpAudioRedirectionMode
+import com.nexusts.app.core.vault.model.RdpGfxCodecProfile
 import com.nexusts.app.core.vault.model.RdpResizeBehavior
 import com.nexusts.app.core.vault.model.SecureGatewayConfig
 import com.nexusts.app.core.vault.model.SmartFolder
@@ -889,10 +890,11 @@ class RtszDocumentImporter {
                 .map { it.trim() }
                 .filter { it.isNotEmpty() }
 
+            val royalExplicitAvc = elem.childBoolean("RDPEnableAVC", default = false)
             val gfxCodecProfile = elem.childText("GfxCodecProfile")
                 .takeIf { it.isNotEmpty() }
                 ?.let { raw -> runCatching { RdpGfxCodecProfile.valueOf(raw) }.getOrNull() }
-                ?: RdpGfxCodecProfile.ADAPTIVE_PROGRESSIVE
+                ?: if (royalExplicitAvc) RdpGfxCodecProfile.AVC444_CHROMA else RdpGfxCodecProfile.ADAPTIVE_PROGRESSIVE
 
             ProtocolSpecificSettings.Rdp(
                 port = port,
