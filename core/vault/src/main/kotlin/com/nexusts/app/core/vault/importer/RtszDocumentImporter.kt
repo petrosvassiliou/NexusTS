@@ -889,6 +889,11 @@ class RtszDocumentImporter {
                 .map { it.trim() }
                 .filter { it.isNotEmpty() }
 
+            val gfxCodecProfile = elem.childText("GfxCodecProfile")
+                .takeIf { it.isNotEmpty() }
+                ?.let { raw -> runCatching { RdpGfxCodecProfile.valueOf(raw) }.getOrNull() }
+                ?: RdpGfxCodecProfile.ADAPTIVE_PROGRESSIVE
+
             ProtocolSpecificSettings.Rdp(
                 port = port,
                 connectToConsoleAdmin = elem.childBoolean("ConnectToAdministerOrConsole", "ConnectToConsole", default = false),
@@ -896,7 +901,8 @@ class RtszDocumentImporter {
                 desktopScaleFactorPercent = scaleRaw,
                 deviceScaleFactorPercent = deviceScale,
                 enableGfxPipeline = elem.childBoolean("EnableGfxPipeline", "EnableGraphicsPipeline", default = true),
-                enableH264Avc444 = elem.childBoolean("EnableH264Avc444", default = true),
+                gfxCodecProfile = gfxCodecProfile,
+                enableH264Avc444 = elem.childBoolean("EnableH264Avc444", default = gfxCodecProfile == RdpGfxCodecProfile.AVC444_CHROMA),
                 enableRemoteFx = elem.childBoolean("EnableRemoteFx", default = true),
                 resizeBehavior = resizeBehavior,
                 customDesktopWidth = elem.childText("DesktopWidth").toIntOrNull()?.takeIf { it >= 320 } ?: 1920,

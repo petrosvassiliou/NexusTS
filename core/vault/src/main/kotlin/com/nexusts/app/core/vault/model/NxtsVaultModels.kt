@@ -195,6 +195,13 @@ enum class RdpAudioRedirectionMode {
 }
 
 @Serializable
+enum class RdpGfxCodecProfile(val nativeCode: Int) {
+    ADAPTIVE_PROGRESSIVE(0),
+    AVC420_VIDEO(1),
+    AVC444_CHROMA(2)
+}
+
+@Serializable
 @SerialName("protocol_settings")
 sealed interface ProtocolSpecificSettings {
 
@@ -207,7 +214,8 @@ sealed interface ProtocolSpecificSettings {
         val desktopScaleFactorPercent: Int = 150,
         val deviceScaleFactorPercent: Int = 140,
         val enableGfxPipeline: Boolean = true,
-        val enableH264Avc444: Boolean = true,
+        val gfxCodecProfile: RdpGfxCodecProfile = RdpGfxCodecProfile.ADAPTIVE_PROGRESSIVE,
+        val enableH264Avc444: Boolean = false,
         val enableRemoteFx: Boolean = true,
         val resizeBehavior: RdpResizeBehavior = RdpResizeBehavior.DYNAMIC_DISP_DVC,
         val customDesktopWidth: Int = 1920,

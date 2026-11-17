@@ -1607,6 +1607,15 @@ public struct RdpDirtyRegionSlice {
     public let sequence: UInt64
 }
 
+public struct RdpMultiDirtyRegionSlice {
+    public let fullFramePixels: UnsafePointer<UInt8>
+    public let strideBytes: Int
+    public let frameWidth: Int
+    public let frameHeight: Int
+    public let dirtyRects: UnsafeBufferPointer<NexusRdpDirtyRect>
+    public let sequence: UInt64
+}
+
 public enum RdpRemoteCursorSnapshot: Sendable {
     case hidden
     case systemDefault
@@ -1674,6 +1683,39 @@ private func nexusRdpDirtyRegionBridgeCallback(
     )
 }
 
+private final class RdpMultiDirtyConsumerContext {
+    let body: (RdpMultiDirtyRegionSlice) -> Void
+
+    init(body: @escaping (RdpMultiDirtyRegionSlice) -> Void) {
+        self.body = body
+    }
+}
+
+private func nexusRdpMultiDirtyRectsBridgeCallback(
+    _ fullFramePixels: UnsafePointer<UInt8>?,
+    _ strideBytes: UInt32,
+    _ fbWidth: UInt32,
+    _ fbHeight: UInt32,
+    _ dirtyRects: UnsafePointer<NexusRdpDirtyRect>?,
+    _ dirtyRectCount: Int,
+    _ frameSeq: UInt64,
+    _ userData: UnsafeMutableRawPointer?
+) {
+    guard let fullFramePixels, let userData else { return }
+    let ctx = Unmanaged<RdpMultiDirtyConsumerContext>.fromOpaque(userData).takeUnretainedValue()
+    let buffer = UnsafeBufferPointer(start: dirtyRects, count: max(0, dirtyRectCount))
+    ctx.body(
+        RdpMultiDirtyRegionSlice(
+            fullFramePixels: fullFramePixels,
+            strideBytes: Int(strideBytes),
+            frameWidth: Int(fbWidth),
+            frameHeight: Int(fbHeight),
+            dirtyRects: buffer,
+            sequence: frameSeq
+        )
+    )
+}
+
 public final class NativeRdpSession: @unchecked Sendable {
     public static let deviceRgbColorSpace = CGColorSpaceCreateDeviceRGB()
     public static let bgrxBitmapInfo: UInt32 =
@@ -1699,6 +1741,10 @@ public final class NativeRdpSession: @unchecked Sendable {
     private var lastRenderedImage: CGImage?
 
     public static let defaultHiDpiScalePercent: Int = 150
+
+    public static func usesH264Cap(settings: RdpProtocolSettings) -> Bool {
+        settings.enableGfxPipeline && settings.gfxCodecProfile != .ADAPTIVE_PROGRESSIVE
+    }
 
     public static func resolveEffectiveHiDpiScalePercent(
         settings: RdpProtocolSettings,
@@ -1766,7 +1812,7 @@ public final class NativeRdpSession: @unchecked Sendable {
             if resolvedScalePercent >= 140 { return 140 }
             return 100
         }()
-        let h264Cap = settings.enableGfxPipeline && settings.enableH264Avc444
+        let h264Cap = Self.usesH264Cap(settings: settings)
         let (alignedInitW, alignedInitH) = Self.clampSurfacePixelDimensions(
             width: initialWidth,
             height: initialHeight,
@@ -1803,7 +1849,8 @@ public final class NativeRdpSession: @unchecked Sendable {
                                                 cfg.device_scale_factor = UInt32(resolvedDeviceScalePercent)
                                                 cfg.color_depth_bits = UInt32(settings.colorDepthBits)
                                                 cfg.enable_gfx_pipeline = settings.enableGfxPipeline
-                                                cfg.enable_h264_avc444 = settings.enableH264Avc444
+                                                cfg.gfx_codec_mode = settings.gfxCodecProfile.nativeCode
+                                                cfg.enable_h264_avc444 = settings.gfxCodecProfile == .AVC444_CHROMA
                                                 cfg.enable_remotefx = settings.enableRemoteFx
                                                 cfg.enable_dynamic_resize = settings.resizeBehavior == .DYNAMIC_DISP_DVC
                                                 cfg.multi_monitor_spanning = settings.multiMonitorSpanning
@@ -1887,6 +1934,20 @@ public final class NativeRdpSession: @unchecked Sendable {
         return h > 0 && nexusts_rdp_is_connected(h)
     }
 
+    public var isReconnecting: Bool {
+        stateLock.lock()
+        let h = handle
+        stateLock.unlock()
+        return h > 0 && nexusts_rdp_is_reconnecting(h)
+    }
+
+    public var reconnectAttempt: Int {
+        stateLock.lock()
+        let h = handle
+        stateLock.unlock()
+        return h > 0 ? Int(nexusts_rdp_reconnect_attempt(h)) : 0
+    }
+
     @discardableResult
     public func requestDynamicResize(width: Int, height: Int, scalePercent: Int = 100) -> Bool {
         stateLock.lock()
@@ -1906,6 +1967,14 @@ public final class NativeRdpSession: @unchecked Sendable {
         nexusts_rdp_send_key_scancode(h, scancode, keyDown, extended)
     }
 
+    public func releaseAllKeys() {
+        stateLock.lock()
+        let h = handle
+        stateLock.unlock()
+        guard h > 0 else { return }
+        nexusts_rdp_release_all_keys(h)
+    }
+
     public func sendCtrlAltDel() {
         sendScancode(0x1D, keyDown: true, extended: false)
         sendScancode(0x38, keyDown: true, extended: false)
@@ -1923,6 +1992,19 @@ public final class NativeRdpSession: @unchecked Sendable {
         nexusts_rdp_send_pointer_event(
             h,
             flags,
+            UInt16(clamping: max(0, x)),
+            UInt16(clamping: max(0, y))
+        )
+    }
+
+    public func sendExtendedPointerEvent(xflags: UInt16, x: Int, y: Int) {
+        stateLock.lock()
+        let h = handle
+        stateLock.unlock()
+        guard h > 0 else { return }
+        nexusts_rdp_send_extended_pointer_event(
+            h,
+            xflags,
             UInt16(clamping: max(0, x)),
             UInt16(clamping: max(0, y))
         )
@@ -2002,6 +2084,31 @@ public final class NativeRdpSession: @unchecked Sendable {
                     h,
                     forceFull,
                     nexusRdpDirtyRegionBridgeCallback,
+                    opaque
+                )
+            }
+        }
+    }
+
+    /// Zero-copy multi-rect dirty-region consumer avoiding bounding-box over-upload on Metal `MTLTexture.replace(region:)`.
+    @discardableResult
+    public func consumeDirtyRects(
+        forceFull: Bool = false,
+        _ body: (RdpMultiDirtyRegionSlice) -> Void
+    ) -> Bool {
+        stateLock.lock()
+        let h = handle
+        stateLock.unlock()
+        guard h > 0 else { return false }
+
+        return withoutActuallyEscaping(body) { escapableBody in
+            let ctx = RdpMultiDirtyConsumerContext(body: escapableBody)
+            return withExtendedLifetime(ctx) {
+                let opaque = Unmanaged.passUnretained(ctx).toOpaque()
+                return nexusts_rdp_consume_dirty_rects(
+                    h,
+                    forceFull,
+                    nexusRdpMultiDirtyRectsBridgeCallback,
                     opaque
                 )
             }

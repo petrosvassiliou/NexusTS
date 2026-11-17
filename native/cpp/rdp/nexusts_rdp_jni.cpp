@@ -176,6 +176,7 @@ Java_com_nexusts_app_protocols_rdp_bridge_FreeRdpNativeBridge_nativeCreateSessio
     jboolean hidpi_enabled,
     jint desktop_scale_percent,
     jint color_depth_bits,
+    jint gfx_codec_mode,
     jboolean enable_h264_avc444,
     jboolean enable_remotefx,
     jboolean enable_dynamic_resize,
@@ -217,6 +218,7 @@ Java_com_nexusts_app_protocols_rdp_bridge_FreeRdpNativeBridge_nativeCreateSessio
     params.desktop_scale_factor = clamped_scale;
     params.device_scale_factor = nexusts::rdp::map_device_scale_factor(clamped_scale);
     params.color_depth_bits = static_cast<uint32_t>(color_depth_bits);
+    params.gfx_codec_mode = static_cast<int32_t>(std::clamp<jint>(gfx_codec_mode, 0, 2));
     params.enable_h264_avc444 = (enable_h264_avc444 == JNI_TRUE);
     params.enable_remotefx = (enable_remotefx == JNI_TRUE);
     params.enable_dynamic_resize = (enable_dynamic_resize == JNI_TRUE);
@@ -332,6 +334,17 @@ Java_com_nexusts_app_protocols_rdp_bridge_FreeRdpNativeBridge_nativeSendKeyScanc
 }
 
 JNIEXPORT void JNICALL
+Java_com_nexusts_app_protocols_rdp_bridge_FreeRdpNativeBridge_nativeReleaseAllKeys(
+    JNIEnv* /*env*/,
+    jclass /*clazz*/,
+    jlong handle
+) {
+    if (const auto session = lookup_session_shared(handle)) {
+        session->release_all_pressed_keys();
+    }
+}
+
+JNIEXPORT void JNICALL
 Java_com_nexusts_app_protocols_rdp_bridge_FreeRdpNativeBridge_nativeSendMouseEvent(
     JNIEnv* /*env*/,
     jclass /*clazz*/,
@@ -343,6 +356,24 @@ Java_com_nexusts_app_protocols_rdp_bridge_FreeRdpNativeBridge_nativeSendMouseEve
     if (const auto session = lookup_session_shared(handle)) {
         session->send_pointer_event(
             static_cast<uint16_t>(pointer_flags),
+            static_cast<uint16_t>(std::clamp<jint>(x, 0, 65535)),
+            static_cast<uint16_t>(std::clamp<jint>(y, 0, 65535))
+        );
+    }
+}
+
+JNIEXPORT void JNICALL
+Java_com_nexusts_app_protocols_rdp_bridge_FreeRdpNativeBridge_nativeSendExtendedMouseEvent(
+    JNIEnv* /*env*/,
+    jclass /*clazz*/,
+    jlong handle,
+    jint xflags,
+    jint x,
+    jint y
+) {
+    if (const auto session = lookup_session_shared(handle)) {
+        session->send_extended_pointer_event(
+            static_cast<uint16_t>(xflags),
             static_cast<uint16_t>(std::clamp<jint>(x, 0, 65535)),
             static_cast<uint16_t>(std::clamp<jint>(y, 0, 65535))
         );
@@ -409,6 +440,30 @@ Java_com_nexusts_app_protocols_rdp_bridge_FreeRdpNativeBridge_nativeIsConnected(
         return session->is_connected() ? JNI_TRUE : JNI_FALSE;
     }
     return JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_nexusts_app_protocols_rdp_bridge_FreeRdpNativeBridge_nativeIsReconnecting(
+    JNIEnv* /*env*/,
+    jclass /*clazz*/,
+    jlong handle
+) {
+    if (const auto session = lookup_session_shared(handle)) {
+        return session->is_reconnecting() ? JNI_TRUE : JNI_FALSE;
+    }
+    return JNI_FALSE;
+}
+
+JNIEXPORT jint JNICALL
+Java_com_nexusts_app_protocols_rdp_bridge_FreeRdpNativeBridge_nativeGetReconnectAttempt(
+    JNIEnv* /*env*/,
+    jclass /*clazz*/,
+    jlong handle
+) {
+    if (const auto session = lookup_session_shared(handle)) {
+        return static_cast<jint>(session->reconnect_attempt());
+    }
+    return 0;
 }
 
 JNIEXPORT jlong JNICALL

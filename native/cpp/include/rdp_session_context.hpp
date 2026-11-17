@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <functional>
@@ -40,6 +41,13 @@ struct RdpMonitorLayout {
     bool is_primary{true};
 };
 
+struct RdpDirtyRect {
+    uint32_t x{0};
+    uint32_t y{0};
+    uint32_t w{0};
+    uint32_t h{0};
+};
+
 struct RdpConnectParams {
     std::string host;
     uint16_t port{3389};
@@ -57,7 +65,11 @@ struct RdpConnectParams {
     uint32_t device_scale_factor{100};
     uint32_t color_depth_bits{32};
     bool enable_gfx_pipeline{true};
-    bool enable_h264_avc444{true};
+    // 0 = ADAPTIVE_PROGRESSIVE (RDPGFX 10.4 Progressive/ClearCodec/Planar/ZGFX — RoyalTS default),
+    // 1 = AVC420_VIDEO (Single-stream H.264 4:2:0 + Progressive),
+    // 2 = AVC444_CHROMA (Dual-stream H.264 4:4:4)
+    int32_t gfx_codec_mode{0};
+    bool enable_h264_avc444{false};
     bool enable_remotefx{true};
     bool enable_dynamic_resize{true};
     bool multi_monitor_spanning{false};
@@ -87,6 +99,10 @@ struct RdpConnectParams {
     std::string shared_drive_local_path;
     std::string app_home_dir;
     std::vector<RdpMonitorLayout> monitors;
+
+    constexpr bool uses_h264_codec() const noexcept {
+        return enable_gfx_pipeline && (gfx_codec_mode == 1 || gfx_codec_mode == 2);
+    }
 };
 
 class RdpHardwareH264Decoder {
@@ -179,6 +195,14 @@ public:
         uint32_t dirty_w,
         uint32_t dirty_h
     );
+    void stage_gdi_dirty_rects(
+        const uint8_t* primary_buffer,
+        uint32_t fb_width,
+        uint32_t fb_height,
+        uint32_t fb_stride,
+        const RdpDirtyRect* rects,
+        size_t rect_count
+    );
     bool flush_pending_frame();
     void present_frame();
     void present_frame(
@@ -206,12 +230,27 @@ public:
         uint64_t frame_seq,
         void* user_data
     );
+    using MultiDirtyRegionConsumer = void(*)(
+        const uint8_t* full_frame_pixels,
+        uint32_t stride_bytes,
+        uint32_t fb_width,
+        uint32_t fb_height,
+        const RdpDirtyRect* dirty_rects,
+        size_t dirty_rect_count,
+        uint64_t frame_seq,
+        void* user_data
+    );
 
     void set_frame_ready_callback(FrameReadyCallback cb, void* user_data);
     void notify_frame_ready() const;
     bool consume_dirty_shadow_region(
         bool force_full,
         DirtyRegionConsumer consumer,
+        void* user_data
+    );
+    bool consume_dirty_shadow_rects(
+        bool force_full,
+        MultiDirtyRegionConsumer consumer,
         void* user_data
     );
 
@@ -234,8 +273,11 @@ public:
     );
 
 private:
+    static constexpr size_t kMaxClientDirtyRects = 24u;
+
     void ensure_window_geometry_locked(uint32_t width, uint32_t height);
     void expand_dirty_bounds_locked(uint32_t x, uint32_t y, uint32_t w, uint32_t h);
+    void append_client_dirty_rect_locked(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t fb_w, uint32_t fb_h);
     void mark_full_frame_dirty_locked(uint32_t width, uint32_t height);
     void present_locked();
 
@@ -256,10 +298,12 @@ private:
     uint32_t acc_dirty_right_{1920};
     uint32_t acc_dirty_bottom_{1080};
     bool has_client_dirty_{true};
+    bool client_dirty_overflow_{true};
     uint32_t client_dirty_left_{0};
     uint32_t client_dirty_top_{0};
     uint32_t client_dirty_right_{1920};
     uint32_t client_dirty_bottom_{1080};
+    std::vector<RdpDirtyRect> client_dirty_rects_;
     std::vector<uint8_t> shadow_rgba_;
 };
 
@@ -270,7 +314,9 @@ public:
 
     bool connect();
     void disconnect();
-    bool is_connected() const noexcept { return connected_.load(); }
+    bool is_connected() const noexcept { return connected_.load(std::memory_order_acquire); }
+    bool is_reconnecting() const noexcept { return reconnecting_.load(std::memory_order_acquire); }
+    uint32_t reconnect_attempt() const noexcept { return reconnect_attempt_.load(std::memory_order_acquire); }
     std::string last_error() const;
     void set_last_error(std::string message);
 
@@ -299,8 +345,16 @@ public:
         bool extended_key
     );
 
+    void release_all_pressed_keys();
+
     void send_pointer_event(
         uint16_t pointer_flags,
+        uint16_t x,
+        uint16_t y
+    );
+
+    void send_extended_pointer_event(
+        uint16_t xflags,
         uint16_t x,
         uint16_t y
     );
@@ -341,6 +395,7 @@ private:
         uint16_t flags{0};
         uint16_t x{0};
         uint16_t y{0};
+        bool is_extended{false};
     };
 
     void render_diagnostic_surface_frame(uint32_t width, uint32_t height);
@@ -349,7 +404,10 @@ private:
 
     RdpConnectParams params_;
     std::atomic<bool> connected_{false};
+    std::atomic<bool> reconnecting_{false};
+    std::atomic<uint32_t> reconnect_attempt_{0};
     std::atomic<bool> stop_requested_{false};
+    std::atomic<bool> wakeup_signaled_{false};
     std::atomic<uint32_t> active_scale_percent_{100};
     std::atomic<uint32_t> last_requested_width_{0};
     std::atomic<uint32_t> last_requested_height_{0};
@@ -373,6 +431,7 @@ private:
     std::thread event_loop_thread_;
     [[maybe_unused]] void* freerdp_instance_{nullptr};
     [[maybe_unused]] void* wakeup_event_{nullptr};
+    std::array<uint8_t, 512> pressed_scancodes_{};
     std::vector<QueuedKeyEvent> pending_keys_;
     std::vector<QueuedPointerEvent> pending_pointer_events_;
     std::vector<RdpMonitorLayout> pending_monitors_;

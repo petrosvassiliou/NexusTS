@@ -12,6 +12,8 @@ public struct RdpSessionView: View {
 
     @State private var isConnected: Bool = false
     @State private var isConnecting: Bool = true
+    @State private var isReconnecting: Bool = false
+    @State private var reconnectAttempt: Int = 0
     @State private var hasPresentedFrame: Bool = false
     @State private var lastNativeError: String = ""
     @State private var scaleToFit: Bool = true
@@ -46,9 +48,19 @@ public struct RdpSessionView: View {
             : NativeRdpSession.defaultHiDpiScalePercent
     }
 
+    private var gfxBadgeLabel: String {
+        guard rdpSettings.enableGfxPipeline else { return "GDI" }
+        switch rdpSettings.gfxCodecProfile {
+        case .ADAPTIVE_PROGRESSIVE: return "GFX"
+        case .AVC420_VIDEO:         return "AVC420"
+        case .AVC444_CHROMA:        return "AVC444"
+        }
+    }
+
     public var body: some View {
         let existingSession = store.existingRdpController(for: tab)
-        let hudConnected = isConnected || (existingSession?.isConnected ?? false)
+        let hudReconnecting = isReconnecting || (existingSession?.isReconnecting ?? false)
+        let hudConnected = !hudReconnecting && (isConnected || (existingSession?.isConnected ?? false))
 
         VStack(spacing: 0) {
             // External Remote Desktop Control & Telemetry Bar (strictly outside/above the RDP viewport)
@@ -56,11 +68,13 @@ public struct RdpSessionView: View {
                 HStack(spacing: 10) {
                     Circle()
                         .fill(
-                            hudConnected
-                                ? Color(nsColor: .systemGreen)
-                                : ((isConnecting || lastNativeError.isEmpty)
-                                    ? Color(nsColor: .systemOrange)
-                                    : Color(nsColor: .systemRed))
+                            hudReconnecting
+                                ? Color(nsColor: .systemOrange)
+                                : (hudConnected
+                                    ? Color(nsColor: .systemGreen)
+                                    : ((isConnecting || lastNativeError.isEmpty)
+                                        ? Color(nsColor: .systemOrange)
+                                        : Color(nsColor: .systemRed)))
                         )
                         .frame(width: 8, height: 8)
 
@@ -68,7 +82,7 @@ public struct RdpSessionView: View {
                         .font(.caption.weight(.semibold))
                         .lineLimit(1)
 
-                    Text(verbatim: frameDimensionsText)
+                    Text(verbatim: "\(frameDimensionsText) • \(gfxBadgeLabel)")
                         .font(.caption2.monospacedDigit())
                         .foregroundStyle(.secondary)
 
@@ -155,7 +169,7 @@ public struct RdpSessionView: View {
                 Divider()
             } else {
                 HStack {
-                    Text(verbatim: "\(latestConnection.name) • \(frameDimensionsText)")
+                    Text(verbatim: "\(latestConnection.name) • \(frameDimensionsText) • \(gfxBadgeLabel)")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                     Spacer()
@@ -189,6 +203,8 @@ public struct RdpSessionView: View {
                         )
                         : nil
                 )
+                let sessionReconnecting = isReconnecting || (session?.isReconnecting ?? false)
+                let sessionAttempt = max(reconnectAttempt, session?.reconnectAttempt ?? 0)
                 let effectiveConnected = isConnected || (session?.isConnected ?? false)
                 let effectiveHasFrame = hasPresentedFrame || (session?.hasValidFrame ?? false)
 
@@ -196,7 +212,7 @@ public struct RdpSessionView: View {
                     Color(red: 0.06, green: 0.07, blue: 0.09)
 
                     if let session {
-                        // Direct Metal CAMetalLayer surface — always live at opacity 1.0 for zero-latency first frame presentation
+                        // Direct off-main-thread Metal CAMetalLayer surface — always live at opacity 1.0
                         RdpInteractiveSurfaceNSViewRepresentable(
                             session: session,
                             generation: sessionGeneration,
@@ -204,9 +220,11 @@ public struct RdpSessionView: View {
                             retina2xEnabled: desiredRetina,
                             redirectClipboard: rdpSettings.redirectClipboard,
                             captureRemoteShortcuts: store.remoteKeyCaptureEnabled,
-                            onTelemetryChange: { connected, connecting, hasFrame, dimsText, errorText in
+                            onTelemetryChange: { connected, connecting, reconnecting, attempt, hasFrame, dimsText, errorText in
                                 if isConnected != connected { isConnected = connected }
                                 if isConnecting != connecting { isConnecting = connecting }
+                                if isReconnecting != reconnecting { isReconnecting = reconnecting }
+                                if reconnectAttempt != attempt { reconnectAttempt = attempt }
                                 if hasPresentedFrame != hasFrame { hasPresentedFrame = hasFrame }
                                 if !dimsText.isEmpty && frameDimensionsText != dimsText {
                                     frameDimensionsText = dimsText
@@ -219,7 +237,35 @@ public struct RdpSessionView: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
 
-                    if !effectiveConnected && !isConnecting && !lastNativeError.isEmpty {
+                    if sessionReconnecting {
+                        VStack {
+                            HStack(spacing: 10) {
+                                ProgressView()
+                                    .controlSize(.small)
+                                Text("Reconnecting to \(latestConnection.name) (attempt \(max(1, sessionAttempt))/8)…")
+                                    .font(.caption.weight(.medium))
+                                    .foregroundStyle(.white)
+                                Button("Reconnect Now") {
+                                    triggerReconnect()
+                                }
+                                .controlSize(.small)
+                                .buttonStyle(.borderedProminent)
+                            }
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 8)
+                            .background(
+                                Capsule(style: .continuous)
+                                    .fill(Color.black.opacity(0.78))
+                                    .overlay(
+                                        Capsule(style: .continuous)
+                                            .strokeBorder(Color.orange.opacity(0.55), lineWidth: 1)
+                                    )
+                            )
+                            .padding(.top, 12)
+                            Spacer()
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                    } else if !effectiveConnected && !isConnecting && !lastNativeError.isEmpty {
                         let diag = NexusErrorClassifier.classifyRdpError(
                             host: latestConnection.host,
                             port: rdpSettings.port,
@@ -355,6 +401,11 @@ public struct RdpSessionView: View {
                         scheduleDynamicResize(for: lastViewportSize, session: session, immediate: true)
                     }
                 }
+                .onChange(of: isConnected) { _, nowConnected in
+                    if nowConnected, let session {
+                        scheduleDynamicResize(for: lastViewportSize, session: session, immediate: true)
+                    }
+                }
             }
         }
     }
@@ -368,6 +419,8 @@ public struct RdpSessionView: View {
         }
         isConnected = session.isConnected
         isConnecting = session.isConnecting
+        isReconnecting = session.isReconnecting
+        reconnectAttempt = session.reconnectAttempt
         hasPresentedFrame = session.hasValidFrame
         lastNativeError = session.lastErrorMessage()
         if !session.hasValidFrame {
@@ -394,7 +447,7 @@ public struct RdpSessionView: View {
         let (pixelW, pixelH) = NativeRdpSession.clampSurfacePixelDimensions(
             width: rawW,
             height: rawH,
-            h264Enabled: rdpSettings.enableGfxPipeline && rdpSettings.enableH264Avc444
+            h264Enabled: NativeRdpSession.usesH264Cap(settings: rdpSettings)
         )
         let scalePercent: Int = {
             guard useRetina else { return 100 }
@@ -421,12 +474,14 @@ public struct RdpSessionView: View {
                 try? await Task.sleep(nanoseconds: 120_000_000)
             }
             guard !Task.isCancelled else { return }
-            lastSentResizeSpec = (pixelW, pixelH, scalePercent)
-            _ = session.requestDynamicResize(
+            let dispatched = session.requestDynamicResize(
                 width: pixelW,
                 height: pixelH,
                 scalePercent: scalePercent
             )
+            if dispatched {
+                lastSentResizeSpec = (pixelW, pixelH, scalePercent)
+            }
         }
     }
 
@@ -434,6 +489,8 @@ public struct RdpSessionView: View {
         lastNativeError = ""
         hasPresentedFrame = false
         isConnecting = true
+        isReconnecting = false
+        reconnectAttempt = 0
         showDelayedSpinner = false
         showStalledReconnect = false
         sessionGeneration &+= 1
@@ -453,7 +510,13 @@ public struct RdpSessionView: View {
     }
 }
 
-// MARK: - Shared Metal Pipeline & Coalesced Main-Thread Wakeup
+// MARK: - Off-Main-Thread Metal Presenter & Shared Pipeline
+
+private struct RdpMetalScaleUniforms {
+    var scale: SIMD2<Float>
+    var exactPixelMatch: UInt32
+    var pad: UInt32
+}
 
 private final class RdpMetalSharedPipeline: @unchecked Sendable {
     static let shared: RdpMetalSharedPipeline? = RdpMetalSharedPipeline()
@@ -473,6 +536,8 @@ private final class RdpMetalSharedPipeline: @unchecked Sendable {
 
     struct ScaleUniforms {
         float2 scale;
+        uint exactPixelMatch;
+        uint pad;
     };
 
     vertex VertexOut nexusts_rdp_vs(
@@ -499,8 +564,14 @@ private final class RdpMetalSharedPipeline: @unchecked Sendable {
 
     fragment half4 nexusts_rdp_fs(
         VertexOut in [[stage_in]],
+        constant ScaleUniforms& u [[buffer(0)]],
         texture2d<half, access::sample> tex [[texture(0)]]
     ) {
+        if (u.exactPixelMatch != 0u) {
+            uint2 coord = uint2(in.position.xy);
+            half3 rgb = tex.read(coord).rgb;
+            return half4(rgb, 1.0h);
+        }
         constexpr sampler s(coord::normalized, address::clamp_to_edge, filter::linear);
         half3 rgb = tex.sample(s, in.uv).rgb;
         return half4(rgb, 1.0h);
@@ -561,6 +632,328 @@ private final class MainThreadRdpFrameSignal: @unchecked Sendable {
     }
 }
 
+/// Dedicated `.userInteractive` off-main-thread Metal uploader & `CAMetalLayer` presenter.
+/// Uploads individual `cinvalid` dirty rectangles under `surface_mutex_` and calls `nextDrawable()`
+/// strictly off the Main Thread so AppKit mouse/keyboard/scroll events never block on WindowServer vsync.
+private final class RdpAsyncMetalPresenter: @unchecked Sendable {
+    private let metalQueue = DispatchQueue(
+        label: "com.nexusts.rdp.metal-presenter",
+        qos: .userInteractive
+    )
+    private let stateLock = NSLock()
+
+    private weak var metalLayer: CAMetalLayer?
+    private var session: NativeRdpSession?
+    private var scaleToFit: Bool = true
+    private var redirectClipboard: Bool = true
+    private var targetDrawableSize: CGSize = .zero
+    private var renderPending: Bool = false
+    private var forceFullNext: Bool = false
+    private var forceRedrawNext: Bool = false
+
+    // Metal-queue-exclusive resources
+    private var desktopTexture: MTLTexture?
+    private var lastUploadedFrameSeq: UInt64 = 0
+
+    // Telemetry snapshot mirrored back to Main Thread only when non-frame state changes
+    private var presentedWidth: Int = 1920
+    private var presentedHeight: Int = 1080
+    private var hasPresentedFirstFrame: Bool = false
+    private var lastNotifiedCursorSeq: UInt64 = 0
+    private var lastNotifiedClipSeq: UInt64 = 0
+    private var lastNotifiedConnected: Bool?
+    private var lastNotifiedConnecting: Bool?
+    private var lastNotifiedReconnecting: Bool?
+    private var lastNotifiedAttempt: Int = -1
+
+    private let mainWakeSignal: MainThreadRdpFrameSignal
+
+    init(metalLayer: CAMetalLayer, mainWakeSignal: MainThreadRdpFrameSignal) {
+        self.metalLayer = metalLayer
+        self.mainWakeSignal = mainWakeSignal
+    }
+
+    func snapshotPresentationState() -> (hasFrame: Bool, width: Int, height: Int) {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return (hasPresentedFirstFrame, presentedWidth, presentedHeight)
+    }
+
+    func bindSession(
+        _ newSession: NativeRdpSession?,
+        scaleToFit: Bool,
+        redirectClipboard: Bool,
+        resetState: Bool
+    ) {
+        stateLock.lock()
+        self.session = newSession
+        self.scaleToFit = scaleToFit
+        self.redirectClipboard = redirectClipboard
+        if resetState {
+            self.hasPresentedFirstFrame = false
+            self.forceFullNext = true
+            self.forceRedrawNext = true
+            self.lastNotifiedCursorSeq = 0
+            self.lastNotifiedClipSeq = 0
+            self.lastNotifiedConnected = nil
+            self.lastNotifiedConnecting = nil
+            self.lastNotifiedReconnecting = nil
+            self.lastNotifiedAttempt = -1
+        }
+        stateLock.unlock()
+
+        if resetState {
+            metalQueue.async { [weak self] in
+                guard let self else { return }
+                self.desktopTexture = nil
+                self.lastUploadedFrameSeq = 0
+                self.performRenderPassOnMetalQueue()
+            }
+        }
+    }
+
+    func updateViewport(drawableSize: CGSize, scaleToFit: Bool, redirectClipboard: Bool) {
+        stateLock.lock()
+        let sizeChanged = self.targetDrawableSize != drawableSize
+        let fitChanged = self.scaleToFit != scaleToFit
+        self.targetDrawableSize = drawableSize
+        self.scaleToFit = scaleToFit
+        self.redirectClipboard = redirectClipboard
+        if sizeChanged || fitChanged {
+            self.forceRedrawNext = true
+        }
+        stateLock.unlock()
+
+        if sizeChanged || fitChanged {
+            scheduleRenderPass(forceFull: false, checkNonFrameWakeup: false)
+        }
+    }
+
+    func requestPresent(forceFull: Bool) {
+        scheduleRenderPass(forceFull: forceFull, checkNonFrameWakeup: true)
+    }
+
+    func handleNativeCallback() {
+        scheduleRenderPass(forceFull: false, checkNonFrameWakeup: true)
+    }
+
+    private func scheduleRenderPass(forceFull: Bool, checkNonFrameWakeup: Bool) {
+        var needsMainWake = false
+        var shouldDispatchMetal = false
+
+        stateLock.lock()
+        if forceFull {
+            self.forceFullNext = true
+            self.forceRedrawNext = true
+        }
+        if !self.renderPending {
+            self.renderPending = true
+            shouldDispatchMetal = true
+        }
+        let activeSession = self.session
+        let checkClip = self.redirectClipboard
+        if checkNonFrameWakeup, let s = activeSession {
+            let curSeq = s.cursorSequence
+            let clipSeq = checkClip ? s.remoteClipboardSequence : self.lastNotifiedClipSeq
+            let conn = s.isConnected
+            let connecting = s.isConnecting
+            let reconn = s.isReconnecting
+            let attempt = s.reconnectAttempt
+            if curSeq != self.lastNotifiedCursorSeq
+                || (checkClip && clipSeq != self.lastNotifiedClipSeq)
+                || self.lastNotifiedConnected != conn
+                || self.lastNotifiedConnecting != connecting
+                || self.lastNotifiedReconnecting != reconn
+                || self.lastNotifiedAttempt != attempt {
+                self.lastNotifiedCursorSeq = curSeq
+                self.lastNotifiedClipSeq = clipSeq
+                self.lastNotifiedConnected = conn
+                self.lastNotifiedConnecting = connecting
+                self.lastNotifiedReconnecting = reconn
+                self.lastNotifiedAttempt = attempt
+                needsMainWake = true
+            }
+        }
+        stateLock.unlock()
+
+        if needsMainWake {
+            mainWakeSignal.signalFromAnyThread()
+        }
+        if shouldDispatchMetal {
+            metalQueue.async { [weak self] in
+                self?.performRenderPassOnMetalQueue()
+            }
+        }
+    }
+
+    private func performRenderPassOnMetalQueue() {
+        guard let pipeline = RdpMetalSharedPipeline.shared else {
+            stateLock.lock()
+            renderPending = false
+            stateLock.unlock()
+            mainWakeSignal.signalFromAnyThread()
+            return
+        }
+
+        stateLock.lock()
+        renderPending = false
+        let activeSession = session
+        let mLayer = metalLayer
+        let fit = scaleToFit
+        let drawSize = targetDrawableSize
+        let forceFull = forceFullNext
+        let forceRedraw = forceRedrawNext
+        forceFullNext = false
+        forceRedrawNext = false
+        stateLock.unlock()
+
+        guard let activeSession, let mLayer else { return }
+
+        var didUploadPixels = false
+        var notifyMainAfterPresent = false
+        let currentSeq = activeSession.frameSequence
+
+        if currentSeq > 0 && (forceFull || currentSeq != lastUploadedFrameSeq || desktopTexture == nil) {
+            var uploadedW = 0
+            var uploadedH = 0
+            var uploadedSeq = lastUploadedFrameSeq
+
+            // Hold C++ surface_mutex_ ONLY during fast shared-memory dirty-rect memcpy
+            let consumed = activeSession.consumeDirtyRects(forceFull: forceFull || desktopTexture == nil) { slice in
+                let w = slice.frameWidth
+                let h = slice.frameHeight
+                guard w > 0, h > 0 else { return }
+
+                var recreated = false
+                if desktopTexture == nil || desktopTexture?.width != w || desktopTexture?.height != h {
+                    let desc = MTLTextureDescriptor.texture2DDescriptor(
+                        pixelFormat: .bgra8Unorm,
+                        width: w,
+                        height: h,
+                        mipmapped: false
+                    )
+                    desc.usage = [.shaderRead]
+                    desc.storageMode = .shared
+                    desktopTexture = pipeline.device.makeTexture(descriptor: desc)
+                    recreated = true
+                }
+
+                guard let tex = desktopTexture else { return }
+                if recreated || forceFull {
+                    tex.replace(
+                        region: MTLRegionMake2D(0, 0, w, h),
+                        mipmapLevel: 0,
+                        withBytes: slice.fullFramePixels,
+                        bytesPerRow: slice.strideBytes
+                    )
+                    didUploadPixels = true
+                } else {
+                    for rect in slice.dirtyRects {
+                        let rx = Int(rect.x)
+                        let ry = Int(rect.y)
+                        let rw = min(Int(rect.w), w - rx)
+                        let rh = min(Int(rect.h), h - ry)
+                        guard rx >= 0, ry >= 0, rw > 0, rh > 0 else { continue }
+                        let byteOffset = ry * slice.strideBytes + rx * 4
+                        tex.replace(
+                            region: MTLRegionMake2D(rx, ry, rw, rh),
+                            mipmapLevel: 0,
+                            withBytes: slice.fullFramePixels.advanced(by: byteOffset),
+                            bytesPerRow: slice.strideBytes
+                        )
+                        didUploadPixels = true
+                    }
+                }
+
+                uploadedW = w
+                uploadedH = h
+                uploadedSeq = slice.sequence
+            }
+
+            if consumed, desktopTexture != nil, uploadedW > 0, uploadedH > 0 {
+                lastUploadedFrameSeq = uploadedSeq
+                stateLock.lock()
+                if !hasPresentedFirstFrame || presentedWidth != uploadedW || presentedHeight != uploadedH {
+                    hasPresentedFirstFrame = true
+                    presentedWidth = uploadedW
+                    presentedHeight = uploadedH
+                    notifyMainAfterPresent = true
+                }
+                stateLock.unlock()
+            }
+        }
+
+        if (didUploadPixels || forceRedraw),
+           let tex = desktopTexture,
+           drawSize.width >= 2.0,
+           drawSize.height >= 2.0 {
+            if mLayer.drawableSize != drawSize {
+                mLayer.drawableSize = drawSize
+            }
+            if let drawable = mLayer.nextDrawable(),
+               let cmdBuf = pipeline.commandQueue.makeCommandBuffer() {
+                let drawW = max(1.0, Float(drawable.texture.width))
+                let drawH = max(1.0, Float(drawable.texture.height))
+                let texW = max(1.0, Float(tex.width))
+                let texH = max(1.0, Float(tex.height))
+                let viewAspect = drawW / drawH
+                let texAspect = texW / texH
+
+                let scaleVec: SIMD2<Float>
+                if fit {
+                    if texAspect > viewAspect {
+                        scaleVec = SIMD2<Float>(1.0, viewAspect / texAspect)
+                    } else {
+                        scaleVec = SIMD2<Float>(texAspect / viewAspect, 1.0)
+                    }
+                } else {
+                    if texAspect > viewAspect {
+                        scaleVec = SIMD2<Float>(texAspect / viewAspect, 1.0)
+                    } else {
+                        scaleVec = SIMD2<Float>(1.0, viewAspect / texAspect)
+                    }
+                }
+
+                let fullBleed = scaleVec.x >= 0.9999 && scaleVec.y >= 0.9999
+                let exactMatch = fullBleed
+                    && drawable.texture.width == tex.width
+                    && drawable.texture.height == tex.height
+
+                let passDesc = MTLRenderPassDescriptor()
+                passDesc.colorAttachments[0].texture = drawable.texture
+                passDesc.colorAttachments[0].loadAction = fullBleed ? .dontCare : .clear
+                passDesc.colorAttachments[0].clearColor = MTLClearColor(red: 0.06, green: 0.07, blue: 0.09, alpha: 1.0)
+                passDesc.colorAttachments[0].storeAction = .store
+
+                if let enc = cmdBuf.makeRenderCommandEncoder(descriptor: passDesc) {
+                    var uniforms = RdpMetalScaleUniforms(
+                        scale: scaleVec,
+                        exactPixelMatch: exactMatch ? 1 : 0,
+                        pad: 0
+                    )
+                    enc.setRenderPipelineState(pipeline.pipelineState)
+                    enc.setVertexBytes(&uniforms, length: MemoryLayout<RdpMetalScaleUniforms>.stride, index: 0)
+                    enc.setFragmentBytes(&uniforms, length: MemoryLayout<RdpMetalScaleUniforms>.stride, index: 0)
+                    enc.setFragmentTexture(tex, index: 0)
+                    enc.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+                    enc.endEncoding()
+                    cmdBuf.present(drawable)
+                    cmdBuf.commit()
+                }
+            }
+        }
+
+        if notifyMainAfterPresent {
+            mainWakeSignal.signalFromAnyThread()
+        }
+
+        // Catch any frame that arrived while we were encoding/presenting
+        if activeSession.frameSequence != lastUploadedFrameSeq {
+            scheduleRenderPass(forceFull: false, checkNonFrameWakeup: false)
+        }
+    }
+}
+
 private struct RdpInteractiveSurfaceNSViewRepresentable: NSViewRepresentable {
     let session: NativeRdpSession
     let generation: Int
@@ -568,7 +961,7 @@ private struct RdpInteractiveSurfaceNSViewRepresentable: NSViewRepresentable {
     let retina2xEnabled: Bool
     let redirectClipboard: Bool
     let captureRemoteShortcuts: Bool
-    let onTelemetryChange: (Bool, Bool, Bool, String, String) -> Void
+    let onTelemetryChange: (Bool, Bool, Bool, Int, Bool, String, String) -> Void
 
     func makeNSView(context: Context) -> RdpPointerAndKeyNSView {
         let view = RdpPointerAndKeyNSView()
@@ -614,7 +1007,7 @@ final class RdpPointerAndKeyNSView: NSView {
     var retina2xEnabled: Bool = false
     var redirectClipboard: Bool = true
     var captureRemoteShortcuts: Bool = false
-    var onTelemetryChange: ((Bool, Bool, Bool, String, String) -> Void)?
+    var onTelemetryChange: ((Bool, Bool, Bool, Int, Bool, String, String) -> Void)?
 
     private var activeGeneration: Int = -1
     private var housekeepingTimer: Timer?
@@ -623,7 +1016,7 @@ final class RdpPointerAndKeyNSView: NSView {
     private var frameWakeSignal: MainThreadRdpFrameSignal?
 
     private var metalSublayer: CAMetalLayer?
-    private var desktopTexture: MTLTexture?
+    private var asyncMetalPresenter: RdpAsyncMetalPresenter?
     private var lastUploadedFrameSeq: UInt64 = 0
     private var lastDrawablePixelSize: CGSize = .zero
 
@@ -631,12 +1024,13 @@ final class RdpPointerAndKeyNSView: NSView {
     private var activeRemoteCursor: NSCursor = .arrow
     private var isPointerInsideView: Bool = false
 
-    private var lastMouseMoveSentTime: CFTimeInterval = 0
-    private var pendingMouseMovePoint: (Int, Int)?
-    private var trailingMouseMoveItem: DispatchWorkItem?
+    private var scrollAccumY: CGFloat = 0
+    private var scrollAccumX: CGFloat = 0
 
     private var lastReportedConnected: Bool?
     private var lastReportedConnecting: Bool?
+    private var lastReportedReconnecting: Bool?
+    private var lastReportedAttempt: Int = -1
     private var lastReportedHasFrame: Bool?
     private var lastReportedDims: String = ""
     private var cachedNativeError: String = ""
@@ -646,6 +1040,8 @@ final class RdpPointerAndKeyNSView: NSView {
     private var lastRemoteClipboardSeq: UInt64 = 0
     private var lastSyncedClipboardText: String = ""
     private var appDidBecomeActiveObserver: NSObjectProtocol?
+    private var appDidResignActiveObserver: NSObjectProtocol?
+    private var windowDidResignKeyObserver: NSObjectProtocol?
 
     private var heldModifierKeyCodes: Set<UInt16> = []
 
@@ -666,6 +1062,12 @@ final class RdpPointerAndKeyNSView: NSView {
         if let obs = appDidBecomeActiveObserver {
             NotificationCenter.default.removeObserver(obs)
         }
+        if let obs = appDidResignActiveObserver {
+            NotificationCenter.default.removeObserver(obs)
+        }
+        if let obs = windowDidResignKeyObserver {
+            NotificationCenter.default.removeObserver(obs)
+        }
     }
 
     private func setupBackingLayer() {
@@ -683,6 +1085,11 @@ final class RdpPointerAndKeyNSView: NSView {
             "sublayers": NSNull()
         ]
 
+        let wakeSignal = MainThreadRdpFrameSignal { [weak self] in
+            self?.handleEventDrivenWakeup()
+        }
+        frameWakeSignal = wakeSignal
+
         if let pipeline = RdpMetalSharedPipeline.shared, let rootLayer = layer {
             let mLayer = CAMetalLayer()
             mLayer.device = pipeline.device
@@ -691,6 +1098,8 @@ final class RdpPointerAndKeyNSView: NSView {
             mLayer.isOpaque = true
             mLayer.presentsWithTransaction = false
             mLayer.displaySyncEnabled = true
+            mLayer.maximumDrawableCount = 2
+            mLayer.allowsNextDrawableTimeout = false
             mLayer.backgroundColor = darkBg
             mLayer.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
             mLayer.frame = bounds
@@ -702,10 +1111,10 @@ final class RdpPointerAndKeyNSView: NSView {
             ]
             rootLayer.addSublayer(mLayer)
             metalSublayer = mLayer
-        }
-
-        frameWakeSignal = MainThreadRdpFrameSignal { [weak self] in
-            self?.handleEventDrivenWakeup()
+            asyncMetalPresenter = RdpAsyncMetalPresenter(
+                metalLayer: mLayer,
+                mainWakeSignal: wakeSignal
+            )
         }
     }
 
@@ -735,8 +1144,8 @@ final class RdpPointerAndKeyNSView: NSView {
                 previousSession?.setFrameReadyHandler(nil)
             }
             releaseAllHeldModifiers()
-            cancelPendingMouseMove()
-            desktopTexture = nil
+            scrollAccumY = 0
+            scrollAccumX = 0
             lastUploadedFrameSeq = 0
             lastAppliedCursorSeq = 0
             activeRemoteCursor = .arrow
@@ -744,6 +1153,8 @@ final class RdpPointerAndKeyNSView: NSView {
             cachedNativeError = ""
             lastReportedConnected = nil
             lastReportedConnecting = nil
+            lastReportedReconnecting = nil
+            lastReportedAttempt = -1
             lastReportedHasFrame = nil
             lastReportedDims = ""
             lastReportedError = ""
@@ -756,9 +1167,21 @@ final class RdpPointerAndKeyNSView: NSView {
                 _ = syncLocalClipboardToRemoteIfNeeded(session: session, forceCheck: true)
             }
 
-            let signal = frameWakeSignal
-            session.setFrameReadyHandler { [weak signal] in
-                signal?.signalFromAnyThread()
+            if let presenter = asyncMetalPresenter {
+                presenter.bindSession(
+                    session,
+                    scaleToFit: scaleToFit,
+                    redirectClipboard: redirectClipboard,
+                    resetState: true
+                )
+                session.setFrameReadyHandler { [weak presenter] in
+                    presenter?.handleNativeCallback()
+                }
+            } else {
+                let signal = frameWakeSignal
+                session.setFrameReadyHandler { [weak signal] in
+                    signal?.signalFromAnyThread()
+                }
             }
             refreshFrameCursorAndTelemetry(forceFullUpload: true, runSlowHousekeeping: true)
         } else {
@@ -766,10 +1189,14 @@ final class RdpPointerAndKeyNSView: NSView {
                 lastAppliedCursorSeq = 0
                 refreshHardwareCursorIfNeeded(session: session)
             }
-            if fitChanged {
-                if metalSublayer != nil {
-                    renderMetalDrawable()
-                }
+            if let presenter = asyncMetalPresenter {
+                presenter.updateViewport(
+                    drawableSize: lastDrawablePixelSize,
+                    scaleToFit: scaleToFit,
+                    redirectClipboard: redirectClipboard
+                )
+            } else if fitChanged && !hasPresentedFrame && session.hasValidFrame {
+                refreshFrameCursorAndTelemetry(forceFullUpload: true, runSlowHousekeeping: false)
             }
             if !hasPresentedFrame && session.hasValidFrame {
                 refreshFrameCursorAndTelemetry(forceFullUpload: true, runSlowHousekeeping: false)
@@ -788,9 +1215,15 @@ final class RdpPointerAndKeyNSView: NSView {
             let scale = win.backingScaleFactor
             layer?.contentsScale = scale
             metalSublayer?.contentsScale = scale
-            if let session, let signal = frameWakeSignal {
-                session.setFrameReadyHandler { [weak signal] in
-                    signal?.signalFromAnyThread()
+            if let session {
+                if let presenter = asyncMetalPresenter {
+                    session.setFrameReadyHandler { [weak presenter] in
+                        presenter?.handleNativeCallback()
+                    }
+                } else if let signal = frameWakeSignal {
+                    session.setFrameReadyHandler { [weak signal] in
+                        signal?.signalFromAnyThread()
+                    }
                 }
             }
             startAppActivationObserverIfNeeded()
@@ -812,7 +1245,6 @@ final class RdpPointerAndKeyNSView: NSView {
     override func viewWillMove(toWindow newWindow: NSWindow?) {
         if newWindow == nil {
             releaseAllHeldModifiers()
-            cancelPendingMouseMove()
             stopAppActivationObserver()
             stopHousekeepingTimer()
             session?.setFrameReadyHandler(nil)
@@ -821,14 +1253,33 @@ final class RdpPointerAndKeyNSView: NSView {
     }
 
     private func startAppActivationObserverIfNeeded() {
-        guard appDidBecomeActiveObserver == nil else { return }
-        appDidBecomeActiveObserver = NotificationCenter.default.addObserver(
-            forName: NSApplication.didBecomeActiveNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            guard let self, self.redirectClipboard, let session = self.session else { return }
-            _ = self.syncLocalClipboardToRemoteIfNeeded(session: session, forceCheck: false)
+        if appDidBecomeActiveObserver == nil {
+            appDidBecomeActiveObserver = NotificationCenter.default.addObserver(
+                forName: NSApplication.didBecomeActiveNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                guard let self, self.redirectClipboard, let session = self.session else { return }
+                _ = self.syncLocalClipboardToRemoteIfNeeded(session: session, forceCheck: false)
+            }
+        }
+        if appDidResignActiveObserver == nil {
+            appDidResignActiveObserver = NotificationCenter.default.addObserver(
+                forName: NSApplication.didResignActiveNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                self?.releaseAllHeldModifiers()
+            }
+        }
+        if windowDidResignKeyObserver == nil, let win = window {
+            windowDidResignKeyObserver = NotificationCenter.default.addObserver(
+                forName: NSWindow.didResignKeyNotification,
+                object: win,
+                queue: .main
+            ) { [weak self] _ in
+                self?.releaseAllHeldModifiers()
+            }
         }
     }
 
@@ -836,6 +1287,14 @@ final class RdpPointerAndKeyNSView: NSView {
         if let obs = appDidBecomeActiveObserver {
             NotificationCenter.default.removeObserver(obs)
             appDidBecomeActiveObserver = nil
+        }
+        if let obs = appDidResignActiveObserver {
+            NotificationCenter.default.removeObserver(obs)
+            appDidResignActiveObserver = nil
+        }
+        if let obs = windowDidResignKeyObserver {
+            NotificationCenter.default.removeObserver(obs)
+            windowDidResignKeyObserver = nil
         }
     }
 
@@ -928,11 +1387,14 @@ final class RdpPointerAndKeyNSView: NSView {
         let targetSize = CGSize(width: pixelW, height: pixelH)
         if lastDrawablePixelSize != targetSize {
             lastDrawablePixelSize = targetSize
-            mLayer.drawableSize = targetSize
-            if desktopTexture != nil {
-                renderMetalDrawable()
-            } else if let session, session.hasValidFrame {
-                refreshFrameCursorAndTelemetry(forceFullUpload: true, runSlowHousekeeping: false)
+            if let presenter = asyncMetalPresenter {
+                presenter.updateViewport(
+                    drawableSize: targetSize,
+                    scaleToFit: scaleToFit,
+                    redirectClipboard: redirectClipboard
+                )
+            } else {
+                mLayer.drawableSize = targetSize
             }
         }
     }
@@ -974,85 +1436,42 @@ final class RdpPointerAndKeyNSView: NSView {
 
         refreshHardwareCursorIfNeeded(session: session)
 
-        let currentSeq = session.frameSequence
-        if currentSeq > 0 && (forceFullUpload || currentSeq != lastUploadedFrameSeq || desktopTexture == nil) {
-            if let pipeline = RdpMetalSharedPipeline.shared, metalSublayer != nil {
-                var uploadedW = remoteWidth
-                var uploadedH = remoteHeight
-                var uploadedSeq = lastUploadedFrameSeq
-                var didUpload = false
-
-                let consumed = session.consumeDirtyRegion(forceFull: forceFullUpload || desktopTexture == nil) { slice in
-                    let w = slice.frameWidth
-                    let h = slice.frameHeight
-                    guard w > 0, h > 0 else { return }
-
-                    var recreated = false
-                    if desktopTexture == nil || desktopTexture?.width != w || desktopTexture?.height != h {
-                        let desc = MTLTextureDescriptor.texture2DDescriptor(
-                            pixelFormat: .bgra8Unorm,
-                            width: w,
-                            height: h,
-                            mipmapped: false
-                        )
-                        desc.usage = [.shaderRead]
-                        desc.storageMode = .shared
-                        desktopTexture = pipeline.device.makeTexture(descriptor: desc)
-                        recreated = true
-                    }
-
-                    guard let tex = desktopTexture else { return }
-                    if recreated || forceFullUpload {
-                        tex.replace(
-                            region: MTLRegionMake2D(0, 0, w, h),
-                            mipmapLevel: 0,
-                            withBytes: slice.fullFramePixels,
-                            bytesPerRow: slice.strideBytes
-                        )
-                        didUpload = true
-                    } else if slice.dirtyWidth > 0 && slice.dirtyHeight > 0 {
-                        let byteOffset = slice.dirtyY * slice.strideBytes + slice.dirtyX * 4
-                        tex.replace(
-                            region: MTLRegionMake2D(slice.dirtyX, slice.dirtyY, slice.dirtyWidth, slice.dirtyHeight),
-                            mipmapLevel: 0,
-                            withBytes: slice.fullFramePixels.advanced(by: byteOffset),
-                            bytesPerRow: slice.strideBytes
-                        )
-                        didUpload = true
-                    }
-
-                    uploadedW = w
-                    uploadedH = h
-                    uploadedSeq = slice.sequence
-                }
-
-                if consumed && desktopTexture != nil {
-                    lastUploadedFrameSeq = uploadedSeq
-                    hasPresentedFrame = true
-                    if remoteWidth != uploadedW || remoteHeight != uploadedH || lastReportedDims.isEmpty {
-                        remoteWidth = uploadedW
-                        remoteHeight = uploadedH
-                        lastReportedDims = "\(uploadedW)×\(uploadedH)"
-                    }
-                    if didUpload || forceFullUpload {
-                        renderMetalDrawable()
-                    }
-                }
-            } else if let fallback = session.copyDirtyFrameIntoPersistentBuffer(forceFull: forceFullUpload || !hasPresentedFrame) {
-                layer?.contents = fallback.image
-                lastUploadedFrameSeq = fallback.sequence
+        if let presenter = asyncMetalPresenter {
+            if forceFullUpload && session.hasValidFrame {
+                presenter.requestPresent(forceFull: true)
+            }
+            let snap = presenter.snapshotPresentationState()
+            if snap.hasFrame {
                 hasPresentedFrame = true
-                if remoteWidth != fallback.width || remoteHeight != fallback.height || lastReportedDims.isEmpty {
-                    remoteWidth = fallback.width
-                    remoteHeight = fallback.height
-                    lastReportedDims = "\(fallback.width)×\(fallback.height)"
+                if remoteWidth != snap.width || remoteHeight != snap.height || lastReportedDims.isEmpty {
+                    remoteWidth = snap.width
+                    remoteHeight = snap.height
+                    lastReportedDims = "\(snap.width)×\(snap.height)"
+                }
+            }
+        } else {
+            let currentSeq = session.frameSequence
+            if currentSeq > 0 && (forceFullUpload || currentSeq != lastUploadedFrameSeq) {
+                if let fallback = session.copyDirtyFrameIntoPersistentBuffer(forceFull: forceFullUpload || !hasPresentedFrame) {
+                    layer?.contents = fallback.image
+                    lastUploadedFrameSeq = fallback.sequence
+                    hasPresentedFrame = true
+                    if remoteWidth != fallback.width || remoteHeight != fallback.height || lastReportedDims.isEmpty {
+                        remoteWidth = fallback.width
+                        remoteHeight = fallback.height
+                        lastReportedDims = "\(fallback.width)×\(fallback.height)"
+                    }
                 }
             }
         }
 
         let connected = session.isConnected
         let connecting = session.isConnecting
-        let stateTransitioned = (connected != lastReportedConnected) || (connecting != lastReportedConnecting)
+        let reconnecting = session.isReconnecting
+        let attempt = session.reconnectAttempt
+        let stateTransitioned = (connected != lastReportedConnected)
+            || (connecting != lastReportedConnecting)
+            || (reconnecting != lastReportedReconnecting)
 
         // Pull remote clipboard immediately on event-driven wakeup (<1ms after Windows Ctrl+C / Cmd+C)
         if connected && redirectClipboard {
@@ -1070,86 +1489,37 @@ final class RdpPointerAndKeyNSView: NSView {
         let currentDims = lastReportedDims.isEmpty ? "\(remoteWidth)×\(remoteHeight)" : lastReportedDims
         if lastReportedConnected != connected
             || lastReportedConnecting != connecting
+            || lastReportedReconnecting != reconnecting
+            || lastReportedAttempt != attempt
             || lastReportedHasFrame != hasPresentedFrame
             || lastReportedError != cachedNativeError {
             lastReportedConnected = connected
             lastReportedConnecting = connecting
+            lastReportedReconnecting = reconnecting
+            lastReportedAttempt = attempt
             lastReportedHasFrame = hasPresentedFrame
             lastReportedError = cachedNativeError
 
             let snapConnected = connected
             let snapConnecting = connecting
+            let snapReconnecting = reconnecting
+            let snapAttempt = attempt
             let snapHasFrame = hasPresentedFrame
             let snapDims = currentDims
             let snapError = cachedNativeError
             // Always dispatch asynchronously outside makeNSView/updateNSView so SwiftUI never discards @State mutations
             DispatchQueue.main.async { [weak self] in
-                self?.onTelemetryChange?(snapConnected, snapConnecting, snapHasFrame, snapDims, snapError)
+                self?.onTelemetryChange?(
+                    snapConnected,
+                    snapConnecting,
+                    snapReconnecting,
+                    snapAttempt,
+                    snapHasFrame,
+                    snapDims,
+                    snapError
+                )
             }
         }
-    }
-
-    private func renderMetalDrawable() {
-        guard let pipeline = RdpMetalSharedPipeline.shared,
-              let mLayer = metalSublayer,
-              let tex = desktopTexture,
-              bounds.width >= 2.0,
-              bounds.height >= 2.0 else {
-            return
-        }
-        if mLayer.drawableSize.width < 2.0 || mLayer.drawableSize.height < 2.0 {
-            let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0
-            let dw = max(2.0, (bounds.width * scale).rounded())
-            let dh = max(2.0, (bounds.height * scale).rounded())
-            mLayer.drawableSize = CGSize(width: dw, height: dh)
-            lastDrawablePixelSize = mLayer.drawableSize
-        }
-
-        guard let drawable = mLayer.nextDrawable(),
-              let cmdBuf = pipeline.commandQueue.makeCommandBuffer() else {
-            return
-        }
-
-        let passDesc = MTLRenderPassDescriptor()
-        passDesc.colorAttachments[0].texture = drawable.texture
-        passDesc.colorAttachments[0].loadAction = .clear
-        passDesc.colorAttachments[0].clearColor = MTLClearColor(red: 0.06, green: 0.07, blue: 0.09, alpha: 1.0)
-        passDesc.colorAttachments[0].storeAction = .store
-
-        guard let enc = cmdBuf.makeRenderCommandEncoder(descriptor: passDesc) else {
-            return
-        }
-
-        let drawW = max(1.0, Float(drawable.texture.width))
-        let drawH = max(1.0, Float(drawable.texture.height))
-        let texW = max(1.0, Float(tex.width))
-        let texH = max(1.0, Float(tex.height))
-        let viewAspect = drawW / drawH
-        let texAspect = texW / texH
-
-        var scaleVec: SIMD2<Float>
-        if scaleToFit {
-            if texAspect > viewAspect {
-                scaleVec = SIMD2<Float>(1.0, viewAspect / texAspect)
-            } else {
-                scaleVec = SIMD2<Float>(texAspect / viewAspect, 1.0)
-            }
-        } else {
-            if texAspect > viewAspect {
-                scaleVec = SIMD2<Float>(texAspect / viewAspect, 1.0)
-            } else {
-                scaleVec = SIMD2<Float>(1.0, viewAspect / texAspect)
-            }
-        }
-
-        enc.setRenderPipelineState(pipeline.pipelineState)
-        enc.setVertexBytes(&scaleVec, length: MemoryLayout<SIMD2<Float>>.stride, index: 0)
-        enc.setFragmentTexture(tex, index: 0)
-        enc.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
-        enc.endEncoding()
-
-        cmdBuf.present(drawable)
-        cmdBuf.commit()
     }
 
     @discardableResult
@@ -1190,7 +1560,7 @@ final class RdpPointerAndKeyNSView: NSView {
         lastPasteboardChangeCount = pb.changeCount
     }
 
-    // MARK: - Aspect-Aware Coordinate Mapping & Coalesced Mouse Input (~125 Hz)
+    // MARK: - Aspect-Aware Coordinate Mapping & Zero-Jitter Native Coalesced Pointer Input
 
     private func scaledPoint(for event: NSEvent) -> (Int, Int) {
         let local = convert(event.locationInWindow, from: nil)
@@ -1206,42 +1576,9 @@ final class RdpPointerAndKeyNSView: NSView {
         )
     }
 
-    private func cancelPendingMouseMove() {
-        trailingMouseMoveItem?.cancel()
-        trailingMouseMoveItem = nil
-        pendingMouseMovePoint = nil
-    }
-
-    private func sendCoalescedMouseMove(x: Int, y: Int) {
-        let now = CACurrentMediaTime()
-        let minInterval: CFTimeInterval = 0.008 // ~125 Hz ceiling matching Royal TSX
-        let elapsed = now - lastMouseMoveSentTime
-        if elapsed >= minInterval {
-            cancelPendingMouseMove()
-            lastMouseMoveSentTime = now
-            session?.sendPointerEvent(flags: 0x0800, x: x, y: y)
-        } else {
-            pendingMouseMovePoint = (x, y)
-            if trailingMouseMoveItem == nil {
-                let delay = max(0.001, minInterval - elapsed)
-                let item = DispatchWorkItem { [weak self] in
-                    guard let self else { return }
-                    self.trailingMouseMoveItem = nil
-                    if let pt = self.pendingMouseMovePoint {
-                        self.pendingMouseMovePoint = nil
-                        self.lastMouseMoveSentTime = CACurrentMediaTime()
-                        self.session?.sendPointerEvent(flags: 0x0800, x: pt.0, y: pt.1)
-                    }
-                }
-                trailingMouseMoveItem = item
-                DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: item)
-            }
-        }
-    }
-
     override func mouseMoved(with event: NSEvent) {
         let (x, y) = scaledPoint(for: event)
-        sendCoalescedMouseMove(x: x, y: y)
+        session?.sendPointerEvent(flags: 0x0800, x: x, y: y)
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -1249,20 +1586,18 @@ final class RdpPointerAndKeyNSView: NSView {
         if redirectClipboard, let session {
             _ = syncLocalClipboardToRemoteIfNeeded(session: session, forceCheck: false)
         }
-        cancelPendingMouseMove()
         let (x, y) = scaledPoint(for: event)
         session?.sendPointerEvent(flags: 0x8000 | 0x1000, x: x, y: y)
     }
 
     override func mouseUp(with event: NSEvent) {
-        cancelPendingMouseMove()
         let (x, y) = scaledPoint(for: event)
         session?.sendPointerEvent(flags: 0x1000, x: x, y: y)
     }
 
     override func mouseDragged(with event: NSEvent) {
         let (x, y) = scaledPoint(for: event)
-        sendCoalescedMouseMove(x: x, y: y)
+        session?.sendPointerEvent(flags: 0x0800, x: x, y: y)
     }
 
     override func rightMouseDown(with event: NSEvent) {
@@ -1270,69 +1605,98 @@ final class RdpPointerAndKeyNSView: NSView {
         if redirectClipboard, let session {
             _ = syncLocalClipboardToRemoteIfNeeded(session: session, forceCheck: false)
         }
-        cancelPendingMouseMove()
         let (x, y) = scaledPoint(for: event)
         session?.sendPointerEvent(flags: 0x8000 | 0x2000, x: x, y: y)
     }
 
     override func rightMouseUp(with event: NSEvent) {
-        cancelPendingMouseMove()
         let (x, y) = scaledPoint(for: event)
         session?.sendPointerEvent(flags: 0x2000, x: x, y: y)
     }
 
     override func rightMouseDragged(with event: NSEvent) {
         let (x, y) = scaledPoint(for: event)
-        sendCoalescedMouseMove(x: x, y: y)
+        session?.sendPointerEvent(flags: 0x0800, x: x, y: y)
     }
 
     override func otherMouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
-        cancelPendingMouseMove()
         let (x, y) = scaledPoint(for: event)
-        session?.sendPointerEvent(flags: 0x8000 | 0x4000, x: x, y: y)
+        switch event.buttonNumber {
+        case 3:
+            // Mouse Button 4 (Browser Back -> PTRXFLAGS_DOWN | PTRXFLAGS_BUTTON1)
+            session?.sendExtendedPointerEvent(xflags: 0x8000 | 0x0001, x: x, y: y)
+        case 4:
+            // Mouse Button 5 (Browser Forward -> PTRXFLAGS_DOWN | PTRXFLAGS_BUTTON2)
+            session?.sendExtendedPointerEvent(xflags: 0x8000 | 0x0002, x: x, y: y)
+        default:
+            session?.sendPointerEvent(flags: 0x8000 | 0x4000, x: x, y: y)
+        }
     }
 
     override func otherMouseUp(with event: NSEvent) {
-        cancelPendingMouseMove()
         let (x, y) = scaledPoint(for: event)
-        session?.sendPointerEvent(flags: 0x4000, x: x, y: y)
+        switch event.buttonNumber {
+        case 3:
+            session?.sendExtendedPointerEvent(xflags: 0x0001, x: x, y: y)
+        case 4:
+            session?.sendExtendedPointerEvent(xflags: 0x0002, x: x, y: y)
+        default:
+            session?.sendPointerEvent(flags: 0x4000, x: x, y: y)
+        }
     }
 
     override func otherMouseDragged(with event: NSEvent) {
         let (x, y) = scaledPoint(for: event)
-        sendCoalescedMouseMove(x: x, y: y)
+        session?.sendPointerEvent(flags: 0x0800, x: x, y: y)
     }
 
     override func scrollWheel(with event: NSEvent) {
+        if event.phase == .began || event.momentumPhase == .began {
+            scrollAccumY = 0
+            scrollAccumX = 0
+        }
+
         let (x, y) = scaledPoint(for: event)
         let rawY = event.scrollingDeltaY
         if abs(rawY) > 0.001 {
-            let scaledY: Int
             if event.hasPreciseScrollingDeltas {
-                let s = Int((rawY * 4.0).rounded())
-                scaledY = s == 0 ? (rawY > 0 ? 16 : -16) : s
+                scrollAccumY += rawY * 3.0
+                if abs(scrollAccumY) >= 4.0 {
+                    let emitY = Int(scrollAccumY.rounded(.towardZero))
+                    scrollAccumY -= CGFloat(emitY)
+                    if let flags = MacRdpScancodeMapper.encodeWheelFlags(delta: emitY, horizontal: false) {
+                        session?.sendPointerEvent(flags: flags, x: x, y: y)
+                    }
+                }
             } else {
+                scrollAccumY = 0
                 let s = Int((rawY * 120.0).rounded())
-                scaledY = s == 0 ? (rawY > 0 ? 120 : -120) : s
-            }
-            if let flags = MacRdpScancodeMapper.encodeWheelFlags(delta: scaledY, horizontal: false) {
-                session?.sendPointerEvent(flags: flags, x: x, y: y)
+                let discreteY = s == 0 ? (rawY > 0 ? 120 : -120) : s
+                if let flags = MacRdpScancodeMapper.encodeWheelFlags(delta: discreteY, horizontal: false) {
+                    session?.sendPointerEvent(flags: flags, x: x, y: y)
+                }
             }
         }
 
         let rawX = -event.scrollingDeltaX
         if abs(rawX) > 0.001 {
-            let scaledX: Int
             if event.hasPreciseScrollingDeltas {
-                let s = Int((rawX * 4.0).rounded())
-                scaledX = s == 0 ? (rawX > 0 ? 16 : -16) : s
+                scrollAccumX += rawX * 3.0
+                if abs(scrollAccumX) >= 4.0 {
+                    let emitX = Int(scrollAccumX.rounded(.towardZero))
+                    scrollAccumX -= CGFloat(emitX)
+                    if let flags = MacRdpScancodeMapper.encodeWheelFlags(delta: emitX, horizontal: true) {
+                        session?.sendPointerEvent(flags: flags, x: x, y: y)
+                    }
+                }
             } else {
+                scrollAccumX = 0
                 let s = Int((rawX * 120.0).rounded())
-                scaledX = s == 0 ? (rawX > 0 ? 120 : -120) : s
-            }
-            if let flags = MacRdpScancodeMapper.encodeWheelFlags(delta: scaledX, horizontal: true) {
-                session?.sendPointerEvent(flags: flags, x: x, y: y)
+                let discreteX = s == 0 ? (rawX > 0 ? 120 : -120) : s
+                if let flags = MacRdpScancodeMapper.encodeWheelFlags(delta: discreteX, horizontal: true) {
+                    session?.sendPointerEvent(flags: flags, x: x, y: y)
+                }
             }
         }
     }
@@ -1511,13 +1875,15 @@ final class RdpPointerAndKeyNSView: NSView {
     }
 
     private func releaseAllHeldModifiers() {
-        guard !heldModifierKeyCodes.isEmpty else { return }
-        let toRelease = heldModifierKeyCodes
-        heldModifierKeyCodes.removeAll()
-        for code in toRelease {
-            if let rel = MacRdpScancodeMapper.mapModifierKeyCode(code, captureRemoteShortcuts: true) {
-                session?.sendScancode(rel.scancode, keyDown: false, extended: rel.extended)
+        if !heldModifierKeyCodes.isEmpty {
+            let toRelease = heldModifierKeyCodes
+            heldModifierKeyCodes.removeAll()
+            for code in toRelease {
+                if let rel = MacRdpScancodeMapper.mapModifierKeyCode(code, captureRemoteShortcuts: true) {
+                    session?.sendScancode(rel.scancode, keyDown: false, extended: rel.extended)
+                }
             }
         }
+        session?.releaseAllKeys()
     }
 }

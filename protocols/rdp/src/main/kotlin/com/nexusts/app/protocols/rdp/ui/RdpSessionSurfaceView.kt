@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.SurfaceTexture
 import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.Surface
 import android.view.TextureView
 import androidx.compose.foundation.background
@@ -71,6 +72,8 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.isBackPressed
+import androidx.compose.ui.input.pointer.isForwardPressed
 import androidx.compose.ui.input.pointer.isSecondaryPressed
 import androidx.compose.ui.input.pointer.isTertiaryPressed
 import androidx.compose.ui.input.pointer.pointerInput
@@ -90,6 +93,7 @@ import com.nexusts.app.core.ui.input.nexusMouseWheelHandler
 import com.nexusts.app.core.ui.input.nexusTrackpadCanvasGesture
 import com.nexusts.app.core.ui.theme.NexusTheme
 import com.nexusts.app.core.vault.model.RdpAudioRedirectionMode
+import com.nexusts.app.core.vault.model.RdpGfxCodecProfile
 import com.nexusts.app.core.vault.model.RdpResizeBehavior
 import com.nexusts.app.protocols.rdp.bridge.FreeRdpNativeBridge
 import com.nexusts.app.protocols.rdp.bridge.RdpManagedSession
@@ -206,6 +210,8 @@ fun RdpSessionSurfaceView(
 
     val isConnecting by session.isConnecting.collectAsState()
     val isConnected by session.isConnected.collectAsState()
+    val isReconnecting by session.isReconnecting.collectAsState()
+    val reconnectAttempt by session.reconnectAttempt.collectAsState()
     val lastError by session.lastError.collectAsState()
     val remoteDesktopDimensions by session.remoteDesktopDimensions.collectAsState()
     val liveResizeBehavior by session.liveResizeBehavior.collectAsState()
@@ -235,11 +241,17 @@ fun RdpSessionSurfaceView(
     }
 
     LaunchedEffect(isFocused, isConnected) {
-        if (isFocused && !showKeyboardBar) {
-            runCatching { focusRequester.requestFocus() }
-        }
-        if (isFocused && isConnected && session.settings.redirectClipboard) {
-            syncHostClipboardToRemote()
+        if (isFocused) {
+            if (!showKeyboardBar) {
+                runCatching { focusRequester.requestFocus() }
+            }
+            if (isConnected && session.settings.redirectClipboard) {
+                syncHostClipboardToRemote()
+            }
+        } else if (isConnected) {
+            withContext(Dispatchers.IO) {
+                session.releaseAllKeys()
+            }
         }
     }
 
@@ -278,18 +290,18 @@ fun RdpSessionSurfaceView(
     }
 
     // Health monitor + server-confirmed GDI dimension sync + automatic remote-to-local CLIPRDR pull
-    LaunchedEffect(session, isConnected) {
+    LaunchedEffect(session, isConnected, isReconnecting) {
         var tick = 0
-        while (isConnected) {
-            delay(450L)
+        while (isConnected || isReconnecting) {
+            delay(if (isReconnecting) 250L else 450L)
             tick++
             val pulledRemoteClip = withContext(Dispatchers.IO) {
-                if (tick % 2 == 0) {
+                if (isReconnecting || tick % 2 == 0) {
                     session.pollSessionHealth()
                 } else {
                     session.syncServerDesktopDimensions()
                 }
-                if (session.settings.redirectClipboard) {
+                if (session.settings.redirectClipboard && !isReconnecting) {
                     val seq = session.remoteClipboardSequence()
                     if (seq > lastObservedRemoteClipSeq) {
                         lastObservedRemoteClipSeq = seq
@@ -356,7 +368,12 @@ fun RdpSessionSurfaceView(
                     modifier = Modifier.size(15.dp),
                     tint = NexusTheme.extendedColors.rdpAccent
                 )
-                val codecTag = if (session.settings.enableRemoteFx) "RDPGFX" else "GDI"
+                val codecTag = when {
+                    !session.settings.enableRemoteFx -> "GDI"
+                    session.settings.gfxCodecProfile == RdpGfxCodecProfile.ADAPTIVE_PROGRESSIVE -> "GFX"
+                    session.settings.gfxCodecProfile == RdpGfxCodecProfile.AVC420_VIDEO -> "AVC420"
+                    else -> "AVC444"
+                }
                 val credUser = when {
                     session.secret.domain.isNotBlank() && session.secret.username.isNotBlank() ->
                         "${session.secret.domain}\\${session.secret.username}"
@@ -670,15 +687,17 @@ fun RdpSessionSurfaceView(
                     onScroll = { dx, dy, _ ->
                         val (wx, wy) = lastRemoteCursor
                         if (dy != 0f) {
+                            val wheelSteps = (kotlin.math.abs(dy) * 120f).toInt().coerceIn(15, 360)
                             val wheelFlags = FreeRdpNativeBridge.encodeMouseWheelFlags(
-                                steps = 120,
+                                steps = wheelSteps,
                                 negative = dy > 0f
                             )
                             session.sendMouse(wheelFlags, wx, wy)
                         }
                         if (dx != 0f) {
+                            val hWheelSteps = (kotlin.math.abs(dx) * 120f).toInt().coerceIn(15, 360)
                             val hWheelFlags = FreeRdpNativeBridge.encodeHorizontalMouseWheelFlags(
-                                steps = 120,
+                                steps = hWheelSteps,
                                 negative = dx < 0f
                             )
                             session.sendMouse(hWheelFlags, wx, wy)
@@ -693,6 +712,7 @@ fun RdpSessionSurfaceView(
                 .pointerInput(session) {
                     awaitPointerEventScope {
                         var lastPressedButtonFlag = FreeRdpNativeBridge.PTRFLAGS_BUTTON1_LEFT
+                        var lastExtendedButtonFlag = 0
                         while (true) {
                             val ev = awaitPointerEvent()
                             val change = ev.changes.firstOrNull() ?: continue
@@ -714,16 +734,42 @@ fun RdpSessionSurfaceView(
                                     if (!showKeyboardBar) {
                                         runCatching { focusRequester.requestFocus() }
                                     }
-                                    val btn = when {
-                                        ev.buttons.isSecondaryPressed -> FreeRdpNativeBridge.PTRFLAGS_BUTTON2_RIGHT
-                                        ev.buttons.isTertiaryPressed -> FreeRdpNativeBridge.PTRFLAGS_BUTTON3_MIDDLE
-                                        else -> FreeRdpNativeBridge.PTRFLAGS_BUTTON1_LEFT
+                                    when {
+                                        ev.buttons.isBackPressed -> {
+                                            lastExtendedButtonFlag = FreeRdpNativeBridge.PTRXFLAGS_BUTTON1_BACK
+                                            session.sendExtendedMouse(
+                                                FreeRdpNativeBridge.PTRXFLAGS_DOWN or FreeRdpNativeBridge.PTRXFLAGS_BUTTON1_BACK,
+                                                x,
+                                                y
+                                            )
+                                        }
+                                        ev.buttons.isForwardPressed -> {
+                                            lastExtendedButtonFlag = FreeRdpNativeBridge.PTRXFLAGS_BUTTON2_FORWARD
+                                            session.sendExtendedMouse(
+                                                FreeRdpNativeBridge.PTRXFLAGS_DOWN or FreeRdpNativeBridge.PTRXFLAGS_BUTTON2_FORWARD,
+                                                x,
+                                                y
+                                            )
+                                        }
+                                        else -> {
+                                            lastExtendedButtonFlag = 0
+                                            val btn = when {
+                                                ev.buttons.isSecondaryPressed -> FreeRdpNativeBridge.PTRFLAGS_BUTTON2_RIGHT
+                                                ev.buttons.isTertiaryPressed -> FreeRdpNativeBridge.PTRFLAGS_BUTTON3_MIDDLE
+                                                else -> FreeRdpNativeBridge.PTRFLAGS_BUTTON1_LEFT
+                                            }
+                                            lastPressedButtonFlag = btn
+                                            session.sendMouse(FreeRdpNativeBridge.PTRFLAGS_DOWN or btn, x, y)
+                                        }
                                     }
-                                    lastPressedButtonFlag = btn
-                                    session.sendMouse(FreeRdpNativeBridge.PTRFLAGS_DOWN or btn, x, y)
                                 }
                                 PointerEventType.Release -> {
-                                    session.sendMouse(lastPressedButtonFlag, x, y)
+                                    if (lastExtendedButtonFlag != 0) {
+                                        session.sendExtendedMouse(lastExtendedButtonFlag, x, y)
+                                        lastExtendedButtonFlag = 0
+                                    } else {
+                                        session.sendMouse(lastPressedButtonFlag, x, y)
+                                    }
                                 }
                             }
                         }
@@ -843,7 +889,47 @@ fun RdpSessionSurfaceView(
                         }
                     }
                 }
-            } else if (!isConnected && lastError != null) {
+            } else if (isReconnecting) {
+                Surface(
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = 12.dp, start = 16.dp, end = 16.dp),
+                    shape = RoundedCornerShape(999.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.95f),
+                    tonalElevation = 6.dp
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            strokeWidth = 2.dp,
+                            color = NexusTheme.extendedColors.rdpAccent
+                        )
+                        Text(
+                            text = "Reconnecting (attempt ${maxOf(1, reconnectAttempt)}/8)…",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        FilledTonalButton(
+                            onClick = {
+                                coroutineScope.launch(Dispatchers.IO) {
+                                    session.reconnect(
+                                        initialWidthPx = latestViewportSize.width,
+                                        initialHeightPx = latestViewportSize.height,
+                                        effectiveScalePercent = activeScalePercent,
+                                        context = context
+                                    )
+                                }
+                            }
+                        ) {
+                            Text("Reconnect Now")
+                        }
+                    }
+                }
+            } else if (!isConnected && !isReconnecting && lastError != null) {
                 val err = lastError!!
                 Surface(
                     modifier = Modifier

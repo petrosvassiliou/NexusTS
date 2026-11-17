@@ -177,6 +177,20 @@ public enum RdpAudioRedirectionMode: String, Codable, CaseIterable, Sendable {
     }
 }
 
+public enum RdpGfxCodecProfile: String, Codable, CaseIterable, Sendable {
+    case ADAPTIVE_PROGRESSIVE
+    case AVC420_VIDEO
+    case AVC444_CHROMA
+
+    public var nativeCode: Int32 {
+        switch self {
+        case .ADAPTIVE_PROGRESSIVE: return 0
+        case .AVC420_VIDEO: return 1
+        case .AVC444_CHROMA: return 2
+        }
+    }
+}
+
 public enum PortForwardKind: String, Codable, CaseIterable, Sendable {
     case LOCAL
     case REMOTE
@@ -338,7 +352,8 @@ public struct RdpProtocolSettings: Codable, Equatable, Hashable, Sendable {
     public var desktopScaleFactorPercent: Int = 150
     public var deviceScaleFactorPercent: Int = 100
     public var enableGfxPipeline: Bool = true
-    public var enableH264Avc444: Bool = true
+    public var gfxCodecProfile: RdpGfxCodecProfile = .ADAPTIVE_PROGRESSIVE
+    public var enableH264Avc444: Bool = false
     public var enableRemoteFx: Bool = true
     public var resizeBehavior: RdpResizeBehavior = .DYNAMIC_DISP_DVC
     public var customDesktopWidth: Int = 1920
@@ -376,7 +391,7 @@ public struct RdpProtocolSettings: Codable, Equatable, Hashable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case port, connectToConsoleAdmin, hiDpiEnabled, desktopScaleFactorPercent, deviceScaleFactorPercent
-        case enableGfxPipeline, enableH264Avc444, enableRemoteFx, resizeBehavior
+        case enableGfxPipeline, gfxCodecProfile, enableH264Avc444, enableRemoteFx, resizeBehavior
         case customDesktopWidth, customDesktopHeight, multiMonitorSpanning, selectedMonitorIds
         case colorDepthBits, redirectClipboard, audioRedirectionMode, redirectAudioPlayback, redirectMicrophone
         case redirectDrives, redirectedDriveSafUris, redirectPrinters, redirectPorts, redirectSmartcardYubiKey
@@ -394,7 +409,9 @@ public struct RdpProtocolSettings: Codable, Equatable, Hashable, Sendable {
         self.desktopScaleFactorPercent = try c.decodeIfPresent(Int.self, forKey: .desktopScaleFactorPercent) ?? 150
         self.deviceScaleFactorPercent = try c.decodeIfPresent(Int.self, forKey: .deviceScaleFactorPercent) ?? 100
         self.enableGfxPipeline = try c.decodeIfPresent(Bool.self, forKey: .enableGfxPipeline) ?? true
-        self.enableH264Avc444 = try c.decodeIfPresent(Bool.self, forKey: .enableH264Avc444) ?? true
+        let decodedProfile = try c.decodeIfPresent(RdpGfxCodecProfile.self, forKey: .gfxCodecProfile) ?? .ADAPTIVE_PROGRESSIVE
+        self.gfxCodecProfile = decodedProfile
+        self.enableH264Avc444 = try c.decodeIfPresent(Bool.self, forKey: .enableH264Avc444) ?? (decodedProfile == .AVC444_CHROMA)
         self.enableRemoteFx = try c.decodeIfPresent(Bool.self, forKey: .enableRemoteFx) ?? true
         self.resizeBehavior = try c.decodeIfPresent(RdpResizeBehavior.self, forKey: .resizeBehavior) ?? .DYNAMIC_DISP_DVC
         self.customDesktopWidth = try c.decodeIfPresent(Int.self, forKey: .customDesktopWidth) ?? 1920

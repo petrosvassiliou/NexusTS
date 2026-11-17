@@ -371,6 +371,7 @@ class VaultDocumentExporter {
                 appendXmlTag("DesktopScaleFactor", settings.desktopScaleFactorPercent.toString(), indent)
                 appendXmlTag("DeviceScaleFactor", settings.deviceScaleFactorPercent.toString(), indent)
                 appendXmlTag("EnableGfxPipeline", settings.enableGfxPipeline.toString(), indent)
+                appendXmlTag("GfxCodecProfile", settings.gfxCodecProfile.name, indent)
                 appendXmlTag("EnableH264Avc444", settings.enableH264Avc444.toString(), indent)
                 appendXmlTag("EnableRemoteFx", settings.enableRemoteFx.toString(), indent)
                 val resizeModeStr = when (settings.resizeBehavior) {

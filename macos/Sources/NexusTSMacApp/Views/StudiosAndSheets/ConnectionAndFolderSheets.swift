@@ -195,7 +195,20 @@ public struct ConnectionEditorSheet: View {
                         Text("200%").tag(200)
                     }
                 }
-                Toggle("RDPGFX + H.264 AVC444 Hardware Pipeline", isOn: $rdpSettings.enableH264Avc444)
+                Picker(
+                    "Graphics Codec",
+                    selection: Binding(
+                        get: { rdpSettings.gfxCodecProfile },
+                        set: { newProfile in
+                            rdpSettings.gfxCodecProfile = newProfile
+                            rdpSettings.enableH264Avc444 = (newProfile == .AVC444_CHROMA)
+                        }
+                    )
+                ) {
+                    Text("Adaptive Progressive GFX (Fastest — Default)").tag(RdpGfxCodecProfile.ADAPTIVE_PROGRESSIVE)
+                    Text("H.264 AVC420 (Video Optimized)").tag(RdpGfxCodecProfile.AVC420_VIDEO)
+                    Text("H.264 AVC444 (Full Chroma)").tag(RdpGfxCodecProfile.AVC444_CHROMA)
+                }
                 Toggle("Multi-Monitor Spanning", isOn: $rdpSettings.multiMonitorSpanning)
                 Toggle("Connect to Admin / Console Session (/admin)", isOn: $rdpSettings.connectToConsoleAdmin)
             }

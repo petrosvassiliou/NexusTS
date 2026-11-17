@@ -33,6 +33,7 @@ inline void fill_dark_slate_backdrop(std::vector<uint8_t>& buf, size_t pixel_cou
 } // namespace
 
 RdpGdiSurfacePresenter::RdpGdiSurfacePresenter() {
+    client_dirty_rects_.reserve(kMaxClientDirtyRects);
     fill_dark_slate_backdrop(shadow_rgba_, 1920u * 1080u);
     mark_full_frame_dirty_locked(1920u, 1080u);
 }
@@ -75,6 +76,51 @@ void RdpGdiSurfacePresenter::expand_dirty_bounds_locked(uint32_t x, uint32_t y, 
     }
 }
 
+void RdpGdiSurfacePresenter::append_client_dirty_rect_locked(
+    uint32_t x,
+    uint32_t y,
+    uint32_t w,
+    uint32_t h,
+    uint32_t fb_w,
+    uint32_t fb_h
+) {
+    if (w == 0 || h == 0) {
+        return;
+    }
+    expand_dirty_bounds_locked(x, y, w, h);
+    if (client_dirty_overflow_) {
+        return;
+    }
+    const uint64_t rect_area = static_cast<uint64_t>(w) * static_cast<uint64_t>(h);
+    const uint64_t fb_area = static_cast<uint64_t>(fb_w) * static_cast<uint64_t>(fb_h);
+    if (fb_area > 0 && rect_area * 100ull >= fb_area * 65ull) {
+        client_dirty_overflow_ = true;
+        client_dirty_rects_.clear();
+        return;
+    }
+    // Coalesce if completely contained inside or identical to the previous rect
+    if (!client_dirty_rects_.empty()) {
+        auto& prev = client_dirty_rects_.back();
+        if (x >= prev.x && y >= prev.y &&
+            (x + w) <= (prev.x + prev.w) &&
+            (y + h) <= (prev.y + prev.h)) {
+            return;
+        }
+        if (prev.x >= x && prev.y >= y &&
+            (prev.x + prev.w) <= (x + w) &&
+            (prev.y + prev.h) <= (y + h)) {
+            prev = RdpDirtyRect{x, y, w, h};
+            return;
+        }
+    }
+    if (client_dirty_rects_.size() >= kMaxClientDirtyRects) {
+        client_dirty_overflow_ = true;
+        client_dirty_rects_.clear();
+        return;
+    }
+    client_dirty_rects_.push_back(RdpDirtyRect{x, y, w, h});
+}
+
 void RdpGdiSurfacePresenter::mark_full_frame_dirty_locked(uint32_t width, uint32_t height) {
     acc_dirty_left_ = 0;
     acc_dirty_top_ = 0;
@@ -87,6 +133,8 @@ void RdpGdiSurfacePresenter::mark_full_frame_dirty_locked(uint32_t width, uint32
     client_dirty_right_ = width;
     client_dirty_bottom_ = height;
     has_client_dirty_ = (width > 0 && height > 0);
+    client_dirty_overflow_ = true;
+    client_dirty_rects_.clear();
 }
 
 void RdpGdiSurfacePresenter::ensure_window_geometry_locked(uint32_t width, uint32_t height) {
@@ -212,7 +260,7 @@ void RdpGdiSurfacePresenter::update_dirty_region(
             std::memcpy(dst, src, row_bytes);
         }
     }
-    expand_dirty_bounds_locked(x, y, copy_w, copy_h);
+    append_client_dirty_rect_locked(x, y, copy_w, copy_h, fb_w, fb_h);
     dirty_pending_.store(true, std::memory_order_release);
 }
 
@@ -226,10 +274,26 @@ void RdpGdiSurfacePresenter::stage_gdi_dirty_region(
     uint32_t dirty_w,
     uint32_t dirty_h
 ) {
-    if (!primary_buffer || fb_width == 0 || fb_height == 0 || dirty_w == 0 || dirty_h == 0) {
+    const RdpDirtyRect single{dirty_x, dirty_y, dirty_w, dirty_h};
+    stage_gdi_dirty_rects(primary_buffer, fb_width, fb_height, fb_stride, &single, 1u);
+}
+
+void RdpGdiSurfacePresenter::stage_gdi_dirty_rects(
+    const uint8_t* primary_buffer,
+    uint32_t fb_width,
+    uint32_t fb_height,
+    uint32_t fb_stride,
+    const RdpDirtyRect* rects,
+    size_t rect_count
+) {
+    if (!primary_buffer || fb_width == 0 || fb_height == 0 || !rects || rect_count == 0) {
         return;
     }
     std::lock_guard<std::mutex> lock(surface_mutex_);
+    const size_t dst_stride = static_cast<size_t>(fb_width) * 4u;
+    const size_t src_stride = fb_stride >= dst_stride ? static_cast<size_t>(fb_stride) : dst_stride;
+
+    bool resized = false;
     if (fb_width != width_.load() || fb_height != height_.load() ||
         shadow_rgba_.size() != static_cast<size_t>(fb_width) * static_cast<size_t>(fb_height) * 4u) {
         width_.store(fb_width);
@@ -237,39 +301,83 @@ void RdpGdiSurfacePresenter::stage_gdi_dirty_region(
         shadow_rgba_.resize(static_cast<size_t>(fb_width) * static_cast<size_t>(fb_height) * 4u);
         mark_full_frame_dirty_locked(fb_width, fb_height);
         ensure_window_geometry_locked(fb_width, fb_height);
-        dirty_x = 0;
-        dirty_y = 0;
-        dirty_w = fb_width;
-        dirty_h = fb_height;
+        resized = true;
     }
-    if (dirty_x >= fb_width || dirty_y >= fb_height) {
+
+    auto copy_rect_pixels = [&](uint32_t rx, uint32_t ry, uint32_t rw, uint32_t rh) {
+        if (rx == 0u && rw == fb_width && src_stride == dst_stride) {
+            const size_t byte_offset = static_cast<size_t>(ry) * dst_stride;
+            std::memcpy(
+                shadow_rgba_.data() + byte_offset,
+                primary_buffer + byte_offset,
+                static_cast<size_t>(rh) * dst_stride
+            );
+        } else {
+            const size_t x_byte = static_cast<size_t>(rx) * 4u;
+            const size_t row_bytes = static_cast<size_t>(rw) * 4u;
+            for (uint32_t row = 0; row < rh; ++row) {
+                const size_t y_idx = static_cast<size_t>(ry + row);
+                std::memcpy(
+                    shadow_rgba_.data() + y_idx * dst_stride + x_byte,
+                    primary_buffer + y_idx * src_stride + x_byte,
+                    row_bytes
+                );
+            }
+        }
+    };
+
+    if (resized) {
+        copy_rect_pixels(0u, 0u, fb_width, fb_height);
+        dirty_pending_.store(true, std::memory_order_release);
         return;
     }
-    const uint32_t copy_w = std::min(dirty_w, fb_width - dirty_x);
-    const uint32_t copy_h = std::min(dirty_h, fb_height - dirty_y);
-    const size_t dst_stride = static_cast<size_t>(fb_width) * 4u;
-    const size_t src_stride = fb_stride >= dst_stride ? static_cast<size_t>(fb_stride) : dst_stride;
 
-    if (dirty_x == 0 && copy_w == fb_width && src_stride == dst_stride) {
-        const size_t byte_offset = static_cast<size_t>(dirty_y) * dst_stride;
-        std::memcpy(
-            shadow_rgba_.data() + byte_offset,
-            primary_buffer + byte_offset,
-            static_cast<size_t>(copy_h) * dst_stride
-        );
+    // Measure clamped bounds and total area to avoid redundant overlapping copies on full-screen updates
+    uint64_t sum_area = 0;
+    uint32_t union_l = fb_width;
+    uint32_t union_t = fb_height;
+    uint32_t union_r = 0;
+    uint32_t union_b = 0;
+    size_t valid_count = 0;
+
+    for (size_t i = 0; i < rect_count; ++i) {
+        const auto& r = rects[i];
+        if (r.w == 0 || r.h == 0 || r.x >= fb_width || r.y >= fb_height) {
+            continue;
+        }
+        const uint32_t cw = std::min(r.w, fb_width - r.x);
+        const uint32_t ch = std::min(r.h, fb_height - r.y);
+        union_l = std::min(union_l, r.x);
+        union_t = std::min(union_t, r.y);
+        union_r = std::max(union_r, r.x + cw);
+        union_b = std::max(union_b, r.y + ch);
+        sum_area += static_cast<uint64_t>(cw) * static_cast<uint64_t>(ch);
+        ++valid_count;
+    }
+
+    if (valid_count == 0 || union_r <= union_l || union_b <= union_t) {
+        return;
+    }
+
+    const uint64_t fb_area = static_cast<uint64_t>(fb_width) * static_cast<uint64_t>(fb_height);
+    if (valid_count > kMaxClientDirtyRects || sum_area * 100ull >= fb_area * 60ull) {
+        const uint32_t uw = union_r - union_l;
+        const uint32_t uh = union_b - union_t;
+        copy_rect_pixels(union_l, union_t, uw, uh);
+        append_client_dirty_rect_locked(union_l, union_t, uw, uh, fb_width, fb_height);
     } else {
-        const size_t x_byte = static_cast<size_t>(dirty_x) * 4u;
-        const size_t row_bytes = static_cast<size_t>(copy_w) * 4u;
-        for (uint32_t row = 0; row < copy_h; ++row) {
-            const size_t y_idx = static_cast<size_t>(dirty_y + row);
-            std::memcpy(
-                shadow_rgba_.data() + y_idx * dst_stride + x_byte,
-                primary_buffer + y_idx * src_stride + x_byte,
-                row_bytes
-            );
+        for (size_t i = 0; i < rect_count; ++i) {
+            const auto& r = rects[i];
+            if (r.w == 0 || r.h == 0 || r.x >= fb_width || r.y >= fb_height) {
+                continue;
+            }
+            const uint32_t cw = std::min(r.w, fb_width - r.x);
+            const uint32_t ch = std::min(r.h, fb_height - r.y);
+            copy_rect_pixels(r.x, r.y, cw, ch);
+            append_client_dirty_rect_locked(r.x, r.y, cw, ch, fb_width, fb_height);
         }
     }
-    expand_dirty_bounds_locked(dirty_x, dirty_y, copy_w, copy_h);
+
     dirty_pending_.store(true, std::memory_order_release);
 }
 
@@ -387,6 +495,8 @@ bool RdpGdiSurfacePresenter::consume_dirty_shadow_region(
         dh = bottom > dy ? (bottom - dy) : 0u;
     }
     has_client_dirty_ = false;
+    client_dirty_overflow_ = false;
+    client_dirty_rects_.clear();
 
     consumer(
         shadow_rgba_.data(),
@@ -400,6 +510,65 @@ bool RdpGdiSurfacePresenter::consume_dirty_shadow_region(
         seq,
         user_data
     );
+    return true;
+}
+
+bool RdpGdiSurfacePresenter::consume_dirty_shadow_rects(
+    bool force_full,
+    MultiDirtyRegionConsumer consumer,
+    void* user_data
+) {
+    if (!consumer) {
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(surface_mutex_);
+    const uint64_t seq = frame_seq_.load(std::memory_order_acquire);
+    const uint32_t w = width_.load();
+    const uint32_t h = height_.load();
+    const size_t expected_bytes = static_cast<size_t>(w) * static_cast<size_t>(h) * 4u;
+    if (seq == 0 || w == 0 || h == 0 || shadow_rgba_.size() < expected_bytes) {
+        return false;
+    }
+
+    RdpDirtyRect single_rect{};
+    const RdpDirtyRect* out_rects = nullptr;
+    size_t out_count = 0u;
+
+    if (force_full) {
+        single_rect = RdpDirtyRect{0u, 0u, w, h};
+        out_rects = &single_rect;
+        out_count = 1u;
+    } else if (has_client_dirty_) {
+        if (!client_dirty_overflow_ && !client_dirty_rects_.empty()) {
+            out_rects = client_dirty_rects_.data();
+            out_count = client_dirty_rects_.size();
+        } else if (client_dirty_right_ > client_dirty_left_ && client_dirty_bottom_ > client_dirty_top_) {
+            const uint32_t dx = std::min(client_dirty_left_, w);
+            const uint32_t dy = std::min(client_dirty_top_, h);
+            const uint32_t right = std::min(client_dirty_right_, w);
+            const uint32_t bottom = std::min(client_dirty_bottom_, h);
+            if (right > dx && bottom > dy) {
+                single_rect = RdpDirtyRect{dx, dy, right - dx, bottom - dy};
+                out_rects = &single_rect;
+                out_count = 1u;
+            }
+        }
+    }
+
+    consumer(
+        shadow_rgba_.data(),
+        w * 4u,
+        w,
+        h,
+        out_rects,
+        out_count,
+        seq,
+        user_data
+    );
+
+    has_client_dirty_ = false;
+    client_dirty_overflow_ = false;
+    client_dirty_rects_.clear();
     return true;
 }
 
@@ -466,6 +635,8 @@ size_t RdpGdiSurfacePresenter::copy_dirty_shadow_pixels(
         dh = bottom > dy ? (bottom - dy) : 0u;
     }
     has_client_dirty_ = false;
+    client_dirty_overflow_ = false;
+    client_dirty_rects_.clear();
 
     if (out_dirty_x) *out_dirty_x = dx;
     if (out_dirty_y) *out_dirty_y = dy;

@@ -98,6 +98,7 @@ import com.nexusts.app.core.vault.model.NxtsVaultDocument
 import com.nexusts.app.core.vault.model.PortForwardKind
 import com.nexusts.app.core.vault.model.ProtocolSpecificSettings
 import com.nexusts.app.core.vault.model.RdpAudioRedirectionMode
+import com.nexusts.app.core.vault.model.RdpGfxCodecProfile
 import com.nexusts.app.core.vault.model.RdpResizeBehavior
 import com.nexusts.app.core.vault.model.SecureGatewayConfig
 import com.nexusts.app.core.vault.model.SshPortForwardRule
@@ -551,7 +552,7 @@ fun NewOrEditConnectionDialog(
     var customHeightText by remember(initialConnection) { mutableStateOf(initialRdp.customDesktopHeight.toString()) }
     var colorDepthBits by remember(initialConnection) { mutableIntStateOf(initialRdp.colorDepthBits) }
     var multiMonitorSpanning by remember(initialConnection) { mutableStateOf(initialRdp.multiMonitorSpanning) }
-    var enableH264Avc444 by remember(initialConnection) { mutableStateOf(initialRdp.enableH264Avc444) }
+    var gfxCodecProfile by remember(initialConnection) { mutableStateOf(initialRdp.gfxCodecProfile) }
 
     var redirectClipboard by remember(initialConnection) { mutableStateOf(initialRdp.redirectClipboard) }
     var audioRedirectionMode by remember(initialConnection) { mutableStateOf(initialRdp.audioRedirectionMode) }
@@ -927,11 +928,32 @@ fun NewOrEditConnectionDialog(
                         checked = multiMonitorSpanning,
                         onCheckedChange = { multiMonitorSpanning = it }
                     )
-                    RdpOptionSwitchRow(
-                        label = "AVC444 / H.264 Hardware Acceleration",
-                        checked = enableH264Avc444,
-                        onCheckedChange = { enableH264Avc444 = it }
+
+                    Text(
+                        text = "Graphics Codec (RDPGFX)",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.secondary
                     )
+                    FlowRow(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        NexusChoiceChip(
+                            selected = gfxCodecProfile == RdpGfxCodecProfile.ADAPTIVE_PROGRESSIVE,
+                            onClick = { gfxCodecProfile = RdpGfxCodecProfile.ADAPTIVE_PROGRESSIVE },
+                            label = "Adaptive Progressive GFX (Fastest)"
+                        )
+                        NexusChoiceChip(
+                            selected = gfxCodecProfile == RdpGfxCodecProfile.AVC420_VIDEO,
+                            onClick = { gfxCodecProfile = RdpGfxCodecProfile.AVC420_VIDEO },
+                            label = "H.264 AVC420"
+                        )
+                        NexusChoiceChip(
+                            selected = gfxCodecProfile == RdpGfxCodecProfile.AVC444_CHROMA,
+                            onClick = { gfxCodecProfile = RdpGfxCodecProfile.AVC444_CHROMA },
+                            label = "H.264 AVC444"
+                        )
+                    }
                 }
 
                 // RDP Tab 2: Local Resources (Clipboard, Audio Mode, Mic, Drives, Printers, Ports, Smartcard)
@@ -1445,7 +1467,8 @@ fun NewOrEditConnectionDialog(
                             hiDpiEnabled = hiDpiEnabled,
                             desktopScaleFactorPercent = desktopScalePercent,
                             deviceScaleFactorPercent = if (desktopScalePercent >= 175) 180 else if (desktopScalePercent >= 125) 140 else 100,
-                            enableH264Avc444 = enableH264Avc444,
+                            gfxCodecProfile = gfxCodecProfile,
+                            enableH264Avc444 = gfxCodecProfile == RdpGfxCodecProfile.AVC444_CHROMA,
                             resizeBehavior = resizeBehavior,
                             customDesktopWidth = customWidthText.toIntOrNull()?.coerceIn(640, 8192) ?: 1920,
                             customDesktopHeight = customHeightText.toIntOrNull()?.coerceIn(480, 8192) ?: 1080,

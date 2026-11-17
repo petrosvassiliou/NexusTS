@@ -350,11 +350,11 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
     }
 
     func testV118LocalizationUpgradeVersionAndVaultReplacementCompatibility() throws {
-        XCTAssertEqual(MacGitHubReleaseUpdater.currentVersion, "0.8.4")
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.4", isNewerThan: "0.8.3"))
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.4", isNewerThan: "0.8.2"))
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.4", isNewerThan: "0.8.0"))
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.4", isNewerThan: "0.3.0-beta.6"))
+        XCTAssertEqual(MacGitHubReleaseUpdater.currentVersion, "0.8.5")
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.5", isNewerThan: "0.8.4"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.5", isNewerThan: "0.8.3"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.5", isNewerThan: "0.8.2"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.5", isNewerThan: "0.3.0-beta.6"))
         XCTAssertEqual(LocalizedWorkspaceStrings.catalog(for: .en).studios, "Manage")
 
         for lang in NexusAppLanguage.allCases {
@@ -738,4 +738,93 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
             MacRdpScancodeMapper.mapMacCommandShortcut(keyCode: 0x01, charactersIgnoringModifiers: "S", hasCommand: true, hasShift: true)
         )
     }
+
+    func testRdpAdaptiveGfxCodecProfileLegacyMigrationAnd5KRetinaViewport() throws {
+        // Default profile uses sub-ms SIMD Adaptive RDPGFX 10.4 (Progressive / ClearCodec / Planar)
+        let defaults = RdpProtocolSettings()
+        XCTAssertTrue(defaults.enableGfxPipeline)
+        XCTAssertEqual(defaults.gfxCodecProfile, .ADAPTIVE_PROGRESSIVE)
+        XCTAssertEqual(defaults.gfxCodecProfile.nativeCode, 0)
+        XCTAssertFalse(defaults.enableH264Avc444)
+        XCTAssertFalse(NativeRdpSession.usesH264Cap(settings: defaults))
+
+        // 5K Retina viewport (5120x2880) is preserved natively without 4K downscaling under Adaptive Progressive
+        let native5k = NativeRdpSession.clampSurfacePixelDimensions(
+            width: 5120,
+            height: 2880,
+            h264Enabled: NativeRdpSession.usesH264Cap(settings: defaults)
+        )
+        XCTAssertEqual(native5k.width, 5120)
+        XCTAssertEqual(native5k.height, 2880)
+
+        // Ultra-wide >8K viewport clamps proportionally to 8192 max Metal/RDPGFX edge
+        let clamped10k = NativeRdpSession.clampSurfacePixelDimensions(
+            width: 10240,
+            height: 5760,
+            h264Enabled: false
+        )
+        XCTAssertEqual(clamped10k.width, 8192)
+        XCTAssertEqual(clamped10k.height, 4608)
+
+        // H.264 profiles (AVC420_VIDEO & AVC444_CHROMA) enforce Level 5.1 3840x2160 cap
+        var avc420 = RdpProtocolSettings()
+        avc420.gfxCodecProfile = .AVC420_VIDEO
+        XCTAssertEqual(avc420.gfxCodecProfile.nativeCode, 1)
+        XCTAssertTrue(NativeRdpSession.usesH264Cap(settings: avc420))
+        let clampedAvc420 = NativeRdpSession.clampSurfacePixelDimensions(
+            width: 5120,
+            height: 2880,
+            h264Enabled: NativeRdpSession.usesH264Cap(settings: avc420)
+        )
+        XCTAssertEqual(clampedAvc420.width, 3840)
+        XCTAssertEqual(clampedAvc420.height, 2160)
+
+        var avc444 = RdpProtocolSettings()
+        avc444.gfxCodecProfile = .AVC444_CHROMA
+        avc444.enableH264Avc444 = true
+        XCTAssertEqual(avc444.gfxCodecProfile.nativeCode, 2)
+        XCTAssertTrue(NativeRdpSession.usesH264Cap(settings: avc444))
+
+        // Legacy vault JSON without gfxCodecProfile migrates cleanly based on enableH264Avc444
+        let legacyAvcTrueJson = Data(#"{"port":3389,"enableGfxPipeline":true,"enableH264Avc444":true}"#.utf8)
+        let decodedLegacyAvc = try JSONDecoder().decode(RdpProtocolSettings.self, from: legacyAvcTrueJson)
+        XCTAssertEqual(decodedLegacyAvc.gfxCodecProfile, .AVC444_CHROMA)
+        XCTAssertTrue(decodedLegacyAvc.enableH264Avc444)
+
+        let legacyAvcFalseJson = Data(#"{"port":3389,"enableGfxPipeline":true,"enableH264Avc444":false}"#.utf8)
+        let decodedLegacyProg = try JSONDecoder().decode(RdpProtocolSettings.self, from: legacyAvcFalseJson)
+        XCTAssertEqual(decodedLegacyProg.gfxCodecProfile, .ADAPTIVE_PROGRESSIVE)
+        XCTAssertFalse(decodedLegacyProg.enableH264Avc444)
+
+        // Round-trip all RdpGfxCodecProfile variants through JSON
+        for profile in RdpGfxCodecProfile.allCases {
+            var original = RdpProtocolSettings()
+            original.gfxCodecProfile = profile
+            original.enableH264Avc444 = (profile == .AVC444_CHROMA)
+            let encoded = try JSONEncoder().encode(original)
+            let decoded = try JSONDecoder().decode(RdpProtocolSettings.self, from: encoded)
+            XCTAssertEqual(decoded.gfxCodecProfile, profile)
+        }
+
+        // Verify multi-rect dirty consumption, reconnect state, releaseAllKeys, and extended mouse buttons on idle session
+        let session5k = NativeRdpSession(
+            host: "10.2.200.11",
+            username: "admin",
+            password: "",
+            domain: "",
+            settings: defaults,
+            initialWidth: 5120,
+            initialHeight: 2880,
+            backingScaleFactor: 2.0
+        )
+        XCTAssertEqual(session5k.initialPixelWidth, 5120)
+        XCTAssertEqual(session5k.initialPixelHeight, 2880)
+        XCTAssertFalse(session5k.isReconnecting)
+        XCTAssertEqual(session5k.reconnectAttempt, 0)
+        XCTAssertFalse(session5k.consumeDirtyRects(forceFull: false) { _ in })
+        session5k.releaseAllKeys()
+        session5k.sendExtendedPointerEvent(xflags: 0x8001, x: 120, y: 240)
+        session5k.sendExtendedPointerEvent(xflags: 0x0001, x: 120, y: 240)
+    }
 }
+

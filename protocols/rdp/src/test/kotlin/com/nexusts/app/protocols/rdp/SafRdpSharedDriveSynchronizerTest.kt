@@ -152,5 +152,61 @@ class SafRdpSharedDriveSynchronizerTest {
             )
         )
     }
+
+    @Test
+    fun `RdpManagedSession preserves above-4K viewports under Adaptive Progressive and clamps H264 profiles to 4K`() {
+        val adaptiveDefault = com.nexusts.app.core.vault.model.ProtocolSpecificSettings.Rdp()
+        assertEquals(
+            com.nexusts.app.core.vault.model.RdpGfxCodecProfile.ADAPTIVE_PROGRESSIVE,
+            adaptiveDefault.gfxCodecProfile
+        )
+        assertEquals(0, adaptiveDefault.gfxCodecProfile.nativeCode)
+        assertEquals(false, adaptiveDefault.enableH264Avc444)
+        assertEquals(false, com.nexusts.app.protocols.rdp.bridge.RdpManagedSession.usesH264Cap(adaptiveDefault))
+
+        // 5K viewport (5120x2880) stays native 5120x2880 under Adaptive Progressive
+        val native5k = com.nexusts.app.protocols.rdp.bridge.RdpManagedSession.clampSurfaceDimensions(
+            widthPx = 5120,
+            heightPx = 2880,
+            h264Enabled = com.nexusts.app.protocols.rdp.bridge.RdpManagedSession.usesH264Cap(adaptiveDefault)
+        )
+        assertEquals(5120 to 2880, native5k)
+
+        // >8K viewport clamps proportionally to 8192 max edge under Adaptive Progressive
+        val clamped10k = com.nexusts.app.protocols.rdp.bridge.RdpManagedSession.clampSurfaceDimensions(
+            widthPx = 10240,
+            heightPx = 5760,
+            h264Enabled = false
+        )
+        assertEquals(8192 to 4608, clamped10k)
+
+        // H.264 profiles (AVC420_VIDEO & AVC444_CHROMA) clamp proportionally to 3840x2160
+        val avc420 = adaptiveDefault.copy(
+            gfxCodecProfile = com.nexusts.app.core.vault.model.RdpGfxCodecProfile.AVC420_VIDEO
+        )
+        assertEquals(1, avc420.gfxCodecProfile.nativeCode)
+        assertTrue(com.nexusts.app.protocols.rdp.bridge.RdpManagedSession.usesH264Cap(avc420))
+        assertEquals(
+            3840 to 2160,
+            com.nexusts.app.protocols.rdp.bridge.RdpManagedSession.clampSurfaceDimensions(
+                widthPx = 5120,
+                heightPx = 2880,
+                h264Enabled = com.nexusts.app.protocols.rdp.bridge.RdpManagedSession.usesH264Cap(avc420)
+            )
+        )
+
+        val avc444 = adaptiveDefault.copy(
+            gfxCodecProfile = com.nexusts.app.core.vault.model.RdpGfxCodecProfile.AVC444_CHROMA,
+            enableH264Avc444 = true
+        )
+        assertEquals(2, avc444.gfxCodecProfile.nativeCode)
+        assertTrue(com.nexusts.app.protocols.rdp.bridge.RdpManagedSession.usesH264Cap(avc444))
+
+        // Extended Mouse 4/5 (Back/Forward) flags match MS-RDPBCGR TS_POINTERX_EVENT
+        assertEquals(0x8000, com.nexusts.app.protocols.rdp.bridge.FreeRdpNativeBridge.PTRXFLAGS_DOWN)
+        assertEquals(0x0001, com.nexusts.app.protocols.rdp.bridge.FreeRdpNativeBridge.PTRXFLAGS_BUTTON1_BACK)
+        assertEquals(0x0002, com.nexusts.app.protocols.rdp.bridge.FreeRdpNativeBridge.PTRXFLAGS_BUTTON2_FORWARD)
+    }
 }
+
 

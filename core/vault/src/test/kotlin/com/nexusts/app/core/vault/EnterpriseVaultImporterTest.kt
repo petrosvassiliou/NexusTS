@@ -1222,4 +1222,94 @@ class EnterpriseVaultImporterTest {
         assertEquals(CredentialSourceKind.SSH_KEY_PAIR, sshCred.sourceKind)
         assertTrue(sshCred.privateKeyPem.contains("-----BEGIN OPENSSH PRIVATE KEY-----"))
     }
+
+    @Test
+    fun roundTripRdpGfxCodecProfilesAcrossRoyalTsRtszAndLegacyAvcXml() {
+        val srcDoc = NxtsVaultDocument(
+            documentId = "doc-rdp-gfx",
+            name = "RDP GFX Profiles",
+            connections = listOf(
+                VaultConnection(
+                    id = "conn-adaptive",
+                    name = "Adaptive Default",
+                    host = "10.10.0.1",
+                    protocol = VaultProtocolType.RDP,
+                    settings = ProtocolSpecificSettings.Rdp()
+                ),
+                VaultConnection(
+                    id = "conn-avc420",
+                    name = "AVC420 Video",
+                    host = "10.10.0.2",
+                    protocol = VaultProtocolType.RDP,
+                    settings = ProtocolSpecificSettings.Rdp(
+                        gfxCodecProfile = com.nexusts.app.core.vault.model.RdpGfxCodecProfile.AVC420_VIDEO
+                    )
+                ),
+                VaultConnection(
+                    id = "conn-avc444",
+                    name = "AVC444 Chroma",
+                    host = "10.10.0.3",
+                    protocol = VaultProtocolType.RDP,
+                    settings = ProtocolSpecificSettings.Rdp(
+                        gfxCodecProfile = com.nexusts.app.core.vault.model.RdpGfxCodecProfile.AVC444_CHROMA,
+                        enableH264Avc444 = true
+                    )
+                )
+            )
+        )
+
+        val rtszBytes = VaultDocumentExporter().exportToRtszBytes(srcDoc)
+        val reimported = RtszDocumentImporter().importRtszBytes(rtszBytes, "RDP GFX Profiles")
+        val byId = reimported.connections.associate { it.id to (it.settings as ProtocolSpecificSettings.Rdp) }
+
+        assertEquals(
+            com.nexusts.app.core.vault.model.RdpGfxCodecProfile.ADAPTIVE_PROGRESSIVE,
+            byId.getValue("conn-adaptive").gfxCodecProfile
+        )
+        assertFalse(byId.getValue("conn-adaptive").enableH264Avc444)
+
+        assertEquals(
+            com.nexusts.app.core.vault.model.RdpGfxCodecProfile.AVC420_VIDEO,
+            byId.getValue("conn-avc420").gfxCodecProfile
+        )
+        assertFalse(byId.getValue("conn-avc420").enableH264Avc444)
+
+        assertEquals(
+            com.nexusts.app.core.vault.model.RdpGfxCodecProfile.AVC444_CHROMA,
+            byId.getValue("conn-avc444").gfxCodecProfile
+        )
+        assertTrue(byId.getValue("conn-avc444").enableH264Avc444)
+
+        // Pure Royal TS XML without NexusGfxCodecProfile maps RDPEnableAVC=False -> ADAPTIVE_PROGRESSIVE, True -> AVC444_CHROMA
+        val pureRoyalXml = """
+            <?xml version="1.0" encoding="utf-8"?>
+            <RTSZDocument>
+              <RoyalDocument>
+                <ID>11111111-2222-3333-4444-555555555555</ID>
+                <Name>Pure Royal</Name>
+              </RoyalDocument>
+              <RoyalRDSConnection>
+                <ID>aaaaaaaa-0000-4000-8000-000000000001</ID>
+                <ParentID>11111111-2222-3333-4444-555555555555</ParentID>
+                <Name>Royal Default No AVC</Name>
+                <URI>10.20.0.1</URI>
+              </RoyalRDSConnection>
+              <RoyalRDSConnection>
+                <ID>aaaaaaaa-0000-4000-8000-000000000002</ID>
+                <ParentID>11111111-2222-3333-4444-555555555555</ParentID>
+                <Name>Royal Explicit AVC</Name>
+                <URI>10.20.0.2</URI>
+                <RDPEnableAVC>True</RDPEnableAVC>
+              </RoyalRDSConnection>
+            </RTSZDocument>
+        """.trimIndent().toByteArray(StandardCharsets.UTF_8)
+
+        val royalImported = RtszDocumentImporter().importRtszBytes(pureRoyalXml, "Pure Royal")
+        val rDefault = royalImported.connections.first { it.id == "aaaaaaaa-0000-4000-8000-000000000001" }.settings as ProtocolSpecificSettings.Rdp
+        val rAvc = royalImported.connections.first { it.id == "aaaaaaaa-0000-4000-8000-000000000002" }.settings as ProtocolSpecificSettings.Rdp
+        assertEquals(com.nexusts.app.core.vault.model.RdpGfxCodecProfile.ADAPTIVE_PROGRESSIVE, rDefault.gfxCodecProfile)
+        assertEquals(com.nexusts.app.core.vault.model.RdpGfxCodecProfile.AVC444_CHROMA, rAvc.gfxCodecProfile)
+        assertTrue(rAvc.enableH264Avc444)
+    }
 }
+

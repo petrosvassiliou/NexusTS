@@ -1,0 +1,1 @@
+• v0.8.5 : Refonte majeure de la vitesse et de la robustesse RDP — codec Adaptive SIMD RDPGFX 10.4 par défaut (profils AVC420/AVC444 au choix), résolutions natives 5K–8K, rendu Metal multi-rect, saisie souris/trackpad sans latence (boutons 4/5) et reconnexion automatique fluide

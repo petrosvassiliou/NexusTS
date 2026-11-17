@@ -52,6 +52,7 @@ int64_t nexusts_rdp_create_session(const NexusRdpConfig* config) {
         : config->device_scale_factor;
     params.color_depth_bits = config->color_depth_bits == 0 ? 32 : config->color_depth_bits;
     params.enable_gfx_pipeline = config->enable_gfx_pipeline;
+    params.gfx_codec_mode = config->gfx_codec_mode;
     params.enable_h264_avc444 = config->enable_h264_avc444;
     params.enable_remotefx = config->enable_remotefx;
     params.enable_dynamic_resize = config->enable_dynamic_resize;
@@ -107,6 +108,20 @@ bool nexusts_rdp_is_connected(int64_t handle) {
         return ctx->is_connected();
     }
     return false;
+}
+
+bool nexusts_rdp_is_reconnecting(int64_t handle) {
+    if (auto ctx = lookup_session(handle)) {
+        return ctx->is_reconnecting();
+    }
+    return false;
+}
+
+uint32_t nexusts_rdp_reconnect_attempt(int64_t handle) {
+    if (auto ctx = lookup_session(handle)) {
+        return ctx->reconnect_attempt();
+    }
+    return 0u;
 }
 
 void nexusts_rdp_destroy_session(int64_t handle) {
@@ -178,6 +193,12 @@ void nexusts_rdp_send_key_scancode(
     }
 }
 
+void nexusts_rdp_release_all_keys(int64_t handle) {
+    if (auto ctx = lookup_session(handle)) {
+        ctx->release_all_pressed_keys();
+    }
+}
+
 void nexusts_rdp_send_pointer_event(
     int64_t handle,
     uint16_t pointer_flags,
@@ -186,6 +207,17 @@ void nexusts_rdp_send_pointer_event(
 ) {
     if (auto ctx = lookup_session(handle)) {
         ctx->send_pointer_event(pointer_flags, x, y);
+    }
+}
+
+void nexusts_rdp_send_extended_pointer_event(
+    int64_t handle,
+    uint16_t xflags,
+    uint16_t x,
+    uint16_t y
+) {
+    if (auto ctx = lookup_session(handle)) {
+        ctx->send_extended_pointer_event(xflags, x, y);
     }
 }
 
@@ -257,6 +289,54 @@ bool nexusts_rdp_consume_dirty_region(
 ) {
     if (auto ctx = lookup_session(handle)) {
         return ctx->presenter().consume_dirty_shadow_region(force_full, consumer, user_data);
+    }
+    return false;
+}
+
+bool nexusts_rdp_consume_dirty_rects(
+    int64_t handle,
+    bool force_full,
+    NexusRdpMultiDirtyRegionConsumer consumer,
+    void* user_data
+) {
+    if (!consumer) {
+        return false;
+    }
+    static_assert(
+        sizeof(NexusRdpDirtyRect) == sizeof(nexusts::rdp::RdpDirtyRect) &&
+            alignof(NexusRdpDirtyRect) == alignof(nexusts::rdp::RdpDirtyRect),
+        "NexusRdpDirtyRect and RdpDirtyRect layout must match"
+    );
+    struct MultiRectThunk {
+        NexusRdpMultiDirtyRegionConsumer fn;
+        void* ctx;
+    } thunk{consumer, user_data};
+
+    if (auto session = lookup_session(handle)) {
+        return session->presenter().consume_dirty_shadow_rects(
+            force_full,
+            [](const uint8_t* full_pixels,
+               uint32_t stride_bytes,
+               uint32_t fb_width,
+               uint32_t fb_height,
+               const nexusts::rdp::RdpDirtyRect* rects,
+               size_t rect_count,
+               uint64_t frame_seq,
+               void* raw_thunk) {
+                auto* t = static_cast<MultiRectThunk*>(raw_thunk);
+                t->fn(
+                    full_pixels,
+                    stride_bytes,
+                    fb_width,
+                    fb_height,
+                    reinterpret_cast<const NexusRdpDirtyRect*>(rects),
+                    rect_count,
+                    frame_seq,
+                    t->ctx
+                );
+            },
+            &thunk
+        );
     }
     return false;
 }

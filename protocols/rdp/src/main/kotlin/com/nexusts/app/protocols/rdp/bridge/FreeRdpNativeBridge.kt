@@ -16,6 +16,7 @@ import com.nexusts.app.core.ui.input.RawHardwareKeyPacket
 import com.nexusts.app.core.vault.credentials.ResolvedSessionSecret
 import com.nexusts.app.core.vault.model.ProtocolSpecificSettings
 import com.nexusts.app.core.vault.model.RdpAudioRedirectionMode
+import com.nexusts.app.core.vault.model.RdpGfxCodecProfile
 import com.nexusts.app.core.vault.model.RdpResizeBehavior
 import com.nexusts.app.core.vault.model.VaultConnection
 import com.nexusts.app.protocols.rdp.storage.SafRdpSharedDriveSynchronizer
@@ -24,7 +25,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 /**
- * JNI Bridge to `libnexusts_rdp_jni.so` (FreeRDP 3.x + AMediaCodec H.264/AVC444 + AAudio + DISP_DVC + RDPDR).
+ * JNI Bridge to `libnexusts_rdp_jni.so` (FreeRDP 3.x + Adaptive RDPGFX/H.264 + AAudio + DISP_DVC + RDPDR).
  */
 object FreeRdpNativeBridge {
     val isNativeLoaded: Boolean = runCatching {
@@ -41,6 +42,11 @@ object FreeRdpNativeBridge {
     const val PTRFLAGS_BUTTON1_LEFT = 0x1000
     const val PTRFLAGS_BUTTON2_RIGHT = 0x2000
     const val PTRFLAGS_BUTTON3_MIDDLE = 0x4000
+
+    // MS-RDPBCGR Extended Pointer Event Flags (Mouse Button 4 Back / Button 5 Forward)
+    const val PTRXFLAGS_DOWN = 0x8000
+    const val PTRXFLAGS_BUTTON1_BACK = 0x0001
+    const val PTRXFLAGS_BUTTON2_FORWARD = 0x0002
 
     /**
      * Encodes MS-RDPBCGR 9-bit two's-complement wheel rotation flags.
@@ -81,6 +87,7 @@ object FreeRdpNativeBridge {
         hiDpiEnabled: Boolean,
         desktopScalePercent: Int,
         colorDepthBits: Int,
+        gfxCodecMode: Int,
         enableH264Avc444: Boolean,
         enableRemoteFx: Boolean,
         enableDynamicResize: Boolean,
@@ -130,9 +137,20 @@ object FreeRdpNativeBridge {
     )
 
     @JvmStatic
+    external fun nativeReleaseAllKeys(handle: Long)
+
+    @JvmStatic
     external fun nativeSendMouseEvent(
         handle: Long,
         pointerFlags: Int,
+        x: Int,
+        y: Int
+    )
+
+    @JvmStatic
+    external fun nativeSendExtendedMouseEvent(
+        handle: Long,
+        xflags: Int,
         x: Int,
         y: Int
     )
@@ -151,6 +169,12 @@ object FreeRdpNativeBridge {
 
     @JvmStatic
     external fun nativeIsConnected(handle: Long): Boolean
+
+    @JvmStatic
+    external fun nativeIsReconnecting(handle: Long): Boolean
+
+    @JvmStatic
+    external fun nativeGetReconnectAttempt(handle: Long): Int
 
     @JvmStatic
     external fun nativeGetDesktopDimensions(handle: Long): Long
@@ -412,6 +436,30 @@ class RdpManagedSession(
     val settings: ProtocolSpecificSettings.Rdp,
     val secret: ResolvedSessionSecret
 ) {
+    companion object {
+        fun usesH264Cap(settings: ProtocolSpecificSettings.Rdp): Boolean =
+            settings.enableRemoteFx && settings.gfxCodecProfile != RdpGfxCodecProfile.ADAPTIVE_PROGRESSIVE
+
+        fun clampSurfaceDimensions(
+            widthPx: Int,
+            heightPx: Int,
+            h264Enabled: Boolean
+        ): Pair<Int, Int> {
+            val maxW = if (h264Enabled) 3840.0 else 8192.0
+            val maxH = if (h264Enabled) 2160.0 else 8192.0
+            var w = widthPx.coerceAtLeast(320).toDouble()
+            var h = heightPx.coerceAtLeast(240).toDouble()
+            if (w > maxW || h > maxH) {
+                val scale = kotlin.math.min(maxW / w, maxH / h)
+                w = (w * scale).coerceAtLeast(320.0)
+                h = (h * scale).coerceAtLeast(240.0)
+            }
+            val alignedW = w.toInt().coerceIn(320, maxW.toInt()) and -2
+            val alignedH = h.toInt().coerceIn(240, maxH.toInt()) and -2
+            return alignedW to alignedH
+        }
+    }
+
     @Volatile
     private var nativeHandle: Long = 0L
     private val started = java.util.concurrent.atomic.AtomicBoolean(false)
@@ -434,6 +482,12 @@ class RdpManagedSession(
     private val _isConnected = MutableStateFlow(false)
     val isConnected: StateFlow<Boolean> = _isConnected.asStateFlow()
 
+    private val _isReconnecting = MutableStateFlow(false)
+    val isReconnecting: StateFlow<Boolean> = _isReconnecting.asStateFlow()
+
+    private val _reconnectAttempt = MutableStateFlow(0)
+    val reconnectAttempt: StateFlow<Int> = _reconnectAttempt.asStateFlow()
+
     private val _lastError = MutableStateFlow<com.nexusts.app.core.vault.error.NexusAppError?>(null)
     val lastError: StateFlow<com.nexusts.app.core.vault.error.NexusAppError?> = _lastError.asStateFlow()
 
@@ -450,8 +504,11 @@ class RdpManagedSession(
     val sharedDriveUncLabel: StateFlow<String?> = _sharedDriveUncLabel.asStateFlow()
 
     private val _remoteDesktopDimensions = MutableStateFlow(
-        (settings.customDesktopWidth.coerceAtLeast(320) and -2) to
-            (settings.customDesktopHeight.coerceAtLeast(240) and -2)
+        clampSurfaceDimensions(
+            widthPx = settings.customDesktopWidth,
+            heightPx = settings.customDesktopHeight,
+            h264Enabled = usesH264Cap(settings)
+        )
     )
     val remoteDesktopDimensions: StateFlow<Pair<Int, Int>> = _remoteDesktopDimensions.asStateFlow()
 
@@ -469,6 +526,8 @@ class RdpManagedSession(
         nativeHandle = 0L
         started.set(false)
         _isConnected.value = false
+        _isReconnecting.value = false
+        _reconnectAttempt.value = 0
         _lastError.value = null
         if (prevHandle != 0L && FreeRdpNativeBridge.isNativeLoaded) {
             runCatching { FreeRdpNativeBridge.nativeDestroySession(prevHandle) }
@@ -497,9 +556,22 @@ class RdpManagedSession(
     fun pollSessionHealth() {
         val handle = nativeHandle
         if (handle == 0L || !FreeRdpNativeBridge.isNativeLoaded || _isConnecting.value) return
-        if (_isConnected.value) {
-            val stillAlive = runCatching { FreeRdpNativeBridge.nativeIsConnected(handle) }.getOrDefault(true)
-            if (!stillAlive) {
+
+        val reconnecting = runCatching { FreeRdpNativeBridge.nativeIsReconnecting(handle) }.getOrDefault(false)
+        val attempt = if (reconnecting) {
+            runCatching { FreeRdpNativeBridge.nativeGetReconnectAttempt(handle) }.getOrDefault(0)
+        } else {
+            0
+        }
+        _isReconnecting.value = reconnecting
+        _reconnectAttempt.value = attempt
+        if (reconnecting) {
+            return
+        }
+
+        val stillAlive = runCatching { FreeRdpNativeBridge.nativeIsConnected(handle) }.getOrDefault(true)
+        if (!stillAlive) {
+            if (_isConnected.value) {
                 val rawErr = runCatching { FreeRdpNativeBridge.nativeGetLastError(handle) }.getOrDefault("")
                 _isConnected.value = false
                 started.set(false)
@@ -511,9 +583,13 @@ class RdpManagedSession(
                         connectionId = connection.id
                     )
                 }
-            } else {
-                syncServerDesktopDimensions()
             }
+        } else {
+            if (!_isConnected.value) {
+                _isConnected.value = true
+                _lastError.value = null
+            }
+            syncServerDesktopDimensions()
         }
     }
 
@@ -573,11 +649,18 @@ class RdpManagedSession(
             return nativeHandle != 0L && _isConnected.value
         }
         _lastError.value = null
+        _isReconnecting.value = false
+        _reconnectAttempt.value = 0
         _isConnecting.value = true
         return try {
             val useFixedSize = _liveResizeBehavior.value == RdpResizeBehavior.FIXED_SERVER_RESOLUTION
-            val startW = (if (useFixedSize) settings.customDesktopWidth else initialWidthPx).coerceAtLeast(320) and -2
-            val startH = (if (useFixedSize) settings.customDesktopHeight else initialHeightPx).coerceAtLeast(240) and -2
+            val rawW = if (useFixedSize) settings.customDesktopWidth else initialWidthPx
+            val rawH = if (useFixedSize) settings.customDesktopHeight else initialHeightPx
+            val (startW, startH) = clampSurfaceDimensions(
+                widthPx = rawW,
+                heightPx = rawH,
+                h264Enabled = usesH264Cap(settings)
+            )
             _remoteDesktopDimensions.value = startW to startH
 
             val audioModeCode = when (settings.audioRedirectionMode) {
@@ -621,7 +704,8 @@ class RdpManagedSession(
                 hiDpiEnabled = settings.hiDpiEnabled,
                 desktopScalePercent = if (settings.hiDpiEnabled) effectiveScalePercent.coerceIn(100, 200) else 100,
                 colorDepthBits = settings.colorDepthBits,
-                enableH264Avc444 = settings.enableH264Avc444,
+                gfxCodecMode = settings.gfxCodecProfile.nativeCode,
+                enableH264Avc444 = settings.gfxCodecProfile == RdpGfxCodecProfile.AVC444_CHROMA,
                 enableRemoteFx = settings.enableRemoteFx,
                 enableDynamicResize = true,
                 multiMonitor = settings.multiMonitorSpanning,
@@ -760,8 +844,11 @@ class RdpManagedSession(
         scalePercent: Int = settings.desktopScaleFactorPercent,
         forceDynamic: Boolean = false
     ) {
-        val alignedW = widthPx.coerceAtLeast(320) and -2
-        val alignedH = heightPx.coerceAtLeast(240) and -2
+        val (alignedW, alignedH) = clampSurfaceDimensions(
+            widthPx = widthPx,
+            heightPx = heightPx,
+            h264Enabled = usesH264Cap(settings)
+        )
         val shouldApplyDisp = _liveResizeBehavior.value == RdpResizeBehavior.DYNAMIC_DISP_DVC || forceDynamic
         if (!shouldApplyDisp) return
 
@@ -829,6 +916,13 @@ class RdpManagedSession(
         return true
     }
 
+    fun releaseAllKeys() {
+        val handle = nativeHandle
+        if (handle != 0L && FreeRdpNativeBridge.isNativeLoaded) {
+            runCatching { FreeRdpNativeBridge.nativeReleaseAllKeys(handle) }
+        }
+    }
+
     fun sendKeyTap(rdpScancode: Int, extended: Boolean = false) {
         val handle = nativeHandle
         if (handle == 0L || !FreeRdpNativeBridge.isNativeLoaded) return
@@ -880,10 +974,19 @@ class RdpManagedSession(
         }
     }
 
+    fun sendExtendedMouse(xflags: Int, x: Int, y: Int) {
+        val handle = nativeHandle
+        if (handle != 0L && FreeRdpNativeBridge.isNativeLoaded) {
+            FreeRdpNativeBridge.nativeSendExtendedMouseEvent(handle, xflags, x, y)
+        }
+    }
+
     fun close() {
         started.set(false)
         _isConnecting.value = false
         _isConnected.value = false
+        _isReconnecting.value = false
+        _reconnectAttempt.value = 0
         val handle = nativeHandle
         nativeHandle = 0L
         synchronized(surfaceLock) {

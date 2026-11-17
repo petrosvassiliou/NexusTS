@@ -39,6 +39,7 @@ typedef struct NexusRdpConfig {
     uint32_t device_scale_factor;
     uint32_t color_depth_bits;
     bool enable_gfx_pipeline;
+    int32_t gfx_codec_mode;
     bool enable_h264_avc444;
     bool enable_remotefx;
     bool enable_dynamic_resize;
@@ -70,10 +71,19 @@ typedef struct NexusRdpConfig {
     const char* app_home_dir;
 } NexusRdpConfig;
 
+typedef struct NexusRdpDirtyRect {
+    uint32_t x;
+    uint32_t y;
+    uint32_t w;
+    uint32_t h;
+} NexusRdpDirtyRect;
+
 int64_t nexusts_rdp_create_session(const NexusRdpConfig* config);
 bool nexusts_rdp_connect(int64_t handle);
 void nexusts_rdp_disconnect(int64_t handle);
 bool nexusts_rdp_is_connected(int64_t handle);
+bool nexusts_rdp_is_reconnecting(int64_t handle);
+uint32_t nexusts_rdp_reconnect_attempt(int64_t handle);
 void nexusts_rdp_destroy_session(int64_t handle);
 
 bool nexusts_rdp_request_resize(
@@ -96,9 +106,18 @@ void nexusts_rdp_send_key_scancode(
     bool extended_key
 );
 
+void nexusts_rdp_release_all_keys(int64_t handle);
+
 void nexusts_rdp_send_pointer_event(
     int64_t handle,
     uint16_t pointer_flags,
+    uint16_t x,
+    uint16_t y
+);
+
+void nexusts_rdp_send_extended_pointer_event(
+    int64_t handle,
+    uint16_t xflags,
     uint16_t x,
     uint16_t y
 );
@@ -124,6 +143,17 @@ typedef void (*NexusRdpDirtyRegionConsumer)(
     void* user_data
 );
 
+typedef void (*NexusRdpMultiDirtyRegionConsumer)(
+    const uint8_t* full_frame_pixels,
+    uint32_t stride_bytes,
+    uint32_t fb_width,
+    uint32_t fb_height,
+    const NexusRdpDirtyRect* dirty_rects,
+    size_t dirty_rect_count,
+    uint64_t frame_seq,
+    void* user_data
+);
+
 void nexusts_rdp_set_frame_ready_callback(
     int64_t handle,
     NexusRdpFrameReadyCallback callback,
@@ -135,6 +165,12 @@ bool nexusts_rdp_consume_dirty_region(
     int64_t handle,
     bool force_full,
     NexusRdpDirtyRegionConsumer consumer,
+    void* user_data
+);
+bool nexusts_rdp_consume_dirty_rects(
+    int64_t handle,
+    bool force_full,
+    NexusRdpMultiDirtyRegionConsumer consumer,
     void* user_data
 );
 size_t nexusts_rdp_copy_frame_rgba(

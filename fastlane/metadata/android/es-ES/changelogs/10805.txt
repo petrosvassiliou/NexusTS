@@ -1,0 +1,1 @@
+• v0.8.5: Gran mejora de velocidad y robustez RDP — códec predeterminado Adaptive SIMD RDPGFX 10.4 (con perfiles AVC420/AVC444 opcionales), resoluciones nativas 5K–8K, renderizado Metal multi-rect, entrada fluida con botones 4/5 y reconexión automática transparente

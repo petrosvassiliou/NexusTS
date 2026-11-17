@@ -1,0 +1,1 @@
+• v0.8.5: Großes RDP-Geschwindigkeits- & Stabilitäts-Upgrade — Adaptiver SIMD-RDPGFX-10.4-Standardcodec (mit wählbaren AVC420/AVC444-Profilen), native 5K–8K-Auflösung, Multi-Rect-Metal-Rendering, verzögerungsfreie Maus-/Trackpad-Eingabe inkl. Maus 4/5 und nahtlose automatische Wiederverbindung

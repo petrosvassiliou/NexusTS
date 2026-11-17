@@ -1,0 +1,1 @@
+• v0.8.5: Major RDP speed & robustness overhaul — Adaptive SIMD RDPGFX 10.4 default codec (with selectable AVC420/AVC444 profiles), native 5K–8K Retina viewports, off-main-thread multi-rect Metal rendering, zero-lag mouse & trackpad input with Mouse 4/5 + focus-loss key release, and seamless auto-reconnection

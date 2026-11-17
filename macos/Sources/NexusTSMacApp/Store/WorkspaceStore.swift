@@ -1750,7 +1750,7 @@ public final class WorkspaceStore: ObservableObject {
             effectiveSettings.hiDpiEnabled = false
         }
 
-        let h264Cap = effectiveSettings.enableGfxPipeline && effectiveSettings.enableH264Avc444
+        let h264Cap = NativeRdpSession.usesH264Cap(settings: effectiveSettings)
         let (initWidth, initHeight): (Int, Int) = {
             guard rdpSettings.resizeBehavior == .DYNAMIC_DISP_DVC else {
                 return NativeRdpSession.clampSurfacePixelDimensions(
