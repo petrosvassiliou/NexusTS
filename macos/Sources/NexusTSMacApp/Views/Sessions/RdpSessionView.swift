@@ -1046,8 +1046,7 @@ final class RdpPointerAndKeyNSView: NSView {
 
     private var lastPasteboardChangeCount: Int = -1
     private var lastRemoteClipboardSeq: UInt64 = 0
-    private var lastSyncedClipboardText: String = ""
-    private var lastSyncedClipboardFiles: [String] = []
+    private var lastPushedPayload: MacPasteboardPayload? = nil
     private var appDidBecomeActiveObserver: NSObjectProtocol?
     private var appDidResignActiveObserver: NSObjectProtocol?
     private var windowDidResignKeyObserver: NSObjectProtocol?
@@ -1081,6 +1080,11 @@ final class RdpPointerAndKeyNSView: NSView {
 
     private func setupBackingLayer() {
         wantsLayer = true
+        registerForDraggedTypes([
+            .fileURL,
+            NSPasteboard.PasteboardType("public.file-url"),
+            NSPasteboard.PasteboardType("NSFilenamesPboardType")
+        ])
         let darkBg = NSColor(calibratedRed: 0.06, green: 0.07, blue: 0.09, alpha: 1.0).cgColor
         layer?.backgroundColor = darkBg
         layer?.magnificationFilter = .trilinear
@@ -1169,12 +1173,11 @@ final class RdpPointerAndKeyNSView: NSView {
             lastReportedError = ""
             layer?.contents = nil
             lastPasteboardChangeCount = -1
-            lastSyncedClipboardText = ""
-            lastSyncedClipboardFiles = []
+            lastPushedPayload = nil
             lastRemoteClipboardSeq = 0
 
             if redirectClipboard {
-                _ = syncLocalClipboardToRemoteIfNeeded(session: session, forceCheck: true)
+                _ = syncLocalClipboardToRemoteIfNeeded(session: session, forcePushToNative: true)
             }
 
             if let presenter = asyncMetalPresenter {
@@ -1278,7 +1281,7 @@ final class RdpPointerAndKeyNSView: NSView {
                 queue: .main
             ) { [weak self] _ in
                 guard let self, self.redirectClipboard, let session = self.session else { return }
-                _ = self.syncLocalClipboardToRemoteIfNeeded(session: session, forceCheck: false)
+                _ = self.syncLocalClipboardToRemoteIfNeeded(session: session, forcePushToNative: false)
             }
         }
         if appDidResignActiveObserver == nil {
@@ -1353,7 +1356,7 @@ final class RdpPointerAndKeyNSView: NSView {
         isPointerInsideView = true
         activeRemoteCursor.set()
         if redirectClipboard, let session {
-            _ = syncLocalClipboardToRemoteIfNeeded(session: session, forceCheck: false)
+            _ = syncLocalClipboardToRemoteIfNeeded(session: session, forcePushToNative: false)
         }
     }
 
@@ -1365,7 +1368,7 @@ final class RdpPointerAndKeyNSView: NSView {
     override func becomeFirstResponder() -> Bool {
         let accepted = super.becomeFirstResponder()
         if accepted, redirectClipboard, let session {
-            _ = syncLocalClipboardToRemoteIfNeeded(session: session, forceCheck: false)
+            _ = syncLocalClipboardToRemoteIfNeeded(session: session, forcePushToNative: false)
         }
         return accepted
     }
@@ -1490,6 +1493,9 @@ final class RdpPointerAndKeyNSView: NSView {
         let stateTransitioned = (connected != lastReportedConnected)
             || (connecting != lastReportedConnecting)
             || (reconnecting != lastReportedReconnecting)
+        let justConnected = connected && (lastReportedConnected != true)
+        let reconnectedNow = connected && !reconnecting && (lastReportedReconnecting == true)
+        let forceInitialClipSync = (justConnected && session.remoteClipboardSequence == 0) || reconnectedNow
 
         // Pull remote clipboard immediately on event-driven wakeup (<1ms after Windows Ctrl+C / Cmd+C)
         if connected && redirectClipboard {
@@ -1499,7 +1505,10 @@ final class RdpPointerAndKeyNSView: NSView {
         if runSlowHousekeeping || stateTransitioned {
             cachedNativeError = session.lastErrorMessage()
             if connected && redirectClipboard {
-                _ = syncLocalClipboardToRemoteIfNeeded(session: session, forceCheck: stateTransitioned)
+                _ = syncLocalClipboardToRemoteIfNeeded(
+                    session: session,
+                    forcePushToNative: forceInitialClipSync
+                )
                 pullRemoteClipboardIfUpdated(session: session)
             }
         }
@@ -1543,46 +1552,36 @@ final class RdpPointerAndKeyNSView: NSView {
     @discardableResult
     private func syncLocalClipboardToRemoteIfNeeded(
         session: NativeRdpSession,
-        forceCheck: Bool
+        forcePushToNative: Bool
     ) -> Bool {
         let pb = NSPasteboard.general
         let pbCount = pb.changeCount
-        guard forceCheck || pbCount != lastPasteboardChangeCount else {
+        let changeCountAdvanced = (pbCount != lastPasteboardChangeCount)
+        guard forcePushToNative || changeCountAdvanced else {
             return false
         }
-        let changeCountAdvanced = pbCount != lastPasteboardChangeCount
         lastPasteboardChangeCount = pbCount
 
-        // Check file URLs FIRST because macOS Finder writes both .fileURL and .string (basename) to NSPasteboard.general
-        if let urls = pb.readObjects(
-            forClasses: [NSURL.self],
-            options: [.urlReadingFileURLsOnly: true]
-        ) as? [URL] {
-            let filePaths = urls
-                .filter { $0.isFileURL }
-                .map { $0.standardizedFileURL.path }
-                .filter { !$0.isEmpty }
-            if !filePaths.isEmpty {
-                if changeCountAdvanced || filePaths != lastSyncedClipboardFiles {
-                    lastSyncedClipboardFiles = filePaths
-                    lastSyncedClipboardText = ""
-                    session.pushLocalClipboardFiles(filePaths)
-                    return true
-                }
-                return false
+        let payload = MacPasteboardClipboardExtractor.extractClipboardPayload(from: pb)
+        switch payload {
+        case .files(let filePaths):
+            if changeCountAdvanced || forcePushToNative || lastPushedPayload != payload {
+                lastPushedPayload = payload
+                session.pushLocalClipboardFiles(filePaths)
+                return true
             }
-        }
-
-        guard let localText = pb.string(forType: .string), !localText.isEmpty else {
+            return false
+        case .text(let localText):
+            if changeCountAdvanced || forcePushToNative || lastPushedPayload != payload {
+                lastPushedPayload = payload
+                session.pushLocalClipboard(localText)
+                return true
+            }
+            return false
+        case .fileIntentEmpty, .empty:
+            // Never fall back to Finder's bare basename .string when .fileURL is present for a missing/unmounted item
             return false
         }
-        if changeCountAdvanced || localText != lastSyncedClipboardText || !lastSyncedClipboardFiles.isEmpty {
-            lastSyncedClipboardFiles = []
-            lastSyncedClipboardText = localText
-            session.pushLocalClipboard(localText)
-            return true
-        }
-        return false
     }
 
     private func pullRemoteClipboardIfUpdated(session: NativeRdpSession) {
@@ -1594,32 +1593,94 @@ final class RdpPointerAndKeyNSView: NSView {
         case .files:
             let stagedPaths = session.pullRemoteClipboardFiles()
             guard !stagedPaths.isEmpty else { return }
-            let existingUrls = stagedPaths
+            let existingUrls: [NSURL] = stagedPaths
                 .filter { FileManager.default.fileExists(atPath: $0) }
-                .map { NSURL(fileURLWithPath: $0) }
+                .map { URL(fileURLWithPath: $0).standardizedFileURL as NSURL }
             guard !existingUrls.isEmpty else { return }
-            lastSyncedClipboardFiles = stagedPaths
-            lastSyncedClipboardText = ""
             let pb = NSPasteboard.general
             pb.clearContents()
             pb.writeObjects(existingUrls)
             lastPasteboardChangeCount = pb.changeCount
+            lastPushedPayload = .files(existingUrls.map { ($0 as URL).path })
         case .text:
             let remoteText = session.pullRemoteClipboard()
             guard !remoteText.isEmpty else { return }
-            lastSyncedClipboardFiles = []
-            lastSyncedClipboardText = remoteText
             let pb = NSPasteboard.general
             if pb.string(forType: .string) != remoteText {
                 pb.clearContents()
                 pb.setString(remoteText, forType: .string)
             }
             lastPasteboardChangeCount = pb.changeCount
+            lastPushedPayload = .text(remoteText)
         case .none:
-            // Remote clipboard changed ownership; clear local mirror caches so re-copying the same local item re-announces CB_FORMAT_LIST
-            lastSyncedClipboardText = ""
-            lastSyncedClipboardFiles = []
+            // Remote clipboard changed ownership (e.g. remote screenshot or huge >512 MB file);
+            // preserve lastPasteboardChangeCount so pressing Cmd+V / Ctrl+V inside Windows does not
+            // overwrite the remote clipboard unless the user actually copies a new item on macOS.
+            lastPushedPayload = nil
         }
+    }
+
+    // MARK: - Finder File & Folder Drag-and-Drop onto Remote Desktop
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        draggingUpdated(sender)
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard redirectClipboard,
+              let session,
+              session.isConnected,
+              case .files(let paths) = MacPasteboardClipboardExtractor.extractClipboardPayload(from: sender.draggingPasteboard),
+              !paths.isEmpty else {
+            return []
+        }
+        let local = convert(sender.draggingLocation, from: nil)
+        let (rx, ry) = MacRdpScancodeMapper.mapViewportPoint(
+            localX: local.x,
+            localY: local.y,
+            viewWidth: bounds.width,
+            viewHeight: bounds.height,
+            remoteWidth: remoteWidth,
+            remoteHeight: remoteHeight,
+            scaleToFit: scaleToFit,
+            originBottomLeft: true
+        )
+        session.sendPointerEvent(flags: 0x0800, x: rx, y: ry)
+        return .copy
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        guard redirectClipboard,
+              let session,
+              session.isConnected,
+              case .files(let paths) = MacPasteboardClipboardExtractor.extractClipboardPayload(from: sender.draggingPasteboard),
+              !paths.isEmpty else {
+            return false
+        }
+        window?.makeFirstResponder(self)
+        let local = convert(sender.draggingLocation, from: nil)
+        let (rx, ry) = MacRdpScancodeMapper.mapViewportPoint(
+            localX: local.x,
+            localY: local.y,
+            viewWidth: bounds.width,
+            viewHeight: bounds.height,
+            remoteWidth: remoteWidth,
+            remoteHeight: remoteHeight,
+            scaleToFit: scaleToFit,
+            originBottomLeft: true
+        )
+        session.sendPointerEvent(flags: 0x0800, x: rx, y: ry)
+
+        let nsUrls = paths.map { URL(fileURLWithPath: $0).standardizedFileURL as NSURL }
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.writeObjects(nsUrls)
+        lastPasteboardChangeCount = pb.changeCount
+        lastPushedPayload = .files(paths)
+
+        session.pushLocalClipboardFiles(paths)
+        session.requestSynchronizedPaste()
+        return true
     }
 
     // MARK: - Aspect-Aware Coordinate Mapping & Zero-Jitter Native Coalesced Pointer Input
@@ -1646,7 +1707,7 @@ final class RdpPointerAndKeyNSView: NSView {
     override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
         if redirectClipboard, let session {
-            _ = syncLocalClipboardToRemoteIfNeeded(session: session, forceCheck: false)
+            _ = syncLocalClipboardToRemoteIfNeeded(session: session, forcePushToNative: false)
         }
         let (x, y) = scaledPoint(for: event)
         session?.sendPointerEvent(flags: 0x8000 | 0x1000, x: x, y: y)
@@ -1665,7 +1726,7 @@ final class RdpPointerAndKeyNSView: NSView {
     override func rightMouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
         if redirectClipboard, let session {
-            _ = syncLocalClipboardToRemoteIfNeeded(session: session, forceCheck: false)
+            _ = syncLocalClipboardToRemoteIfNeeded(session: session, forcePushToNative: false)
         }
         let (x, y) = scaledPoint(for: event)
         session?.sendPointerEvent(flags: 0x8000 | 0x2000, x: x, y: y)
@@ -1777,6 +1838,20 @@ final class RdpPointerAndKeyNSView: NSView {
         )
     }
 
+    private func isPlainControlPaste(for event: NSEvent) -> Bool {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard flags.contains(.control),
+              !flags.contains(.command),
+              !flags.contains(.option),
+              !flags.contains(.shift) else {
+            return false
+        }
+        if event.keyCode == 0x09 {
+            return true
+        }
+        return event.charactersIgnoringModifiers?.lowercased() == "v"
+    }
+
     private func sendRemoteCtrlChord(scancode: UInt16) {
         guard let session else { return }
         let physicalCtrlHeld = heldModifierKeyCodes.contains(0x3B) || heldModifierKeyCodes.contains(0x3E)
@@ -1796,14 +1871,22 @@ final class RdpPointerAndKeyNSView: NSView {
         }
     }
 
-    private func executeRemoteCommandShortcut(_ shortcut: MacRdpScancodeMapper.MacCommandRemoteShortcut) {
+    private func executeSynchronizedPaste() {
         guard let session else { return }
-        if shortcut == .paste && redirectClipboard {
-            _ = syncLocalClipboardToRemoteIfNeeded(session: session, forceCheck: true)
-            for code: UInt16 in [0x37, 0x36, 0x38, 0x3C] {
+        if redirectClipboard {
+            _ = syncLocalClipboardToRemoteIfNeeded(session: session, forcePushToNative: false)
+            for code: UInt16 in [0x37, 0x36, 0x38, 0x3C, 0x3B, 0x3E] {
                 heldModifierKeyCodes.remove(code)
             }
             session.requestSynchronizedPaste()
+        } else {
+            sendRemoteCtrlChord(scancode: MacRdpScancodeMapper.MacCommandRemoteShortcut.paste.windowsCtrlScancode)
+        }
+    }
+
+    private func executeRemoteCommandShortcut(_ shortcut: MacRdpScancodeMapper.MacCommandRemoteShortcut) {
+        if shortcut == .paste {
+            executeSynchronizedPaste()
             return
         }
         sendRemoteCtrlChord(scancode: shortcut.windowsCtrlScancode)
@@ -1851,9 +1934,18 @@ final class RdpPointerAndKeyNSView: NSView {
             executeRemoteCommandShortcut(shortcut)
             return
         }
+        if redirectClipboard && isPlainControlPaste(for: event) {
+            executeSynchronizedPaste()
+            return
+        }
         if !captureRemoteShortcuts && event.modifierFlags.contains(.command) {
             super.keyDown(with: event)
             return
+        }
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if flags.contains(.control) && heldModifierKeyCodes.isDisjoint(with: [0x3B, 0x3E]) {
+            heldModifierKeyCodes.insert(0x3B)
+            session?.sendScancode(0x1D, keyDown: true, extended: false)
         }
         guard let mapped = MacRdpScancodeMapper.mapKeyCode(
             event.keyCode,
@@ -1866,6 +1958,9 @@ final class RdpPointerAndKeyNSView: NSView {
 
     override func keyUp(with event: NSEvent) {
         if resolveMacCommandShortcut(for: event) != nil {
+            return
+        }
+        if redirectClipboard && isPlainControlPaste(for: event) {
             return
         }
         if !captureRemoteShortcuts && event.modifierFlags.contains(.command) {

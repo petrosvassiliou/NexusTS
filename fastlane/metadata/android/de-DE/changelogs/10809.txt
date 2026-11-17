@@ -1,0 +1,1 @@
+• v0.8.9: Bidirektionales Kopieren & Einfügen von Dateien und Ordnern über RDP (MS-RDPECLIP FileGroupDescriptorW, CB_LOCK_CLIPDATA-Snapshot-Sperre, 2-MB-Streaming bis 512 MB, Hyper-V VMConnect) sowie absturzfreies Beenden von RDP-Sitzungen

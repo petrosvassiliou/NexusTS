@@ -92,15 +92,27 @@ inline std::pair<uint32_t, uint32_t> clamp_rdp_surface_dimensions(
     };
 }
 
+std::atomic<uint64_t>& global_remote_clip_batch_seq() {
+    static auto* seq = new std::atomic<uint64_t>(1u);
+    return *seq;
+}
+
 #if defined(NEXUSTS_HAS_FREERDP3_BINARY) && NEXUSTS_HAS_FREERDP3_BINARY == 1
 constexpr UINT32 kWinCfText = 1u;
 constexpr UINT32 kWinCfOemText = 7u;
 constexpr UINT32 kWinCfUnicodeText = 13u;
 
-std::mutex g_freerdp_env_mutex;
-bool g_addin_provider_registered = false;
-bool g_env_initialized = false;
-std::string g_cached_resolved_home;
+struct FreeRdpRuntimeEnvState {
+    std::mutex mutex;
+    bool addin_provider_registered{false};
+    bool env_initialized{false};
+    std::string cached_resolved_home;
+};
+
+FreeRdpRuntimeEnvState& freerdp_env_state() {
+    static auto* state = new FreeRdpRuntimeEnvState();
+    return *state;
+}
 
 void set_posix_and_winpr_env(const char* key, const std::string& value) {
     if (!key || value.empty()) {
@@ -273,11 +285,12 @@ std::string detect_android_fallback_files_dir() {
  * `setenv()` against `getenv()` on background threads.
  */
 bool ensure_freerdp_runtime_environment(const std::string& preferred_home_dir, std::string* out_resolved_home) {
-    std::lock_guard<std::mutex> lock(g_freerdp_env_mutex);
+    auto& env = freerdp_env_state();
+    std::lock_guard<std::mutex> lock(env.mutex);
 
-    if (g_env_initialized && !g_cached_resolved_home.empty()) {
+    if (env.env_initialized && !env.cached_resolved_home.empty()) {
         if (out_resolved_home) {
-            *out_resolved_home = g_cached_resolved_home;
+            *out_resolved_home = env.cached_resolved_home;
         }
         return true;
     }
@@ -324,9 +337,9 @@ bool ensure_freerdp_runtime_environment(const std::string& preferred_home_dir, s
     set_posix_and_winpr_env("XDG_CACHE_HOME", xdg_cache.string());
     set_posix_and_winpr_env("TMPDIR", tmp_dir.string());
 
-    if (!g_addin_provider_registered) {
+    if (!env.addin_provider_registered) {
         if (freerdp_register_addin_provider(freerdp_channels_load_static_addin_entry, 0) == CHANNEL_RC_OK) {
-            g_addin_provider_registered = true;
+            env.addin_provider_registered = true;
             NX_RDP_LOGI("Registered FreeRDP 3.x static builtin channel addin provider");
         } else {
             NX_RDP_LOGE("freerdp_register_addin_provider(freerdp_channels_load_static_addin_entry) returned non-OK");
@@ -334,10 +347,10 @@ bool ensure_freerdp_runtime_environment(const std::string& preferred_home_dir, s
     }
 
     if (std::filesystem::exists(home_path, ec)) {
-        g_cached_resolved_home = home_path.string();
-        g_env_initialized = true;
+        env.cached_resolved_home = home_path.string();
+        env.env_initialized = true;
         if (out_resolved_home) {
-            *out_resolved_home = g_cached_resolved_home;
+            *out_resolved_home = env.cached_resolved_home;
         }
         return true;
     }
@@ -384,8 +397,15 @@ struct FreeRdpCallbackState {
     std::string domain;
 };
 
-std::mutex g_freerdp_cb_mutex;
-std::unordered_map<freerdp*, FreeRdpCallbackState> g_freerdp_callbacks;
+struct FreeRdpCallbackRegistry {
+    std::mutex mutex;
+    std::unordered_map<freerdp*, FreeRdpCallbackState> callbacks;
+};
+
+FreeRdpCallbackRegistry& freerdp_cb_registry() {
+    static auto* reg = new FreeRdpCallbackRegistry();
+    return *reg;
+}
 
 void register_freerdp_callbacks(
     freerdp* instance,
@@ -396,8 +416,9 @@ void register_freerdp_callbacks(
     const std::string& password,
     const std::string& domain
 ) {
-    std::lock_guard<std::mutex> lock(g_freerdp_cb_mutex);
-    g_freerdp_callbacks[instance] = FreeRdpCallbackState{
+    auto& reg = freerdp_cb_registry();
+    std::lock_guard<std::mutex> lock(reg.mutex);
+    reg.callbacks[instance] = FreeRdpCallbackState{
         owner,
         ignore_certs,
         cert_store_writable,
@@ -408,19 +429,21 @@ void register_freerdp_callbacks(
 }
 
 void unregister_freerdp_callbacks(freerdp* instance) {
-    std::lock_guard<std::mutex> lock(g_freerdp_cb_mutex);
-    g_freerdp_callbacks.erase(instance);
+    auto& reg = freerdp_cb_registry();
+    std::lock_guard<std::mutex> lock(reg.mutex);
+    reg.callbacks.erase(instance);
 }
 
 FreeRdpCallbackState lookup_freerdp_callbacks(freerdp* instance) {
-    std::lock_guard<std::mutex> lock(g_freerdp_cb_mutex);
-    auto it = g_freerdp_callbacks.find(instance);
-    return (it != g_freerdp_callbacks.end()) ? it->second : FreeRdpCallbackState{};
+    auto& reg = freerdp_cb_registry();
+    std::lock_guard<std::mutex> lock(reg.mutex);
+    auto it = reg.callbacks.find(instance);
+    return (it != reg.callbacks.end()) ? it->second : FreeRdpCallbackState{};
 }
 
 constexpr UINT32 kClientFormatFileGroupDescriptorW = 0xC080u;
-constexpr UINT32 kClientFormatFileContents = 0xC081u;
 constexpr uint32_t kMaxServerFileContentsRangeBytes = 8u * 1024u * 1024u;
+constexpr uint64_t kMaxLegacyNonHugeFileBytes = 0x7FFFFFFFULL;
 
 bool equals_ascii_icase(const char* a, const char* b) noexcept {
     if (!a || !b) {
@@ -444,15 +467,26 @@ bool equals_ascii_icase(const char* a, const char* b) noexcept {
     return *a == '\0' && *b == '\0';
 }
 
-UINT cliprdr_send_client_format_list(CliprdrClientContext* cliprdr, RdpSessionContext* owner) {
+UINT cliprdr_send_client_format_list(
+    CliprdrClientContext* cliprdr,
+    RdpSessionContext* owner,
+    bool is_initial_monitor_ready,
+    bool* out_sent_wire_pdu = nullptr
+) {
+    if (out_sent_wire_pdu) {
+        *out_sent_wire_pdu = false;
+    }
     if (!cliprdr || !cliprdr->ClientFormatList) {
         return CHANNEL_RC_OK;
     }
     const RdpClipboardContentKind kind =
         owner ? owner->channels().local_clipboard_kind() : RdpClipboardContentKind::None;
 
+    // Per [MS-RDPECLIP] & FreeRDP xf_cliprdr/wlf_cliprdr, announce ONLY "FileGroupDescriptorW"
+    // when CB_STREAM_FILECLIP_ENABLED is active; advertising "FileContents" in CB_FORMAT_LIST
+    // causes some Windows consumers to issue CB_FORMAT_DATA_REQUEST(FileContents) (TYMED_HGLOBAL)
+    // instead of CB_FILECONTENTS_REQUEST (TYMED_ISTREAM).
     char fgd_name[] = "FileGroupDescriptorW";
-    char fc_name[] = "FileContents";
     CLIPRDR_FORMAT formats[2]{};
     UINT32 num_formats = 0u;
 
@@ -461,9 +495,7 @@ UINT cliprdr_send_client_format_list(CliprdrClientContext* cliprdr, RdpSessionCo
         if (files && !files->empty()) {
             formats[0].formatId = kClientFormatFileGroupDescriptorW;
             formats[0].formatName = fgd_name;
-            formats[1].formatId = kClientFormatFileContents;
-            formats[1].formatName = fc_name;
-            num_formats = 2u;
+            num_formats = 1u;
         }
     } else if (kind == RdpClipboardContentKind::Text && owner) {
         if (!owner->channels().local_clipboard_text().empty()) {
@@ -475,12 +507,22 @@ UINT cliprdr_send_client_format_list(CliprdrClientContext* cliprdr, RdpSessionCo
         }
     }
 
+    // FreeRDP's cliprdr_client_format_list() drops empty format lists after initial MonitorReady
+    // without transmitting a wire PDU, so avoid waiting on a CB_FORMAT_LIST_RESPONSE that won't come.
+    if (!is_initial_monitor_ready && num_formats == 0u) {
+        return CHANNEL_RC_OK;
+    }
+
     CLIPRDR_FORMAT_LIST format_list{};
     format_list.common.msgType = CB_FORMAT_LIST;
     format_list.common.msgFlags = 0;
     format_list.numFormats = num_formats;
     format_list.formats = (num_formats > 0u) ? formats : nullptr;
-    return cliprdr->ClientFormatList(cliprdr, &format_list);
+    const UINT rc = cliprdr->ClientFormatList(cliprdr, &format_list);
+    if (out_sent_wire_pdu && rc == CHANNEL_RC_OK) {
+        *out_sent_wire_pdu = true;
+    }
+    return rc;
 }
 
 UINT cliprdr_on_monitor_ready(CliprdrClientContext* cliprdr, const CLIPRDR_MONITOR_READY* /*monitor_ready*/) {
@@ -513,7 +555,7 @@ UINT cliprdr_on_monitor_ready(CliprdrClientContext* cliprdr, const CLIPRDR_MONIT
     }
     // Per [MS-RDPECLIP] 1.3.1.1, ClientFormatList MUST always be sent in response to MonitorReady
     // (even with 0 formats when the local clipboard is initially empty) so rdpclip.exe activates CLIPRDR.
-    const UINT rc = cliprdr_send_client_format_list(cliprdr, owner);
+    const UINT rc = cliprdr_send_client_format_list(cliprdr, owner, /*is_initial_monitor_ready=*/true);
     if (owner) {
         owner->set_cliprdr_ready(true);
     }
@@ -592,6 +634,11 @@ UINT cliprdr_on_server_format_list(CliprdrClientContext* cliprdr, const CLIPRDR_
         req.requestedFormatId = req_fmt;
         return cliprdr->ClientFormatDataRequest(cliprdr, &req);
     }
+
+    // Wake host UI so remote non-text/non-file clipboard updates (e.g. screenshots) clear stale mirror state
+    if (owner) {
+        owner->presenter().notify_frame_ready();
+    }
     return CHANNEL_RC_OK;
 }
 
@@ -646,13 +693,26 @@ UINT cliprdr_on_server_format_data_request(
     resp.common.msgType = CB_FORMAT_DATA_RESPONSE;
 
     if (owner && request->requestedFormatId == kClientFormatFileGroupDescriptorW) {
-        const auto files = owner->channels().local_clipboard_files();
+        const auto files = owner->bind_active_file_group_descriptor_snapshot();
         if (files && !files->empty()) {
-            const std::vector<uint8_t> packed = serialize_cliprdr_file_list(*files);
-            resp.common.msgFlags = CB_RESPONSE_OK;
-            resp.common.dataLen = static_cast<UINT32>(packed.size());
-            resp.requestedFormatData = packed.data();
-            return cliprdr->ClientFormatDataResponse(cliprdr, &resp);
+            const bool huge_ok =
+                (owner->cliprdr_server_capabilities() & CB_HUGE_FILE_SUPPORT_ENABLED) != 0u;
+            bool size_compatible = true;
+            if (!huge_ok) {
+                for (const auto& entry : *files) {
+                    if (!entry.is_directory && entry.file_size > kMaxLegacyNonHugeFileBytes) {
+                        size_compatible = false;
+                        break;
+                    }
+                }
+            }
+            if (size_compatible) {
+                const std::vector<uint8_t> packed = serialize_cliprdr_file_list(*files);
+                resp.common.msgFlags = CB_RESPONSE_OK;
+                resp.common.dataLen = static_cast<UINT32>(packed.size());
+                resp.requestedFormatData = packed.data();
+                return cliprdr->ClientFormatDataResponse(cliprdr, &resp);
+            }
         }
     }
 
@@ -1474,6 +1534,9 @@ RdpSessionContext::RdpSessionContext(RdpConnectParams params)
 }
 
 RdpSessionContext::~RdpSessionContext() {
+    if (gdi_presenter_) {
+        gdi_presenter_->set_frame_ready_callback(nullptr, nullptr);
+    }
     disconnect();
 }
 
@@ -1520,7 +1583,14 @@ void RdpSessionContext::set_cliprdr_context(void* cliprdr_context) {
     }
     std::lock_guard<std::mutex> lock(cliprdr_mutex_);
     if (!cliprdr_context) {
+        has_active_server_clip_data_id_ = false;
+        active_server_clip_data_id_ = 0u;
+        active_fgd_snapshot_.reset();
         locked_local_file_snapshots_.clear();
+        if (remote_file_transfer_.active_ofs) {
+            remote_file_transfer_.active_ofs->close();
+            remote_file_transfer_.active_ofs.reset();
+        }
         remote_file_transfer_ = RemoteFileTransferState{};
     }
     cliprdr_context_ = cliprdr_context;
@@ -1540,6 +1610,9 @@ void RdpSessionContext::announce_local_clipboard_to_remote() {
 #if defined(NEXUSTS_HAS_FREERDP3_BINARY) && NEXUSTS_HAS_FREERDP3_BINARY == 1
     std::lock_guard<std::mutex> lock(input_mutex_);
     pending_clipboard_announce_ = true;
+    if (!awaiting_format_list_response_) {
+        format_list_sent_tp_ = std::chrono::steady_clock::now();
+    }
     if (wakeup_event_ && !wakeup_signaled_.exchange(true, std::memory_order_acq_rel)) {
         SetEvent(static_cast<HANDLE>(wakeup_event_));
     }
@@ -1627,7 +1700,7 @@ void RdpSessionContext::on_cliprdr_server_format_list_response(bool ok) {
 #if defined(NEXUSTS_HAS_FREERDP3_BINARY) && NEXUSTS_HAS_FREERDP3_BINARY == 1
     std::lock_guard<std::mutex> lock(input_mutex_);
     awaiting_format_list_response_ = false;
-    bool need_wake = false;
+    bool need_wake = !pending_pointer_events_.empty();
     if (pending_clipboard_announce_) {
         // Another local clipboard update arrived while CB_FORMAT_LIST was in flight — announce it next
         need_wake = true;
@@ -1643,32 +1716,72 @@ void RdpSessionContext::on_cliprdr_server_format_list_response(bool ok) {
 }
 
 void RdpSessionContext::lock_local_clipboard_files(uint32_t clip_data_id) {
-    const auto snapshot = channels_.local_clipboard_files();
+    auto snapshot = channels_.local_clipboard_files();
+    std::lock_guard<std::mutex> lock(cliprdr_mutex_);
+    has_active_server_clip_data_id_ = true;
+    active_server_clip_data_id_ = clip_data_id;
+    if (!snapshot || snapshot->empty()) {
+        snapshot = active_fgd_snapshot_;
+    }
     if (!snapshot || snapshot->empty()) {
         return;
     }
-    std::lock_guard<std::mutex> lock(cliprdr_mutex_);
     if (locked_local_file_snapshots_.size() >= 16u &&
         locked_local_file_snapshots_.find(clip_data_id) == locked_local_file_snapshots_.end()) {
         locked_local_file_snapshots_.erase(locked_local_file_snapshots_.begin());
     }
     locked_local_file_snapshots_[clip_data_id] = snapshot;
+    active_fgd_snapshot_ = snapshot;
 }
 
 void RdpSessionContext::unlock_local_clipboard_files(uint32_t clip_data_id) {
     std::lock_guard<std::mutex> lock(cliprdr_mutex_);
     locked_local_file_snapshots_.erase(clip_data_id);
+    if (has_active_server_clip_data_id_ && active_server_clip_data_id_ == clip_data_id) {
+        has_active_server_clip_data_id_ = false;
+        active_server_clip_data_id_ = 0u;
+    }
+}
+
+std::shared_ptr<const std::vector<RdpClipboardFileEntry>>
+RdpSessionContext::bind_active_file_group_descriptor_snapshot() {
+    auto latest = channels_.local_clipboard_files();
+    std::lock_guard<std::mutex> lock(cliprdr_mutex_);
+    if (has_active_server_clip_data_id_) {
+        const auto it = locked_local_file_snapshots_.find(active_server_clip_data_id_);
+        if (it != locked_local_file_snapshots_.end() && it->second && !it->second->empty()) {
+            active_fgd_snapshot_ = it->second;
+            return it->second;
+        }
+    }
+    if (latest && !latest->empty()) {
+        active_fgd_snapshot_ = latest;
+        if (has_active_server_clip_data_id_) {
+            if (locked_local_file_snapshots_.size() >= 16u &&
+                locked_local_file_snapshots_.find(active_server_clip_data_id_) == locked_local_file_snapshots_.end()) {
+                locked_local_file_snapshots_.erase(locked_local_file_snapshots_.begin());
+            }
+            locked_local_file_snapshots_[active_server_clip_data_id_] = latest;
+        }
+        return latest;
+    }
+    return active_fgd_snapshot_;
 }
 
 std::shared_ptr<const std::vector<RdpClipboardFileEntry>> RdpSessionContext::resolve_local_clipboard_files(
     bool has_clip_data_id,
     uint32_t clip_data_id
 ) {
-    if (has_clip_data_id) {
+    {
         std::lock_guard<std::mutex> lock(cliprdr_mutex_);
-        const auto it = locked_local_file_snapshots_.find(clip_data_id);
-        if (it != locked_local_file_snapshots_.end() && it->second) {
-            return it->second;
+        if (has_clip_data_id) {
+            const auto it = locked_local_file_snapshots_.find(clip_data_id);
+            if (it != locked_local_file_snapshots_.end() && it->second) {
+                return it->second;
+            }
+        }
+        if (active_fgd_snapshot_ && !active_fgd_snapshot_->empty()) {
+            return active_fgd_snapshot_;
         }
     }
     return channels_.local_clipboard_files();
@@ -1689,6 +1802,10 @@ void RdpSessionContext::abort_remote_file_transfer_locked(void* raw_cliprdr) {
 #else
     (void)raw_cliprdr;
 #endif
+    if (remote_file_transfer_.active_ofs) {
+        remote_file_transfer_.active_ofs->close();
+        remote_file_transfer_.active_ofs.reset();
+    }
     if (!remote_file_transfer_.batch_root_dir.empty()) {
         std::error_code ec;
         std::filesystem::remove_all(remote_file_transfer_.batch_root_dir, ec);
@@ -1706,7 +1823,10 @@ void RdpSessionContext::begin_remote_file_list_fetch(void* raw_cliprdr, uint32_t
     if (cliprdr &&
         cliprdr->ClientLockClipboardData &&
         (server_clip_caps_.load(std::memory_order_acquire) & CB_CAN_LOCK_CLIPDATA) != 0u) {
-        const uint32_t lock_id = next_client_clip_data_id_++;
+        uint32_t lock_id = next_client_clip_data_id_++;
+        if (lock_id == 0u) {
+            lock_id = next_client_clip_data_id_++;
+        }
         CLIPRDR_LOCK_CLIPBOARD_DATA lock_pdu{};
         lock_pdu.common.msgType = CB_LOCK_CLIPDATA;
         lock_pdu.common.dataLen = 4u;
@@ -1729,16 +1849,24 @@ void RdpSessionContext::advance_remote_file_transfer_locked(void* raw_cliprdr) {
         return;
     }
 
-    constexpr uint32_t kRemotePullChunkBytes = 256u * 1024u;
+    constexpr uint32_t kRemotePullChunkBytes = 2u * 1024u * 1024u;
     while (remote_file_transfer_.current_index < remote_file_transfer_.entries.size()) {
         auto& entry = remote_file_transfer_.entries[remote_file_transfer_.current_index];
         if (entry.is_directory) {
+            if (remote_file_transfer_.active_ofs) {
+                remote_file_transfer_.active_ofs->close();
+                remote_file_transfer_.active_ofs.reset();
+                remote_file_transfer_.active_file_path.clear();
+            }
             ++remote_file_transfer_.current_index;
             remote_file_transfer_.current_offset = 0u;
             continue;
         }
         if (!entry.has_known_size) {
-            const uint32_t stream_id = next_client_stream_id_++;
+            uint32_t stream_id = next_client_stream_id_++;
+            if (stream_id == 0u) {
+                stream_id = next_client_stream_id_++;
+            }
             remote_file_transfer_.awaiting_size = true;
             remote_file_transfer_.active_stream_id = stream_id;
 
@@ -1758,6 +1886,12 @@ void RdpSessionContext::advance_remote_file_transfer_locked(void* raw_cliprdr) {
             return;
         }
         if (entry.file_size == 0u || remote_file_transfer_.current_offset >= entry.file_size) {
+            if (remote_file_transfer_.active_ofs) {
+                remote_file_transfer_.active_ofs->flush();
+                remote_file_transfer_.active_ofs->close();
+                remote_file_transfer_.active_ofs.reset();
+                remote_file_transfer_.active_file_path.clear();
+            }
             if (entry.file_size == 0u) {
                 const std::filesystem::path target_file =
                     std::filesystem::path(remote_file_transfer_.batch_root_dir) / entry.local_posix_path;
@@ -1771,7 +1905,10 @@ void RdpSessionContext::advance_remote_file_transfer_locked(void* raw_cliprdr) {
 
         const uint64_t remaining = entry.file_size - remote_file_transfer_.current_offset;
         const uint32_t chunk_req = static_cast<uint32_t>(std::min<uint64_t>(remaining, kRemotePullChunkBytes));
-        const uint32_t stream_id = next_client_stream_id_++;
+        uint32_t stream_id = next_client_stream_id_++;
+        if (stream_id == 0u) {
+            stream_id = next_client_stream_id_++;
+        }
         remote_file_transfer_.awaiting_size = false;
         remote_file_transfer_.active_stream_id = stream_id;
 
@@ -1792,6 +1929,12 @@ void RdpSessionContext::advance_remote_file_transfer_locked(void* raw_cliprdr) {
     }
 
     // All files & folders in the batch have been staged locally!
+    if (remote_file_transfer_.active_ofs) {
+        remote_file_transfer_.active_ofs->flush();
+        remote_file_transfer_.active_ofs->close();
+        remote_file_transfer_.active_ofs.reset();
+        remote_file_transfer_.active_file_path.clear();
+    }
     if (remote_file_transfer_.has_lock && cliprdr->ClientUnlockClipboardData) {
         CLIPRDR_UNLOCK_CLIPBOARD_DATA unlock_pdu{};
         unlock_pdu.common.msgType = CB_UNLOCK_CLIPDATA;
@@ -1839,13 +1982,41 @@ void RdpSessionContext::handle_remote_file_group_descriptor_response(
                 : (std::filesystem::temp_directory_path(ec) / "nexusts_cliprdr_recv"));
         std::filesystem::create_directories(base_dir, ec);
 
-        const uint64_t batch_id = next_remote_clip_batch_id_++;
-        if (batch_id > 2u) {
-            const std::filesystem::path old_batch = base_dir / ("clip_" + std::to_string(batch_id - 2u));
-            std::filesystem::remove_all(old_batch, ec);
+        // Retain the 10 newest staged clipboard batches so Finder/Explorer paste operations
+        // still reading a recent batch never lose files across rapid copies or multiple tabs.
+        {
+            std::vector<std::pair<std::filesystem::file_time_type, std::filesystem::path>> existing_batches;
+            for (const auto& dir_entry : std::filesystem::directory_iterator(base_dir, ec)) {
+                if (ec) {
+                    break;
+                }
+                const std::string fname = dir_entry.path().filename().string();
+                if (dir_entry.is_directory(ec) && fname.rfind("clip_", 0u) == 0u) {
+                    const auto mtime = dir_entry.last_write_time(ec);
+                    existing_batches.emplace_back(mtime, dir_entry.path());
+                }
+            }
+            if (existing_batches.size() >= 10u) {
+                std::sort(
+                    existing_batches.begin(),
+                    existing_batches.end(),
+                    [](const auto& a, const auto& b) { return a.first < b.first; }
+                );
+                const size_t to_prune = existing_batches.size() - 9u;
+                for (size_t i = 0u; i < to_prune; ++i) {
+                    std::filesystem::remove_all(existing_batches[i].second, ec);
+                }
+            }
         }
 
-        const std::filesystem::path batch_dir = base_dir / ("clip_" + std::to_string(batch_id));
+        const uint64_t batch_id = global_remote_clip_batch_seq().fetch_add(1u, std::memory_order_relaxed);
+        const auto epoch_ms = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch()
+            ).count()
+        );
+        const std::filesystem::path batch_dir =
+            base_dir / ("clip_" + std::to_string(epoch_ms) + "_" + std::to_string(batch_id));
         std::filesystem::remove_all(batch_dir, ec);
         if (!std::filesystem::create_directories(batch_dir, ec) && ec) {
             abort_remote_file_transfer_locked(raw_cliprdr);
@@ -1884,6 +2055,10 @@ void RdpSessionContext::handle_remote_file_group_descriptor_response(
             }
         }
 
+        if (remote_file_transfer_.active_ofs) {
+            remote_file_transfer_.active_ofs->close();
+            remote_file_transfer_.active_ofs.reset();
+        }
         remote_file_transfer_.active = true;
         remote_file_transfer_.batch_id = batch_id;
         remote_file_transfer_.batch_root_dir = canonical_batch.string();
@@ -1893,6 +2068,7 @@ void RdpSessionContext::handle_remote_file_group_descriptor_response(
         remote_file_transfer_.awaiting_size = false;
         remote_file_transfer_.current_offset = 0u;
         remote_file_transfer_.total_bytes_written = 0u;
+        remote_file_transfer_.active_file_path.clear();
 
         advance_remote_file_transfer_locked(raw_cliprdr);
         if (!remote_file_transfer_.active && !remote_file_transfer_.top_level_staged_paths.empty()) {
@@ -1950,22 +2126,34 @@ void RdpSessionContext::handle_remote_file_contents_response(
         } else {
             const std::filesystem::path target_file =
                 std::filesystem::path(remote_file_transfer_.batch_root_dir) / entry.local_posix_path;
-            const auto open_mode = std::ios::binary |
-                (remote_file_transfer_.current_offset == 0u ? std::ios::trunc : std::ios::app);
-            std::ofstream ofs(target_file, open_mode);
-            if (!ofs) {
-                abort_remote_file_transfer_locked(raw_cliprdr);
-                return;
-            }
-            if (data && data_len > 0u) {
-                if (remote_file_transfer_.total_bytes_written + data_len > kMaxRemoteClipTotalBytes) {
-                    ofs.close();
+            const std::string target_file_str = target_file.string();
+            if (!remote_file_transfer_.active_ofs ||
+                !remote_file_transfer_.active_ofs->is_open() ||
+                remote_file_transfer_.active_file_path != target_file_str) {
+                if (remote_file_transfer_.active_ofs) {
+                    remote_file_transfer_.active_ofs->close();
+                    remote_file_transfer_.active_ofs.reset();
+                }
+                const auto open_mode = std::ios::binary |
+                    (remote_file_transfer_.current_offset == 0u ? std::ios::trunc : std::ios::app);
+                auto ofs = std::make_unique<std::ofstream>(target_file, open_mode);
+                if (!ofs || !ofs->is_open()) {
                     abort_remote_file_transfer_locked(raw_cliprdr);
                     return;
                 }
-                ofs.write(reinterpret_cast<const char*>(data), static_cast<std::streamsize>(data_len));
-                if (!ofs) {
-                    ofs.close();
+                remote_file_transfer_.active_file_path = target_file_str;
+                remote_file_transfer_.active_ofs = std::move(ofs);
+            }
+            if (data && data_len > 0u) {
+                if (remote_file_transfer_.total_bytes_written + data_len > kMaxRemoteClipTotalBytes) {
+                    abort_remote_file_transfer_locked(raw_cliprdr);
+                    return;
+                }
+                remote_file_transfer_.active_ofs->write(
+                    reinterpret_cast<const char*>(data),
+                    static_cast<std::streamsize>(data_len)
+                );
+                if (!(*remote_file_transfer_.active_ofs)) {
                     abort_remote_file_transfer_locked(raw_cliprdr);
                     return;
                 }
@@ -2050,7 +2238,23 @@ void RdpSessionContext::drain_queued_commands_on_event_thread(void* raw_instance
             keys.swap(pending_keys_);
         }
         if (!pending_pointer_events_.empty()) {
-            pointers.swap(pending_pointer_events_);
+            // If a new local clipboard CB_FORMAT_LIST is currently awaiting rdpclip.exe acknowledgement,
+            // briefly gate right-mouse-button-down (<220 ms) so Windows Explorer's context menu sees
+            // the newly announced FileGroupDescriptorW / text formats and enables "Paste".
+            bool hold_for_right_click_clip_sync = false;
+            if (params_.redirect_clipboard && clip_ready &&
+                (pending_clipboard_announce_ || awaiting_format_list_response_) &&
+                (now_tp - format_list_sent_tp_) < std::chrono::milliseconds(220)) {
+                for (const auto& ev : pending_pointer_events_) {
+                    if (!ev.is_extended && (ev.flags & 0xA000u) == 0xA000u) {
+                        hold_for_right_click_clip_sync = true;
+                        break;
+                    }
+                }
+            }
+            if (!hold_for_right_click_clip_sync) {
+                pointers.swap(pending_pointer_events_);
+            }
         }
         if (has_pending_monitors_ && raw_disp != nullptr) {
             monitors = pending_monitors_;
@@ -2059,12 +2263,41 @@ void RdpSessionContext::drain_queued_commands_on_event_thread(void* raw_instance
         }
     }
 
-    // Transmit CB_FORMAT_LIST BEFORE synthetic scancodes
+    // Transmit CB_FORMAT_LIST BEFORE synthetic scancodes / pointer clicks
     if (send_clipboard) {
-        std::lock_guard<std::mutex> clip_lock(cliprdr_mutex_);
-        if (cliprdr_context_) {
-            auto* cliprdr = static_cast<CliprdrClientContext*>(cliprdr_context_);
-            cliprdr_send_client_format_list(cliprdr, this);
+        bool sent_wire_pdu = false;
+        {
+            std::lock_guard<std::mutex> clip_lock(cliprdr_mutex_);
+            has_active_server_clip_data_id_ = false;
+            active_server_clip_data_id_ = 0u;
+            active_fgd_snapshot_.reset();
+            if (cliprdr_context_) {
+                auto* cliprdr = static_cast<CliprdrClientContext*>(cliprdr_context_);
+                cliprdr_send_client_format_list(
+                    cliprdr,
+                    this,
+                    /*is_initial_monitor_ready=*/false,
+                    &sent_wire_pdu
+                );
+            }
+        }
+        if (!sent_wire_pdu) {
+            std::lock_guard<std::mutex> lock(input_mutex_);
+            awaiting_format_list_response_ = false;
+            if (!pending_clipboard_announce_ && pending_synchronized_paste_) {
+                pending_synchronized_paste_ = false;
+                enqueue_ctrl_v_locked();
+                keys.insert(keys.end(), pending_keys_.begin(), pending_keys_.end());
+                pending_keys_.clear();
+            }
+            if (!pending_pointer_events_.empty()) {
+                pointers.insert(
+                    pointers.end(),
+                    pending_pointer_events_.begin(),
+                    pending_pointer_events_.end()
+                );
+                pending_pointer_events_.clear();
+            }
         }
     }
 
@@ -2209,6 +2442,7 @@ void RdpSessionContext::render_diagnostic_surface_frame(uint32_t width, uint32_t
 }
 
 bool RdpSessionContext::connect() {
+    std::lock_guard<std::mutex> lifecycle_lock(disconnect_mutex_);
     if (connected_.load(std::memory_order_acquire)) {
         return true;
     }
@@ -2229,8 +2463,13 @@ bool RdpSessionContext::connect() {
     if (stale_worker.joinable()) {
         stale_worker.join();
     }
+    event_loop_thread_id_.store(std::thread::id{}, std::memory_order_release);
 
-    std::lock_guard<std::mutex> lock(state_mutex_);
+    const RdpConnectParams connect_params = [this]() {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        return params_;
+    }();
+
     set_last_error("");
     auto trim_ascii = [](const std::string& raw) -> std::string {
         const auto first = raw.find_first_not_of(" \t\r\n");
@@ -2240,9 +2479,9 @@ bool RdpSessionContext::connect() {
         const auto last = raw.find_last_not_of(" \t\r\n");
         return raw.substr(first, last - first + 1u);
     };
-    std::string effective_host = trim_ascii(params_.host);
-    const std::string effective_pcb = normalize_hyperv_preconnection_blob(params_.preconnection_blob);
-    uint16_t effective_port = params_.port;
+    std::string effective_host = trim_ascii(connect_params.host);
+    const std::string effective_pcb = normalize_hyperv_preconnection_blob(connect_params.preconnection_blob);
+    uint16_t effective_port = connect_params.port;
     bool port_from_host_literal = false;
     if (effective_host.size() >= 2u && effective_host.front() == '[' && effective_host.back() == ']') {
         effective_host = effective_host.substr(1u, effective_host.size() - 2u);
@@ -2282,26 +2521,26 @@ bool RdpSessionContext::connect() {
 
     const uint32_t w = gdi_presenter_->width();
     const uint32_t h = gdi_presenter_->height();
-    const bool local_audio_out = params_.redirect_audio_out && (params_.audio_redirection_mode == 0);
+    const bool local_audio_out = connect_params.redirect_audio_out && (connect_params.audio_redirection_mode == 0);
 
 #if !defined(NEXUSTS_HAS_FREERDP3_BINARY) || NEXUSTS_HAS_FREERDP3_BINARY == 0
-    resolved_runtime_home_ = params_.app_home_dir;
-    if (params_.uses_h264_codec()) {
-        h264_decoder_.initialize(w, h, /*avc444_chroma=*/params_.gfx_codec_mode == 2);
+    resolved_runtime_home_ = connect_params.app_home_dir;
+    if (connect_params.uses_h264_codec()) {
+        h264_decoder_.initialize(w, h, /*avc444_chroma=*/connect_params.gfx_codec_mode == 2);
     }
-    if (local_audio_out || params_.redirect_mic_in) {
-        channels_.start_audio_streams(local_audio_out, params_.redirect_mic_in, 48000);
+    if (local_audio_out || connect_params.redirect_mic_in) {
+        channels_.start_audio_streams(local_audio_out, connect_params.redirect_mic_in, 48000);
     }
 #endif
 
 #if defined(NEXUSTS_HAS_FREERDP3_BINARY) && NEXUSTS_HAS_FREERDP3_BINARY == 1
     std::string resolved_home;
-    const bool env_ready = ensure_freerdp_runtime_environment(params_.app_home_dir, &resolved_home);
+    const bool env_ready = ensure_freerdp_runtime_environment(connect_params.app_home_dir, &resolved_home);
     resolved_runtime_home_ = resolved_home;
 
-    std::string effective_username = trim_ascii(params_.username);
-    std::string effective_domain = trim_ascii(params_.domain);
-    const std::string effective_gateway_host = trim_ascii(params_.rd_gateway_host);
+    std::string effective_username = trim_ascii(connect_params.username);
+    std::string effective_domain = trim_ascii(connect_params.domain);
+    const std::string effective_gateway_host = trim_ascii(connect_params.rd_gateway_host);
     if (effective_domain.empty()) {
         const auto bs_pos = effective_username.find('\\');
         if (bs_pos != std::string::npos) {
@@ -2323,14 +2562,14 @@ bool RdpSessionContext::connect() {
     instance->VerifyCertificateEx = &freerdp_on_verify_certificate_ex;
     instance->VerifyChangedCertificateEx = &freerdp_on_verify_changed_certificate_ex;
 
-    const bool effective_ignore_cert = params_.ignore_certificate || !effective_pcb.empty();
+    const bool effective_ignore_cert = connect_params.ignore_certificate || !effective_pcb.empty();
     register_freerdp_callbacks(
         instance,
         this,
         effective_ignore_cert,
         env_ready,
         effective_username,
-        params_.password,
+        connect_params.password,
         effective_domain
     );
 
@@ -2386,11 +2625,11 @@ bool RdpSessionContext::connect() {
     freerdp_settings_set_uint32(settings, FreeRDP_ServerPort, effective_port);
     freerdp_settings_set_uint32(settings, FreeRDP_DesktopWidth, w);
     freerdp_settings_set_uint32(settings, FreeRDP_DesktopHeight, h);
-    freerdp_settings_set_uint32(settings, FreeRDP_ColorDepth, params_.color_depth_bits);
-    freerdp_settings_set_bool(settings, FreeRDP_ConsoleSession, params_.connect_to_console);
+    freerdp_settings_set_uint32(settings, FreeRDP_ColorDepth, connect_params.color_depth_bits);
+    freerdp_settings_set_bool(settings, FreeRDP_ConsoleSession, connect_params.connect_to_console);
 
-    if (params_.hidpi_enabled && params_.desktop_scale_factor > 100) {
-        const uint32_t scale = std::clamp(params_.desktop_scale_factor, 100u, 500u);
+    if (connect_params.hidpi_enabled && connect_params.desktop_scale_factor > 100) {
+        const uint32_t scale = std::clamp(connect_params.desktop_scale_factor, 100u, 500u);
         const uint32_t dev_scale = map_device_scale_factor(scale);
         const uint32_t effective_dpi = (96u * scale) / 100u;
         const uint32_t dpi_x10 = std::max<uint32_t>(960u, effective_dpi * 10u);
@@ -2405,14 +2644,14 @@ bool RdpSessionContext::connect() {
 
     bool enable_gfx_h264 = false;
     bool enable_gfx_avc444 = false;
-    if (params_.enable_gfx_pipeline && (params_.gfx_codec_mode == 1 || params_.gfx_codec_mode == 2)) {
+    if (connect_params.enable_gfx_pipeline && (connect_params.gfx_codec_mode == 1 || connect_params.gfx_codec_mode == 2)) {
         // Mode 1 = Single-stream H.264 AVC420 (CAPVERSION_81, zero dual-stream OpenH264 DPB corruption).
         // Mode 2 = Dual-stream H.264 AVC444 (only enabled on desktop; Android AMediaCodec lacks High 4:4:4).
         H264_CONTEXT* probe_h264 = h264_context_new(FALSE);
         if (probe_h264) {
             enable_gfx_h264 = true;
 #ifndef __ANDROID__
-            enable_gfx_avc444 = (params_.gfx_codec_mode == 2);
+            enable_gfx_avc444 = (connect_params.gfx_codec_mode == 2);
 #endif
             h264_context_free(probe_h264);
         }
@@ -2424,39 +2663,46 @@ bool RdpSessionContext::connect() {
     // OffscreenSupportLevel (0). Setting BitmapCacheEnabled or OffscreenSupportLevel directly on
     // raw rdpSettings without OrderSupport[NEG_MEMBLT_INDEX] or prior to PostConnect gdi_init()
     // causes rdp_client_wait_for_activation() to abort with FREERDP_ERROR_CONNECT_TRANSPORT_FAILED (0x0002000D).
-    freerdp_settings_set_bool(settings, FreeRDP_SupportGraphicsPipeline, params_.enable_gfx_pipeline);
+    freerdp_settings_set_bool(settings, FreeRDP_SupportGraphicsPipeline, connect_params.enable_gfx_pipeline);
     freerdp_settings_set_bool(settings, FreeRDP_GfxH264, enable_gfx_h264);
     freerdp_settings_set_bool(settings, FreeRDP_GfxAVC444, enable_gfx_avc444);
     freerdp_settings_set_bool(settings, FreeRDP_GfxAVC444v2, enable_gfx_avc444);
-    freerdp_settings_set_bool(settings, FreeRDP_GfxProgressive, params_.enable_gfx_pipeline);
-    freerdp_settings_set_bool(settings, FreeRDP_GfxProgressiveV2, params_.enable_gfx_pipeline);
+    freerdp_settings_set_bool(settings, FreeRDP_GfxProgressive, connect_params.enable_gfx_pipeline);
+    freerdp_settings_set_bool(settings, FreeRDP_GfxProgressiveV2, connect_params.enable_gfx_pipeline);
     freerdp_settings_set_bool(settings, FreeRDP_GfxPlanar, TRUE);
     freerdp_settings_set_bool(settings, FreeRDP_GfxSmallCache, FALSE);
     freerdp_settings_set_bool(settings, FreeRDP_GfxSendQoeAck, TRUE);
-    freerdp_settings_set_bool(settings, FreeRDP_RemoteFxCodec, params_.enable_remotefx);
+    freerdp_settings_set_bool(settings, FreeRDP_RemoteFxCodec, connect_params.enable_remotefx);
     freerdp_settings_set_bool(settings, FreeRDP_NSCodec, TRUE);
 
     const bool enable_disp_channel =
-        params_.enable_dynamic_resize || params_.hidpi_enabled || params_.multi_monitor_spanning;
+        connect_params.enable_dynamic_resize || connect_params.hidpi_enabled || connect_params.multi_monitor_spanning;
     freerdp_settings_set_bool(settings, FreeRDP_SupportDisplayControl, enable_disp_channel);
     freerdp_settings_set_bool(settings, FreeRDP_DynamicResolutionUpdate, enable_disp_channel);
-    freerdp_settings_set_bool(settings, FreeRDP_UseMultimon, params_.multi_monitor_spanning);
+    freerdp_settings_set_bool(settings, FreeRDP_UseMultimon, connect_params.multi_monitor_spanning);
 
-    freerdp_settings_set_bool(settings, FreeRDP_RedirectClipboard, params_.redirect_clipboard);
+    freerdp_settings_set_bool(settings, FreeRDP_RedirectClipboard, connect_params.redirect_clipboard);
+#if defined(CLIPRDR_FLAG_DEFAULT_MASK)
+    freerdp_settings_set_uint32(
+        settings,
+        FreeRDP_ClipboardFeatureMask,
+        connect_params.redirect_clipboard ? static_cast<UINT32>(CLIPRDR_FLAG_DEFAULT_MASK) : 0u
+    );
+#endif
 #ifdef __APPLE__
     // macOS Universal2 static SDK builds with -DWITH_PCSC=OFF and -DWITH_MACAUDIO=OFF; advertising
     // virtual SmartCard or RDPSND without backends stalls Windows Winlogon/SCardSvr by ~1.5-2.0s.
     freerdp_settings_set_bool(settings, FreeRDP_RedirectSmartCards, FALSE);
 #else
-    freerdp_settings_set_bool(settings, FreeRDP_RedirectSmartCards, params_.redirect_smartcard);
+    freerdp_settings_set_bool(settings, FreeRDP_RedirectSmartCards, connect_params.redirect_smartcard);
 #endif
-    freerdp_settings_set_bool(settings, FreeRDP_RedirectDrives, params_.redirect_drives);
-    if (params_.redirect_drives && !params_.shared_drive_local_path.empty()) {
+    freerdp_settings_set_bool(settings, FreeRDP_RedirectDrives, connect_params.redirect_drives);
+    if (connect_params.redirect_drives && !connect_params.shared_drive_local_path.empty()) {
         const std::string drive_name =
-            params_.shared_drive_name.empty() ? "NexusTS" : params_.shared_drive_local_path.empty() ? "NexusTS" : params_.shared_drive_name;
+            connect_params.shared_drive_name.empty() ? "NexusTS" : connect_params.shared_drive_local_path.empty() ? "NexusTS" : connect_params.shared_drive_name;
         const char* drive_args[2] = {
             drive_name.c_str(),
-            params_.shared_drive_local_path.c_str()
+            connect_params.shared_drive_local_path.c_str()
         };
         RDPDR_DEVICE* drive_device = freerdp_device_new(RDPDR_DTYP_FILESYSTEM, 2, drive_args);
         if (drive_device) {
@@ -2465,45 +2711,45 @@ bool RdpSessionContext::connect() {
                 NX_RDP_LOGE("freerdp_device_collection_add failed for drive '%s'", drive_name.c_str());
             } else {
                 NX_RDP_LOGI("Registered RDPDR shared filesystem drive '\\\\tsclient\\%s' -> '%s'",
-                            drive_name.c_str(), params_.shared_drive_local_path.c_str());
+                            drive_name.c_str(), connect_params.shared_drive_local_path.c_str());
             }
         }
     }
-    freerdp_settings_set_bool(settings, FreeRDP_RedirectPrinters, params_.redirect_printers);
-    freerdp_settings_set_bool(settings, FreeRDP_RedirectSerialPorts, params_.redirect_serial_ports);
+    freerdp_settings_set_bool(settings, FreeRDP_RedirectPrinters, connect_params.redirect_printers);
+    freerdp_settings_set_bool(settings, FreeRDP_RedirectSerialPorts, connect_params.redirect_serial_ports);
 #ifdef __APPLE__
     (void)local_audio_out;
     freerdp_settings_set_bool(settings, FreeRDP_AudioPlayback, FALSE);
-    freerdp_settings_set_bool(settings, FreeRDP_RemoteConsoleAudio, params_.audio_redirection_mode == 1);
+    freerdp_settings_set_bool(settings, FreeRDP_RemoteConsoleAudio, connect_params.audio_redirection_mode == 1);
     freerdp_settings_set_bool(settings, FreeRDP_AudioCapture, FALSE);
 #else
     freerdp_settings_set_bool(settings, FreeRDP_AudioPlayback, local_audio_out);
-    freerdp_settings_set_bool(settings, FreeRDP_RemoteConsoleAudio, params_.audio_redirection_mode == 1);
-    freerdp_settings_set_bool(settings, FreeRDP_AudioCapture, params_.redirect_mic_in);
+    freerdp_settings_set_bool(settings, FreeRDP_RemoteConsoleAudio, connect_params.audio_redirection_mode == 1);
+    freerdp_settings_set_bool(settings, FreeRDP_AudioCapture, connect_params.redirect_mic_in);
 #endif
 
-    freerdp_settings_set_bool(settings, FreeRDP_AllowFontSmoothing, params_.enable_font_smoothing);
-    freerdp_settings_set_bool(settings, FreeRDP_AllowDesktopComposition, params_.enable_desktop_composition);
-    freerdp_settings_set_bool(settings, FreeRDP_DisableWallpaper, !params_.enable_wallpaper);
-    freerdp_settings_set_bool(settings, FreeRDP_DisableFullWindowDrag, !params_.enable_full_window_drag);
-    freerdp_settings_set_bool(settings, FreeRDP_DisableMenuAnims, !params_.enable_menu_animations);
-    freerdp_settings_set_bool(settings, FreeRDP_DisableThemes, !params_.enable_themes);
+    freerdp_settings_set_bool(settings, FreeRDP_AllowFontSmoothing, connect_params.enable_font_smoothing);
+    freerdp_settings_set_bool(settings, FreeRDP_AllowDesktopComposition, connect_params.enable_desktop_composition);
+    freerdp_settings_set_bool(settings, FreeRDP_DisableWallpaper, !connect_params.enable_wallpaper);
+    freerdp_settings_set_bool(settings, FreeRDP_DisableFullWindowDrag, !connect_params.enable_full_window_drag);
+    freerdp_settings_set_bool(settings, FreeRDP_DisableMenuAnims, !connect_params.enable_menu_animations);
+    freerdp_settings_set_bool(settings, FreeRDP_DisableThemes, !connect_params.enable_themes);
     // Pack the individual visual performance booleans into FreeRDP_PerformanceFlags for TS_INFO_PACKET
     freerdp_performance_flags_make(settings);
-    if (!params_.enable_menu_animations) {
+    if (!connect_params.enable_menu_animations) {
         const UINT32 perf_flags = freerdp_settings_get_uint32(settings, FreeRDP_PerformanceFlags);
         freerdp_settings_set_uint32(settings, FreeRDP_PerformanceFlags, perf_flags | PERF_DISABLE_CURSOR_SHADOW);
     }
-    freerdp_settings_set_bool(settings, FreeRDP_CompressionEnabled, params_.compression_enabled);
+    freerdp_settings_set_bool(settings, FreeRDP_CompressionEnabled, connect_params.compression_enabled);
 
     const bool has_credentials =
-        !effective_username.empty() || !params_.password.empty() || params_.restricted_admin_mode;
-    const bool effective_nla = params_.nla_security && has_credentials;
+        !effective_username.empty() || !connect_params.password.empty() || connect_params.restricted_admin_mode;
+    const bool effective_nla = connect_params.nla_security && has_credentials;
     freerdp_settings_set_bool(settings, FreeRDP_NlaSecurity, effective_nla);
-    freerdp_settings_set_bool(settings, FreeRDP_TlsSecurity, params_.tls_security);
-    freerdp_settings_set_bool(settings, FreeRDP_RestrictedAdminModeRequired, params_.restricted_admin_mode);
+    freerdp_settings_set_bool(settings, FreeRDP_TlsSecurity, connect_params.tls_security);
+    freerdp_settings_set_bool(settings, FreeRDP_RestrictedAdminModeRequired, connect_params.restricted_admin_mode);
     freerdp_settings_set_bool(settings, FreeRDP_IgnoreCertificate, effective_ignore_cert);
-    freerdp_settings_set_bool(settings, FreeRDP_RemoteApplicationMode, params_.remote_app_mode);
+    freerdp_settings_set_bool(settings, FreeRDP_RemoteApplicationMode, connect_params.remote_app_mode);
 
     if (!effective_pcb.empty()) {
         // Hyper-V VMConnect (vmms.exe on TCP 2179): send RDP_PRECONNECTION_PDU_V2 before X.224
@@ -2522,8 +2768,8 @@ bool RdpSessionContext::connect() {
     if (!effective_username.empty()) {
         freerdp_settings_set_string(settings, FreeRDP_Username, effective_username.c_str());
     }
-    if (!params_.password.empty()) {
-        freerdp_settings_set_string(settings, FreeRDP_Password, params_.password.c_str());
+    if (!connect_params.password.empty()) {
+        freerdp_settings_set_string(settings, FreeRDP_Password, connect_params.password.c_str());
     }
     if (!effective_domain.empty()) {
         freerdp_settings_set_string(settings, FreeRDP_Domain, effective_domain.c_str());
@@ -2531,46 +2777,73 @@ bool RdpSessionContext::connect() {
     if (!effective_gateway_host.empty()) {
         freerdp_settings_set_bool(settings, FreeRDP_GatewayEnabled, TRUE);
         freerdp_settings_set_string(settings, FreeRDP_GatewayHostname, effective_gateway_host.c_str());
-        freerdp_settings_set_uint32(settings, FreeRDP_GatewayPort, params_.rd_gateway_port);
+        freerdp_settings_set_uint32(settings, FreeRDP_GatewayPort, connect_params.rd_gateway_port);
         freerdp_settings_set_bool(settings, FreeRDP_GatewayUseSameCredentials, TRUE);
     }
-    if (params_.remote_app_mode && !params_.remote_app_program.empty()) {
-        freerdp_settings_set_string(settings, FreeRDP_RemoteApplicationProgram, params_.remote_app_program.c_str());
-        freerdp_settings_set_string(settings, FreeRDP_RemoteApplicationCmdLine, params_.remote_app_args.c_str());
+    if (connect_params.remote_app_mode && !connect_params.remote_app_program.empty()) {
+        freerdp_settings_set_string(settings, FreeRDP_RemoteApplicationProgram, connect_params.remote_app_program.c_str());
+        freerdp_settings_set_string(settings, FreeRDP_RemoteApplicationCmdLine, connect_params.remote_app_args.c_str());
     }
 
     disp_context_.store(nullptr, std::memory_order_release);
     set_cliprdr_context(nullptr);
-    if (!freerdp_connect(instance)) {
-        const std::string callback_err = last_error();
-        const std::string freerdp_err = format_freerdp_last_error(instance->context, effective_host, effective_port);
-        std::string captured;
-        if (!callback_err.empty() && !freerdp_err.empty()) {
-            captured = callback_err + " [" + freerdp_err + "]";
-        } else if (!callback_err.empty()) {
-            captured = callback_err;
-        } else if (!freerdp_err.empty()) {
-            captured = freerdp_err;
-        } else {
-            captured = "CONNECT_TRANSPORT_FAILED: FreeRDP 3.x connection failed to " +
-                effective_host + ":" + std::to_string(effective_port);
-        }
-        set_last_error(captured);
-        NX_RDP_LOGE("FreeRDP 3.x connection failed to %s:%u (%s)",
-                    effective_host.c_str(), effective_port, captured.c_str());
-        disp_context_.store(nullptr, std::memory_order_release);
-        set_cliprdr_context(nullptr);
-        unregister_freerdp_callbacks(instance);
-        freerdp_context_free(instance);
-        freerdp_free(instance);
-        return false;
-    }
 
     HANDLE wakeup_ev = CreateEventA(nullptr, TRUE, FALSE, nullptr);
     {
         std::lock_guard<std::mutex> input_lock(input_mutex_);
         freerdp_instance_ = instance;
         wakeup_event_ = wakeup_ev;
+        wakeup_signaled_.store(false, std::memory_order_relaxed);
+        if (stop_requested_.load(std::memory_order_acquire) && instance->context) {
+            freerdp_abort_connect_context(instance->context);
+        }
+    }
+
+    const BOOL connect_ok = !stop_requested_.load(std::memory_order_acquire)
+        ? freerdp_connect(instance)
+        : FALSE;
+    if (!connect_ok || stop_requested_.load(std::memory_order_acquire)) {
+        if (!connect_ok) {
+            const std::string callback_err = last_error();
+            const std::string freerdp_err = format_freerdp_last_error(instance->context, effective_host, effective_port);
+            std::string captured;
+            if (!callback_err.empty() && !freerdp_err.empty()) {
+                captured = callback_err + " [" + freerdp_err + "]";
+            } else if (!callback_err.empty()) {
+                captured = callback_err;
+            } else if (!freerdp_err.empty()) {
+                captured = freerdp_err;
+            } else {
+                captured = "CONNECT_TRANSPORT_FAILED: FreeRDP 3.x connection failed to " +
+                    effective_host + ":" + std::to_string(effective_port);
+            }
+            set_last_error(captured);
+            NX_RDP_LOGE("FreeRDP 3.x connection failed to %s:%u (%s)",
+                        effective_host.c_str(), effective_port, captured.c_str());
+        }
+        {
+            std::lock_guard<std::mutex> input_lock(input_mutex_);
+            freerdp_instance_ = nullptr;
+            wakeup_event_ = nullptr;
+            wakeup_signaled_.store(false, std::memory_order_relaxed);
+        }
+        if (wakeup_ev) {
+            CloseHandle(wakeup_ev);
+        }
+        disp_context_.store(nullptr, std::memory_order_release);
+        set_cliprdr_context(nullptr);
+        if (connect_ok) {
+            freerdp_disconnect(instance);
+        }
+        unregister_freerdp_callbacks(instance);
+        gdi_free(instance);
+        freerdp_context_free(instance);
+        freerdp_free(instance);
+        return false;
+    }
+
+    {
+        std::lock_guard<std::mutex> input_lock(input_mutex_);
         wakeup_signaled_.store(false, std::memory_order_relaxed);
         pending_keys_.clear();
         pending_pointer_events_.clear();
@@ -2585,7 +2858,8 @@ bool RdpSessionContext::connect() {
     }
     connected_.store(true, std::memory_order_release);
 
-    event_loop_thread_ = std::thread([this, instance, wakeup_ev, effective_host, effective_port]() {
+    std::thread worker([this, instance, wakeup_ev, effective_host, effective_port, connect_params]() {
+        event_loop_thread_id_.store(std::this_thread::get_id(), std::memory_order_release);
         HANDLE handles[64]{};
 #ifndef __APPLE__
         constexpr auto kFrameBudget = std::chrono::milliseconds(8); // ~120 Hz ANativeWindow ceiling
@@ -2635,7 +2909,9 @@ bool RdpSessionContext::connect() {
                 }
                 reconnecting_.store(true, std::memory_order_release);
                 reconnect_attempt_.store(attempt, std::memory_order_release);
-                gdi_presenter_->notify_frame_ready();
+                if (!stop_requested_.load(std::memory_order_acquire)) {
+                    gdi_presenter_->notify_frame_ready();
+                }
 
                 const DWORD delay_ms = kBackoffDelaysMs[attempt - 1u];
                 if (wakeup_ev) {
@@ -2653,7 +2929,7 @@ bool RdpSessionContext::connect() {
                     reconnecting_.store(false, std::memory_order_release);
                     reconnect_attempt_.store(0u, std::memory_order_release);
                     set_last_error("");
-                    if (params_.enable_dynamic_resize) {
+                    if (connect_params.enable_dynamic_resize) {
                         const uint32_t cur_w = last_requested_width_.load(std::memory_order_relaxed);
                         const uint32_t cur_h = last_requested_height_.load(std::memory_order_relaxed);
                         const uint32_t cur_scale = active_scale_percent_.load(std::memory_order_relaxed);
@@ -2672,7 +2948,9 @@ bool RdpSessionContext::connect() {
                             has_pending_monitors_ = true;
                         }
                     }
-                    gdi_presenter_->notify_frame_ready();
+                    if (!stop_requested_.load(std::memory_order_acquire)) {
+                        gdi_presenter_->notify_frame_ready();
+                    }
                     NX_RDP_LOGI("Seamless RDP auto-reconnect succeeded on attempt %u", attempt);
                     return true;
                 }
@@ -2684,7 +2962,9 @@ bool RdpSessionContext::connect() {
 
             reconnecting_.store(false, std::memory_order_release);
             reconnect_attempt_.store(0u, std::memory_order_release);
-            gdi_presenter_->notify_frame_ready();
+            if (!stop_requested_.load(std::memory_order_acquire)) {
+                gdi_presenter_->notify_frame_ready();
+            }
             return false;
         };
 
@@ -2786,8 +3066,16 @@ bool RdpSessionContext::connect() {
             }
         }
         connected_.store(false, std::memory_order_release);
-        gdi_presenter_->notify_frame_ready();
+        if (!stop_requested_.load(std::memory_order_acquire)) {
+            gdi_presenter_->notify_frame_ready();
+        }
+        event_loop_thread_id_.store(std::thread::id{}, std::memory_order_release);
     });
+    event_loop_thread_id_.store(worker.get_id(), std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        event_loop_thread_ = std::move(worker);
+    }
 #else
     (void)effective_port;
     (void)effective_pcb;
@@ -2796,8 +3084,8 @@ bool RdpSessionContext::connect() {
 #endif
 
     NX_RDP_LOGI("NexusTS RDP session active (%ux%u @ %u%% HiDPI, CodecMode=%d, Console=%d, DISP_DVC=%d, ClipSync=%d, Drive=%d)",
-                w, h, active_scale_percent_.load(), params_.gfx_codec_mode, params_.connect_to_console,
-                params_.enable_dynamic_resize, params_.redirect_clipboard, params_.redirect_drives);
+                w, h, active_scale_percent_.load(), connect_params.gfx_codec_mode, connect_params.connect_to_console,
+                connect_params.enable_dynamic_resize, connect_params.redirect_clipboard, connect_params.redirect_drives);
     return true;
 }
 
@@ -2845,25 +3133,34 @@ void RdpSessionContext::logoff_remote_session() {
 #endif
 }
 
-void RdpSessionContext::disconnect() {
+void RdpSessionContext::request_stop() noexcept {
     stop_requested_.store(true, std::memory_order_release);
 #if defined(NEXUSTS_HAS_FREERDP3_BINARY) && NEXUSTS_HAS_FREERDP3_BINARY == 1
-    {
-        std::lock_guard<std::mutex> input_lock(input_mutex_);
-        if (freerdp_instance_) {
-            auto* inst = static_cast<freerdp*>(freerdp_instance_);
-            if (inst->context) {
-                freerdp_abort_connect_context(inst->context);
-            }
+    std::lock_guard<std::mutex> input_lock(input_mutex_);
+    if (freerdp_instance_) {
+        auto* inst = static_cast<freerdp*>(freerdp_instance_);
+        if (inst->context) {
+            freerdp_abort_connect_context(inst->context);
         }
-        if (wakeup_event_) {
-            wakeup_signaled_.store(true, std::memory_order_release);
-            SetEvent(static_cast<HANDLE>(wakeup_event_));
-        }
+    }
+    if (wakeup_event_) {
+        wakeup_signaled_.store(true, std::memory_order_release);
+        SetEvent(static_cast<HANDLE>(wakeup_event_));
     }
 #else
     signal_event_loop_wakeup();
 #endif
+}
+
+void RdpSessionContext::disconnect() {
+    request_stop();
+
+    const auto worker_tid = event_loop_thread_id_.load(std::memory_order_acquire);
+    if (worker_tid != std::thread::id{} && worker_tid == std::this_thread::get_id()) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lifecycle_lock(disconnect_mutex_);
 
     std::thread worker_to_join;
     {
@@ -2879,8 +3176,8 @@ void RdpSessionContext::disconnect() {
             worker_to_join.join();
         }
     }
+    event_loop_thread_id_.store(std::thread::id{}, std::memory_order_release);
 
-    std::lock_guard<std::mutex> lock(state_mutex_);
     const bool was_connected = connected_.exchange(false);
     reconnecting_.store(false, std::memory_order_release);
     reconnect_attempt_.store(0u, std::memory_order_release);
@@ -2911,6 +3208,7 @@ void RdpSessionContext::disconnect() {
         CloseHandle(wakeup_to_close);
     }
     if (!was_connected && !instance_to_free) {
+        gdi_presenter_->detach_native_window();
         return;
     }
     channels_.stop_audio_streams();
@@ -2924,6 +3222,7 @@ void RdpSessionContext::disconnect() {
     }
 #else
     if (!was_connected && !freerdp_instance_) {
+        gdi_presenter_->detach_native_window();
         return;
     }
     channels_.stop_audio_streams();

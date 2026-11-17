@@ -71,6 +71,7 @@ let package = Package(
                 .linkedLibrary("z"),
                 .linkedLibrary("iconv"),
                 .linkedFramework("Foundation"),
+                .linkedFramework("AppKit"),
                 .linkedFramework("CoreFoundation"),
                 .linkedFramework("CoreServices"),
                 .linkedFramework("Carbon"),

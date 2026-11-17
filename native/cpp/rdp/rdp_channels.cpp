@@ -10,6 +10,10 @@
 #include <aaudio/AAudio.h>
 #endif
 
+#ifdef __APPLE__
+#include <CoreFoundation/CoreFoundation.h>
+#endif
+
 namespace nexusts::rdp {
 
 namespace {
@@ -169,10 +173,46 @@ uint64_t unix_time_to_win_filetime(time_t t) noexcept {
     return (static_cast<uint64_t>(t) + kUnixToWinFiletimeSecOffset) * kWinFiletimeTicksPerSec;
 }
 
+std::string normalize_utf8_nfc_for_windows(const std::string& raw) {
+#ifdef __APPLE__
+    if (raw.empty()) {
+        return raw;
+    }
+    CFStringRef cf_str = CFStringCreateWithBytes(
+        kCFAllocatorDefault,
+        reinterpret_cast<const UInt8*>(raw.data()),
+        static_cast<CFIndex>(raw.size()),
+        kCFStringEncodingUTF8,
+        false
+    );
+    if (!cf_str) {
+        return raw;
+    }
+    CFMutableStringRef mut = CFStringCreateMutableCopy(kCFAllocatorDefault, 0, cf_str);
+    CFRelease(cf_str);
+    if (!mut) {
+        return raw;
+    }
+    CFStringNormalize(mut, kCFStringNormalizationFormC);
+    const CFIndex max_bytes = CFStringGetMaximumSizeForEncoding(CFStringGetLength(mut), kCFStringEncodingUTF8) + 1;
+    std::string normalized(static_cast<size_t>(std::max<CFIndex>(1, max_bytes)), '\0');
+    const Boolean ok = CFStringGetCString(mut, normalized.data(), max_bytes, kCFStringEncodingUTF8);
+    CFRelease(mut);
+    if (!ok) {
+        return raw;
+    }
+    normalized.resize(std::strlen(normalized.c_str()));
+    return normalized;
+#else
+    return raw;
+#endif
+}
+
 std::string sanitize_win_component(const std::string& raw) {
+    const std::string nfc = normalize_utf8_nfc_for_windows(raw);
     std::string out;
-    out.reserve(raw.size());
-    for (char ch : raw) {
+    out.reserve(nfc.size());
+    for (char ch : nfc) {
         const auto uc = static_cast<unsigned char>(ch);
         if (uc < 0x20u || ch == '\\' || ch == '/' || ch == ':' || ch == '*' ||
             ch == '?' || ch == '"' || ch == '<' || ch == '>' || ch == '|') {
@@ -209,6 +249,7 @@ void collect_directory_entries_recursive(
     }
     std::sort(children.begin(), children.end());
 
+    std::unordered_set<std::string> used_sibling_names;
     for (const auto& child : children) {
         if (out.size() >= kMaxCliprdrFileEntries) {
             break;
@@ -221,11 +262,23 @@ void collect_directory_entries_recursive(
         if (S_ISLNK(st.st_mode)) {
             continue;
         }
-        const std::string clean_name = sanitize_win_component(child.filename().string());
+        const std::string base_raw = sanitize_win_component(child.filename().string());
+        std::string clean_name = base_raw;
+        int suffix = 2;
+        while (used_sibling_names.count(clean_name) > 0u) {
+            const auto dot = base_raw.find_last_of('.');
+            if (dot != std::string::npos && dot > 0u && !S_ISDIR(st.st_mode)) {
+                clean_name = base_raw.substr(0u, dot) + " (" + std::to_string(suffix) + ")" + base_raw.substr(dot);
+            } else {
+                clean_name = base_raw + " (" + std::to_string(suffix) + ")";
+            }
+            ++suffix;
+        }
         const std::string rel_win = win_prefix + "\\" + clean_name;
         if (utf8_to_utf16_units(rel_win).size() >= 260u) {
             continue;
         }
+        used_sibling_names.insert(clean_name);
         if (S_ISDIR(st.st_mode)) {
             RdpClipboardFileEntry dir_entry{};
             dir_entry.relative_win_path = rel_win;
@@ -322,6 +375,10 @@ bool parse_and_sanitize_cliprdr_file_list(
             if (ch == '\\') {
                 ch = '/';
             }
+        }
+        // Strip trailing slashes emitted by some RDP servers on directory FILEDESCRIPTORW entries
+        while (raw_name.size() > 1u && raw_name.back() == '/') {
+            raw_name.pop_back();
         }
         if (raw_name.front() == '/' || raw_name.back() == '/' || raw_name.find(':') != std::string::npos) {
             out_entries.clear();
@@ -587,9 +644,13 @@ void RdpVirtualChannelHub::on_remote_clipboard_files(const std::vector<std::stri
 
 void RdpVirtualChannelHub::mark_remote_clipboard_owner_changed() {
     std::lock_guard<std::mutex> lock(channel_mutex_);
+    remote_clipboard_utf8_.clear();
+    remote_clipboard_files_.clear();
+    remote_kind_ = RdpClipboardContentKind::None;
     local_clipboard_utf8_.clear();
     local_clipboard_files_.reset();
     local_kind_ = RdpClipboardContentKind::None;
+    remote_clipboard_seq_.fetch_add(1u, std::memory_order_release);
 }
 
 RdpClipboardContentKind RdpVirtualChannelHub::local_clipboard_kind() const {

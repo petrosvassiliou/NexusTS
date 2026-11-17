@@ -1,0 +1,1 @@
+• v0.8.9: Copiar y pegar bidireccional de archivos y carpetas por RDP (MS-RDPECLIP FileGroupDescriptorW, bloqueo CB_LOCK_CLIPDATA, transferencia de 2 MB hasta 512 MB, Hyper-V VMConnect) y cierre seguro de sesiones FreeRDP sin fallos

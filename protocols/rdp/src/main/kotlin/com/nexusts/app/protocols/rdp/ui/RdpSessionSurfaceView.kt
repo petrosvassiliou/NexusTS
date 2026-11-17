@@ -165,7 +165,7 @@ private fun stageHostClipboardUrisToLocalFiles(context: Context, uris: List<Uri>
     val sendRoot = File(context.cacheDir, "cliprdr_send")
     // Prune older staging directories cleanly before creating a fresh batch
     runCatching {
-        sendRoot.listFiles()?.sortedByDescending { it.lastModified() }?.drop(2)?.forEach { it.deleteRecursively() }
+        sendRoot.listFiles()?.sortedByDescending { it.lastModified() }?.drop(8)?.forEach { it.deleteRecursively() }
     }
     val batchDir = File(sendRoot, "batch_${System.currentTimeMillis()}").apply { mkdirs() }
     val stagedPaths = mutableListOf<String>()

@@ -11,18 +11,26 @@
 
 namespace {
 
-std::mutex g_macos_rdp_mutex;
-int64_t g_next_macos_rdp_handle = 8000;
-std::unordered_map<int64_t, std::shared_ptr<nexusts::rdp::RdpSessionContext>> g_macos_rdp_sessions;
+struct MacosRdpRegistry {
+    std::mutex mutex;
+    int64_t next_handle{8000};
+    std::unordered_map<int64_t, std::shared_ptr<nexusts::rdp::RdpSessionContext>> sessions;
+};
+
+MacosRdpRegistry& macos_rdp_registry() {
+    static auto* reg = new MacosRdpRegistry();
+    return *reg;
+}
 
 std::string safe_cstr(const char* ptr) {
     return ptr ? std::string(ptr) : std::string();
 }
 
 std::shared_ptr<nexusts::rdp::RdpSessionContext> lookup_session(int64_t handle) {
-    std::lock_guard<std::mutex> lock(g_macos_rdp_mutex);
-    auto it = g_macos_rdp_sessions.find(handle);
-    return it != g_macos_rdp_sessions.end() ? it->second : nullptr;
+    auto& reg = macos_rdp_registry();
+    std::lock_guard<std::mutex> lock(reg.mutex);
+    auto it = reg.sessions.find(handle);
+    return it != reg.sessions.end() ? it->second : nullptr;
 }
 
 } // namespace
@@ -85,9 +93,10 @@ int64_t nexusts_rdp_create_session(const NexusRdpConfig* config) {
     params.preconnection_blob = safe_cstr(config->preconnection_blob);
 
     auto ctx = std::make_shared<nexusts::rdp::RdpSessionContext>(std::move(params));
-    std::lock_guard<std::mutex> lock(g_macos_rdp_mutex);
-    const int64_t handle = ++g_next_macos_rdp_handle;
-    g_macos_rdp_sessions.emplace(handle, std::move(ctx));
+    auto& reg = macos_rdp_registry();
+    std::lock_guard<std::mutex> lock(reg.mutex);
+    const int64_t handle = ++reg.next_handle;
+    reg.sessions.emplace(handle, std::move(ctx));
     return handle;
 }
 
@@ -128,16 +137,42 @@ uint32_t nexusts_rdp_reconnect_attempt(int64_t handle) {
 void nexusts_rdp_destroy_session(int64_t handle) {
     std::shared_ptr<nexusts::rdp::RdpSessionContext> removed;
     {
-        std::lock_guard<std::mutex> lock(g_macos_rdp_mutex);
-        auto it = g_macos_rdp_sessions.find(handle);
-        if (it != g_macos_rdp_sessions.end()) {
+        auto& reg = macos_rdp_registry();
+        std::lock_guard<std::mutex> lock(reg.mutex);
+        auto it = reg.sessions.find(handle);
+        if (it != reg.sessions.end()) {
             removed = std::move(it->second);
-            g_macos_rdp_sessions.erase(it);
+            reg.sessions.erase(it);
         }
     }
     if (removed) {
         removed->presenter().set_frame_ready_callback(nullptr, nullptr);
+        removed->request_stop();
         removed->disconnect();
+    }
+}
+
+void nexusts_rdp_shutdown_all_sessions(void) {
+    std::vector<std::shared_ptr<nexusts::rdp::RdpSessionContext>> drained;
+    {
+        auto& reg = macos_rdp_registry();
+        std::lock_guard<std::mutex> lock(reg.mutex);
+        drained.reserve(reg.sessions.size());
+        for (auto& kv : reg.sessions) {
+            if (kv.second) {
+                drained.push_back(std::move(kv.second));
+            }
+        }
+        reg.sessions.clear();
+    }
+    // Signal stop and detach bridge callbacks on ALL sessions in parallel first
+    // so multi-tab shutdown aborts in-flight connects and event loops simultaneously.
+    for (const auto& ctx : drained) {
+        ctx->presenter().set_frame_ready_callback(nullptr, nullptr);
+        ctx->request_stop();
+    }
+    for (const auto& ctx : drained) {
+        ctx->disconnect();
     }
 }
 

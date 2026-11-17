@@ -4,6 +4,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <fstream>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -366,6 +367,7 @@ public:
     ~RdpSessionContext();
 
     bool connect();
+    void request_stop() noexcept;
     void disconnect();
     void logoff_remote_session();
     bool is_connected() const noexcept { return connected_.load(std::memory_order_acquire); }
@@ -389,6 +391,7 @@ public:
     void on_cliprdr_server_format_list_response(bool ok);
     void lock_local_clipboard_files(uint32_t clip_data_id);
     void unlock_local_clipboard_files(uint32_t clip_data_id);
+    std::shared_ptr<const std::vector<RdpClipboardFileEntry>> bind_active_file_group_descriptor_snapshot();
     std::shared_ptr<const std::vector<RdpClipboardFileEntry>> resolve_local_clipboard_files(
         bool has_clip_data_id,
         uint32_t clip_data_id
@@ -495,6 +498,8 @@ private:
         uint32_t active_stream_id{0};
         uint64_t current_offset{0};
         uint64_t total_bytes_written{0};
+        std::string active_file_path;
+        std::unique_ptr<std::ofstream> active_ofs;
     };
 
     void render_diagnostic_surface_frame(uint32_t width, uint32_t height);
@@ -515,6 +520,7 @@ private:
     std::atomic<uint32_t> active_scale_percent_{100};
     std::atomic<uint32_t> last_requested_width_{0};
     std::atomic<uint32_t> last_requested_height_{0};
+    std::mutex disconnect_mutex_;
     std::mutex state_mutex_;
     std::mutex input_mutex_;
     std::mutex cliprdr_mutex_;
@@ -533,6 +539,7 @@ private:
     RdpVirtualChannelHub channels_;
     RdpHardwareH264Decoder h264_decoder_;
     std::thread event_loop_thread_;
+    std::atomic<std::thread::id> event_loop_thread_id_{};
     [[maybe_unused]] void* freerdp_instance_{nullptr};
     [[maybe_unused]] void* wakeup_event_{nullptr};
     std::array<uint8_t, 512> pressed_scancodes_{};
@@ -554,6 +561,9 @@ private:
     [[maybe_unused]] uint32_t next_client_clip_data_id_{1};
     [[maybe_unused]] uint32_t next_client_stream_id_{1};
     uint64_t next_remote_clip_batch_id_{1};
+    bool has_active_server_clip_data_id_{false};
+    uint32_t active_server_clip_data_id_{0};
+    std::shared_ptr<const std::vector<RdpClipboardFileEntry>> active_fgd_snapshot_;
     std::unordered_map<uint32_t, std::shared_ptr<const std::vector<RdpClipboardFileEntry>>> locked_local_file_snapshots_;
     RemoteFileTransferState remote_file_transfer_{};
 };

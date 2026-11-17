@@ -1,0 +1,1 @@
+• v0.8.9 : Copier-coller bidirectionnel de fichiers et dossiers via RDP (MS-RDPECLIP FileGroupDescriptorW, verrouillage CB_LOCK_CLIPDATA, flux 2 Mo jusqu'à 512 Mo, Hyper-V VMConnect) et fermeture propre des sessions FreeRDP sans plantage

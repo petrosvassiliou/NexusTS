@@ -22,6 +22,10 @@ public final class NexusMacAppDelegate: NSObject, NSApplicationDelegate {
         }
         return true
     }
+
+    public func applicationWillTerminate(_ notification: Notification) {
+        NativeRdpSession.shutdownAllNativeSessions()
+    }
 }
 
 @main

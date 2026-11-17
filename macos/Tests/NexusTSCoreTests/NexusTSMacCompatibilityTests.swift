@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 @testable import NexusTSCore
 import XCTest
@@ -350,11 +351,11 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
     }
 
     func testV118LocalizationUpgradeVersionAndVaultReplacementCompatibility() throws {
-        XCTAssertEqual(MacGitHubReleaseUpdater.currentVersion, "0.8.8")
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.8", isNewerThan: "0.8.7"))
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.8", isNewerThan: "0.8.6"))
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.8", isNewerThan: "0.8.5"))
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.8", isNewerThan: "0.3.0-beta.6"))
+        XCTAssertEqual(MacGitHubReleaseUpdater.currentVersion, "0.8.9")
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.9", isNewerThan: "0.8.8"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.9", isNewerThan: "0.8.7"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.9", isNewerThan: "0.8.6"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.9", isNewerThan: "0.3.0-beta.6"))
         XCTAssertEqual(LocalizedWorkspaceStrings.catalog(for: .en).studios, "Manage")
         XCTAssertEqual(LocalizedWorkspaceStrings.catalog(for: .en).logOffSession, "Log Off Session")
 
@@ -985,6 +986,109 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
         XCTAssertTrue(exportedXml.contains("<RoyalHyperVConnection>"))
         XCTAssertTrue(exportedXml.contains("<HyperVInstance>11111111-2222-3333-4444-555555555555</HyperVInstance>"))
         XCTAssertTrue(exportedXml.contains("<HyperVEnhancedSessionMode>True</HyperVEnhancedSessionMode>"))
+    }
+
+    func testV089FinderApfsFileReferenceClipboardExtractionDragPayloadAndShutdownAllSessions() throws {
+        let baseTmp = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+        let tempDir = baseTmp.appendingPathComponent("nexusts-v089-clip-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let reportUrl = tempDir.appendingPathComponent("Quarterly Report.pdf")
+        try Data("PDF-1.7-NexusTS-Payload".utf8).write(to: reportUrl)
+        let subFolderUrl = tempDir.appendingPathComponent("Deploy_Scripts", isDirectory: true)
+        try FileManager.default.createDirectory(at: subFolderUrl, withIntermediateDirectories: true)
+        let nestedUrl = subFolderUrl.appendingPathComponent("bootstrap.ps1")
+        try Data("Write-Host 'Ready'".utf8).write(to: nestedUrl)
+
+        let expectedReportPath = reportUrl.resolvingSymlinksInPath().standardizedFileURL.path
+        let expectedSubFolderPath = subFolderUrl.resolvingSymlinksInPath().standardizedFileURL.path
+
+        // 1. Real APFS file-reference URL (file:///.file/id=...) + Finder .string bare basename on NSPasteboard
+        let pb = NSPasteboard.withUniqueName()
+        defer { pb.releaseGlobally() }
+
+        if let apfsRefNsUrl = (reportUrl as NSURL).fileReferenceURL() {
+            XCTAssertTrue(apfsRefNsUrl.absoluteString?.contains("/.file/id=") == true)
+            let resolvedFromRef = MacPasteboardClipboardExtractor.resolveLocalFilePath(apfsRefNsUrl as URL)
+            XCTAssertEqual(resolvedFromRef?.resolvingSymlinksIfPossible(), expectedReportPath)
+
+            pb.clearContents()
+            let item = NSPasteboardItem()
+            item.setString(apfsRefNsUrl.absoluteString ?? reportUrl.absoluteString, forType: .fileURL)
+            item.setString("Quarterly Report.pdf", forType: .string)
+            XCTAssertTrue(pb.writeObjects([item]))
+
+            let extracted = MacPasteboardClipboardExtractor.extractClipboardPayload(from: pb)
+            if case .files(let paths) = extracted {
+                XCTAssertEqual(paths.count, 1)
+                XCTAssertEqual(paths[0].resolvingSymlinksIfPossible(), expectedReportPath)
+            } else {
+                XCTFail("Expected .files payload from APFS file reference URL, got \(extracted)")
+            }
+        }
+
+        // 2. Multi-selection (file + directory) & duplicate deduplication
+        pb.clearContents()
+        let multiUrls: [NSURL] = [reportUrl as NSURL, subFolderUrl as NSURL, reportUrl as NSURL]
+        XCTAssertTrue(pb.writeObjects(multiUrls))
+        if case .files(let multiPaths) = MacPasteboardClipboardExtractor.extractClipboardPayload(from: pb) {
+            let normalized = multiPaths.map { $0.resolvingSymlinksIfPossible() }
+            XCTAssertEqual(normalized, [expectedReportPath, expectedSubFolderPath])
+        } else {
+            XCTFail("Expected .files([report, subFolder])")
+        }
+
+        // 3. Deleted file URL + Finder .string basename MUST return .fileIntentEmpty (never .text("deleted.zip")!)
+        let deletedUrl = tempDir.appendingPathComponent("deleted.zip")
+        pb.clearContents()
+        let staleItem = NSPasteboardItem()
+        staleItem.setString(deletedUrl.absoluteString, forType: .fileURL)
+        staleItem.setString("deleted.zip", forType: .string)
+        XCTAssertTrue(pb.writeObjects([staleItem]))
+        XCTAssertEqual(MacPasteboardClipboardExtractor.extractClipboardPayload(from: pb), .fileIntentEmpty)
+
+        // 4. Plain text pasteboard (without .fileURL) extracts .text cleanly
+        pb.clearContents()
+        pb.setString("Get-VM | Select-Object Name,State", forType: .string)
+        XCTAssertEqual(
+            MacPasteboardClipboardExtractor.extractClipboardPayload(from: pb),
+            .text("Get-VM | Select-Object Name,State")
+        )
+
+        // 5. NativeRdpSession file clipboard staging & race-free shutdownAllNativeSessions() idempotency
+        let s1 = NativeRdpSession(
+            host: "10.2.200.21",
+            username: "Administrator",
+            password: "",
+            domain: "",
+            settings: RdpProtocolSettings(),
+            initialWidth: 1920,
+            initialHeight: 1080,
+            backingScaleFactor: 2.0
+        )
+        let s2 = NativeRdpSession(
+            host: "10.2.200.22",
+            username: "Administrator",
+            password: "",
+            domain: "",
+            settings: RdpProtocolSettings(hyperVVmId: "11111111-2222-3333-4444-555555555555"),
+            initialWidth: 1920,
+            initialHeight: 1080,
+            backingScaleFactor: 2.0
+        )
+        s1.pushLocalClipboardFiles([expectedReportPath, expectedSubFolderPath])
+        s2.pushLocalClipboardFiles([expectedReportPath])
+        NativeRdpSession.shutdownAllNativeSessions()
+        NativeRdpSession.shutdownAllNativeSessions()
+        s1.destroy()
+        s2.destroy()
+    }
+}
+
+private extension String {
+    func resolvingSymlinksIfPossible() -> String {
+        URL(fileURLWithPath: self).resolvingSymlinksInPath().standardizedFileURL.path
     }
 }
 

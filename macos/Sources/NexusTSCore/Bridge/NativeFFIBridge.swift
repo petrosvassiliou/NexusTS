@@ -1,3 +1,6 @@
+#if canImport(AppKit)
+import AppKit
+#endif
 import CNexusTSNative
 import CoreGraphics
 import Foundation
@@ -2424,7 +2427,135 @@ public final class NativeRdpSession: @unchecked Sendable {
         }
         retainedBox?.release()
     }
+
+    /// Deterministically signals stop and disconnects all active native FreeRDP sessions in parallel
+    /// before macOS `exit()` / `atexit()` tears down WinPR synchronization primitives.
+    public static func shutdownAllNativeSessions() {
+        nexusts_rdp_shutdown_all_sessions()
+    }
 }
+
+#if canImport(AppKit)
+public enum MacPasteboardPayload: Equatable, Sendable {
+    case files([String])
+    case fileIntentEmpty
+    case text(String)
+    case empty
+}
+
+/// Resolves macOS Finder APFS file-reference URLs (`file:///.file/id=...`), standard file URLs,
+/// and legacy `NSFilenamesPboardType` payloads into canonical POSIX paths without ever falling back
+/// to Finder's bare-basename `.string` representation when file pasteboard types are present.
+public enum MacPasteboardClipboardExtractor {
+    private static let rawFileUrlType = NSPasteboard.PasteboardType("public.file-url")
+    private static let legacyFilenamesType = NSPasteboard.PasteboardType("NSFilenamesPboardType")
+
+    public static func resolveLocalFilePath(_ url: URL) -> String? {
+        guard url.isFileURL else { return nil }
+        let nsUrl = url as NSURL
+        let pathUrl = nsUrl.filePathURL ?? url
+        var resolvedPath = pathUrl.standardizedFileURL.path
+        if resolvedPath.isEmpty || resolvedPath.hasPrefix("/.file/") {
+            if let canonical = try? url.resourceValues(forKeys: [.canonicalPathKey]).canonicalPath,
+               !canonical.isEmpty,
+               !canonical.hasPrefix("/.file/") {
+                resolvedPath = URL(fileURLWithPath: canonical).standardizedFileURL.path
+            }
+        }
+        guard !resolvedPath.isEmpty, !resolvedPath.hasPrefix("/.file/") else {
+            return nil
+        }
+        if resolvedPath.count > 1 && resolvedPath.hasSuffix("/") {
+            resolvedPath.removeLast()
+        }
+        return resolvedPath
+    }
+
+    public static func hasFilePasteboardType(on pasteboard: NSPasteboard) -> Bool {
+        let fileTypes: Set<NSPasteboard.PasteboardType> = [.fileURL, rawFileUrlType, legacyFilenamesType]
+        if let topTypes = pasteboard.types, topTypes.contains(where: { fileTypes.contains($0) }) {
+            return true
+        }
+        if let items = pasteboard.pasteboardItems {
+            for item in items where item.types.contains(where: { fileTypes.contains($0) }) {
+                return true
+            }
+        }
+        return false
+    }
+
+    public static func extractClipboardPayload(from pasteboard: NSPasteboard) -> MacPasteboardPayload {
+        let hasFileType = hasFilePasteboardType(on: pasteboard)
+        var candidatePaths: [String] = []
+        var seenPaths = Set<String>()
+        func appendUniquePath(_ path: String) {
+            let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, seenPaths.insert(trimmed).inserted else { return }
+            candidatePaths.append(trimmed)
+        }
+
+        // 1. Primary AppKit NSURL reader (resolves APFS file:///.file/id=... directly on NSURL before bridging)
+        if let rawObjects = pasteboard.readObjects(
+            forClasses: [NSURL.self],
+            options: [.urlReadingFileURLsOnly: true]
+        ) {
+            for obj in rawObjects {
+                if let nsUrl = obj as? NSURL {
+                    let resolvedUrl = nsUrl.filePathURL ?? (nsUrl as URL)
+                    if let path = resolveLocalFilePath(resolvedUrl) {
+                        appendUniquePath(path)
+                    }
+                } else if let url = obj as? URL, let path = resolveLocalFilePath(url) {
+                    appendUniquePath(path)
+                }
+            }
+        }
+
+        // 2. Per-item public.file-url inspection for multi-file Finder selections & drag pasteboards
+        if let items = pasteboard.pasteboardItems {
+            for item in items {
+                if let rawStr = item.string(forType: .fileURL) ?? item.string(forType: rawFileUrlType),
+                   let nsUrl = NSURL(string: rawStr.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                    let resolvedUrl = nsUrl.filePathURL ?? (nsUrl as URL)
+                    if let path = resolveLocalFilePath(resolvedUrl) {
+                        appendUniquePath(path)
+                    }
+                } else if let rawData = item.data(forType: .fileURL) ?? item.data(forType: rawFileUrlType),
+                          let rawStr = String(data: rawData, encoding: .utf8),
+                          let nsUrl = NSURL(string: rawStr.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                    let resolvedUrl = nsUrl.filePathURL ?? (nsUrl as URL)
+                    if let path = resolveLocalFilePath(resolvedUrl) {
+                        appendUniquePath(path)
+                    }
+                }
+            }
+        }
+
+        // 3. Legacy NSFilenamesPboardType property-list fallback (used by third-party file managers & drag sources)
+        if let types = pasteboard.types, types.contains(legacyFilenamesType),
+           let legacyPaths = pasteboard.propertyList(forType: legacyFilenamesType) as? [String] {
+            for rawPath in legacyPaths {
+                let url = URL(fileURLWithPath: rawPath)
+                if let path = resolveLocalFilePath(url) {
+                    appendUniquePath(path)
+                }
+            }
+        }
+
+        let existingPaths = candidatePaths.filter { FileManager.default.fileExists(atPath: $0) }
+        if !existingPaths.isEmpty {
+            return .files(existingPaths)
+        }
+        if hasFileType {
+            return .fileIntentEmpty
+        }
+        if let localText = pasteboard.string(forType: .string), !localText.isEmpty {
+            return .text(localText)
+        }
+        return .empty
+    }
+}
+#endif
 
 /// Maps macOS Carbon virtual keyCodes (`NSEvent.keyCode`), modifier flags, scroll wheels,
 /// and aspect-fit viewport coordinates to PC XT Set-1 RDP wire inputs.

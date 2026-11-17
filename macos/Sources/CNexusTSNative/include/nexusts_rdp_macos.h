@@ -87,6 +87,7 @@ bool nexusts_rdp_is_connected(int64_t handle);
 bool nexusts_rdp_is_reconnecting(int64_t handle);
 uint32_t nexusts_rdp_reconnect_attempt(int64_t handle);
 void nexusts_rdp_destroy_session(int64_t handle);
+void nexusts_rdp_shutdown_all_sessions(void);
 
 bool nexusts_rdp_request_resize(
     int64_t handle,

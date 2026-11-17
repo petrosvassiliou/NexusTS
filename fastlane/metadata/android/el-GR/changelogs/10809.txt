@@ -1,0 +1,1 @@
+• v0.8.9: Αμφίδρομη αντιγραφή & επικόλληση αρχείων και φακέλων μέσω RDP (MS-RDPECLIP FileGroupDescriptorW, κλείδωμα CB_LOCK_CLIPDATA, ροή 2 MB έως 512 MB, Hyper-V VMConnect) και ασφαλής τερματισμός συνεδριών FreeRDP

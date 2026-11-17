@@ -1,0 +1,1 @@
+• v0.8.9: Bidirectional RDP file & folder copy-paste (MS-RDPECLIP FileGroupDescriptorW + CB_LOCK_CLIPDATA snapshot locking, 2 MB streaming chunks up to 512 MB, Hyper-V VMConnect support) and race-free FreeRDP session teardown

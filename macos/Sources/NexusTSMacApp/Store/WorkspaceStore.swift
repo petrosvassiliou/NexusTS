@@ -1069,6 +1069,8 @@ public final class WorkspaceStore: ObservableObject {
     private var rdpSessions: [UUID: NativeRdpSession] = [:]
     private var transferControllers: [UUID: LiveTransferController] = [:]
     private var vncControllers: [UUID: LiveVncController] = [:]
+    private var didShutdownForTermination: Bool = false
+    private var appWillTerminateObserver: NSObjectProtocol?
     public let cloudBookmarkBridge = MacCloudBookmarkSyncBridge()
     public let googleDriveEngine = GoogleDriveRestSyncEngine()
 
@@ -1089,6 +1091,21 @@ public final class WorkspaceStore: ObservableObject {
         self.linkedCloudFileURL = cloudBookmarkBridge.resolveLinkedURL()
         loadPersistedLocalVault()
         appendAudit("Vault", "NexusTS macOS initialized (\(document.connections.count) connections).")
+        self.appWillTerminateObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            if Thread.isMainThread {
+                MainActor.assumeIsolated {
+                    self?.shutdownAllSessionsForAppTermination()
+                }
+            } else {
+                Task { @MainActor [weak self] in
+                    self?.shutdownAllSessionsForAppTermination()
+                }
+            }
+        }
         Task { [weak self] in
             if self?.autoCheckUpdatesEnabled == true {
                 await self?.checkGitHubUpdates(manual: false)
@@ -1213,10 +1230,30 @@ public final class WorkspaceStore: ObservableObject {
     }
 
     private func shutdownAllLiveRuntimes() {
+        for (_, rdp) in rdpSessions { rdp.setFrameReadyHandler(nil) }
         for (_, ctrl) in terminalControllers { ctrl.shutdown() }
         terminalControllers.removeAll()
         for (_, rdp) in rdpSessions { rdp.destroy() }
         rdpSessions.removeAll()
+        for (_, transfer) in transferControllers { transfer.shutdown() }
+        transferControllers.removeAll()
+        for (_, vnc) in vncControllers { vnc.shutdown() }
+        vncControllers.removeAll()
+    }
+
+    public func shutdownAllSessionsForAppTermination() {
+        guard !didShutdownForTermination else { return }
+        didShutdownForTermination = true
+        for (_, rdp) in rdpSessions {
+            rdp.setFrameReadyHandler(nil)
+        }
+        NativeRdpSession.shutdownAllNativeSessions()
+        for (_, rdp) in rdpSessions {
+            rdp.destroy()
+        }
+        rdpSessions.removeAll()
+        for (_, ctrl) in terminalControllers { ctrl.shutdown() }
+        terminalControllers.removeAll()
         for (_, transfer) in transferControllers { transfer.shutdown() }
         transferControllers.removeAll()
         for (_, vnc) in vncControllers { vnc.shutdown() }
@@ -1858,10 +1895,15 @@ public final class WorkspaceStore: ObservableObject {
             initialHeight: initHeight,
             backingScaleFactor: Double(effectiveBackingScale)
         )
-        if effectiveSettings.redirectClipboard,
-           let initialClip = NSPasteboard.general.string(forType: .string),
-           !initialClip.isEmpty {
-            session.pushLocalClipboard(initialClip)
+        if effectiveSettings.redirectClipboard {
+            switch MacPasteboardClipboardExtractor.extractClipboardPayload(from: .general) {
+            case .files(let initialPaths):
+                session.pushLocalClipboardFiles(initialPaths)
+            case .text(let initialClip):
+                session.pushLocalClipboard(initialClip)
+            case .fileIntentEmpty, .empty:
+                break
+            }
         }
         session.setConnecting(true)
         rdpSessions[tab.id] = session

@@ -1,0 +1,1 @@
+• v0.8.9: Copia e incolla bidirezionale di file e cartelle via RDP (MS-RDPECLIP FileGroupDescriptorW, blocco snapshot CB_LOCK_CLIPDATA, streaming da 2 MB fino a 512 MB, Hyper-V VMConnect) e chiusura sicura delle sessioni FreeRDP

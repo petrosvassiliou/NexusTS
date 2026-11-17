@@ -12,9 +12,16 @@
 
 namespace {
 
-std::mutex g_sessions_mutex;
-int64_t g_next_rdp_handle = 5000;
-std::unordered_map<int64_t, std::shared_ptr<nexusts::rdp::RdpSessionContext>> g_sessions;
+struct JniRdpRegistry {
+    std::mutex mutex;
+    int64_t next_handle{5000};
+    std::unordered_map<int64_t, std::shared_ptr<nexusts::rdp::RdpSessionContext>> sessions;
+};
+
+JniRdpRegistry& jni_rdp_registry() {
+    static auto* reg = new JniRdpRegistry();
+    return *reg;
+}
 
 void append_utf8_codepoint(std::string& out, uint32_t cp) {
     if (cp <= 0x7Fu) {
@@ -150,9 +157,10 @@ jstring utf8_to_jstring(JNIEnv* env, const std::string& utf8) {
 }
 
 std::shared_ptr<nexusts::rdp::RdpSessionContext> lookup_session_shared(jlong handle) {
-    std::lock_guard<std::mutex> lock(g_sessions_mutex);
-    auto it = g_sessions.find(static_cast<int64_t>(handle));
-    return (it != g_sessions.end()) ? it->second : nullptr;
+    auto& reg = jni_rdp_registry();
+    std::lock_guard<std::mutex> lock(reg.mutex);
+    auto it = reg.sessions.find(static_cast<int64_t>(handle));
+    return (it != reg.sessions.end()) ? it->second : nullptr;
 }
 
 } // namespace
@@ -248,9 +256,10 @@ Java_com_nexusts_app_protocols_rdp_bridge_FreeRdpNativeBridge_nativeCreateSessio
     params.preconnection_blob = jstring_to_utf8(env, preconnection_blob);
 
     auto session = std::make_shared<nexusts::rdp::RdpSessionContext>(std::move(params));
-    std::lock_guard<std::mutex> lock(g_sessions_mutex);
-    const int64_t handle = g_next_rdp_handle++;
-    g_sessions.emplace(handle, std::move(session));
+    auto& reg = jni_rdp_registry();
+    std::lock_guard<std::mutex> lock(reg.mutex);
+    const int64_t handle = reg.next_handle++;
+    reg.sessions.emplace(handle, std::move(session));
     return static_cast<jlong>(handle);
 }
 
@@ -574,14 +583,37 @@ Java_com_nexusts_app_protocols_rdp_bridge_FreeRdpNativeBridge_nativeDestroySessi
 ) {
     std::shared_ptr<nexusts::rdp::RdpSessionContext> session;
     {
-        std::lock_guard<std::mutex> lock(g_sessions_mutex);
-        auto it = g_sessions.find(static_cast<int64_t>(handle));
-        if (it != g_sessions.end()) {
+        auto& reg = jni_rdp_registry();
+        std::lock_guard<std::mutex> lock(reg.mutex);
+        auto it = reg.sessions.find(static_cast<int64_t>(handle));
+        if (it != reg.sessions.end()) {
             session = std::move(it->second);
-            g_sessions.erase(it);
+            reg.sessions.erase(it);
         }
     }
     if (session) {
+        session->request_stop();
+        session->disconnect();
+    }
+}
+
+JNIEXPORT void JNICALL JNI_OnUnload(JavaVM* /*vm*/, void* /*reserved*/) {
+    std::vector<std::shared_ptr<nexusts::rdp::RdpSessionContext>> drained;
+    {
+        auto& reg = jni_rdp_registry();
+        std::lock_guard<std::mutex> lock(reg.mutex);
+        drained.reserve(reg.sessions.size());
+        for (auto& kv : reg.sessions) {
+            if (kv.second) {
+                drained.push_back(std::move(kv.second));
+            }
+        }
+        reg.sessions.clear();
+    }
+    for (const auto& session : drained) {
+        session->request_stop();
+    }
+    for (const auto& session : drained) {
         session->disconnect();
     }
 }
