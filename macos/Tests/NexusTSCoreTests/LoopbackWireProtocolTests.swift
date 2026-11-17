@@ -1526,7 +1526,8 @@ final class LoopbackWireProtocolTests: XCTestCase {
                     recorder.lock.unlock()
 
                     if chosen == 2 {
-                        // Complete DES 16-byte challenge/response + SecurityResult OK + ServerInit
+                        // Complete DES 16-byte challenge/response + SecurityResult OK + ServerInit,
+                        // then drain post-ServerInit RFB client frames until client disconnects.
                         let challenge = [UInt8](repeating: 0xAA, count: 16)
                         if Self.sendAll(fd, challenge),
                            Self.recvExact(fd, count: 16) != nil,
@@ -1541,8 +1542,22 @@ final class LoopbackWireProtocolTests: XCTestCase {
                                 0, 0, 0, 3,
                                 0x56, 0x4E, 0x43
                             ]
-                            _ = Self.sendAll(fd, serverInit)
-                            _ = Self.recvExact(fd, count: 1)
+                            if Self.sendAll(fd, serverInit) {
+                                rfbLoop: while let msgType = Self.recvExact(fd, count: 1)?.first {
+                                    switch msgType {
+                                    case 0:
+                                        if Self.recvExact(fd, count: 19) == nil { break rfbLoop }
+                                    case 2:
+                                        guard let hdr = Self.recvExact(fd, count: 3) else { break rfbLoop }
+                                        let count = (Int(hdr[1]) << 8) | Int(hdr[2])
+                                        if Self.recvExact(fd, count: count * 4) == nil { break rfbLoop }
+                                    case 3:
+                                        if Self.recvExact(fd, count: 9) == nil { break rfbLoop }
+                                    default:
+                                        break rfbLoop
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -1558,6 +1573,7 @@ final class LoopbackWireProtocolTests: XCTestCase {
             username: "",
             password: "vncpassword"
         )
+        XCTAssertEqual(standardVnc.desktopName(), "VNC")
         standardVnc.disconnect()
 
         // 2. Apple Screen Sharing passes username -> must pick Security Type 30 (Apple ARD DH)
