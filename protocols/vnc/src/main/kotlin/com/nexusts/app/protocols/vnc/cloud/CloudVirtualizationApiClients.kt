@@ -240,13 +240,13 @@ class ProxmoxVeApiClient(
     ): String {
         val base = CloudVirtualizationHubClient.normalizeProxmoxBaseUrl(host, settings.apiEndpointUrl)
         val auth = resolveAuth(base, settings, secret)
+        val vmPath = if ('/' in resource.id) resource.id else "qemu/${resource.id.removePrefix("vm-")}"
         val verb = when (action) {
             VmPowerAction.START -> "start"
             VmPowerAction.STOP -> "stop"
-            VmPowerAction.SAVE -> "suspend"
+            VmPowerAction.SAVE -> if (vmPath.startsWith("lxc/")) "shutdown" else "suspend"
             VmPowerAction.REBOOT -> "reboot"
         }
-        val vmPath = if ('/' in resource.id) resource.id else "qemu/${resource.id.removePrefix("vm-")}"
         val reqBuilder = Request.Builder()
             .url("$base/api2/json/nodes/${resource.nodeOrZone}/$vmPath/status/$verb")
             .post("".toRequestBody("application/x-www-form-urlencoded".toMediaType()))

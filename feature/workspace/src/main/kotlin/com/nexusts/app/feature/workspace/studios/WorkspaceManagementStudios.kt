@@ -540,7 +540,7 @@ fun NewOrEditConnectionDialog(
     var cloudApiEndpoint by remember(initialConnection) { mutableStateOf(initialCloud.apiEndpointUrl) }
     var cloudRegionOrCluster by remember(initialConnection) { mutableStateOf(initialCloud.regionOrCluster) }
     var cloudSubscriptionId by remember(initialConnection) { mutableStateOf(initialCloud.subscriptionOrAccountId) }
-    var cloudRealmOrTenant by remember(initialConnection) { mutableStateOf(initialCloud.realmOrTenant) }
+    var cloudRealmOrTenant by remember(initialConnection) { mutableStateOf(initialCloud.realmOrDomain) }
     var cloudVerifyTls by remember(initialConnection) { mutableStateOf(initialCloud.verifyTls) }
 
     var netWolMac by remember(initialConnection) { mutableStateOf(initialNet.wolMacAddress) }
@@ -1973,7 +1973,7 @@ fun NewOrEditConnectionDialog(
                                 apiEndpointUrl = customUrl,
                                 regionOrCluster = cloudRegionOrCluster.trim(),
                                 subscriptionOrAccountId = cloudSubscriptionId.trim(),
-                                realmOrTenant = cloudRealmOrTenant.trim(),
+                                realmOrDomain = cloudRealmOrTenant.trim(),
                                 verifyTls = cloudVerifyTls
                             )
                         }
@@ -1994,7 +1994,7 @@ fun NewOrEditConnectionDialog(
                                 apiEndpointUrl = normalizedUrl,
                                 regionOrCluster = cloudRegionOrCluster.trim(),
                                 subscriptionOrAccountId = cloudSubscriptionId.trim(),
-                                realmOrTenant = cloudRealmOrTenant.trim().ifBlank { "pam" },
+                                realmOrDomain = cloudRealmOrTenant.trim().ifBlank { "pam" },
                                 verifyTls = cloudVerifyTls
                             )
                         }
@@ -2011,7 +2011,7 @@ fun NewOrEditConnectionDialog(
                                 apiEndpointUrl = normalizedUrl,
                                 regionOrCluster = cloudRegionOrCluster.trim(),
                                 subscriptionOrAccountId = cloudSubscriptionId.trim(),
-                                realmOrTenant = cloudRealmOrTenant.trim(),
+                                realmOrDomain = cloudRealmOrTenant.trim(),
                                 verifyTls = cloudVerifyTls
                             )
                         }
@@ -2031,7 +2031,7 @@ fun NewOrEditConnectionDialog(
                                 apiEndpointUrl = explicitCustomEndpoint,
                                 regionOrCluster = defaultRegion,
                                 subscriptionOrAccountId = cloudSubscriptionId.trim(),
-                                realmOrTenant = cloudRealmOrTenant.trim(),
+                                realmOrDomain = cloudRealmOrTenant.trim(),
                                 verifyTls = cloudVerifyTls
                             )
                         }

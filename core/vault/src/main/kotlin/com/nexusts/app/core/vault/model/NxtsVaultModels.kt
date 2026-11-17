@@ -324,7 +324,7 @@ sealed interface ProtocolSpecificSettings {
     @Serializable
     @SerialName("web_page")
     data class WebPage(
-        val url: String,
+        val url: String = "",
         val isolatedStorageProfileId: String = UUID.randomUUID().toString(),
         val autoFillEnabled: Boolean = true,
         val usernameCssSelector: String = "input[type='email'], input[name*='user'], input[type='text']",
@@ -338,7 +338,7 @@ sealed interface ProtocolSpecificSettings {
     @Serializable
     @SerialName("cloud_virtualization")
     data class CloudVirtualization(
-        val apiEndpointUrl: String,
+        val apiEndpointUrl: String = "",
         val regionOrCluster: String = "",
         val subscriptionOrAccountId: String = "",
         val realmOrDomain: String = "pam",
