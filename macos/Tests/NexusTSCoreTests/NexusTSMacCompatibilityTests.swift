@@ -1008,14 +1008,14 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
         let pb = NSPasteboard.withUniqueName()
         defer { pb.releaseGlobally() }
 
-        if let apfsRefNsUrl = (reportUrl as NSURL).fileReferenceURL() {
-            XCTAssertTrue(apfsRefNsUrl.absoluteString?.contains("/.file/id=") == true)
-            let resolvedFromRef = MacPasteboardClipboardExtractor.resolveLocalFilePath(apfsRefNsUrl as URL)
+        if let apfsRefUrl = (reportUrl as NSURL).fileReferenceURL() {
+            XCTAssertTrue(apfsRefUrl.absoluteString.contains("/.file/id="))
+            let resolvedFromRef = MacPasteboardClipboardExtractor.resolveLocalFilePath(apfsRefUrl)
             XCTAssertEqual(resolvedFromRef?.resolvingSymlinksIfPossible(), expectedReportPath)
 
             pb.clearContents()
             let item = NSPasteboardItem()
-            item.setString(apfsRefNsUrl.absoluteString ?? reportUrl.absoluteString, forType: .fileURL)
+            item.setString(apfsRefUrl.absoluteString, forType: .fileURL)
             item.setString("Quarterly Report.pdf", forType: .string)
             XCTAssertTrue(pb.writeObjects([item]))
 

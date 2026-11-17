@@ -560,7 +560,6 @@ private:
     [[maybe_unused]] void* cliprdr_context_{nullptr};
     [[maybe_unused]] uint32_t next_client_clip_data_id_{1};
     [[maybe_unused]] uint32_t next_client_stream_id_{1};
-    uint64_t next_remote_clip_batch_id_{1};
     bool has_active_server_clip_data_id_{false};
     uint32_t active_server_clip_data_id_{0};
     std::shared_ptr<const std::vector<RdpClipboardFileEntry>> active_fgd_snapshot_;
