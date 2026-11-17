@@ -1324,9 +1324,11 @@ class EnterpriseVaultImporterTest {
         assertFalse(defaultRdp.hiDpiScaleCustomized)
 
         val fastSerializer = com.nexusts.app.core.vault.crypto.NxtsVaultSerializer(
-            argon2Iterations = 1,
-            argon2MemoryKiB = 4096,
-            argon2Parallelism = 1
+            com.nexusts.app.core.vault.crypto.KdfSecurityParameters(
+                memoryKiB = 8192,
+                iterations = 1,
+                parallelism = 1
+            )
         )
         val preV086Doc = NxtsVaultDocument(
             documentId = "doc-hidpi-migration",

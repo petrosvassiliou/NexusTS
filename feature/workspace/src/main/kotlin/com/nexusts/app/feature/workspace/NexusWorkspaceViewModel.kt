@@ -62,6 +62,7 @@ import com.nexusts.app.protocols.ssh.ui.TransferCommanderSessionController
 import com.nexusts.app.protocols.vnc.bridge.VncRfbSessionClient
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
