@@ -1123,10 +1123,18 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
         let pb = NSPasteboard.withUniqueName()
         defer { pb.releaseGlobally() }
 
-        let txtRefStr = (CFURLCreateFileReferenceURL(kCFAllocatorDefault, txtFile as CFURL, nil)?.takeRetainedValue()
-            .flatMap { CFURLGetString($0) as String? }) ?? txtFile.absoluteString
-        let exeRefStr = (CFURLCreateFileReferenceURL(kCFAllocatorDefault, exeFile as CFURL, nil)?.takeRetainedValue()
-            .flatMap { CFURLGetString($0) as String? }) ?? exeFile.absoluteString
+        let txtRefStr: String
+        if let cfRef = CFURLCreateFileReferenceURL(kCFAllocatorDefault, txtFile as CFURL, nil)?.takeRetainedValue() {
+            txtRefStr = CFURLGetString(cfRef) as String
+        } else {
+            txtRefStr = txtFile.absoluteString
+        }
+        let exeRefStr: String
+        if let cfRef = CFURLCreateFileReferenceURL(kCFAllocatorDefault, exeFile as CFURL, nil)?.takeRetainedValue() {
+            exeRefStr = CFURLGetString(cfRef) as String
+        } else {
+            exeRefStr = exeFile.absoluteString
+        }
 
         pb.clearContents()
         let i1 = NSPasteboardItem()
