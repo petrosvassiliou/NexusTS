@@ -352,11 +352,11 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
     }
 
     func testV118LocalizationUpgradeVersionAndVaultReplacementCompatibility() throws {
-        XCTAssertEqual(MacGitHubReleaseUpdater.currentVersion, "0.8.9")
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.9", isNewerThan: "0.8.8"))
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.9", isNewerThan: "0.8.7"))
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.9", isNewerThan: "0.8.6"))
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.9", isNewerThan: "0.3.0-beta.6"))
+        XCTAssertEqual(MacGitHubReleaseUpdater.currentVersion, "0.8.10")
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.10", isNewerThan: "0.8.9"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.10", isNewerThan: "0.8.8"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.10", isNewerThan: "0.8.7"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.10", isNewerThan: "0.3.0-beta.6"))
         XCTAssertEqual(LocalizedWorkspaceStrings.catalog(for: .en).studios, "Manage")
         XCTAssertEqual(LocalizedWorkspaceStrings.catalog(for: .en).logOffSession, "Log Off Session")
 
@@ -1094,6 +1094,58 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
         NativeRdpSession.shutdownAllNativeSessions()
         s1.destroy()
         s2.destroy()
+    }
+
+    func testV0810CliprdrRawBinaryTxtAndExeRoundTripAndExactFilenames() throws {
+        let baseTmp = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+        let tempDir = baseTmp.appendingPathComponent("nexusts-v0810-bin-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        // 1. Run the native C++20 CLIPRDR binary round-trip suite (.txt with LF/CRLF/BOM/NUL,
+        //    0-byte .txt, >8 MiB .exe PE binary, virtual stream FILECONTENTS_SIZE, ANSI FILEDESCRIPTORA)
+        XCTAssertTrue(
+            NativeRdpSession.runNativeCliprdrBinaryRoundTripSelfTest(workDirectory: tempDir.path),
+            "Native CLIPRDR binary round-trip self-test failed"
+        )
+
+        // 2. Verify NSPasteboard extraction preserves exact .txt, .exe, and symlink filenames without mutation
+        let txtFile = tempDir.appendingPathComponent("server_config.txt")
+        let exeFile = tempDir.appendingPathComponent("NexusInstaller_x64.exe")
+        let targetBin = tempDir.appendingPathComponent("internal_payload_v2.bin")
+        let symlinkExe = tempDir.appendingPathComponent("LaunchAgent.exe")
+
+        try Data([0xEF, 0xBB, 0xBF, 0x41, 0x0A, 0x42, 0x0D, 0x0A, 0x00, 0xFF]).write(to: txtFile)
+        try Data([0x4D, 0x5A, 0x90, 0x00, 0x03, 0x00, 0x1A, 0x00, 0xFF]).write(to: exeFile)
+        try Data([0x4D, 0x5A, 0x50, 0x45, 0x00, 0x00]).write(to: targetBin)
+        try FileManager.default.createSymbolicLink(at: symlinkExe, withDestinationURL: targetBin)
+
+        let pb = NSPasteboard.withUniqueName()
+        defer { pb.releaseGlobally() }
+
+        let txtRefStr = (CFURLCreateFileReferenceURL(kCFAllocatorDefault, txtFile as CFURL, nil)?.takeRetainedValue()
+            .flatMap { CFURLGetString($0) as String? }) ?? txtFile.absoluteString
+        let exeRefStr = (CFURLCreateFileReferenceURL(kCFAllocatorDefault, exeFile as CFURL, nil)?.takeRetainedValue()
+            .flatMap { CFURLGetString($0) as String? }) ?? exeFile.absoluteString
+
+        pb.clearContents()
+        let i1 = NSPasteboardItem()
+        i1.setString(txtRefStr, forType: .fileURL)
+        i1.setString("server_config.txt", forType: .string)
+        let i2 = NSPasteboardItem()
+        i2.setString(exeRefStr, forType: .fileURL)
+        i2.setString("NexusInstaller_x64.exe", forType: .string)
+        let i3 = NSPasteboardItem()
+        i3.setString(symlinkExe.absoluteString, forType: .fileURL)
+        i3.setString("LaunchAgent.exe", forType: .string)
+        XCTAssertTrue(pb.writeObjects([i1, i2, i3]))
+
+        if case .files(let extractedPaths) = MacPasteboardClipboardExtractor.extractClipboardPayload(from: pb) {
+            let names = extractedPaths.map { URL(fileURLWithPath: $0).lastPathComponent }
+            XCTAssertEqual(names, ["server_config.txt", "NexusInstaller_x64.exe", "LaunchAgent.exe"])
+        } else {
+            XCTFail("Expected .files([server_config.txt, NexusInstaller_x64.exe, LaunchAgent.exe])")
+        }
     }
 }
 

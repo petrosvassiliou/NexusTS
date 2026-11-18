@@ -37,7 +37,13 @@ public struct NexusTSApp: App {
         if CommandLine.arguments.contains("--self-test") {
             let en = LocalizedWorkspaceStrings.catalog(for: .en)
             let de = LocalizedWorkspaceStrings.catalog(for: .de)
-            guard !en.newConnection.isEmpty, !de.newConnection.isEmpty else {
+            let clipWorkDir = FileManager.default.temporaryDirectory
+                .appendingPathComponent("nexusts-selftest-clip-\(UUID().uuidString)", isDirectory: true)
+            defer { try? FileManager.default.removeItem(at: clipWorkDir) }
+            try? FileManager.default.createDirectory(at: clipWorkDir, withIntermediateDirectories: true)
+            guard !en.newConnection.isEmpty,
+                  !de.newConnection.isEmpty,
+                  NativeRdpSession.runNativeCliprdrBinaryRoundTripSelfTest(workDirectory: clipWorkDir.path) else {
                 Darwin.exit(1)
             }
             print("NEXUSTS_MACOS_SELF_TEST_OK version=\(MacGitHubReleaseUpdater.currentVersion)")

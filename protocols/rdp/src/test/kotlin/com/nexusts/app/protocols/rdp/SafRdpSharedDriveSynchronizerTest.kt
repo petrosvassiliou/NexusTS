@@ -207,6 +207,34 @@ class SafRdpSharedDriveSynchronizerTest {
         assertEquals(0x0001, com.nexusts.app.protocols.rdp.bridge.FreeRdpNativeBridge.PTRXFLAGS_BUTTON1_BACK)
         assertEquals(0x0002, com.nexusts.app.protocols.rdp.bridge.FreeRdpNativeBridge.PTRXFLAGS_BUTTON2_FORWARD)
     }
+
+    @Test
+    fun `sanitizeStagedDisplayName preserves exact txt and exe filenames across SAF URI prefixes`() {
+        assertEquals(
+            "notes.txt",
+            com.nexusts.app.protocols.rdp.ui.sanitizeStagedDisplayName("notes.txt", 0)
+        )
+        assertEquals(
+            "NexusSetup_v1.0.exe",
+            com.nexusts.app.protocols.rdp.ui.sanitizeStagedDisplayName("NexusSetup_v1.0.exe", 0)
+        )
+        assertEquals(
+            "installer.exe",
+            com.nexusts.app.protocols.rdp.ui.sanitizeStagedDisplayName("primary:Download/installer.exe", 0)
+        )
+        assertEquals(
+            "readme.txt",
+            com.nexusts.app.protocols.rdp.ui.sanitizeStagedDisplayName("primary:readme.txt", 1)
+        )
+        assertEquals(
+            "agent_x64.exe",
+            com.nexusts.app.protocols.rdp.ui.sanitizeStagedDisplayName("raw:/storage/emulated/0/Download/agent_x64.exe", 2)
+        )
+        assertEquals(
+            "clipboard_file_4",
+            com.nexusts.app.protocols.rdp.ui.sanitizeStagedDisplayName("..", 3)
+        )
+    }
 }
 
 

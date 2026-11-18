@@ -2434,6 +2434,14 @@ public final class NativeRdpSession: @unchecked Sendable {
     public static func shutdownAllNativeSessions() {
         nexusts_rdp_shutdown_all_sessions()
     }
+
+    /// Executes the native C++20 CLIPRDR binary round-trip verification suite (.txt, 0-byte .txt, >8 MiB .exe PE,
+    /// nested folders, symlinks, virtual stream FILECONTENTS_SIZE discovery, and legacy FILEDESCRIPTORA).
+    public static func runNativeCliprdrBinaryRoundTripSelfTest(workDirectory: String) -> Bool {
+        workDirectory.withCString { cPath in
+            nexusts_rdp_self_test_cliprdr_binary_roundtrip(cPath)
+        }
+    }
 }
 
 #if canImport(AppKit)
@@ -2445,36 +2453,104 @@ public enum MacPasteboardPayload: Equatable, Sendable {
 }
 
 /// Resolves macOS Finder APFS file-reference URLs (`file:///.file/id=...`), standard file URLs,
-/// and legacy `NSFilenamesPboardType` payloads into canonical POSIX paths without ever falling back
+/// and legacy `NSFilenamesPboardType` payloads into exact POSIX paths while preserving original
+/// filenames, extensions (`.txt`, `.exe`, etc.), and symlink names without ever falling back
 /// to Finder's bare-basename `.string` representation when file pasteboard types are present.
 public enum MacPasteboardClipboardExtractor {
     private static let rawFileUrlType = NSPasteboard.PasteboardType("public.file-url")
+    private static let promisedFileUrlType = NSPasteboard.PasteboardType("com.apple.pasteboard.promised-file-url")
     private static let legacyFilenamesType = NSPasteboard.PasteboardType("NSFilenamesPboardType")
+
+    private static func normalizeResolvedPosixPath(_ rawPath: String) -> String? {
+        var cleaned = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleaned.isEmpty, cleaned.hasPrefix("/"), !cleaned.hasPrefix("/.file/") else {
+            return nil
+        }
+        while cleaned.count > 1 && cleaned.hasSuffix("/") {
+            cleaned.removeLast()
+        }
+        return cleaned
+    }
+
+    public static func resolveLocalFileUrlString(_ rawUrlString: String) -> String? {
+        let trimmed = rawUrlString.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        // Resolve directly through CoreFoundation CFURL so swift-foundation value-type URL bridging
+        // on macOS 15-27 never drops APFS file-reference (/.file/id=...) inode resolution or mutates names.
+        let utf8Bytes = Array(trimmed.utf8)
+        if let cfUrl = utf8Bytes.withUnsafeBufferPointer({ buf -> CFURL? in
+            guard let base = buf.baseAddress else { return nil }
+            return CFURLCreateWithBytes(
+                kCFAllocatorDefault,
+                base,
+                buf.count,
+                CFStringBuiltInEncodings.UTF8.rawValue,
+                nil
+            )
+        }) {
+            let scheme = (CFURLCopyScheme(cfUrl) as String?)?.lowercased()
+            if scheme == "file" {
+                let cfPathUrl = CFURLCreateFilePathURL(kCFAllocatorDefault, cfUrl, nil)?.takeRetainedValue() ?? cfUrl
+                if let posix = CFURLCopyFileSystemPath(cfPathUrl, .cfurlposixPathStyle) as String?,
+                   let valid = normalizeResolvedPosixPath(posix) {
+                    return valid
+                }
+            }
+        }
+
+        if let nsUrl = NSURL(string: trimmed), nsUrl.isFileURL {
+            if let pathUrl = nsUrl.filePathURL,
+               let valid = normalizeResolvedPosixPath(pathUrl.path) {
+                return valid
+            }
+            if let rawPath = nsUrl.path,
+               let valid = normalizeResolvedPosixPath(rawPath) {
+                return valid
+            }
+        }
+        return nil
+    }
 
     public static func resolveLocalFilePath(_ url: URL) -> String? {
         guard url.isFileURL else { return nil }
-        let cfPathUrl: URL? = CFURLCreateFilePathURL(kCFAllocatorDefault, url as CFURL, nil)?.takeRetainedValue() as URL?
+        let absStr = url.absoluteString
+        if absStr.contains("/.file/"), let fromRaw = resolveLocalFileUrlString(absStr) {
+            return fromRaw
+        }
+
+        let cfUrl = url as CFURL
+        let cfPathUrl = CFURLCreateFilePathURL(kCFAllocatorDefault, cfUrl, nil)?.takeRetainedValue() ?? cfUrl
+        if let posix = CFURLCopyFileSystemPath(cfPathUrl, .cfurlposixPathStyle) as String?,
+           let valid = normalizeResolvedPosixPath(posix) {
+            return valid
+        }
+
         let nsUrl = url as NSURL
-        let pathUrl = cfPathUrl ?? nsUrl.filePathURL ?? url
-        var resolvedPath = pathUrl.standardizedFileURL.path
-        if resolvedPath.isEmpty || resolvedPath.hasPrefix("/.file/") {
-            if let canonical = try? url.resourceValues(forKeys: [.canonicalPathKey]).canonicalPath,
-               !canonical.isEmpty,
-               !canonical.hasPrefix("/.file/") {
-                resolvedPath = URL(fileURLWithPath: canonical).standardizedFileURL.path
-            }
+        if let pathUrl = nsUrl.filePathURL,
+           let valid = normalizeResolvedPosixPath(pathUrl.path) {
+            return valid
         }
-        guard !resolvedPath.isEmpty, !resolvedPath.hasPrefix("/.file/") else {
-            return nil
+        if let rawPath = nsUrl.path,
+           let valid = normalizeResolvedPosixPath(rawPath) {
+            return valid
         }
-        if resolvedPath.count > 1 && resolvedPath.hasSuffix("/") {
-            resolvedPath.removeLast()
+
+        // Only consult canonicalPathKey if the URL is still an unresolved /.file/ reference
+        if let canonical = try? url.resourceValues(forKeys: [.canonicalPathKey]).canonicalPath,
+           let valid = normalizeResolvedPosixPath(canonical) {
+            return valid
         }
-        return resolvedPath
+        return nil
     }
 
     public static func hasFilePasteboardType(on pasteboard: NSPasteboard) -> Bool {
-        let fileTypes: Set<NSPasteboard.PasteboardType> = [.fileURL, rawFileUrlType, legacyFilenamesType]
+        let fileTypes: Set<NSPasteboard.PasteboardType> = [
+            .fileURL,
+            rawFileUrlType,
+            promisedFileUrlType,
+            legacyFilenamesType
+        ]
         if let topTypes = pasteboard.types, topTypes.contains(where: { fileTypes.contains($0) }) {
             return true
         }
@@ -2491,20 +2567,39 @@ public enum MacPasteboardClipboardExtractor {
         var candidatePaths: [String] = []
         var seenPaths = Set<String>()
         func appendUniquePath(_ path: String) {
-            let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty, seenPaths.insert(trimmed).inserted else { return }
-            candidatePaths.append(trimmed)
+            guard let clean = normalizeResolvedPosixPath(path),
+                  seenPaths.insert(clean).inserted else { return }
+            candidatePaths.append(clean)
         }
 
-        // 1. Primary AppKit NSURL reader (resolves APFS file:///.file/id=... directly on NSURL before bridging)
+        // 1. Per-item public.file-url inspection via CoreFoundation CFURL (preserves exact symlink & binary filenames
+        //    and resolves Finder APFS file:///.file/id=... references without swift-foundation URL bridging loss)
+        if let items = pasteboard.pasteboardItems {
+            for item in items {
+                if let rawStr = item.string(forType: .fileURL) ?? item.string(forType: rawFileUrlType),
+                   let path = resolveLocalFileUrlString(rawStr) {
+                    appendUniquePath(path)
+                } else if let rawData = item.data(forType: .fileURL) ?? item.data(forType: rawFileUrlType),
+                          let rawStr = String(data: rawData, encoding: .utf8),
+                          let path = resolveLocalFileUrlString(rawStr) {
+                    appendUniquePath(path)
+                } else if let plist = item.propertyList(forType: .fileURL) ?? item.propertyList(forType: rawFileUrlType),
+                          let nsUrl = NSURL(pasteboardPropertyList: plist, ofType: .fileURL),
+                          let path = resolveLocalFilePath((nsUrl.filePathURL ?? (nsUrl as URL))) {
+                    appendUniquePath(path)
+                }
+            }
+        }
+
+        // 2. AppKit NSURL object reader fallback
         if let rawObjects = pasteboard.readObjects(
             forClasses: [NSURL.self],
             options: [.urlReadingFileURLsOnly: true]
         ) {
             for obj in rawObjects {
                 if let nsUrl = obj as? NSURL {
-                    let resolvedUrl = nsUrl.filePathURL ?? (nsUrl as URL)
-                    if let path = resolveLocalFilePath(resolvedUrl) {
+                    let targetUrl = nsUrl.filePathURL ?? (nsUrl as URL)
+                    if let path = resolveLocalFilePath(targetUrl) {
                         appendUniquePath(path)
                     }
                 } else if let url = obj as? URL, let path = resolveLocalFilePath(url) {
@@ -2513,32 +2608,12 @@ public enum MacPasteboardClipboardExtractor {
             }
         }
 
-        // 2. Per-item public.file-url inspection for multi-file Finder selections & drag pasteboards
-        if let items = pasteboard.pasteboardItems {
-            for item in items {
-                if let rawStr = item.string(forType: .fileURL) ?? item.string(forType: rawFileUrlType),
-                   let nsUrl = NSURL(string: rawStr.trimmingCharacters(in: .whitespacesAndNewlines)) {
-                    let resolvedUrl = nsUrl.filePathURL ?? (nsUrl as URL)
-                    if let path = resolveLocalFilePath(resolvedUrl) {
-                        appendUniquePath(path)
-                    }
-                } else if let rawData = item.data(forType: .fileURL) ?? item.data(forType: rawFileUrlType),
-                          let rawStr = String(data: rawData, encoding: .utf8),
-                          let nsUrl = NSURL(string: rawStr.trimmingCharacters(in: .whitespacesAndNewlines)) {
-                    let resolvedUrl = nsUrl.filePathURL ?? (nsUrl as URL)
-                    if let path = resolveLocalFilePath(resolvedUrl) {
-                        appendUniquePath(path)
-                    }
-                }
-            }
-        }
-
-        // 3. Legacy NSFilenamesPboardType property-list fallback (used by third-party file managers & drag sources)
-        if let types = pasteboard.types, types.contains(legacyFilenamesType),
-           let legacyPaths = pasteboard.propertyList(forType: legacyFilenamesType) as? [String] {
+        // 3. Unconditional NSFilenamesPboardType property-list fallback (AppKit lazily bridges legacy filename lists)
+        if let legacyPaths = pasteboard.propertyList(forType: legacyFilenamesType) as? [String] {
             for rawPath in legacyPaths {
-                let url = URL(fileURLWithPath: rawPath)
-                if let path = resolveLocalFilePath(url) {
+                if let valid = normalizeResolvedPosixPath(rawPath) {
+                    appendUniquePath(valid)
+                } else if let path = resolveLocalFilePath(URL(fileURLWithPath: rawPath)) {
                     appendUniquePath(path)
                 }
             }

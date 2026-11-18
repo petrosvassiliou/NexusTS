@@ -1,0 +1,1 @@
+• v0.8.10: Lossless bit-for-bit raw binary RDP file copy-paste (.txt, .exe, >8 MB installers up to 16 GB, 0-byte files, symlinks & folders) with exact filename and extension preservation across macOS, Android & Windows

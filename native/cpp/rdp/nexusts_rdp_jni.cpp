@@ -427,10 +427,8 @@ Java_com_nexusts_app_protocols_rdp_bridge_FreeRdpNativeBridge_nativeSyncClipboar
             }
         }
     }
-    if (!paths.empty()) {
-        if (const auto session = lookup_session_shared(handle)) {
-            session->channels().on_local_clipboard_files(paths);
-        }
+    if (const auto session = lookup_session_shared(handle)) {
+        session->channels().on_local_clipboard_files(paths);
     }
 }
 

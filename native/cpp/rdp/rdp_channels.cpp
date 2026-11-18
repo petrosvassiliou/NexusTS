@@ -1,10 +1,13 @@
 #include "rdp_session_context.hpp"
 
 #include <algorithm>
+#include <cerrno>
 #include <cstring>
 #include <filesystem>
 #include <unordered_set>
+#include <fcntl.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #ifdef __ANDROID__
 #include <aaudio/AAudio.h>
@@ -27,7 +30,9 @@ constexpr uint32_t kWinFileAttrDirectory = 0x00000010u;
 constexpr uint32_t kWinFileAttrNormal    = 0x00000080u;
 
 constexpr size_t kFileDescriptorWBytes = 592u;
+constexpr size_t kFileDescriptorABytes = 332u;
 constexpr size_t kMaxCliprdrFileEntries = 2048u;
+constexpr uint32_t kMaxSingleRangePduBytes = 128u * 1024u * 1024u;
 constexpr uint64_t kUnixToWinFiletimeSecOffset = 11644473600ULL;
 constexpr uint64_t kWinFiletimeTicksPerSec = 10000000ULL;
 
@@ -166,6 +171,64 @@ std::string utf16le_fixed_to_utf8(const uint8_t* src, size_t max_wchars) {
     return out;
 }
 
+std::string ansi_fixed_to_utf8(const uint8_t* src, size_t max_chars) {
+    size_t len = 0u;
+    while (len < max_chars && src[len] != 0u) {
+        ++len;
+    }
+    // Check if already valid UTF-8 (including pure 7-bit ASCII)
+    bool valid_utf8 = true;
+    size_t idx = 0u;
+    while (idx < len) {
+        const uint8_t b0 = src[idx];
+        if (b0 < 0x80u) {
+            ++idx;
+        } else if ((b0 & 0xE0u) == 0xC0u && idx + 1u < len && (src[idx + 1u] & 0xC0u) == 0x80u) {
+            const uint32_t cp = ((static_cast<uint32_t>(b0) & 0x1Fu) << 6) | (src[idx + 1u] & 0x3Fu);
+            if (cp < 0x80u) {
+                valid_utf8 = false;
+                break;
+            }
+            idx += 2u;
+        } else if ((b0 & 0xF0u) == 0xE0u && idx + 2u < len &&
+                   (src[idx + 1u] & 0xC0u) == 0x80u && (src[idx + 2u] & 0xC0u) == 0x80u) {
+            const uint32_t cp = ((static_cast<uint32_t>(b0) & 0x0Fu) << 12) |
+                                ((static_cast<uint32_t>(src[idx + 1u]) & 0x3Fu) << 6) |
+                                (src[idx + 2u] & 0x3Fu);
+            if (cp < 0x800u || (cp >= 0xD800u && cp <= 0xDFFFu)) {
+                valid_utf8 = false;
+                break;
+            }
+            idx += 3u;
+        } else if ((b0 & 0xF8u) == 0xF0u && idx + 3u < len &&
+                   (src[idx + 1u] & 0xC0u) == 0x80u &&
+                   (src[idx + 2u] & 0xC0u) == 0x80u &&
+                   (src[idx + 3u] & 0xC0u) == 0x80u) {
+            const uint32_t cp = ((static_cast<uint32_t>(b0) & 0x07u) << 18) |
+                                ((static_cast<uint32_t>(src[idx + 1u]) & 0x3Fu) << 12) |
+                                ((static_cast<uint32_t>(src[idx + 2u]) & 0x3Fu) << 6) |
+                                (src[idx + 3u] & 0x3Fu);
+            if (cp < 0x10000u || cp > 0x10FFFFu) {
+                valid_utf8 = false;
+                break;
+            }
+            idx += 4u;
+        } else {
+            valid_utf8 = false;
+            break;
+        }
+    }
+    if (valid_utf8) {
+        return std::string(reinterpret_cast<const char*>(src), len);
+    }
+    std::string out;
+    out.reserve(len * 2u);
+    for (size_t k = 0u; k < len; ++k) {
+        append_utf8_codepoint(out, src[k]);
+    }
+    return out;
+}
+
 uint64_t unix_time_to_win_filetime(time_t t) noexcept {
     if (t <= 0) {
         return (1704067200ULL + kUnixToWinFiletimeSecOffset) * kWinFiletimeTicksPerSec;
@@ -260,7 +323,13 @@ void collect_directory_entries_recursive(
             continue;
         }
         if (S_ISLNK(st.st_mode)) {
-            continue;
+            struct stat target_st {};
+            // Allow symlinks pointing to regular files (copying raw target bytes under exact symlink filename),
+            // while skipping directory symlinks to prevent cyclic traversal.
+            if (::stat(child_str.c_str(), &target_st) != 0 || !S_ISREG(target_st.st_mode)) {
+                continue;
+            }
+            st = target_st;
         }
         const std::string base_raw = sanitize_win_component(child.filename().string());
         std::string clean_name = base_raw;
@@ -313,18 +382,16 @@ std::vector<uint8_t> serialize_cliprdr_file_list(const std::vector<RdpClipboardF
         const auto& e = entries[i];
         uint8_t* rec = buf.data() + 4u + i * kFileDescriptorWBytes;
 
-        uint32_t flags = kClipFdAttributes | kClipFdProgressUi;
+        uint32_t flags = kClipFdAttributes | kClipFdFileSize | kClipFdProgressUi;
         if (e.last_write_filetime != 0u) {
             flags |= kClipFdWriteTime;
         }
-        if (!e.is_directory) {
-            flags |= kClipFdFileSize;
-        }
+        const uint64_t wire_size = e.is_directory ? 0u : e.file_size;
         write_u32_le(rec + 0u, flags);
         write_u32_le(rec + 36u, e.is_directory ? kWinFileAttrDirectory : kWinFileAttrNormal);
         write_u64_le(rec + 56u, e.last_write_filetime);
-        write_u32_le(rec + 64u, static_cast<uint32_t>((e.file_size >> 32) & 0xFFFFFFFFULL));
-        write_u32_le(rec + 68u, static_cast<uint32_t>(e.file_size & 0xFFFFFFFFULL));
+        write_u32_le(rec + 64u, static_cast<uint32_t>((wire_size >> 32) & 0xFFFFFFFFULL));
+        write_u32_le(rec + 68u, static_cast<uint32_t>(wire_size & 0xFFFFFFFFULL));
 
         const std::vector<uint16_t> wunits = utf8_to_utf16_units(e.relative_win_path);
         size_t copy_units = std::min<size_t>(wunits.size(), 259u);
@@ -342,7 +409,8 @@ std::vector<uint8_t> serialize_cliprdr_file_list(const std::vector<RdpClipboardF
 bool parse_and_sanitize_cliprdr_file_list(
     const uint8_t* data,
     size_t data_len,
-    std::vector<RdpClipboardFileEntry>& out_entries
+    std::vector<RdpClipboardFileEntry>& out_entries,
+    bool is_ansi_descriptor
 ) {
     out_entries.clear();
     if (!data || data_len < 4u) {
@@ -352,21 +420,24 @@ bool parse_and_sanitize_cliprdr_file_list(
     if (count == 0u || count > kMaxCliprdrFileEntries) {
         return false;
     }
-    const size_t required_bytes = 4u + static_cast<size_t>(count) * kFileDescriptorWBytes;
+    const size_t rec_stride = is_ansi_descriptor ? kFileDescriptorABytes : kFileDescriptorWBytes;
+    const size_t required_bytes = 4u + static_cast<size_t>(count) * rec_stride;
     if (data_len < required_bytes) {
         return false;
     }
 
     out_entries.reserve(count);
     for (uint32_t i = 0u; i < count; ++i) {
-        const uint8_t* rec = data + 4u + static_cast<size_t>(i) * kFileDescriptorWBytes;
+        const uint8_t* rec = data + 4u + static_cast<size_t>(i) * rec_stride;
         const uint32_t flags = read_u32_le(rec + 0u);
         const uint32_t attrs = read_u32_le(rec + 36u);
         const uint64_t write_ft = read_u64_le(rec + 56u);
         const uint32_t size_hi = read_u32_le(rec + 64u);
         const uint32_t size_lo = read_u32_le(rec + 68u);
 
-        std::string raw_name = utf16le_fixed_to_utf8(rec + 72u, 260u);
+        std::string raw_name = is_ansi_descriptor
+            ? ansi_fixed_to_utf8(rec + 72u, 260u)
+            : utf16le_fixed_to_utf8(rec + 72u, 260u);
         if (raw_name.empty()) {
             out_entries.clear();
             return false;
@@ -376,7 +447,7 @@ bool parse_and_sanitize_cliprdr_file_list(
                 ch = '/';
             }
         }
-        // Strip trailing slashes emitted by some RDP servers on directory FILEDESCRIPTORW entries
+        // Strip trailing slashes emitted by some RDP servers on directory FILEDESCRIPTOR entries
         while (raw_name.size() > 1u && raw_name.back() == '/') {
             raw_name.pop_back();
         }
@@ -419,7 +490,9 @@ bool parse_and_sanitize_cliprdr_file_list(
             return false;
         }
 
-        const bool is_dir = ((flags & kClipFdAttributes) != 0u) && ((attrs & kWinFileAttrDirectory) != 0u);
+        const bool is_dir =
+            ((attrs & kWinFileAttrDirectory) != 0u) &&
+            (((flags & kClipFdAttributes) != 0u) || ((flags & kClipFdFileSize) == 0u));
         const bool has_size = is_dir || ((flags & kClipFdFileSize) != 0u);
         const uint64_t full_size = is_dir
             ? 0u
@@ -495,6 +568,74 @@ std::vector<RdpClipboardFileEntry> build_local_clipboard_file_entries(
         }
     }
     return out;
+}
+
+bool read_local_clipboard_file_range(
+    const std::string& posix_path,
+    uint64_t offset,
+    uint32_t cb_requested,
+    std::vector<uint8_t>& out_bytes,
+    uint64_t* out_total_size
+) {
+    out_bytes.clear();
+    if (posix_path.empty()) {
+        return false;
+    }
+
+    int fd = -1;
+    do {
+        fd = ::open(posix_path.c_str(), O_RDONLY);
+    } while (fd < 0 && errno == EINTR);
+    if (fd < 0) {
+        return false;
+    }
+
+    struct stat st {};
+    if (::fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size < 0) {
+        ::close(fd);
+        return false;
+    }
+    const uint64_t file_size = static_cast<uint64_t>(st.st_size);
+    if (out_total_size) {
+        *out_total_size = file_size;
+    }
+    if (offset > file_size) {
+        ::close(fd);
+        return false;
+    }
+
+    const uint32_t capped_req = std::min<uint32_t>(cb_requested, kMaxSingleRangePduBytes);
+    const size_t to_read = static_cast<size_t>(std::min<uint64_t>(capped_req, file_size - offset));
+    if (to_read == 0u) {
+        ::close(fd);
+        return true;
+    }
+
+    out_bytes.resize(to_read);
+    size_t total_read = 0u;
+    while (total_read < to_read) {
+        const ssize_t n = ::pread(
+            fd,
+            out_bytes.data() + total_read,
+            to_read - total_read,
+            static_cast<off_t>(offset + total_read)
+        );
+        if (n < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            out_bytes.clear();
+            ::close(fd);
+            return false;
+        }
+        if (n == 0) {
+            break;
+        }
+        total_read += static_cast<size_t>(n);
+    }
+    ::close(fd);
+    out_bytes.resize(total_read);
+    return true;
 }
 
 RdpVirtualChannelHub::RdpVirtualChannelHub() = default;
@@ -598,6 +739,10 @@ void RdpVirtualChannelHub::on_local_clipboard_files(const std::vector<std::strin
         build_local_clipboard_file_entries(root_paths)
     );
     if (built->empty()) {
+        std::lock_guard<std::mutex> lock(channel_mutex_);
+        local_clipboard_utf8_.clear();
+        local_clipboard_files_.reset();
+        local_kind_ = RdpClipboardContentKind::None;
         return;
     }
     std::function<void(const std::string&)> announce_cb;

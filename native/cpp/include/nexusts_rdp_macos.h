@@ -212,6 +212,8 @@ size_t nexusts_rdp_copy_cursor_bgra(
     bool* out_is_default
 );
 
+bool nexusts_rdp_self_test_cliprdr_binary_roundtrip(const char* work_dir_utf8);
+
 #ifdef __cplusplus
 }
 #endif

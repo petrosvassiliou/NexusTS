@@ -21,7 +21,7 @@ on:
       release_tag:
         description: "Tag name when publishing via workflow_dispatch"
         required: false
-        default: "v0.8.9"
+        default: "v0.8.10"
         type: string
 
 permissions:
@@ -319,7 +319,7 @@ jobs:
           set -euo pipefail
           TAG_NAME="${GITHUB_REF_NAME}"
           if [[ "${TAG_NAME}" != v* ]]; then
-            TAG_NAME="${{ inputs.release_tag || 'v0.8.9' }}"
+            TAG_NAME="${{ inputs.release_tag || 'v0.8.10' }}"
           fi
           echo "tag_name=${TAG_NAME}" >> "${GITHUB_OUTPUT}"
 
@@ -346,7 +346,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.stage.outputs.tag_name }}
-          name: "NexusTS ${{ steps.stage.outputs.tag_name }} — Bidirectional RDP File Copy-Paste, Finder Drag-and-Drop & Race-Free Shutdown"
+          name: "NexusTS ${{ steps.stage.outputs.tag_name }} — Lossless Raw-Binary RDP File Copy-Paste (.txt / .exe / >8 MiB) & Exact Filename Preservation"
           draft: false
           prerelease: ${{ contains(steps.stage.outputs.tag_name, '-') }}
           generate_release_notes: true
@@ -354,21 +354,19 @@ jobs:
             ## NexusTS ${{ steps.stage.outputs.tag_name }} (`com.nexusts.app` / `com.nexusts.app.macos`)
             **Native Remote Management & Connection Manager for Googlebook OS, Android Tablets & macOS**
 
-            > **Bidirectional RDP File Copy-Paste & Race-Free Shutdown Release (`0.8.9` / `versionCode = 10809`)**: Delivers rock-solid bidirectional **MS-RDPECLIP (`CLIPRDR`) file & folder copy-paste** between macOS Finder / Android and Windows Explorer (including Hyper-V VMConnect TCP `2179`), **Finder Drag-and-Drop** directly onto the RDP viewport, APFS `file:///.file/id=...` & NFD->NFC filename normalization, and completely eliminates the macOS app-quit `EXC_BAD_ACCESS` crash in FreeRDP/WinPR teardown.
+            > **Lossless Raw-Binary RDP File Copy-Paste Release (`0.8.10` / `versionCode = 10810`)**: Guarantees **bit-for-bit raw binary identity** and **exact filename & extension preservation** (`.txt` -> `.txt`, `.exe` -> `.exe`, multi-GB installers, 0-byte files, symlinks, and nested folders) across bidirectional **MS-RDPECLIP (`CLIPRDR`)** file copy-paste and **Finder Drag-and-Drop** on macOS 27.2+ and Android/Googlebook OS.
 
             ### Signed Deliverables (100% In-Place Upgrade Compatible)
-            - **`NexusTS-${{ steps.stage.outputs.tag_name }}-googlebook-android-release.apk`**: Cryptographically signed (APK Signature Scheme v2/v3/v4, RSA-4096) universal `arm64-v8a` + `x86_64` APK with 16 KB ELF page alignment (`0x4000`) and 100% Google Play Protect compliance (`versionCode = 10809`).
+            - **`NexusTS-${{ steps.stage.outputs.tag_name }}-googlebook-android-release.apk`**: Cryptographically signed (APK Signature Scheme v2/v3/v4, RSA-4096) universal `arm64-v8a` + `x86_64` APK with 16 KB ELF page alignment (`0x4000`) and 100% Google Play Protect compliance (`versionCode = 10810`).
             - **`NexusTS-${{ steps.stage.outputs.tag_name }}-playstore-release.aab`**: Signed Android App Bundle for optional Managed Google Play / internal distribution.
-            - **`NexusTS-${{ steps.stage.outputs.tag_name }}-macOS-Universal.zip` & `.dmg`**: Self-contained Universal2 (`arm64` + `x86_64`) macOS application bundle statically linking OpenSSL 3.4 + Cisco OpenH264 2.5.0 + FreeRDP 3.12 (`.zip` powers one-click in-app updates without downloading a `.dmg`).
+            - **`NexusTS-${{ steps.stage.outputs.tag_name }}-macOS-Universal.zip` & `.dmg`**: Self-contained Universal2 (`arm64` + `x86_64`) macOS application bundle statically linking OpenSSL 3.4 + Cisco OpenH264 2.5.0 + FreeRDP 3.10 (`.zip` powers one-click in-app updates without downloading a `.dmg`).
             - **`nexusts-upload-certificate.pem` & `oauth-and-mdm-registration.json`**: Public X.509 upload certificate (`SHA-1: A6:AF:15:A9:BF:0B:FE:38:D4:66:46:3E:3E:72:A6:5B:4F:9C:4D:F6`, `SHA-256: 4A:BD:80:F1:20:14:B9:88:09:1C:97:92:2F:87:02:D1:BF:B7:93:9C:73:B6:9A:DB:1A:9B:76:30:6A:30:27:82`) and Managed Google Play `app_restrictions` template.
 
             ### Highlights in ${{ steps.stage.outputs.tag_name }}
-            - **Bidirectional RDP File & Folder Copy-Paste (`MS-RDPECLIP` / `CLIPRDR`)**:
-              - **macOS Finder APFS File-Reference Resolution**: Resolves Finder `file:///.file/id=...` URLs and legacy `NSFilenamesPboardType` payloads via `MacPasteboardClipboardExtractor` without ever falling back to Finder's bare-filename `.string` pasteboard representation.
-              - **Pure `FileGroupDescriptorW` Wire Format & Snapshot Locking**: Announces clean `FileGroupDescriptorW` format lists (`FreeRDP_ClipboardFeatureMask = CLIPRDR_FLAG_DEFAULT_MASK`), binds immutable `CB_LOCK_CLIPDATA` snapshots across `FileGroupDescriptorW` and `FileContentsRequest` streams, normalizes APFS NFD -> Windows NFC UTF-16LE filenames, and gates right-click context menus (`<220 ms`) plus `⌘V` / `⌃V` on `CB_FORMAT_LIST_RESPONSE`.
-              - **Finder Drag-and-Drop & High-Throughput Transfers**: Supports dragging files and folders directly from Finder onto the remote Windows desktop/Explorer, streams 2 MB `FILECONTENTS_RANGE` chunks with persistent file handles up to 512 MB, and declares macOS TCC Desktop/Documents/Downloads/Volume usage descriptions.
-            - **Deterministic Race-Free macOS Shutdown**:
-              - Eliminates `EXC_BAD_ACCESS (SIGSEGV)` in `EnterCriticalSection <- transport_free <- freerdp_disconnect` on app termination by replacing static C++ destructors with immortal session/callback registries, serializing `connect()`/`disconnect()` under `disconnect_mutex_`, and joining all FreeRDP worker threads in parallel via `NativeRdpSession.shutdownAllNativeSessions()` during `NSApplication.willTerminateNotification` before `exit()` runs WinPR `atexit` handlers.
+            - **Bit-for-Bit Raw Binary `MS-RDPECLIP` (`CLIPRDR`) File Copy-Paste**:
+              - **Zero `8 MiB` `FILECONTENTS_RANGE` Truncation (`macOS/Android -> Windows`)**: Replaces `std::ifstream` and the `8 MiB` range cap with `EINTR`-safe POSIX `::open(O_RDONLY)` + complete `::pread` loops up to `128 MiB` per single PDU, ensuring large `.exe` / `.msi` / `.zip` binaries are never truncated by Windows `IStream::Read` consumers.
+              - **Mandatory `FILECONTENTS_SIZE` Stream Discovery & Raw POSIX `::write` (`Windows -> macOS/Android`)**: Always queries `FILECONTENTS_SIZE` (`IStream::Stat`) before reading ranges (fixing 0-byte empty files on compressed/virtual Windows shell items), raises batch capacity to `16 GiB` (`4 MiB` chunks), supports short-name `FileGroupDescrip` and legacy `FILEDESCRIPTORA` (`332` bytes), and writes raw binary bytes via POSIX `::open`/`::write`/`::futimens` with zero line-ending or encoding transformation.
+              - **Exact Filename, Extension & Symlink Preservation**: Resolves macOS 27 `swift-foundation` APFS `file:///.file/id=...` URLs directly via CoreFoundation `CFURLCreateWithBytes` / `CFURLCreateFilePathURL` / `CFURLCopyFileSystemPath` without dereferencing symlinks or altering filenames, and strips Android SAF volume prefixes (`primary:setup.exe` -> `setup.exe`).
           files: release-assets/*
 
       - name: Check Optional Google Play Service Account Secret

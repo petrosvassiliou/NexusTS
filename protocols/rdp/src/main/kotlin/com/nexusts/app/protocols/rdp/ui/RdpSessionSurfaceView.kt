@@ -148,11 +148,11 @@ private fun readHostClipboardUris(manager: ClipboardManager?): List<Uri> {
     return result
 }
 
-private fun sanitizeStagedDisplayName(rawName: String, fallbackIndex: Int): String {
+internal fun sanitizeStagedDisplayName(rawName: String, fallbackIndex: Int): String {
     val cleaned = rawName
+        .substringAfterLast(':')
         .substringAfterLast('/')
         .substringAfterLast('\\')
-        .replace(':', '_')
         .trim()
     if (cleaned.isEmpty() || cleaned == "." || cleaned == "..") {
         return "clipboard_file_${fallbackIndex + 1}"
@@ -249,11 +249,11 @@ private fun publishRemoteFilesToHostClipboard(
     return if (applied) exportedUris.joinToString("\n") { it.toString() } else null
 }
 
-private fun readHostPlainClipboard(context: Context, manager: ClipboardManager?): String {
+private fun readHostPlainClipboard(@Suppress("UNUSED_PARAMETER") context: Context, manager: ClipboardManager?): String {
     val clip = runCatching { manager?.primaryClip }.getOrNull() ?: return ""
     if (clip.itemCount <= 0) return ""
     return runCatching {
-        clip.getItemAt(0)?.coerceToText(context)?.toString().orEmpty()
+        clip.getItemAt(0)?.text?.toString().orEmpty()
     }.getOrDefault("")
 }
 

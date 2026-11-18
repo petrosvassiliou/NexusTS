@@ -1,0 +1,1 @@
+• v0.8.10: Copia y pegado binario exacto bit a bit de archivos por RDP (.txt, .exe, instaladores >8 MB hasta 16 GB, archivos de 0 bytes y carpetas) conservando exactamente el nombre y la extensión original

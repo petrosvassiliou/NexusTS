@@ -1593,15 +1593,14 @@ final class RdpPointerAndKeyNSView: NSView {
         case .files:
             let stagedPaths = session.pullRemoteClipboardFiles()
             guard !stagedPaths.isEmpty else { return }
-            let existingUrls: [NSURL] = stagedPaths
-                .filter { FileManager.default.fileExists(atPath: $0) }
-                .map { URL(fileURLWithPath: $0).standardizedFileURL as NSURL }
-            guard !existingUrls.isEmpty else { return }
+            let existingPaths = stagedPaths.filter { FileManager.default.fileExists(atPath: $0) }
+            guard !existingPaths.isEmpty else { return }
+            let existingUrls: [NSURL] = existingPaths.map { NSURL(fileURLWithPath: $0) }
             let pb = NSPasteboard.general
             pb.clearContents()
             pb.writeObjects(existingUrls)
             lastPasteboardChangeCount = pb.changeCount
-            lastPushedPayload = .files(existingUrls.map { ($0 as URL).path })
+            lastPushedPayload = .files(existingPaths)
         case .text:
             let remoteText = session.pullRemoteClipboard()
             guard !remoteText.isEmpty else { return }
@@ -1613,7 +1612,7 @@ final class RdpPointerAndKeyNSView: NSView {
             lastPasteboardChangeCount = pb.changeCount
             lastPushedPayload = .text(remoteText)
         case .none:
-            // Remote clipboard changed ownership (e.g. remote screenshot or huge >512 MB file);
+            // Remote clipboard changed ownership (e.g. remote screenshot or huge >16 GiB file);
             // preserve lastPasteboardChangeCount so pressing Cmd+V / Ctrl+V inside Windows does not
             // overwrite the remote clipboard unless the user actually copies a new item on macOS.
             lastPushedPayload = nil
@@ -1671,7 +1670,7 @@ final class RdpPointerAndKeyNSView: NSView {
         )
         session.sendPointerEvent(flags: 0x0800, x: rx, y: ry)
 
-        let nsUrls = paths.map { URL(fileURLWithPath: $0).standardizedFileURL as NSURL }
+        let nsUrls: [NSURL] = paths.map { NSURL(fileURLWithPath: $0) }
         let pb = NSPasteboard.general
         pb.clearContents()
         pb.writeObjects(nsUrls)

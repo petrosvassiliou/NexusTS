@@ -1,0 +1,1 @@
+• v0.8.10 : Copier-coller binaire brut bit à bit sans perte via RDP (.txt, .exe, installeurs >8 Mo jusqu'à 16 Go, fichiers de 0 octet et dossiers) avec conservation exacte du nom et de l'extension du fichier

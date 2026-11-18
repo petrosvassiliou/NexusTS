@@ -1,0 +1,1 @@
+• v0.8.10: Verlustfreies bitgenaues Binär-Kopieren & Einfügen von Dateien über RDP (.txt, .exe, >8 MB Installer bis 16 GB, 0-Byte-Dateien, Symlinks & Ordner) unter exakter Beibehaltung von Dateinamen und Dateiendungen

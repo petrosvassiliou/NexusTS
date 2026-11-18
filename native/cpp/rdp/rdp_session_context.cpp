@@ -1,6 +1,7 @@
 #include "rdp_session_context.hpp"
 
 #include <algorithm>
+#include <cerrno>
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
@@ -11,7 +12,9 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
+#include <fcntl.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #ifdef __ANDROID__
 #include <android/log.h>
@@ -442,8 +445,8 @@ FreeRdpCallbackState lookup_freerdp_callbacks(freerdp* instance) {
 }
 
 constexpr UINT32 kClientFormatFileGroupDescriptorW = 0xC080u;
-constexpr uint32_t kMaxServerFileContentsRangeBytes = 8u * 1024u * 1024u;
 constexpr uint64_t kMaxLegacyNonHugeFileBytes = 0x7FFFFFFFULL;
+constexpr BYTE kEmptyClipPayloadByte = 0u;
 
 bool equals_ascii_icase(const char* a, const char* b) noexcept {
     if (!a || !b) {
@@ -603,13 +606,23 @@ UINT cliprdr_on_server_format_list(CliprdrClientContext* cliprdr, const CLIPRDR_
     }
 
     UINT32 fgd_format_id = 0u;
+    bool fgd_is_ansi = false;
+    bool saw_unicode_fgd = false;
     bool has_unicode = false;
     bool has_ansi = false;
     for (UINT32 i = 0; i < format_list->numFormats; ++i) {
         const UINT32 fmt_id = format_list->formats[i].formatId;
         const char* fmt_name = format_list->formats[i].formatName;
-        if (fmt_name && equals_ascii_icase(fmt_name, "FileGroupDescriptorW")) {
+        if (fmt_name &&
+            (equals_ascii_icase(fmt_name, "FileGroupDescriptorW") ||
+             equals_ascii_icase(fmt_name, "FileGroupDescrip"))) {
             fgd_format_id = fmt_id;
+            fgd_is_ansi = false;
+            saw_unicode_fgd = true;
+        } else if (fmt_name && !saw_unicode_fgd &&
+                   equals_ascii_icase(fmt_name, "FileGroupDescriptor")) {
+            fgd_format_id = fmt_id;
+            fgd_is_ansi = true;
         } else if (fmt_id == kWinCfUnicodeText) {
             has_unicode = true;
         } else if (fmt_id == kWinCfText || fmt_id == kWinCfOemText) {
@@ -618,7 +631,7 @@ UINT cliprdr_on_server_format_list(CliprdrClientContext* cliprdr, const CLIPRDR_
     }
 
     if (fgd_format_id != 0u && owner && cliprdr->ClientFormatDataRequest) {
-        owner->begin_remote_file_list_fetch(cliprdr, fgd_format_id);
+        owner->begin_remote_file_list_fetch(cliprdr, fgd_format_id, fgd_is_ansi);
         cliprdr->lastRequestedFormatId = fgd_format_id;
         CLIPRDR_FORMAT_DATA_REQUEST req{};
         req.common.msgType = CB_FORMAT_DATA_REQUEST;
@@ -743,7 +756,7 @@ UINT cliprdr_on_server_format_data_request(
 
     resp.common.msgFlags = CB_RESPONSE_FAIL;
     resp.common.dataLen = 0u;
-    resp.requestedFormatData = nullptr;
+    resp.requestedFormatData = &kEmptyClipPayloadByte;
     return cliprdr->ClientFormatDataResponse(cliprdr, &resp);
 }
 
@@ -754,7 +767,7 @@ UINT cliprdr_send_file_contents_fail(CliprdrClientContext* cliprdr, UINT32 strea
     resp.common.dataLen = 4u;
     resp.streamId = stream_id;
     resp.cbRequested = 0u;
-    resp.requestedData = nullptr;
+    resp.requestedData = &kEmptyClipPayloadByte;
     return cliprdr->ClientFileContentsResponse(cliprdr, &resp);
 }
 
@@ -787,6 +800,9 @@ UINT cliprdr_on_server_file_contents_request(
     }
 
     if (mode_flags == FILECONTENTS_SIZE) {
+        if (request->nPositionLow != 0u || request->nPositionHigh != 0u) {
+            return cliprdr_send_file_contents_fail(cliprdr, request->streamId);
+        }
         uint64_t actual_size = entry.file_size;
         struct stat st {};
         if (::stat(entry.local_posix_path.c_str(), &st) == 0 && st.st_size >= 0) {
@@ -809,42 +825,23 @@ UINT cliprdr_on_server_file_contents_request(
     const uint64_t offset =
         (static_cast<uint64_t>(request->nPositionHigh) << 32) |
         static_cast<uint64_t>(request->nPositionLow);
-    const uint32_t max_chunk = std::min<uint32_t>(request->cbRequested, kMaxServerFileContentsRangeBytes);
-
-    std::ifstream ifs(entry.local_posix_path, std::ios::binary);
-    if (!ifs) {
+    std::vector<uint8_t> chunk;
+    if (!read_local_clipboard_file_range(
+            entry.local_posix_path,
+            offset,
+            request->cbRequested,
+            chunk
+        )) {
         return cliprdr_send_file_contents_fail(cliprdr, request->streamId);
     }
-    ifs.seekg(0, std::ios::end);
-    const std::streampos end_pos = ifs.tellg();
-    const uint64_t file_size = (end_pos > 0) ? static_cast<uint64_t>(end_pos) : 0u;
-    if (offset > file_size) {
-        return cliprdr_send_file_contents_fail(cliprdr, request->streamId);
-    }
-    if (offset == file_size || max_chunk == 0u) {
-        CLIPRDR_FILE_CONTENTS_RESPONSE empty_resp{};
-        empty_resp.common.msgType = CB_FILECONTENTS_RESPONSE;
-        empty_resp.common.msgFlags = CB_RESPONSE_OK;
-        empty_resp.common.dataLen = 4u;
-        empty_resp.streamId = request->streamId;
-        empty_resp.cbRequested = 0u;
-        empty_resp.requestedData = nullptr;
-        return cliprdr->ClientFileContentsResponse(cliprdr, &empty_resp);
-    }
-
-    const size_t bytes_to_read = static_cast<size_t>(std::min<uint64_t>(max_chunk, file_size - offset));
-    std::vector<BYTE> chunk(bytes_to_read);
-    ifs.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
-    ifs.read(reinterpret_cast<char*>(chunk.data()), static_cast<std::streamsize>(bytes_to_read));
-    const auto got = static_cast<size_t>(std::max<std::streamsize>(0, ifs.gcount()));
 
     CLIPRDR_FILE_CONTENTS_RESPONSE resp{};
     resp.common.msgType = CB_FILECONTENTS_RESPONSE;
     resp.common.msgFlags = CB_RESPONSE_OK;
-    resp.common.dataLen = static_cast<UINT32>(4u + got);
+    resp.common.dataLen = static_cast<UINT32>(4u + chunk.size());
     resp.streamId = request->streamId;
-    resp.cbRequested = static_cast<UINT32>(got);
-    resp.requestedData = got > 0u ? chunk.data() : nullptr;
+    resp.cbRequested = static_cast<UINT32>(chunk.size());
+    resp.requestedData = chunk.empty() ? &kEmptyClipPayloadByte : chunk.data();
     return cliprdr->ClientFileContentsResponse(cliprdr, &resp);
 }
 
@@ -1538,6 +1535,8 @@ RdpSessionContext::~RdpSessionContext() {
         gdi_presenter_->set_frame_ready_callback(nullptr, nullptr);
     }
     disconnect();
+    std::lock_guard<std::mutex> lock(cliprdr_mutex_);
+    close_active_remote_file_locked(0u);
 }
 
 void RdpSessionContext::signal_event_loop_wakeup() noexcept {
@@ -1575,6 +1574,7 @@ void RdpSessionContext::set_cliprdr_context(void* cliprdr_context) {
         cliprdr_ready_.store(false, std::memory_order_release);
         server_clip_caps_.store(0u, std::memory_order_release);
         server_fgd_format_id_.store(0u, std::memory_order_release);
+        server_fgd_is_ansi_.store(false, std::memory_order_release);
         {
             std::lock_guard<std::mutex> in_lock(input_mutex_);
             awaiting_format_list_response_ = false;
@@ -1587,10 +1587,7 @@ void RdpSessionContext::set_cliprdr_context(void* cliprdr_context) {
         active_server_clip_data_id_ = 0u;
         active_fgd_snapshot_.reset();
         locked_local_file_snapshots_.clear();
-        if (remote_file_transfer_.active_ofs) {
-            remote_file_transfer_.active_ofs->close();
-            remote_file_transfer_.active_ofs.reset();
-        }
+        close_active_remote_file_locked(0u);
         remote_file_transfer_ = RemoteFileTransferState{};
     }
     cliprdr_context_ = cliprdr_context;
@@ -1685,6 +1682,16 @@ void RdpSessionContext::request_synchronized_paste() {
 }
 
 void RdpSessionContext::on_cliprdr_monitor_ready_sent() {
+    std::shared_ptr<const std::vector<RdpClipboardFileEntry>> prebound_files;
+    if (channels_.local_clipboard_kind() == RdpClipboardContentKind::Files) {
+        prebound_files = channels_.local_clipboard_files();
+    }
+    {
+        std::lock_guard<std::mutex> clip_lock(cliprdr_mutex_);
+        has_active_server_clip_data_id_ = false;
+        active_server_clip_data_id_ = 0u;
+        active_fgd_snapshot_ = (prebound_files && !prebound_files->empty()) ? prebound_files : nullptr;
+    }
     std::lock_guard<std::mutex> lock(input_mutex_);
     pending_clipboard_announce_ = false;
     awaiting_format_list_response_ = true;
@@ -1787,6 +1794,29 @@ std::shared_ptr<const std::vector<RdpClipboardFileEntry>> RdpSessionContext::res
     return channels_.local_clipboard_files();
 }
 
+void RdpSessionContext::close_active_remote_file_locked(uint64_t last_write_filetime) noexcept {
+    if (remote_file_transfer_.active_fd >= 0) {
+        constexpr uint64_t kWinEpochDiffTicks = 116444736000000000ULL;
+        if (last_write_filetime > kWinEpochDiffTicks) {
+            const uint64_t unix_ticks = last_write_filetime - kWinEpochDiffTicks;
+            struct timespec times[2]{};
+            times[0].tv_sec = 0;
+            times[0].tv_nsec = UTIME_NOW;
+            times[1].tv_sec = static_cast<time_t>(unix_ticks / 10000000ULL);
+            times[1].tv_nsec = static_cast<long>((unix_ticks % 10000000ULL) * 100ULL);
+            (void)::futimens(remote_file_transfer_.active_fd, times);
+        }
+        (void)::close(remote_file_transfer_.active_fd);
+        remote_file_transfer_.active_fd = -1;
+    }
+    remote_file_transfer_.active_file_path.clear();
+}
+
+void RdpSessionContext::set_file_contents_request_hook(FileContentsRequestHook hook) {
+    std::lock_guard<std::mutex> lock(cliprdr_mutex_);
+    file_contents_request_hook_ = std::move(hook);
+}
+
 void RdpSessionContext::abort_remote_file_transfer_locked(void* raw_cliprdr) {
 #if defined(NEXUSTS_HAS_FREERDP3_BINARY) && NEXUSTS_HAS_FREERDP3_BINARY == 1
     if (remote_file_transfer_.has_lock && raw_cliprdr) {
@@ -1802,10 +1832,7 @@ void RdpSessionContext::abort_remote_file_transfer_locked(void* raw_cliprdr) {
 #else
     (void)raw_cliprdr;
 #endif
-    if (remote_file_transfer_.active_ofs) {
-        remote_file_transfer_.active_ofs->close();
-        remote_file_transfer_.active_ofs.reset();
-    }
+    close_active_remote_file_locked(0u);
     if (!remote_file_transfer_.batch_root_dir.empty()) {
         std::error_code ec;
         std::filesystem::remove_all(remote_file_transfer_.batch_root_dir, ec);
@@ -1813,8 +1840,13 @@ void RdpSessionContext::abort_remote_file_transfer_locked(void* raw_cliprdr) {
     remote_file_transfer_ = RemoteFileTransferState{};
 }
 
-void RdpSessionContext::begin_remote_file_list_fetch(void* raw_cliprdr, uint32_t format_id) {
+void RdpSessionContext::begin_remote_file_list_fetch(
+    void* raw_cliprdr,
+    uint32_t format_id,
+    bool is_ansi
+) {
     server_fgd_format_id_.store(format_id, std::memory_order_release);
+    server_fgd_is_ansi_.store(is_ansi, std::memory_order_release);
     std::lock_guard<std::mutex> lock(cliprdr_mutex_);
     abort_remote_file_transfer_locked(raw_cliprdr);
 
@@ -1842,63 +1874,101 @@ void RdpSessionContext::begin_remote_file_list_fetch(void* raw_cliprdr, uint32_t
 }
 
 void RdpSessionContext::advance_remote_file_transfer_locked(void* raw_cliprdr) {
-#if defined(NEXUSTS_HAS_FREERDP3_BINARY) && NEXUSTS_HAS_FREERDP3_BINARY == 1
-    auto* cliprdr = static_cast<CliprdrClientContext*>(raw_cliprdr);
-    if (!cliprdr || !cliprdr->ClientFileContentsRequest) {
-        abort_remote_file_transfer_locked(raw_cliprdr);
-        return;
-    }
+    constexpr uint32_t kFileContentsSizeFlag = 0x00000001u;
+    constexpr uint32_t kFileContentsRangeFlag = 0x00000002u;
+    constexpr uint32_t kRemotePullChunkBytes = 4u * 1024u * 1024u;
 
-    constexpr uint32_t kRemotePullChunkBytes = 2u * 1024u * 1024u;
+    auto send_file_contents_req = [&](
+        uint32_t stream_id,
+        uint32_t list_index,
+        uint32_t dw_flags,
+        uint64_t offset,
+        uint32_t cb_requested
+    ) -> bool {
+        if (file_contents_request_hook_) {
+            return file_contents_request_hook_(
+                stream_id,
+                list_index,
+                dw_flags,
+                offset,
+                cb_requested,
+                remote_file_transfer_.has_lock,
+                remote_file_transfer_.clip_data_id
+            );
+        }
+#if defined(NEXUSTS_HAS_FREERDP3_BINARY) && NEXUSTS_HAS_FREERDP3_BINARY == 1
+        auto* cliprdr = static_cast<CliprdrClientContext*>(raw_cliprdr);
+        if (!cliprdr || !cliprdr->ClientFileContentsRequest) {
+            return false;
+        }
+        CLIPRDR_FILE_CONTENTS_REQUEST req{};
+        req.common.msgType = CB_FILECONTENTS_REQUEST;
+        req.streamId = stream_id;
+        req.listIndex = list_index;
+        req.dwFlags = dw_flags;
+        req.nPositionLow = static_cast<UINT32>(offset & 0xFFFFFFFFULL);
+        req.nPositionHigh = static_cast<UINT32>((offset >> 32) & 0xFFFFFFFFULL);
+        req.cbRequested = cb_requested;
+        req.haveClipDataId = remote_file_transfer_.has_lock ? TRUE : FALSE;
+        req.clipDataId = remote_file_transfer_.clip_data_id;
+        return cliprdr->ClientFileContentsRequest(cliprdr, &req) == CHANNEL_RC_OK;
+#else
+        (void)raw_cliprdr;
+        return false;
+#endif
+    };
+
     while (remote_file_transfer_.current_index < remote_file_transfer_.entries.size()) {
         auto& entry = remote_file_transfer_.entries[remote_file_transfer_.current_index];
         if (entry.is_directory) {
-            if (remote_file_transfer_.active_ofs) {
-                remote_file_transfer_.active_ofs->close();
-                remote_file_transfer_.active_ofs.reset();
-                remote_file_transfer_.active_file_path.clear();
-            }
+            close_active_remote_file_locked(0u);
             ++remote_file_transfer_.current_index;
+            remote_file_transfer_.size_queried = false;
+            remote_file_transfer_.awaiting_size = false;
             remote_file_transfer_.current_offset = 0u;
             continue;
         }
-        if (!entry.has_known_size) {
+        // Always query FILECONTENTS_SIZE (IStream::Stat) first for every regular file:
+        // virtual/compressed Windows shell items often set FD_FILESIZE (0x40) with nFileSize=0
+        // in FILEDESCRIPTORW while reporting the real byte length via FILECONTENTS_SIZE.
+        if (!remote_file_transfer_.size_queried) {
             uint32_t stream_id = next_client_stream_id_++;
             if (stream_id == 0u) {
                 stream_id = next_client_stream_id_++;
             }
             remote_file_transfer_.awaiting_size = true;
             remote_file_transfer_.active_stream_id = stream_id;
-
-            CLIPRDR_FILE_CONTENTS_REQUEST req{};
-            req.common.msgType = CB_FILECONTENTS_REQUEST;
-            req.streamId = stream_id;
-            req.listIndex = static_cast<UINT32>(remote_file_transfer_.current_index);
-            req.dwFlags = FILECONTENTS_SIZE;
-            req.nPositionLow = 0u;
-            req.nPositionHigh = 0u;
-            req.cbRequested = 8u;
-            req.haveClipDataId = remote_file_transfer_.has_lock ? TRUE : FALSE;
-            req.clipDataId = remote_file_transfer_.clip_data_id;
-            if (cliprdr->ClientFileContentsRequest(cliprdr, &req) != CHANNEL_RC_OK) {
+            if (!send_file_contents_req(
+                    stream_id,
+                    static_cast<uint32_t>(remote_file_transfer_.current_index),
+                    kFileContentsSizeFlag,
+                    0u,
+                    8u
+                )) {
                 abort_remote_file_transfer_locked(raw_cliprdr);
             }
             return;
         }
         if (entry.file_size == 0u || remote_file_transfer_.current_offset >= entry.file_size) {
-            if (remote_file_transfer_.active_ofs) {
-                remote_file_transfer_.active_ofs->flush();
-                remote_file_transfer_.active_ofs->close();
-                remote_file_transfer_.active_ofs.reset();
-                remote_file_transfer_.active_file_path.clear();
-            }
-            if (entry.file_size == 0u) {
+            if (entry.file_size == 0u && remote_file_transfer_.active_fd < 0) {
                 const std::filesystem::path target_file =
                     std::filesystem::path(remote_file_transfer_.batch_root_dir) / entry.local_posix_path;
-                std::ofstream touch(target_file, std::ios::binary | std::ios::trunc);
-                (void)touch;
+                const std::string target_file_str = target_file.string();
+                int fd = -1;
+                do {
+                    fd = ::open(target_file_str.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+                } while (fd < 0 && errno == EINTR);
+                if (fd < 0) {
+                    abort_remote_file_transfer_locked(raw_cliprdr);
+                    return;
+                }
+                remote_file_transfer_.active_fd = fd;
+                remote_file_transfer_.active_file_path = target_file_str;
             }
+            close_active_remote_file_locked(entry.last_write_filetime);
             ++remote_file_transfer_.current_index;
+            remote_file_transfer_.size_queried = false;
+            remote_file_transfer_.awaiting_size = false;
             remote_file_transfer_.current_offset = 0u;
             continue;
         }
@@ -1911,42 +1981,34 @@ void RdpSessionContext::advance_remote_file_transfer_locked(void* raw_cliprdr) {
         }
         remote_file_transfer_.awaiting_size = false;
         remote_file_transfer_.active_stream_id = stream_id;
-
-        CLIPRDR_FILE_CONTENTS_REQUEST req{};
-        req.common.msgType = CB_FILECONTENTS_REQUEST;
-        req.streamId = stream_id;
-        req.listIndex = static_cast<UINT32>(remote_file_transfer_.current_index);
-        req.dwFlags = FILECONTENTS_RANGE;
-        req.nPositionLow = static_cast<UINT32>(remote_file_transfer_.current_offset & 0xFFFFFFFFULL);
-        req.nPositionHigh = static_cast<UINT32>((remote_file_transfer_.current_offset >> 32) & 0xFFFFFFFFULL);
-        req.cbRequested = chunk_req;
-        req.haveClipDataId = remote_file_transfer_.has_lock ? TRUE : FALSE;
-        req.clipDataId = remote_file_transfer_.clip_data_id;
-        if (cliprdr->ClientFileContentsRequest(cliprdr, &req) != CHANNEL_RC_OK) {
+        if (!send_file_contents_req(
+                stream_id,
+                static_cast<uint32_t>(remote_file_transfer_.current_index),
+                kFileContentsRangeFlag,
+                remote_file_transfer_.current_offset,
+                chunk_req
+            )) {
             abort_remote_file_transfer_locked(raw_cliprdr);
         }
         return;
     }
 
-    // All files & folders in the batch have been staged locally!
-    if (remote_file_transfer_.active_ofs) {
-        remote_file_transfer_.active_ofs->flush();
-        remote_file_transfer_.active_ofs->close();
-        remote_file_transfer_.active_ofs.reset();
-        remote_file_transfer_.active_file_path.clear();
+    // All files & folders in the batch have been staged locally as exact raw binaries!
+    close_active_remote_file_locked(0u);
+#if defined(NEXUSTS_HAS_FREERDP3_BINARY) && NEXUSTS_HAS_FREERDP3_BINARY == 1
+    if (remote_file_transfer_.has_lock && raw_cliprdr) {
+        auto* cliprdr = static_cast<CliprdrClientContext*>(raw_cliprdr);
+        if (cliprdr->ClientUnlockClipboardData) {
+            CLIPRDR_UNLOCK_CLIPBOARD_DATA unlock_pdu{};
+            unlock_pdu.common.msgType = CB_UNLOCK_CLIPDATA;
+            unlock_pdu.common.dataLen = 4u;
+            unlock_pdu.clipDataId = remote_file_transfer_.clip_data_id;
+            cliprdr->ClientUnlockClipboardData(cliprdr, &unlock_pdu);
+            remote_file_transfer_.has_lock = false;
+        }
     }
-    if (remote_file_transfer_.has_lock && cliprdr->ClientUnlockClipboardData) {
-        CLIPRDR_UNLOCK_CLIPBOARD_DATA unlock_pdu{};
-        unlock_pdu.common.msgType = CB_UNLOCK_CLIPDATA;
-        unlock_pdu.common.dataLen = 4u;
-        unlock_pdu.clipDataId = remote_file_transfer_.clip_data_id;
-        cliprdr->ClientUnlockClipboardData(cliprdr, &unlock_pdu);
-        remote_file_transfer_.has_lock = false;
-    }
-    remote_file_transfer_.active = false;
-#else
-    (void)raw_cliprdr;
 #endif
+    remote_file_transfer_.active = false;
 }
 
 void RdpSessionContext::handle_remote_file_group_descriptor_response(
@@ -1954,12 +2016,15 @@ void RdpSessionContext::handle_remote_file_group_descriptor_response(
     const uint8_t* data,
     size_t data_len
 ) {
-    constexpr uint64_t kMaxRemoteClipTotalBytes = 512ULL * 1024ULL * 1024ULL;
+    constexpr uint64_t kMaxRemoteClipTotalBytes = 16ULL * 1024ULL * 1024ULL * 1024ULL;
+    const bool is_ansi_fgd = server_fgd_is_ansi_.load(std::memory_order_acquire);
     std::vector<std::string> completed_roots;
     {
         std::lock_guard<std::mutex> lock(cliprdr_mutex_);
         std::vector<RdpClipboardFileEntry> parsed;
-        if (!data || data_len == 0u || !parse_and_sanitize_cliprdr_file_list(data, data_len, parsed)) {
+        if (!data ||
+            data_len == 0u ||
+            !parse_and_sanitize_cliprdr_file_list(data, data_len, parsed, is_ansi_fgd)) {
             abort_remote_file_transfer_locked(raw_cliprdr);
             return;
         }
@@ -2055,16 +2120,14 @@ void RdpSessionContext::handle_remote_file_group_descriptor_response(
             }
         }
 
-        if (remote_file_transfer_.active_ofs) {
-            remote_file_transfer_.active_ofs->close();
-            remote_file_transfer_.active_ofs.reset();
-        }
+        close_active_remote_file_locked(0u);
         remote_file_transfer_.active = true;
         remote_file_transfer_.batch_id = batch_id;
         remote_file_transfer_.batch_root_dir = canonical_batch.string();
         remote_file_transfer_.entries = std::move(parsed);
         remote_file_transfer_.top_level_staged_paths = std::move(top_roots);
         remote_file_transfer_.current_index = 0u;
+        remote_file_transfer_.size_queried = false;
         remote_file_transfer_.awaiting_size = false;
         remote_file_transfer_.current_offset = 0u;
         remote_file_transfer_.total_bytes_written = 0u;
@@ -2090,7 +2153,7 @@ void RdpSessionContext::handle_remote_file_contents_response(
     const uint8_t* data,
     size_t data_len
 ) {
-    constexpr uint64_t kMaxRemoteClipTotalBytes = 512ULL * 1024ULL * 1024ULL;
+    constexpr uint64_t kMaxRemoteClipTotalBytes = 16ULL * 1024ULL * 1024ULL * 1024ULL;
     std::vector<std::string> completed_roots;
     {
         std::lock_guard<std::mutex> lock(cliprdr_mutex_);
@@ -2099,13 +2162,23 @@ void RdpSessionContext::handle_remote_file_contents_response(
             remote_file_transfer_.current_index >= remote_file_transfer_.entries.size()) {
             return;
         }
-        if (!ok) {
-            abort_remote_file_transfer_locked(raw_cliprdr);
-            return;
-        }
-
         auto& entry = remote_file_transfer_.entries[remote_file_transfer_.current_index];
-        if (remote_file_transfer_.awaiting_size) {
+        if (!ok) {
+            if (remote_file_transfer_.awaiting_size && entry.has_known_size) {
+                // Fallback to FILEDESCRIPTOR FD_FILESIZE when a server rejects FILECONTENTS_SIZE
+                remote_file_transfer_.awaiting_size = false;
+                remote_file_transfer_.size_queried = true;
+                remote_file_transfer_.current_offset = 0u;
+                advance_remote_file_transfer_locked(raw_cliprdr);
+                if (!remote_file_transfer_.active && !remote_file_transfer_.top_level_staged_paths.empty()) {
+                    completed_roots = std::move(remote_file_transfer_.top_level_staged_paths);
+                    remote_file_transfer_ = RemoteFileTransferState{};
+                }
+            } else {
+                abort_remote_file_transfer_locked(raw_cliprdr);
+                return;
+            }
+        } else if (remote_file_transfer_.awaiting_size) {
             if (!data || data_len < 8u) {
                 abort_remote_file_transfer_locked(raw_cliprdr);
                 return;
@@ -2121,41 +2194,63 @@ void RdpSessionContext::handle_remote_file_contents_response(
             }
             entry.file_size = remote_sz;
             entry.has_known_size = true;
+            remote_file_transfer_.size_queried = true;
             remote_file_transfer_.awaiting_size = false;
             remote_file_transfer_.current_offset = 0u;
+
+            advance_remote_file_transfer_locked(raw_cliprdr);
+            if (!remote_file_transfer_.active && !remote_file_transfer_.top_level_staged_paths.empty()) {
+                completed_roots = std::move(remote_file_transfer_.top_level_staged_paths);
+                remote_file_transfer_ = RemoteFileTransferState{};
+            }
         } else {
+            if (!data && data_len > 0u) {
+                abort_remote_file_transfer_locked(raw_cliprdr);
+                return;
+            }
             const std::filesystem::path target_file =
                 std::filesystem::path(remote_file_transfer_.batch_root_dir) / entry.local_posix_path;
             const std::string target_file_str = target_file.string();
-            if (!remote_file_transfer_.active_ofs ||
-                !remote_file_transfer_.active_ofs->is_open() ||
+            if (remote_file_transfer_.active_fd < 0 ||
                 remote_file_transfer_.active_file_path != target_file_str) {
-                if (remote_file_transfer_.active_ofs) {
-                    remote_file_transfer_.active_ofs->close();
-                    remote_file_transfer_.active_ofs.reset();
-                }
-                const auto open_mode = std::ios::binary |
-                    (remote_file_transfer_.current_offset == 0u ? std::ios::trunc : std::ios::app);
-                auto ofs = std::make_unique<std::ofstream>(target_file, open_mode);
-                if (!ofs || !ofs->is_open()) {
+                close_active_remote_file_locked(0u);
+                const int open_flags = O_WRONLY | O_CREAT |
+                    (remote_file_transfer_.current_offset == 0u ? O_TRUNC : O_APPEND);
+                int fd = -1;
+                do {
+                    fd = ::open(target_file_str.c_str(), open_flags, 0644);
+                } while (fd < 0 && errno == EINTR);
+                if (fd < 0) {
                     abort_remote_file_transfer_locked(raw_cliprdr);
                     return;
                 }
+                remote_file_transfer_.active_fd = fd;
                 remote_file_transfer_.active_file_path = target_file_str;
-                remote_file_transfer_.active_ofs = std::move(ofs);
             }
-            if (data && data_len > 0u) {
+            if (data_len > 0u) {
                 if (remote_file_transfer_.total_bytes_written + data_len > kMaxRemoteClipTotalBytes) {
                     abort_remote_file_transfer_locked(raw_cliprdr);
                     return;
                 }
-                remote_file_transfer_.active_ofs->write(
-                    reinterpret_cast<const char*>(data),
-                    static_cast<std::streamsize>(data_len)
-                );
-                if (!(*remote_file_transfer_.active_ofs)) {
-                    abort_remote_file_transfer_locked(raw_cliprdr);
-                    return;
+                size_t total_written_chunk = 0u;
+                while (total_written_chunk < data_len) {
+                    const ssize_t nw = ::write(
+                        remote_file_transfer_.active_fd,
+                        data + total_written_chunk,
+                        data_len - total_written_chunk
+                    );
+                    if (nw < 0) {
+                        if (errno == EINTR) {
+                            continue;
+                        }
+                        abort_remote_file_transfer_locked(raw_cliprdr);
+                        return;
+                    }
+                    if (nw == 0) {
+                        abort_remote_file_transfer_locked(raw_cliprdr);
+                        return;
+                    }
+                    total_written_chunk += static_cast<size_t>(nw);
                 }
                 remote_file_transfer_.current_offset += data_len;
                 remote_file_transfer_.total_bytes_written += data_len;
@@ -2163,12 +2258,12 @@ void RdpSessionContext::handle_remote_file_contents_response(
                 // Early EOF from remote application stream
                 entry.file_size = remote_file_transfer_.current_offset;
             }
-        }
 
-        advance_remote_file_transfer_locked(raw_cliprdr);
-        if (!remote_file_transfer_.active && !remote_file_transfer_.top_level_staged_paths.empty()) {
-            completed_roots = std::move(remote_file_transfer_.top_level_staged_paths);
-            remote_file_transfer_ = RemoteFileTransferState{};
+            advance_remote_file_transfer_locked(raw_cliprdr);
+            if (!remote_file_transfer_.active && !remote_file_transfer_.top_level_staged_paths.empty()) {
+                completed_roots = std::move(remote_file_transfer_.top_level_staged_paths);
+                remote_file_transfer_ = RemoteFileTransferState{};
+            }
         }
     }
 
@@ -2265,12 +2360,16 @@ void RdpSessionContext::drain_queued_commands_on_event_thread(void* raw_instance
 
     // Transmit CB_FORMAT_LIST BEFORE synthetic scancodes / pointer clicks
     if (send_clipboard) {
+        std::shared_ptr<const std::vector<RdpClipboardFileEntry>> prebound_files;
+        if (channels_.local_clipboard_kind() == RdpClipboardContentKind::Files) {
+            prebound_files = channels_.local_clipboard_files();
+        }
         bool sent_wire_pdu = false;
         {
             std::lock_guard<std::mutex> clip_lock(cliprdr_mutex_);
             has_active_server_clip_data_id_ = false;
             active_server_clip_data_id_ = 0u;
-            active_fgd_snapshot_.reset();
+            active_fgd_snapshot_ = (prebound_files && !prebound_files->empty()) ? prebound_files : nullptr;
             if (cliprdr_context_) {
                 auto* cliprdr = static_cast<CliprdrClientContext*>(cliprdr_context_);
                 cliprdr_send_client_format_list(

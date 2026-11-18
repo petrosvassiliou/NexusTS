@@ -1,0 +1,1 @@
+• v0.8.10: Copia e incolla binario puro bit per bit senza modifiche via RDP (.txt, .exe, installer >8 MB fino a 16 GB, file da 0 byte e cartelle) preservando esattamente nome ed estensione originali
