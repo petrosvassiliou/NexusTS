@@ -2435,7 +2435,7 @@ class NexusWorkspaceComposeE2ETest {
     @Test
     fun v0814SidebarActiveConnectionFocusAndRemoteDriveChangeDetection() {
         val context = ApplicationProvider.getApplicationContext<Context>()
-        val vm = buildTestViewModel()
+        val vm = buildRealViewModel()
 
         val server1 = VaultConnection(
             id = "conn-srv-1",
@@ -2485,7 +2485,7 @@ class NexusWorkspaceComposeE2ETest {
         )
 
         // Verify SafLiveGoogleDriveBridge live remote change detection & automatic pull
-        val serializer = NxtsVaultSerializer(KdfSecurityParameters.interactiveTestParameters())
+        val serializer = buildFastSerializer()
         val passphrase = "test-vault-passphrase".toCharArray()
         var remoteBytes = ByteArray(0)
         val fakeTransport = object : SafByteTransport {
