@@ -93,4 +93,27 @@ swift test --package-path macos
 ./scripts/package-macos-app.sh --universal
 ```
 
+---
+
+## ChromeOS Offline PWA & Isolated Web App Edition (`chromeos-pwa/` — `.swbn` & Offline Service Worker)
+
+**NexusTS for ChromeOS** (`com.nexusts.app.chromeos`) delivers 1:1 feature parity and 100% offline operation from a single Dual-Build codebase:
+
+- **Signed Isolated Web App (`NexusTS-v*-ChromeOS-IWA.swbn`)**:
+  - Uses native ChromeOS **`Direct Sockets API` (`TCPSocket` / `UDPSocket`)**, **`Controlled Frame` (`<controlledframe>`)**, and **`Web Serial` (`navigator.serial`)** for 100% standalone offline raw TCP/UDP connections (RDP, SSHv2, SFTP v3, VNC, FTP, Telnet, Wake-on-LAN, TCP Ping & Port Scanner) with **zero companion binary**.
+  - Installable via Chrome Enterprise Policy (`IsolatedWebAppInstallForceList` with `NexusTS-v*-ChromeOS-IWA-update-manifest.json`) or on ChromeOS via `chrome://web-app-internals` (*Install IWA from Signed Web Bundle* with `#enable-isolated-web-apps-in-renderer` & `#enable-isolated-web-app-dev-mode`).
+- **Standard Offline PWA (`NexusTS-v*-ChromeOS-Offline-PWA.zip` + `nexusts-local-relay`)**:
+  - Precaches every HTML, CSS, ES module, icon, and the `nexusts_wasm.wasm` Rust Argon2id + AES-256-GCM & RFB/RDP accelerator via `sw.js` for 100% offline startup on any unmanaged Chromebook, with optional single-binary `nexusts-local-relay` (`x86_64` / `arm64`) inside ChromeOS Linux (Crostini).
+- **100% `.nxts` v2 & Google Drive Offline Sync Interoperability**:
+  - Shares the exact `NXTS\x00\x02` Argon2id + HKDF-SHA256 + AES-256-GCM wire format and 3-way `VaultDeltaConflictResolver` with macOS and Android, syncing automatically on startup, local edits, and remote changes via persistent ChromeOS `FileSystemFileHandle` in Google Drive ("Meine Ablage" / "My Drive" & Shared Drives, including offline-pinned files).
+
+### ChromeOS Build & Test
+
+```bash
+cd chromeos-pwa
+npm test
+npm run build
+```
+
+
 

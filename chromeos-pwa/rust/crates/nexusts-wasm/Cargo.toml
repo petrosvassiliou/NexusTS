@@ -1,0 +1,19 @@
+[package]
+name = "nexusts-wasm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+argon2 = { version = "0.5", default-features = false, features = ["alloc", "zeroize"] }
+aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc", "zeroize"] }
+hkdf = "0.12"
+sha2 = { version = "0.10", default-features = false }
+ed25519-dalek = { version = "2.1", default-features = false, features = ["alloc", "zeroize"] }
+des = "0.8"
+cipher = "0.4"
+base64 = { version = "0.22", default-features = false, features = ["alloc"] }
+zeroize = { version = "1.8", default-features = false, features = ["alloc", "derive"] }

@@ -1,0 +1,3 @@
+• NexusTS 0.9.0: Neue 100 % offlinefähige ChromeOS-PWA & Isolated Web App (.swbn) mit 1:1 Funktionsumfang.
+• Native ChromeOS Direct Sockets (RDP, SSH, SFTP, VNC, FTP, Telnet, WoL) + optionales Linux/Crostini-Relay.
+• Byte-identische Argon2id + AES-256-GCM .nxts-Tresore & automatischer Google-Drive-Sync zwischen ChromeOS, Android & macOS.

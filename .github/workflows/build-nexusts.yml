@@ -21,7 +21,7 @@ on:
       release_tag:
         description: "Tag name when publishing via workflow_dispatch"
         required: false
-        default: "v0.8.14"
+        default: "v0.9.0"
         type: string
 
 permissions:
@@ -319,7 +319,7 @@ jobs:
           set -euo pipefail
           TAG_NAME="${GITHUB_REF_NAME}"
           if [[ "${TAG_NAME}" != v* ]]; then
-            TAG_NAME="${{ inputs.release_tag || 'v0.8.14' }}"
+            TAG_NAME="${{ inputs.release_tag || 'v0.9.0' }}"
           fi
           echo "tag_name=${TAG_NAME}" >> "${GITHUB_OUTPUT}"
 
@@ -346,33 +346,27 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.stage.outputs.tag_name }}
-          name: "NexusTS ${{ steps.stage.outputs.tag_name }} — Automatic Google Drive Sync, Tabbed Settings, Full-Size macOS AppIcon & Discreet Tooltips"
+          name: "NexusTS ${{ steps.stage.outputs.tag_name }} — ChromeOS Offline PWA & Isolated Web App (.swbn) + Cross-Platform Parity"
           draft: false
           prerelease: ${{ contains(steps.stage.outputs.tag_name, '-') }}
           generate_release_notes: true
           body: |
-            ## NexusTS ${{ steps.stage.outputs.tag_name }} (`com.nexusts.app` / `com.nexusts.app.macos`)
-            **Native Remote Management & Connection Manager for Googlebook OS, Android Tablets & macOS**
+            ## NexusTS ${{ steps.stage.outputs.tag_name }} (`com.nexusts.app` / `com.nexusts.app.macos` / `com.nexusts.app.chromeos`)
+            **Native & Offline Remote Management Workspace for ChromeOS (IWA & PWA), Googlebook OS, Android Tablets & macOS**
 
-            > **Automatic & Simplified Google Drive Sync, Unified Tabbed Settings, Full-Size macOS AppIcon, Discreet Tooltips & Sidebar Tab Switching (`0.8.14` / `versionCode = 10814`)**: Simplifies Google Drive Sync into a single one-click card with automatic sync on startup, local edits, and remote changes; replaces the top-bar dropdown with a `⚙ Settings` button opening a unified tabbed Settings screen; fixes macOS Dock AppIcon sizing (`832×832` continuous Apple superellipse + `Assets.car`); adds discreet Liquid Glass tooltips with shortcut pills; and switches directly to active session tabs when clicking connections in the sidebar.
+            > **ChromeOS Offline PWA + Isolated Web App Dual-Build (`0.9.0` / `versionCode = 10900`)**: Introduces the 100% offline-capable ChromeOS edition with 1:1 feature parity — packaged both as a **Signed Isolated Web App (`.swbn`)** with native ChromeOS `Direct Sockets API` (`TCPSocket` / `UDPSocket`) for standalone raw RDP, SSH, SFTP, VNC, FTP, Telnet & Wake-on-LAN without any helper process, and as a **Standard Offline PWA (`.zip`)** with Service Worker precaching + optional `nexusts-local-relay` Crostini companion binary. Byte-for-byte compatible `.nxts` v2 Argon2id + AES-256-GCM vaults and automatic Google Drive sync across ChromeOS, macOS, and Android.
 
-            ### Signed Deliverables (100% In-Place Upgrade Compatible)
-            - **`NexusTS-${{ steps.stage.outputs.tag_name }}-googlebook-android-release.apk`**: Cryptographically signed (APK Signature Scheme v2/v3/v4, RSA-4096) universal `arm64-v8a` + `x86_64` APK with 16 KB ELF page alignment (`0x4000`) and 100% Google Play Protect compliance (`versionCode = 10814`).
-            - **`NexusTS-${{ steps.stage.outputs.tag_name }}-playstore-release.aab`**: Signed Android App Bundle for optional Managed Google Play / internal distribution.
-            - **`NexusTS-${{ steps.stage.outputs.tag_name }}-macOS-Universal.zip` & `.dmg`**: Self-contained Universal2 (`arm64` + `x86_64`) macOS application bundle statically linking OpenSSL 3.4.1 + Cisco OpenH264 2.5.0 + FreeRDP 3.12.0 (`.zip` powers one-click in-app updates without downloading a `.dmg`).
-            - **`nexusts-upload-certificate.pem` & `oauth-and-mdm-registration.json`**: Public X.509 upload certificate (`SHA-1: A6:AF:15:A9:BF:0B:FE:38:D4:66:46:3E:3E:72:A6:5B:4F:9C:4D:F6`, `SHA-256: 4A:BD:80:F1:20:14:B9:88:09:1C:97:92:2F:87:02:D1:BF:B7:93:9C:73:B6:9A:DB:1A:9B:76:30:6A:30:27:82`) and Managed Google Play `app_restrictions` template.
+            ### Signed Deliverables
+            - **`NexusTS-${{ steps.stage.outputs.tag_name }}-ChromeOS-IWA.swbn` & `update-manifest.json`**: Signed ChromeOS Isolated Web App bundle (`isolated-app://`) with native `Direct Sockets`, `Controlled Frame`, and `Web Serial` — 100% standalone & offline.
+            - **`NexusTS-${{ steps.stage.outputs.tag_name }}-ChromeOS-Offline-PWA.zip` + `nexusts-local-relay` (`x86_64` & `arm64`)**: Self-contained Offline PWA bundle + optional zero-dependency Linux/Crostini local socket relay for unmanaged Chromebooks.
+            - **`NexusTS-${{ steps.stage.outputs.tag_name }}-googlebook-android-release.apk` & `.aab`**: Signed (APK Signature Scheme v2/v3/v4, RSA-4096) universal `arm64-v8a` + `x86_64` APK (`versionCode = 10900`) with 16 KB ELF page alignment.
+            - **`NexusTS-${{ steps.stage.outputs.tag_name }}-macOS-Universal.zip` & `.dmg`**: Self-contained Universal2 (`arm64` + `x86_64`) macOS application bundle.
 
             ### Highlights in ${{ steps.stage.outputs.tag_name }}
-            - **Simplified & Automatic Google Drive Sync**:
-              - Streamlines Google Drive Sync into a single clean card (Create Synced Vault, Open Existing Vault, Sync Now, Disconnect — zero OAuth Client IDs, Folder IDs, SHA-1s, or VectorClock noise) and automatically syncs **(1) on startup / unlock**, **(2) on local vault saves (debounced)**, and **(3) whenever remote vault changes are detected** (`DispatchSource` + activation & hash watcher on macOS; `ContentObserver` + `ON_RESUME` & SHA-256 watcher on Android/Chromebook).
-            - **Unified `⚙` Settings Button & Tabbed Settings Screen**:
-              - Replaces the top-bar dropdown menu with a clean `⚙ Settings` button (`⌘,` on macOS) opening a unified tabbed Settings screen (`General`, `Google Drive Sync`, `Security`, `Credentials`, `Gateways`, `Templates`, `Tasks`, `Updates`) with instant `← Connections` return to live sessions.
-            - **Standard Full-Size macOS AppIcon (`Assets.car` + `AppIcon.icns`)**:
-              - Renders the macOS icon on Apple's exact `832×832` continuous superellipse (`RoundedRectangle(..., style: .continuous)`) inside `1024×1024` with zero outer shadow bleed so macOS 26 Tahoe renders NexusTS at full `1.0×` Dock scale alongside native apps.
-            - **Discreet Liquid Glass Tooltips Across Toolbar & Workspace**:
-              - Adds non-activating, click-through Liquid Glass capsule tooltips with compact shortcut badges across all macOS unified toolbar items and workspace controls.
-            - **Sidebar Click Switches to Active Connection**:
-              - Clicking a connection in the sidebar switches immediately to its open session tab (or brings its detached session window forward) when active, while leaving inactive connections untouched until launched.
+            - **100% Offline ChromeOS Isolated Web App (`.swbn`) & Standard Offline PWA**:
+              - Zero external CDN dependencies; precaches all HTML, CSS, ES modules, icons, and the `nexusts_wasm.wasm` Rust cryptography & RFB/RDP accelerator for instant offline startup.
+            - **1:1 Protocol & Enterprise Vault Parity**:
+              - Byte-for-byte compatible `.nxts` v2 (`NXTS\x00\x02`) Argon2id + HKDF-SHA256 + AES-256-GCM vaults, OpenSSH Ed25519 key generator, live RFC 6238 TOTP codes, Royal TS (`.rtsz`/`.rtsx`), KeePass XML, Bitwarden, 1Password & CSV import/export, cascading folder inheritance, Smart Folders, multi-pane split/quad tiling, discreet Liquid Glass tooltips, sidebar active-tab switching, Unified 8-Tab Settings, and automatic offline-capable Google Drive sync via ChromeOS Files (`FileSystemFileHandle`).
           files: release-assets/*
 
       - name: Check Optional Google Play Service Account Secret

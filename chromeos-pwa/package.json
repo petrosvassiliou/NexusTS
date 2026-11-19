@@ -1,0 +1,12 @@
+{
+  "name": "nexusts-chromeos-pwa",
+  "version": "0.9.0",
+  "private": true,
+  "type": "module",
+  "description": "NexusTS ChromeOS Offline PWA & Isolated Web App (.swbn) with Direct Sockets",
+  "scripts": {
+    "icons": "python3 scripts/generate-icons.py",
+    "build": "node scripts/build-chromeos-bundles.mjs",
+    "test": "node --test tests/chromeos-pwa.test.mjs"
+  }
+}
