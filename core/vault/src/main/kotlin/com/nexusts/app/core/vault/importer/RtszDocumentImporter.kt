@@ -897,9 +897,11 @@ class RtszDocumentImporter {
             } else {
                 elem.childInt("RDPPort", "Port", "ServerPort") ?: uriPortFallback ?: 3389
             }
-            val hasExplicitHvEnhanced = elem.hasDirectChild("HyperVEnhancedSessionMode") || elem.hasDirectChild("EnhancedSessionMode")
             val hvEnhancedSession = elem.childBoolean("HyperVEnhancedSessionMode", "EnhancedSessionMode", default = true)
-            val hasExplicitClip = elem.hasDirectChild("RedirectClipboard") || elem.hasDirectChild("DisableClipboard")
+            val hvEnhancedCustomized = elem.childBoolean(
+                "HyperVEnhancedSessionCustomized",
+                default = !hvEnhancedSession
+            )
             val redirectClip = if (elem.hasDirectChild("RedirectClipboard")) {
                 elem.childBoolean("RedirectClipboard", default = true)
             } else if (elem.hasDirectChild("DisableClipboard")) {
@@ -907,6 +909,10 @@ class RtszDocumentImporter {
             } else {
                 true
             }
+            val redirectClipCustomized = elem.childBoolean(
+                "RedirectClipboardCustomized",
+                default = !redirectClip
+            )
             val audioModeRaw = elem.childText("AudioRedirectionMode").trim()
             val audioMode = when {
                 audioModeRaw == "1" || audioModeRaw.contains("Remote", true) ->
@@ -971,7 +977,7 @@ class RtszDocumentImporter {
                 selectedMonitorIds = monitorIds,
                 colorDepthBits = elem.childText("ColorDepth").toIntOrNull()?.takeIf { it in listOf(8, 15, 16, 24, 32) } ?: 32,
                 redirectClipboard = redirectClip,
-                redirectClipboardCustomized = hasExplicitClip,
+                redirectClipboardCustomized = redirectClipCustomized,
                 audioRedirectionMode = audioMode,
                 redirectAudioPlayback = if (elem.hasDirectChild("RedirectAudioPlayback")) {
                     elem.childBoolean("RedirectAudioPlayback", default = true)
@@ -1012,7 +1018,7 @@ class RtszDocumentImporter {
                 ),
                 hyperVVmId = hvInstance,
                 hyperVEnhancedSession = hvEnhancedSession,
-                hyperVEnhancedSessionCustomized = hasExplicitHvEnhanced
+                hyperVEnhancedSessionCustomized = hvEnhancedCustomized
             )
         }
 

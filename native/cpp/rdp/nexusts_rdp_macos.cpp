@@ -1083,20 +1083,41 @@ bool nexusts_rdp_self_test_cliprdr_binary_roundtrip(const char* work_dir_utf8) {
 
 #if defined(NEXUSTS_HAS_FREERDP3_BINARY) && NEXUSTS_HAS_FREERDP3_BINARY == 1
     // v0.8.12 Regression 6: Verify FreeRDP 3.x static virtual channel table & CLIPRDR feature mask
-    if (!freerdp_channels_load_static_addin_entry("cliprdr", nullptr, nullptr, FREERDP_ADDIN_CHANNEL_STATIC) ||
-        !freerdp_channels_load_static_addin_entry("rdpdr", nullptr, nullptr, FREERDP_ADDIN_CHANNEL_STATIC) ||
+    // FreeRDP 3.x SVC plugins (cliprdr, rdpdr, drdynvc) export VirtualChannelEntryEx, so match
+    // freerdp_client_load_static_channel_addin() by probing ENTRYEX first, then STATIC.
+    auto has_static_svc = [](const char* svc_name) -> bool {
+        return freerdp_channels_load_static_addin_entry(
+                   svc_name,
+                   nullptr,
+                   nullptr,
+                   FREERDP_ADDIN_CHANNEL_STATIC | FREERDP_ADDIN_CHANNEL_ENTRYEX
+               ) != nullptr ||
+               freerdp_channels_load_static_addin_entry(
+                   svc_name,
+                   nullptr,
+                   nullptr,
+                   FREERDP_ADDIN_CHANNEL_STATIC
+               ) != nullptr;
+    };
+    if (!has_static_svc("cliprdr") ||
+        !has_static_svc("rdpdr") ||
+        !has_static_svc("drdynvc") ||
         !freerdp_channels_load_static_addin_entry("disp", nullptr, nullptr, FREERDP_ADDIN_CHANNEL_DYNAMIC) ||
         !freerdp_channels_load_static_addin_entry("rdpgfx", nullptr, nullptr, FREERDP_ADDIN_CHANNEL_DYNAMIC)) {
+        std::fprintf(stderr, "[NexusTS Self-Test] Missing required FreeRDP 3.x static channel addin entry\n");
         return false;
     }
     if (freerdp_register_addin_provider(freerdp_channels_load_static_addin_entry, 0) != CHANNEL_RC_OK) {
+        std::fprintf(stderr, "[NexusTS Self-Test] freerdp_register_addin_provider failed\n");
         return false;
     }
     freerdp* probe_inst = freerdp_new();
     if (!probe_inst) {
+        std::fprintf(stderr, "[NexusTS Self-Test] freerdp_new() returned nullptr\n");
         return false;
     }
     if (!freerdp_context_new(probe_inst)) {
+        std::fprintf(stderr, "[NexusTS Self-Test] freerdp_context_new() failed\n");
         freerdp_free(probe_inst);
         return false;
     }
@@ -1106,18 +1127,27 @@ bool nexusts_rdp_self_test_cliprdr_binary_roundtrip(const char* work_dir_utf8) {
     std::filesystem::create_directories(probe_cfg, ec);
     freerdp_settings_set_string(probe_settings, FreeRDP_ConfigPath, probe_cfg.c_str());
     freerdp_settings_set_bool(probe_settings, FreeRDP_RedirectClipboard, TRUE);
+    freerdp_settings_set_bool(probe_settings, FreeRDP_SupportDisplayControl, TRUE);
+    freerdp_settings_set_bool(probe_settings, FreeRDP_SupportGraphicsPipeline, TRUE);
     constexpr UINT32 kExpectedMask =
         CLIPRDR_FLAG_LOCAL_TO_REMOTE |
         CLIPRDR_FLAG_LOCAL_TO_REMOTE_FILES |
         CLIPRDR_FLAG_REMOTE_TO_LOCAL |
         CLIPRDR_FLAG_REMOTE_TO_LOCAL_FILES;
     freerdp_settings_set_uint32(probe_settings, FreeRDP_ClipboardFeatureMask, kExpectedMask);
+    const BOOL mask_ok =
+        (freerdp_settings_get_uint32(probe_settings, FreeRDP_ClipboardFeatureMask) == 0x33u);
     const BOOL addins_ok =
-        (freerdp_settings_get_uint32(probe_settings, FreeRDP_ClipboardFeatureMask) == 0x33u) &&
         freerdp_client_load_addins(probe_inst->context->channels, probe_settings);
     freerdp_context_free(probe_inst);
     freerdp_free(probe_inst);
-    if (!addins_ok) {
+    if (!mask_ok || !addins_ok) {
+        std::fprintf(
+            stderr,
+            "[NexusTS Self-Test] FreeRDP addins/mask probe failed (mask_ok=%d, addins_ok=%d)\n",
+            mask_ok ? 1 : 0,
+            addins_ok ? 1 : 0
+        );
         return false;
     }
 #endif

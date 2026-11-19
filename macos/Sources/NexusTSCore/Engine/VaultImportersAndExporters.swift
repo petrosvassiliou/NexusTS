@@ -886,7 +886,10 @@ private final class RoyalTsXmlSAXParser: NSObject, XMLParserDelegate {
                         rdp.hyperVVmId = vmGuid
                         if let explicitEnhanced = node.fields["HyperVEnhancedSessionMode"] ?? node.fields["EnhancedSessionMode"] {
                             rdp.hyperVEnhancedSession = parseBool(explicitEnhanced, default: true)
-                            rdp.hyperVEnhancedSessionCustomized = true
+                            rdp.hyperVEnhancedSessionCustomized = parseBool(
+                                node.fields["HyperVEnhancedSessionCustomized"],
+                                default: !rdp.hyperVEnhancedSession
+                            )
                         } else {
                             rdp.hyperVEnhancedSession = true
                         }
@@ -904,10 +907,16 @@ private final class RoyalTsXmlSAXParser: NSObject, XMLParserDelegate {
                     rdp.connectToConsoleAdmin = parseBool(node.fields["ConnectToAdministerOrConsole"])
                     if let explicitClip = node.fields["RedirectClipboard"] {
                         rdp.redirectClipboard = parseBool(explicitClip, default: true)
-                        rdp.redirectClipboardCustomized = true
+                        rdp.redirectClipboardCustomized = parseBool(
+                            node.fields["RedirectClipboardCustomized"],
+                            default: !rdp.redirectClipboard
+                        )
                     } else if let disableClip = node.fields["DisableClipboard"] {
                         rdp.redirectClipboard = !parseBool(disableClip, default: false)
-                        rdp.redirectClipboardCustomized = true
+                        rdp.redirectClipboardCustomized = parseBool(
+                            node.fields["RedirectClipboardCustomized"],
+                            default: !rdp.redirectClipboard
+                        )
                     }
                     if let explicitScaleStr = node.fields["DesktopScaleFactor"] ?? node.fields["ScaleFactor"],
                        let explicitScale = Int(explicitScaleStr.trimmingCharacters(in: .whitespacesAndNewlines)),
@@ -1467,6 +1476,7 @@ public enum VaultDocumentExporter {
                 lines.append("      <IgnoreCertificateWarning>\(rdp.ignoreCertificateWarnings ? "True" : "False")</IgnoreCertificateWarning>")
                 lines.append("      <ConnectToAdministerOrConsole>\(rdp.connectToConsoleAdmin ? "True" : "False")</ConnectToAdministerOrConsole>")
                 lines.append("      <RedirectClipboard>\(rdp.redirectClipboard ? "True" : "False")</RedirectClipboard>")
+                lines.append("      <RedirectClipboardCustomized>\(rdp.redirectClipboardCustomized ? "True" : "False")</RedirectClipboardCustomized>")
                 if rdp.hiDpiScaleCustomized {
                     lines.append("      <DesktopScaleFactor>\(rdp.desktopScaleFactorPercent)</DesktopScaleFactor>")
                 }
@@ -1475,6 +1485,7 @@ public enum VaultDocumentExporter {
                     lines.append("      <HyperVInstance>\(esc(rdp.hyperVVmId.trimmingCharacters(in: .whitespacesAndNewlines)))</HyperVInstance>")
                     lines.append("      <HyperVPort>\(rdp.effectiveRdpPort)</HyperVPort>")
                     lines.append("      <HyperVEnhancedSessionMode>\(rdp.hyperVEnhancedSession ? "True" : "False")</HyperVEnhancedSessionMode>")
+                    lines.append("      <HyperVEnhancedSessionCustomized>\(rdp.hyperVEnhancedSessionCustomized ? "True" : "False")</HyperVEnhancedSessionCustomized>")
                 }
             case .ssh(let ssh):
                 if conn.protocolType == .TELNET {

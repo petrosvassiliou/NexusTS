@@ -372,6 +372,10 @@ class VaultDocumentExporter {
                     appendXmlTag("HyperVInstance", settings.hyperVVmId.trim(), indent)
                     appendXmlTag("HyperVPort", effectivePort.toString(), indent)
                     appendXmlTag("HyperVEnhancedSessionMode", if (settings.hyperVEnhancedSession) "True" else "False", indent)
+                    appendXmlTag("HyperVEnhancedSessionCustomized", settings.hyperVEnhancedSessionCustomized.toString(), indent)
+                } else if (!settings.hyperVEnhancedSession || settings.hyperVEnhancedSessionCustomized) {
+                    appendXmlTag("HyperVEnhancedSessionMode", if (settings.hyperVEnhancedSession) "True" else "False", indent)
+                    appendXmlTag("HyperVEnhancedSessionCustomized", settings.hyperVEnhancedSessionCustomized.toString(), indent)
                 }
                 appendXmlTag("ConnectToAdministerOrConsole", settings.connectToConsoleAdmin.toString(), indent)
                 appendXmlTag("AutoAdjustRetinaDisplay", settings.hiDpiEnabled.toString(), indent)
@@ -398,6 +402,7 @@ class VaultDocumentExporter {
                     appendXmlTag("SelectedMonitorIds", settings.selectedMonitorIds.joinToString(","), indent)
                 }
                 appendXmlTag("RedirectClipboard", settings.redirectClipboard.toString(), indent)
+                appendXmlTag("RedirectClipboardCustomized", settings.redirectClipboardCustomized.toString(), indent)
                 val audioCode = when (settings.audioRedirectionMode) {
                     RdpAudioRedirectionMode.PLAY_ON_THIS_DEVICE -> "0"
                     RdpAudioRedirectionMode.PLAY_ON_REMOTE_HOST -> "1"
