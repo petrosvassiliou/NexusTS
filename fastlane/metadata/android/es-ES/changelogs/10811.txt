@@ -1,0 +1,1 @@
+• v0.8.11: Corrige copiar y pegar bidireccional de texto y archivos por RDP (MS-RDPECLIP/CLIPRDR): elimina bloqueos CB_LOCK_CLIPDATA inválidos del cliente (sin archivos .textClipping en Finder), transfiere FILECONTENTS_RANGE directo (.csv, .txt, .exe), aísla el portapapeles local/remoto, añade respaldo CF_UNICODETEXT y corrige los atajos ⌘C/⌘V y menú Edición sin colisión VK_LWIN.

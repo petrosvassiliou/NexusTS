@@ -352,11 +352,11 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
     }
 
     func testV118LocalizationUpgradeVersionAndVaultReplacementCompatibility() throws {
-        XCTAssertEqual(MacGitHubReleaseUpdater.currentVersion, "0.8.10")
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.10", isNewerThan: "0.8.9"))
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.10", isNewerThan: "0.8.8"))
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.10", isNewerThan: "0.8.7"))
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.10", isNewerThan: "0.3.0-beta.6"))
+        XCTAssertEqual(MacGitHubReleaseUpdater.currentVersion, "0.8.11")
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.11", isNewerThan: "0.8.10"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.11", isNewerThan: "0.8.9"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.11", isNewerThan: "0.8.8"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.11", isNewerThan: "0.3.0-beta.6"))
         XCTAssertEqual(LocalizedWorkspaceStrings.catalog(for: .en).studios, "Manage")
         XCTAssertEqual(LocalizedWorkspaceStrings.catalog(for: .en).logOffSession, "Log Off Session")
 
@@ -1154,6 +1154,94 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
         } else {
             XCTFail("Expected .files([server_config.txt, NexusInstaller_x64.exe, LaunchAgent.exe])")
         }
+    }
+
+    func testV0811RoyalTsClipboardImportAndPasteboardTextFileTransitions() throws {
+        // 1. Royal TS .rtsx import defaults redirectClipboard=true and honors explicit RedirectClipboard / DisableClipboard
+        let rtsxSample = """
+        <?xml version="1.0" encoding="utf-8"?>
+        <RTSZDocument>
+          <RoyalDocument>
+            <ID>doc-clip</ID>
+            <Name>Clipboard Lab</Name>
+            <RoyalRDSConnection>
+              <ID>rdp-default</ID>
+              <Name>Win11-Default</Name>
+              <URI>10.0.10.11</URI>
+            </RoyalRDSConnection>
+            <RoyalRDSConnection>
+              <ID>rdp-explicit-off</ID>
+              <Name>Win11-NoClip</Name>
+              <URI>10.0.10.12</URI>
+              <RedirectClipboard>False</RedirectClipboard>
+            </RoyalRDSConnection>
+            <RoyalRDSConnection>
+              <ID>rdp-disable-flag</ID>
+              <Name>Win11-DisabledFlag</Name>
+              <URI>10.0.10.13</URI>
+              <DisableClipboard>True</DisableClipboard>
+            </RoyalRDSConnection>
+          </RoyalDocument>
+        </RTSZDocument>
+        """
+        let imported = try EnterpriseVaultFormatImporter.importRoyalTsXml(Data(rtsxSample.utf8), vaultName: "Clipboard Lab")
+        XCTAssertEqual(imported.document.connections.count, 3)
+
+        let cDefault = try XCTUnwrap(imported.document.connections.first(where: { $0.id == "rdp-default" }))
+        if case .rdp(let sDefault) = cDefault.settings {
+            XCTAssertTrue(sDefault.redirectClipboard, "Imported Royal TS RDP connection must enable clipboard redirection by default")
+        } else {
+            XCTFail("Expected RDP settings")
+        }
+
+        let cOff = try XCTUnwrap(imported.document.connections.first(where: { $0.id == "rdp-explicit-off" }))
+        if case .rdp(let sOff) = cOff.settings {
+            XCTAssertFalse(sOff.redirectClipboard, "Explicit <RedirectClipboard>False</RedirectClipboard> must be honored")
+        } else {
+            XCTFail("Expected RDP settings")
+        }
+
+        let cDisable = try XCTUnwrap(imported.document.connections.first(where: { $0.id == "rdp-disable-flag" }))
+        if case .rdp(let sDisable) = cDisable.settings {
+            XCTAssertFalse(sDisable.redirectClipboard, "Explicit <DisableClipboard>True</DisableClipboard> must be honored")
+        } else {
+            XCTFail("Expected RDP settings")
+        }
+
+        // 2. Replacing 283 KB stale text on NSPasteboard with 1_Group_Mapping_Final.csv file URLs
+        //    must completely clear text so Finder pastes 1_Group_Mapping_Final.csv instead of a .textClipping!
+        let baseTmp = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+        let tempDir = baseTmp.appendingPathComponent("nexusts-v0811-clip-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let csvFile = tempDir.appendingPathComponent("1_Group_Mapping_Final.csv")
+        let staleText = String(repeating: "GroupID;SamAccountName;DisplayName;München\r\n", count: 6500)
+        try Data(staleText.utf8).write(to: csvFile)
+        let expectedCsvPath = csvFile.resolvingSymlinksInPath().standardizedFileURL.path
+
+        let pb = NSPasteboard.withUniqueName()
+        defer { pb.releaseGlobally() }
+
+        pb.clearContents()
+        XCTAssertTrue(pb.setString(staleText, forType: .string))
+        XCTAssertEqual(MacPasteboardClipboardExtractor.extractClipboardPayload(from: pb), .text(staleText))
+
+        // Simulate NativeRdpSession / RdpSessionView publishing staged remote file URLs onto NSPasteboard
+        pb.clearContents()
+        XCTAssertTrue(pb.writeObjects([NSURL(fileURLWithPath: expectedCsvPath)]))
+        XCTAssertNil(pb.string(forType: .string), "Stale text must be completely cleared when file URLs are written")
+        if case .files(let paths) = MacPasteboardClipboardExtractor.extractClipboardPayload(from: pb) {
+            XCTAssertEqual(paths.map { $0.resolvingSymlinksIfPossible() }, [expectedCsvPath])
+        } else {
+            XCTFail("Expected .files([1_Group_Mapping_Final.csv]) after overwriting stale text")
+        }
+
+        // Simulate subsequent Remote -> Local text copy overwriting file URLs cleanly
+        let remoteText = "Fehlerbericht München: äöüßÄÖÜ€ — Zeile 1\nZeile 2"
+        pb.clearContents()
+        XCTAssertTrue(pb.setString(remoteText, forType: .string))
+        XCTAssertEqual(MacPasteboardClipboardExtractor.extractClipboardPayload(from: pb), .text(remoteText))
     }
 }
 

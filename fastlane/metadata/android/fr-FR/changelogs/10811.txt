@@ -1,0 +1,1 @@
+• v0.8.11 : Corrige le copier-coller bidirectionnel de texte et de fichiers via RDP (MS-RDPECLIP/CLIPRDR) : supprime le verrou client CB_LOCK_CLIPDATA erroné (plus de fichiers .textClipping dans le Finder), transfert FILECONTENTS_RANGE direct (.csv, .txt, .exe), isolation du presse-papiers local/distant, repli CF_UNICODETEXT et raccourcis ⌘C/⌘V sans collision VK_LWIN.

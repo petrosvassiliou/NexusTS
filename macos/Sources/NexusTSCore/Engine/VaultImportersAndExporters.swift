@@ -897,6 +897,11 @@ private final class RoyalTsXmlSAXParser: NSObject, XMLParserDelegate {
                         }
                     }
                     rdp.connectToConsoleAdmin = parseBool(node.fields["ConnectToAdministerOrConsole"])
+                    if let explicitClip = node.fields["RedirectClipboard"] {
+                        rdp.redirectClipboard = parseBool(explicitClip, default: true)
+                    } else if let disableClip = node.fields["DisableClipboard"] {
+                        rdp.redirectClipboard = !parseBool(disableClip, default: false)
+                    }
                     if let explicitScaleStr = node.fields["DesktopScaleFactor"] ?? node.fields["ScaleFactor"],
                        let explicitScale = Int(explicitScaleStr.trimmingCharacters(in: .whitespacesAndNewlines)),
                        (100...500).contains(explicitScale) {

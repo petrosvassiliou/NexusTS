@@ -423,21 +423,32 @@ final class TerminalKeyCaptureNSView: NSView {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         DispatchQueue.main.async { [weak self] in
-            guard let self, let win = self.window else { return }
+            guard let self, let win = self.window, win.attachedSheet == nil, !(win.firstResponder is NSText) else { return }
             win.makeFirstResponder(self)
         }
     }
 
+    @objc func copy(_ sender: Any?) {
+        onCopyScreenText?()
+    }
+
+    @objc func paste(_ sender: Any?) {
+        if let str = NSPasteboard.general.string(forType: .string), !str.isEmpty {
+            onPasteString?(str)
+        }
+    }
+
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        guard window?.firstResponder === self else {
+            return super.performKeyEquivalent(with: event)
+        }
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if flags == .command, let chars = event.charactersIgnoringModifiers?.lowercased() {
             if chars == "v" {
-                if let str = NSPasteboard.general.string(forType: .string), !str.isEmpty {
-                    onPasteString?(str)
-                }
+                paste(nil)
                 return true
             } else if chars == "c" {
-                onCopyScreenText?()
+                copy(nil)
                 return true
             }
         }

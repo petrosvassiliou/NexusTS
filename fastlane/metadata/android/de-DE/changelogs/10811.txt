@@ -1,0 +1,1 @@
+• v0.8.11: Behebt bidirektionales Kopieren & Einfügen von Text und Dateien über RDP (MS-RDPECLIP/CLIPRDR): keine ungültige Client-CB_LOCK_CLIPDATA-Sperre mehr (kein .textClipping im macOS Finder), direkter FILECONTENTS_RANGE-Transfer für Dateien mit bekannter Größe (.csv, .txt, .exe), Unicode-Text-Fallback sowie saubere ⌘C/⌘V- und Bearbeiten-Menü-Steuerung ohne VK_LWIN-Kollision.

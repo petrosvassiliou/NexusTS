@@ -414,6 +414,17 @@ public:
         uint32_t clip_data_id
     )>;
     void set_file_contents_request_hook(FileContentsRequestHook hook);
+    void set_client_requested_format(uint32_t format_id, uint32_t fallback_text_format_id) noexcept {
+        client_requested_format_id_.store(format_id, std::memory_order_release);
+        fallback_text_format_id_.store(fallback_text_format_id, std::memory_order_release);
+    }
+    uint32_t client_requested_format_id() const noexcept {
+        return client_requested_format_id_.load(std::memory_order_acquire);
+    }
+    uint32_t consume_fallback_text_format_id() noexcept {
+        return fallback_text_format_id_.exchange(0u, std::memory_order_acq_rel);
+    }
+    void try_request_fallback_text_format(void* cliprdr_ctx);
     void begin_remote_file_list_fetch(void* cliprdr_ctx, uint32_t format_id, bool is_ansi = false);
     uint32_t server_file_group_format_id() const noexcept {
         return server_fgd_format_id_.load(std::memory_order_acquire);
@@ -581,6 +592,8 @@ private:
     std::atomic<uint32_t> server_clip_caps_{0};
     std::atomic<uint32_t> server_fgd_format_id_{0};
     std::atomic<bool> server_fgd_is_ansi_{false};
+    std::atomic<uint32_t> client_requested_format_id_{0};
+    std::atomic<uint32_t> fallback_text_format_id_{0};
     [[maybe_unused]] void* cliprdr_context_{nullptr};
     [[maybe_unused]] uint32_t next_client_clip_data_id_{1};
     uint32_t next_client_stream_id_{1};

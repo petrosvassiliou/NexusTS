@@ -766,10 +766,6 @@ void RdpVirtualChannelHub::on_remote_clipboard_text(const std::string& utf8_text
     remote_clipboard_files_.clear();
     remote_clipboard_utf8_ = utf8_text;
     remote_kind_ = RdpClipboardContentKind::Text;
-    // Mirror into local_clipboard_utf8_ so pasting back without a new local copy never overwrites remote text
-    local_clipboard_files_.reset();
-    local_clipboard_utf8_ = utf8_text;
-    local_kind_ = RdpClipboardContentKind::Text;
     remote_clipboard_seq_.fetch_add(1u, std::memory_order_release);
 }
 
@@ -781,9 +777,6 @@ void RdpVirtualChannelHub::on_remote_clipboard_files(const std::vector<std::stri
     remote_clipboard_utf8_.clear();
     remote_clipboard_files_ = staged_root_paths;
     remote_kind_ = RdpClipboardContentKind::Files;
-    local_clipboard_utf8_.clear();
-    local_clipboard_files_.reset();
-    local_kind_ = RdpClipboardContentKind::None;
     remote_clipboard_seq_.fetch_add(1u, std::memory_order_release);
 }
 
@@ -792,9 +785,6 @@ void RdpVirtualChannelHub::mark_remote_clipboard_owner_changed() {
     remote_clipboard_utf8_.clear();
     remote_clipboard_files_.clear();
     remote_kind_ = RdpClipboardContentKind::None;
-    local_clipboard_utf8_.clear();
-    local_clipboard_files_.reset();
-    local_kind_ = RdpClipboardContentKind::None;
     remote_clipboard_seq_.fetch_add(1u, std::memory_order_release);
 }
 

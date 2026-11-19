@@ -748,6 +748,7 @@ bool nexusts_rdp_self_test_cliprdr_binary_roundtrip(const char* work_dir_utf8) {
         uint32_t dw_flags;
         uint64_t offset;
         uint32_t cb_requested;
+        bool has_clip_data_id;
     };
     std::deque<PendingReq> req_queue;
     session.set_file_contents_request_hook([&](
@@ -756,10 +757,17 @@ bool nexusts_rdp_self_test_cliprdr_binary_roundtrip(const char* work_dir_utf8) {
         uint32_t dw_flags,
         uint64_t offset,
         uint32_t cb_requested,
-        bool /*has_clip_data_id*/,
+        bool has_clip_data_id,
         uint32_t /*clip_data_id*/
     ) -> bool {
-        req_queue.push_back(PendingReq{stream_id, list_index, dw_flags, offset, cb_requested});
+        req_queue.push_back(PendingReq{
+            stream_id,
+            list_index,
+            dw_flags,
+            offset,
+            cb_requested,
+            has_clip_data_id
+        });
         return true;
     });
 
@@ -774,7 +782,8 @@ bool nexusts_rdp_self_test_cliprdr_binary_roundtrip(const char* work_dir_utf8) {
     while (!req_queue.empty() && safety_iters++ < 256u) {
         const PendingReq req = req_queue.front();
         req_queue.pop_front();
-        if (req.list_index >= bound_snapshot->size()) {
+        // MS-RDPECLIP 2.2.5.3: client-pulled FileContentsRequest MUST NOT fabricate clipDataId
+        if (req.has_clip_data_id || req.list_index >= bound_snapshot->size()) {
             return false;
         }
         const auto& src_entry = (*bound_snapshot)[req.list_index];
@@ -790,8 +799,8 @@ bool nexusts_rdp_self_test_cliprdr_binary_roundtrip(const char* work_dir_utf8) {
             }
             session.handle_remote_file_contents_response(nullptr, req.stream_id, true, sz_le, 8u);
         } else if (req.dw_flags == 0x2u) {
-            // Deliberately cap server response chunks to 1,500,000 bytes to exercise multi-chunk + short-read reassembly
-            const uint32_t capped = std::min<uint32_t>(req.cb_requested, 1500000u);
+            // Deliberately cap server response chunks to 600,000 bytes to exercise multi-chunk + short-read reassembly
+            const uint32_t capped = std::min<uint32_t>(req.cb_requested, 600000u);
             std::vector<uint8_t> slice;
             if (!nexusts::rdp::read_local_clipboard_file_range(
                     src_entry.local_posix_path,
@@ -873,8 +882,10 @@ bool nexusts_rdp_self_test_cliprdr_binary_roundtrip(const char* work_dir_utf8) {
     while (!req_queue.empty()) {
         const PendingReq req = req_queue.front();
         req_queue.pop_front();
+        if (req.has_clip_data_id) {
+            return false;
+        }
         if (req.dw_flags == 0x1u) {
-            // Simulate legacy server rejecting FILECONTENTS_SIZE so FD_FILESIZE fallback is exercised!
             session.handle_remote_file_contents_response(nullptr, req.stream_id, false, nullptr, 0u);
         } else if (req.dw_flags == 0x2u) {
             const size_t avail = req.offset < nested_exe_payload.size()
@@ -897,6 +908,91 @@ bool nexusts_rdp_self_test_cliprdr_binary_roundtrip(const char* work_dir_utf8) {
         std::filesystem::path(ansi_staged[0]).filename().string() != "legacy_installer.exe" ||
         !read_raw_file(ansi_staged[0], got_ansi_exe) ||
         got_ansi_exe != nested_exe_payload) {
+        return false;
+    }
+
+    // v0.8.11 Regression 1: 283 KB Windows Explorer CSV (1_Group_Mapping_Final.csv) with FD_FILESIZE > 0
+    // MUST issue FILECONTENTS_RANGE (0x2) directly without redundant FILECONTENTS_SIZE (0x1) or clipDataId.
+    const std::filesystem::path src_csv = src_dir / "1_Group_Mapping_Final.csv";
+    std::vector<uint8_t> csv_payload;
+    const std::string csv_header = "GroupID;SamAccountName;DisplayName;Department;Notes\r\n";
+    const std::string csv_row = "GRP-0042;sec_ops_dach;Security Operations München (äöüßÄÖÜ€);IT-Security;Active\r\n";
+    csv_payload.insert(csv_payload.end(), csv_header.begin(), csv_header.end());
+    while (csv_payload.size() < 289792u) {
+        csv_payload.insert(csv_payload.end(), csv_row.begin(), csv_row.end());
+    }
+    csv_payload.resize(289792u);
+    if (!write_raw_file(src_csv, csv_payload)) {
+        return false;
+    }
+    session.channels().on_local_clipboard_files({src_csv.string()});
+    const auto csv_snapshot = session.bind_active_file_group_descriptor_snapshot();
+    if (!csv_snapshot || csv_snapshot->size() != 1u) {
+        return false;
+    }
+    const std::vector<uint8_t> csv_fgdw = nexusts::rdp::serialize_cliprdr_file_list(*csv_snapshot);
+    session.begin_remote_file_list_fetch(nullptr, 0xC09Bu, /*is_ansi=*/false);
+    session.handle_remote_file_group_descriptor_response(nullptr, csv_fgdw.data(), csv_fgdw.size());
+    bool saw_size_query_for_known_csv = false;
+    while (!req_queue.empty()) {
+        const PendingReq req = req_queue.front();
+        req_queue.pop_front();
+        if (req.has_clip_data_id) {
+            return false;
+        }
+        if (req.dw_flags == 0x1u) {
+            saw_size_query_for_known_csv = true;
+            return false;
+        }
+        if (req.dw_flags == 0x2u) {
+            const size_t avail = req.offset < csv_payload.size()
+                ? (csv_payload.size() - static_cast<size_t>(req.offset))
+                : 0u;
+            const size_t take = std::min<size_t>(avail, req.cb_requested);
+            const uint8_t dummy = 0u;
+            session.handle_remote_file_contents_response(
+                nullptr,
+                req.stream_id,
+                true,
+                take > 0u ? (csv_payload.data() + req.offset) : &dummy,
+                take
+            );
+        }
+    }
+    const std::vector<std::string> csv_staged = session.channels().latest_remote_clipboard_files();
+    std::vector<uint8_t> got_csv;
+    if (saw_size_query_for_known_csv ||
+        csv_staged.size() != 1u ||
+        std::filesystem::path(csv_staged[0]).filename().string() != "1_Group_Mapping_Final.csv" ||
+        !read_raw_file(csv_staged[0], got_csv) ||
+        got_csv != csv_payload) {
+        return false;
+    }
+
+    // v0.8.11 Regression 2: Local clipboard text & files MUST survive incoming remote ServerFormatList / text updates
+    session.channels().on_local_clipboard_text("Local macOS text äöüß€");
+    session.channels().mark_remote_clipboard_owner_changed();
+    session.channels().on_remote_clipboard_text("Remote Windows text 12345");
+    if (session.channels().local_clipboard_text() != "Local macOS text äöüß€" ||
+        session.channels().latest_remote_clipboard_text() != "Remote Windows text 12345" ||
+        session.channels().remote_clipboard_kind() != nexusts::rdp::RdpClipboardContentKind::Text) {
+        return false;
+    }
+    session.channels().on_local_clipboard_files({src_csv.string()});
+    session.channels().mark_remote_clipboard_owner_changed();
+    const auto preserved_local_files = session.channels().local_clipboard_files();
+    if (!preserved_local_files || preserved_local_files->size() != 1u) {
+        return false;
+    }
+
+    // v0.8.11 Regression 3: Independent client_requested_format_id_ & hybrid fallback_text_format_id_ consumption
+    session.set_client_requested_format(0xC09Cu, 13u);
+    if (session.client_requested_format_id() != 0xC09Cu) {
+        return false;
+    }
+    session.begin_remote_file_list_fetch(nullptr, 0xC09Cu, /*is_ansi=*/false);
+    session.handle_remote_file_group_descriptor_response(nullptr, nullptr, 0u);
+    if (session.consume_fallback_text_format_id() != 0u) {
         return false;
     }
 

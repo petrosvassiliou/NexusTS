@@ -1,0 +1,1 @@
+• v0.8.11: Επιδιόρθωση αμφίδρομης αντιγραφής & επικόλλησης κειμένου και αρχείων μέσω RDP (MS-RDPECLIP/CLIPRDR): κατάργηση εσφαλμένου client CB_LOCK_CLIPDATA (χωρίς αρχεία .textClipping στο Finder), άμεση μεταφορά FILECONTENTS_RANGE (.csv, .txt, .exe), απομόνωση τοπικού/απομακρυσμένου προχείρου, εφεδρικό CF_UNICODETEXT και πλήρης υποστήριξη ⌘C/⌘V χωρίς σύγκρουση VK_LWIN.

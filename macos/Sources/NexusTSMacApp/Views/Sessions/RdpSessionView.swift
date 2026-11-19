@@ -110,6 +110,14 @@ public struct RdpSessionView: View {
 
                     Spacer(minLength: 8)
 
+                    Button("Start") {
+                        existingSession?.sendScancode(0x5B, keyDown: true, extended: true)
+                        existingSession?.sendScancode(0x5B, keyDown: false, extended: true)
+                    }
+                    .controlSize(.small)
+                    .disabled(!hudConnected)
+                    .help("Open Remote Windows Start Menu")
+
                     Button("Ctrl+Alt+Del") {
                         existingSession?.sendCtrlAltDel()
                     }
@@ -1049,6 +1057,7 @@ final class RdpPointerAndKeyNSView: NSView {
     private var lastPushedPayload: MacPasteboardPayload? = nil
     private var appDidBecomeActiveObserver: NSObjectProtocol?
     private var appDidResignActiveObserver: NSObjectProtocol?
+    private var windowDidBecomeKeyObserver: NSObjectProtocol?
     private var windowDidResignKeyObserver: NSObjectProtocol?
 
     private var heldModifierKeyCodes: Set<UInt16> = []
@@ -1071,6 +1080,9 @@ final class RdpPointerAndKeyNSView: NSView {
             NotificationCenter.default.removeObserver(obs)
         }
         if let obs = appDidResignActiveObserver {
+            NotificationCenter.default.removeObserver(obs)
+        }
+        if let obs = windowDidBecomeKeyObserver {
             NotificationCenter.default.removeObserver(obs)
         }
         if let obs = windowDidResignKeyObserver {
@@ -1273,6 +1285,21 @@ final class RdpPointerAndKeyNSView: NSView {
         super.viewWillMove(toWindow: newWindow)
     }
 
+    private func restoreFirstResponderIfAppropriate() {
+        guard let win = window,
+              win.isKeyWindow,
+              win.attachedSheet == nil,
+              !isHiddenOrHasHiddenAncestor else {
+            return
+        }
+        if !(win.firstResponder is NSText),
+           !(win.firstResponder is RdpPointerAndKeyNSView),
+           !(win.firstResponder is TerminalKeyCaptureNSView),
+           !(win.firstResponder is VncPointerAndKeyNSView) {
+            win.makeFirstResponder(self)
+        }
+    }
+
     private func startAppActivationObserverIfNeeded() {
         if appDidBecomeActiveObserver == nil {
             appDidBecomeActiveObserver = NotificationCenter.default.addObserver(
@@ -1280,8 +1307,12 @@ final class RdpPointerAndKeyNSView: NSView {
                 object: nil,
                 queue: .main
             ) { [weak self] _ in
-                guard let self, self.redirectClipboard, let session = self.session else { return }
-                _ = self.syncLocalClipboardToRemoteIfNeeded(session: session, forcePushToNative: false)
+                guard let self else { return }
+                self.restoreFirstResponderIfAppropriate()
+                if self.redirectClipboard, let session = self.session {
+                    self.pullRemoteClipboardIfUpdated(session: session)
+                    _ = self.syncLocalClipboardToRemoteIfNeeded(session: session, forcePushToNative: false)
+                }
             }
         }
         if appDidResignActiveObserver == nil {
@@ -1290,7 +1321,25 @@ final class RdpPointerAndKeyNSView: NSView {
                 object: nil,
                 queue: .main
             ) { [weak self] _ in
-                self?.releaseAllHeldModifiers()
+                guard let self else { return }
+                if self.redirectClipboard, let session = self.session {
+                    self.pullRemoteClipboardIfUpdated(session: session)
+                }
+                self.releaseAllHeldModifiers()
+            }
+        }
+        if windowDidBecomeKeyObserver == nil, let win = window {
+            windowDidBecomeKeyObserver = NotificationCenter.default.addObserver(
+                forName: NSWindow.didBecomeKeyNotification,
+                object: win,
+                queue: .main
+            ) { [weak self] _ in
+                guard let self else { return }
+                self.restoreFirstResponderIfAppropriate()
+                if self.redirectClipboard, let session = self.session {
+                    self.pullRemoteClipboardIfUpdated(session: session)
+                    _ = self.syncLocalClipboardToRemoteIfNeeded(session: session, forcePushToNative: false)
+                }
             }
         }
         if windowDidResignKeyObserver == nil, let win = window {
@@ -1312,6 +1361,10 @@ final class RdpPointerAndKeyNSView: NSView {
         if let obs = appDidResignActiveObserver {
             NotificationCenter.default.removeObserver(obs)
             appDidResignActiveObserver = nil
+        }
+        if let obs = windowDidBecomeKeyObserver {
+            NotificationCenter.default.removeObserver(obs)
+            windowDidBecomeKeyObserver = nil
         }
         if let obs = windowDidResignKeyObserver {
             NotificationCenter.default.removeObserver(obs)
@@ -1853,15 +1906,14 @@ final class RdpPointerAndKeyNSView: NSView {
 
     private func sendRemoteCtrlChord(scancode: UInt16) {
         guard let session else { return }
-        let physicalCtrlHeld = heldModifierKeyCodes.contains(0x3B) || heldModifierKeyCodes.contains(0x3E)
-        if !physicalCtrlHeld {
-            // Press Left Ctrl BEFORE releasing Left/Right Win so Windows never opens the Start Menu during ⌘C/⌘X/⌘A/⌘Z
-            session.sendScancode(0x1D, keyDown: true, extended: false)
-        }
         for code: UInt16 in [0x37, 0x36, 0x38, 0x3C] where heldModifierKeyCodes.remove(code) != nil {
             if let rel = MacRdpScancodeMapper.mapModifierKeyCode(code, captureRemoteShortcuts: true) {
                 session.sendScancode(rel.scancode, keyDown: false, extended: rel.extended)
             }
+        }
+        let physicalCtrlHeld = heldModifierKeyCodes.contains(0x3B) || heldModifierKeyCodes.contains(0x3E)
+        if !physicalCtrlHeld {
+            session.sendScancode(0x1D, keyDown: true, extended: false)
         }
         session.sendScancode(scancode, keyDown: true, extended: false)
         session.sendScancode(scancode, keyDown: false, extended: false)
@@ -1873,17 +1925,19 @@ final class RdpPointerAndKeyNSView: NSView {
     private func executeSynchronizedPaste() {
         guard let session else { return }
         if redirectClipboard {
-            _ = syncLocalClipboardToRemoteIfNeeded(session: session, forcePushToNative: false)
-            for code: UInt16 in [0x37, 0x36, 0x38, 0x3C, 0x3B, 0x3E] {
-                heldModifierKeyCodes.remove(code)
+            for code: UInt16 in [0x37, 0x36, 0x38, 0x3C] where heldModifierKeyCodes.remove(code) != nil {
+                if let rel = MacRdpScancodeMapper.mapModifierKeyCode(code, captureRemoteShortcuts: true) {
+                    session.sendScancode(rel.scancode, keyDown: false, extended: rel.extended)
+                }
             }
+            _ = syncLocalClipboardToRemoteIfNeeded(session: session, forcePushToNative: false)
             session.requestSynchronizedPaste()
         } else {
             sendRemoteCtrlChord(scancode: MacRdpScancodeMapper.MacCommandRemoteShortcut.paste.windowsCtrlScancode)
         }
     }
 
-    private func executeRemoteCommandShortcut(_ shortcut: MacRdpScancodeMapper.MacCommandRemoteShortcut) {
+    func executeRemoteCommandShortcut(_ shortcut: MacRdpScancodeMapper.MacCommandRemoteShortcut) {
         if shortcut == .paste {
             executeSynchronizedPaste()
             return
@@ -1942,15 +1996,19 @@ final class RdpPointerAndKeyNSView: NSView {
             return
         }
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        if flags.contains(.control) && heldModifierKeyCodes.isDisjoint(with: [0x3B, 0x3E]) {
-            heldModifierKeyCodes.insert(0x3B)
-            session?.sendScancode(0x1D, keyDown: true, extended: false)
-        }
         guard let mapped = MacRdpScancodeMapper.mapKeyCode(
             event.keyCode,
             captureRemoteShortcuts: captureRemoteShortcuts
         ) else {
             return
+        }
+        if flags.contains(.control) && heldModifierKeyCodes.isDisjoint(with: [0x3B, 0x3E]) {
+            heldModifierKeyCodes.insert(0x3B)
+            session?.sendScancode(0x1D, keyDown: true, extended: false)
+        }
+        if captureRemoteShortcuts && flags.contains(.command) && heldModifierKeyCodes.isDisjoint(with: [0x37, 0x36]) {
+            heldModifierKeyCodes.insert(0x37)
+            session?.sendScancode(0x5B, keyDown: true, extended: true)
         }
         session?.sendScancode(mapped.scancode, keyDown: true, extended: mapped.extended)
     }
@@ -1977,6 +2035,21 @@ final class RdpPointerAndKeyNSView: NSView {
 
     override func flagsChanged(with event: NSEvent) {
         let keyCode = event.keyCode
+        // Never send VK_LWIN down on bare Command (0x37/0x36) flagsChanged: on macOS, Command is the
+        // host shortcut and Ctrl-chord modifier (⌘C, ⌘V, ⌘X, ⌘A, ⌘Z, ⌘Tab). Only release VK_LWIN here
+        // if an explicit Win+<Key> chord (e.g. ⌘E / ⌘R) pressed it in keyDown(with:).
+        if keyCode == 0x37 || keyCode == 0x36 {
+            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            if !flags.contains(.command) {
+                for code: UInt16 in [0x37, 0x36] where heldModifierKeyCodes.remove(code) != nil {
+                    if let rel = MacRdpScancodeMapper.mapModifierKeyCode(code, captureRemoteShortcuts: true) {
+                        session?.sendScancode(rel.scancode, keyDown: false, extended: rel.extended)
+                    }
+                }
+            }
+            return
+        }
+
         guard let mapped = MacRdpScancodeMapper.mapModifierKeyCode(
             keyCode,
             captureRemoteShortcuts: captureRemoteShortcuts
@@ -2004,9 +2077,6 @@ final class RdpPointerAndKeyNSView: NSView {
         case 0x3A, 0x3D:
             familyActive = flags.contains(.option)
             familyCodes = [0x3A, 0x3D]
-        case 0x37, 0x36:
-            familyActive = flags.contains(.command)
-            familyCodes = [0x37, 0x36]
         default:
             familyActive = false
             familyCodes = [keyCode]

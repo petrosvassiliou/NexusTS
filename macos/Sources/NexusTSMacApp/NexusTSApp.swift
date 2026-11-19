@@ -178,6 +178,58 @@ struct NexusMenuBarCommands: Commands {
             .disabled(store.isVaultLocked)
         }
 
+        CommandGroup(replacing: .undoRedo) {
+            Button("Undo") {
+                dispatchEditAction(
+                    selector: Selector(("undo:")),
+                    rdpShortcut: .undo
+                )
+            }
+            .keyboardShortcut("z", modifiers: [.command])
+
+            Button("Redo") {
+                dispatchEditAction(
+                    selector: Selector(("redo:")),
+                    rdpShortcut: .redo
+                )
+            }
+            .keyboardShortcut("z", modifiers: [.command, .shift])
+        }
+
+        CommandGroup(replacing: .pasteboard) {
+            Button("Cut") {
+                dispatchEditAction(
+                    selector: #selector(NSText.cut(_:)),
+                    rdpShortcut: .cut
+                )
+            }
+            .keyboardShortcut("x", modifiers: [.command])
+
+            Button("Copy") {
+                dispatchEditAction(
+                    selector: #selector(NSText.copy(_:)),
+                    rdpShortcut: .copy
+                )
+            }
+            .keyboardShortcut("c", modifiers: [.command])
+
+            Button("Paste") {
+                dispatchEditAction(
+                    selector: #selector(NSText.paste(_:)),
+                    rdpShortcut: .paste
+                )
+            }
+            .keyboardShortcut("v", modifiers: [.command])
+
+            Button("Select All") {
+                dispatchEditAction(
+                    selector: #selector(NSText.selectAll(_:)),
+                    rdpShortcut: .selectAll
+                )
+            }
+            .keyboardShortcut("a", modifiers: [.command])
+        }
+
         CommandGroup(after: .toolbar) {
             Divider()
 
@@ -336,5 +388,78 @@ struct NexusMenuBarCommands: Commands {
                 Text(store.strings.resetDatabase)
             }
         }
+    }
+
+    private func findVisibleSessionView<T: NSView>(
+        ofType type: T.Type,
+        in root: NSView?,
+        matching predicate: (T) -> Bool = { _ in true }
+    ) -> T? {
+        guard let view = root, !view.isHidden else { return nil }
+        if let match = view as? T, predicate(match) {
+            return match
+        }
+        for sub in view.subviews {
+            if let found = findVisibleSessionView(ofType: type, in: sub, matching: predicate) {
+                return found
+            }
+        }
+        return nil
+    }
+
+    private func dispatchEditAction(
+        selector: Selector,
+        rdpShortcut: MacRdpScancodeMapper.MacCommandRemoteShortcut
+    ) {
+        let keyWin = NSApp.keyWindow
+        if let rdpView = keyWin?.firstResponder as? RdpPointerAndKeyNSView {
+            rdpView.executeRemoteCommandShortcut(rdpShortcut)
+            return
+        }
+        if let termView = keyWin?.firstResponder as? TerminalKeyCaptureNSView {
+            switch rdpShortcut {
+            case .copy:
+                termView.copy(nil)
+            case .paste:
+                termView.paste(nil)
+            default:
+                _ = NSApp.sendAction(selector, to: nil, from: nil)
+            }
+            return
+        }
+        if keyWin?.firstResponder is NSText ||
+            keyWin?.attachedSheet != nil ||
+            store.isPresentingQuickConnect {
+            _ = NSApp.sendAction(selector, to: nil, from: nil)
+            return
+        }
+        if let win = keyWin {
+            let preferredSession = store.focusedOrFirstActiveTab.flatMap { store.existingRdpController(for: $0) }
+            if let rdpView = (preferredSession.flatMap { target in
+                findVisibleSessionView(
+                    ofType: RdpPointerAndKeyNSView.self,
+                    in: win.contentView,
+                    matching: { $0.session === target }
+                )
+            }) ?? findVisibleSessionView(ofType: RdpPointerAndKeyNSView.self, in: win.contentView) {
+                win.makeFirstResponder(rdpView)
+                rdpView.executeRemoteCommandShortcut(rdpShortcut)
+                return
+            }
+            if let termView = findVisibleSessionView(ofType: TerminalKeyCaptureNSView.self, in: win.contentView) {
+                win.makeFirstResponder(termView)
+                switch rdpShortcut {
+                case .copy:
+                    termView.copy(nil)
+                    return
+                case .paste:
+                    termView.paste(nil)
+                    return
+                default:
+                    break
+                }
+            }
+        }
+        _ = NSApp.sendAction(selector, to: nil, from: nil)
     }
 }

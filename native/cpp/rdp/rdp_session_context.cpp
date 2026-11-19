@@ -537,11 +537,12 @@ UINT cliprdr_on_monitor_ready(CliprdrClientContext* cliprdr, const CLIPRDR_MONIT
         gen_caps.capabilitySetType = CB_CAPSTYPE_GENERAL;
         gen_caps.capabilitySetLength = CB_CAPSTYPE_GENERAL_LEN;
         gen_caps.version = CB_CAPS_VERSION_2;
+        // Match upstream FreeRDP 3.12 client_cliprdr_file.c: omit CB_CAN_LOCK_CLIPDATA because
+        // rdpclip.exe rejects client-initiated clipDataId on CB_FILECONTENTS_REQUEST on several Windows builds.
         gen_caps.generalFlags =
             CB_USE_LONG_FORMAT_NAMES |
             CB_STREAM_FILECLIP_ENABLED |
             CB_FILECLIP_NO_FILE_PATHS |
-            CB_CAN_LOCK_CLIPDATA |
             CB_HUGE_FILE_SUPPORT_ENABLED;
 
         CLIPRDR_CAPABILITIES caps{};
@@ -609,7 +610,7 @@ UINT cliprdr_on_server_format_list(CliprdrClientContext* cliprdr, const CLIPRDR_
     bool fgd_is_ansi = false;
     bool saw_unicode_fgd = false;
     bool has_unicode = false;
-    bool has_ansi = false;
+    UINT32 ansi_fmt = 0u;
     for (UINT32 i = 0; i < format_list->numFormats; ++i) {
         const UINT32 fmt_id = format_list->formats[i].formatId;
         const char* fmt_name = format_list->formats[i].formatName;
@@ -625,31 +626,43 @@ UINT cliprdr_on_server_format_list(CliprdrClientContext* cliprdr, const CLIPRDR_
             fgd_is_ansi = true;
         } else if (fmt_id == kWinCfUnicodeText) {
             has_unicode = true;
-        } else if (fmt_id == kWinCfText || fmt_id == kWinCfOemText) {
-            has_ansi = true;
+        } else if (fmt_id == kWinCfText) {
+            ansi_fmt = kWinCfText;
+        } else if (fmt_id == kWinCfOemText && ansi_fmt == 0u) {
+            ansi_fmt = kWinCfOemText;
         }
     }
 
+    const UINT32 text_fmt = has_unicode ? kWinCfUnicodeText : ansi_fmt;
+
     if (fgd_format_id != 0u && owner && cliprdr->ClientFormatDataRequest) {
+        owner->set_client_requested_format(fgd_format_id, text_fmt);
         owner->begin_remote_file_list_fetch(cliprdr, fgd_format_id, fgd_is_ansi);
-        cliprdr->lastRequestedFormatId = fgd_format_id;
         CLIPRDR_FORMAT_DATA_REQUEST req{};
         req.common.msgType = CB_FORMAT_DATA_REQUEST;
         req.requestedFormatId = fgd_format_id;
-        return cliprdr->ClientFormatDataRequest(cliprdr, &req);
+        const UINT rc = cliprdr->ClientFormatDataRequest(cliprdr, &req);
+        if (rc != CHANNEL_RC_OK) {
+            owner->try_request_fallback_text_format(cliprdr);
+        }
+        return rc;
     }
 
-    if ((has_unicode || has_ansi) && cliprdr->ClientFormatDataRequest) {
-        const UINT32 req_fmt = has_unicode ? kWinCfUnicodeText : kWinCfText;
-        cliprdr->lastRequestedFormatId = req_fmt;
+    if (text_fmt != 0u && cliprdr->ClientFormatDataRequest) {
+        if (owner) {
+            owner->set_client_requested_format(text_fmt, 0u);
+            owner->begin_remote_file_list_fetch(cliprdr, 0u, false);
+        }
         CLIPRDR_FORMAT_DATA_REQUEST req{};
         req.common.msgType = CB_FORMAT_DATA_REQUEST;
-        req.requestedFormatId = req_fmt;
+        req.requestedFormatId = text_fmt;
         return cliprdr->ClientFormatDataRequest(cliprdr, &req);
     }
 
     // Wake host UI so remote non-text/non-file clipboard updates (e.g. screenshots) clear stale mirror state
     if (owner) {
+        owner->set_client_requested_format(0u, 0u);
+        owner->begin_remote_file_list_fetch(cliprdr, 0u, false);
         owner->presenter().notify_frame_ready();
     }
     return CHANNEL_RC_OK;
@@ -857,8 +870,9 @@ UINT cliprdr_on_server_format_data_response(
         return CHANNEL_RC_OK;
     }
 
+    const UINT32 req_fmt = owner->client_requested_format_id();
     const UINT32 fgd_fmt = owner->server_file_group_format_id();
-    if (fgd_fmt != 0u && cliprdr->lastRequestedFormatId == fgd_fmt) {
+    if (fgd_fmt != 0u && req_fmt == fgd_fmt) {
         if ((response->common.msgFlags & CB_RESPONSE_OK) == 0u ||
             !response->requestedFormatData ||
             response->common.dataLen == 0u) {
@@ -873,16 +887,18 @@ UINT cliprdr_on_server_format_data_response(
         return CHANNEL_RC_OK;
     }
 
-    if ((response->common.msgFlags & CB_RESPONSE_OK) == 0 ||
+    if (req_fmt == 0u ||
+        (response->common.msgFlags & CB_RESPONSE_OK) == 0 ||
         !response->requestedFormatData ||
         response->common.dataLen == 0u) {
+        owner->presenter().notify_frame_ready();
         return CHANNEL_RC_OK;
     }
 
     std::string decoded;
-    if (cliprdr->lastRequestedFormatId == kWinCfUnicodeText) {
+    if (req_fmt == kWinCfUnicodeText) {
         decoded = decode_utf16le_clipboard_to_utf8(response->requestedFormatData, response->common.dataLen);
-    } else {
+    } else if (req_fmt == kWinCfText || req_fmt == kWinCfOemText) {
         const auto* chars = reinterpret_cast<const char*>(response->requestedFormatData);
         size_t len = 0u;
         while (len < response->common.dataLen && chars[len] != '\0') {
@@ -1617,16 +1633,21 @@ void RdpSessionContext::announce_local_clipboard_to_remote() {
 }
 
 void RdpSessionContext::enqueue_ctrl_v_locked() {
-    // Press Left Ctrl (0x1D) BEFORE releasing any held Left/Right Win (0x5B/0x5C extended)
-    // so Windows never interprets a Cmd->Ctrl transition as a bare Win-key Start Menu tap.
     constexpr size_t kLeftCtrlIdx = 0x1Du;
+    constexpr size_t kRightCtrlExtIdx = 256u + 0x1Du;
     constexpr size_t kLeftShiftIdx = 0x2Au;
     constexpr size_t kRightShiftIdx = 0x36u;
     constexpr size_t kLeftWinExtIdx = 256u + 0x5Bu;
     constexpr size_t kRightWinExtIdx = 256u + 0x5Cu;
 
-    pressed_scancodes_[kLeftCtrlIdx] = 1u;
-    pending_keys_.push_back(QueuedKeyEvent{0x1Du, /*key_down=*/true, /*extended=*/false});
+    const bool ctrl_already_held =
+        (pressed_scancodes_[kLeftCtrlIdx] != 0u) ||
+        (pressed_scancodes_[kRightCtrlExtIdx] != 0u);
+
+    if (!ctrl_already_held) {
+        pressed_scancodes_[kLeftCtrlIdx] = 1u;
+        pending_keys_.push_back(QueuedKeyEvent{0x1Du, /*key_down=*/true, /*extended=*/false});
+    }
 
     if (pressed_scancodes_[kLeftWinExtIdx] != 0u) {
         pressed_scancodes_[kLeftWinExtIdx] = 0u;
@@ -1647,8 +1668,10 @@ void RdpSessionContext::enqueue_ctrl_v_locked() {
 
     pending_keys_.push_back(QueuedKeyEvent{0x2Fu, /*key_down=*/true, /*extended=*/false});
     pending_keys_.push_back(QueuedKeyEvent{0x2Fu, /*key_down=*/false, /*extended=*/false});
-    pressed_scancodes_[kLeftCtrlIdx] = 0u;
-    pending_keys_.push_back(QueuedKeyEvent{0x1Du, /*key_down=*/false, /*extended=*/false});
+    if (!ctrl_already_held) {
+        pressed_scancodes_[kLeftCtrlIdx] = 0u;
+        pending_keys_.push_back(QueuedKeyEvent{0x1Du, /*key_down=*/false, /*extended=*/false});
+    }
 }
 
 void RdpSessionContext::request_synchronized_paste() {
@@ -1682,6 +1705,11 @@ void RdpSessionContext::request_synchronized_paste() {
 }
 
 void RdpSessionContext::on_cliprdr_monitor_ready_sent() {
+    server_fgd_format_id_.store(0u, std::memory_order_release);
+    server_fgd_is_ansi_.store(false, std::memory_order_release);
+    client_requested_format_id_.store(0u, std::memory_order_release);
+    fallback_text_format_id_.store(0u, std::memory_order_release);
+
     std::shared_ptr<const std::vector<RdpClipboardFileEntry>> prebound_files;
     if (channels_.local_clipboard_kind() == RdpClipboardContentKind::Files) {
         prebound_files = channels_.local_clipboard_files();
@@ -1840,6 +1868,31 @@ void RdpSessionContext::abort_remote_file_transfer_locked(void* raw_cliprdr) {
     remote_file_transfer_ = RemoteFileTransferState{};
 }
 
+void RdpSessionContext::try_request_fallback_text_format(void* raw_cliprdr) {
+    const uint32_t fb_fmt = consume_fallback_text_format_id();
+    server_fgd_format_id_.store(0u, std::memory_order_release);
+    server_fgd_is_ansi_.store(false, std::memory_order_release);
+    if (fb_fmt == 0u || !raw_cliprdr) {
+        client_requested_format_id_.store(0u, std::memory_order_release);
+        gdi_presenter_->notify_frame_ready();
+        return;
+    }
+    client_requested_format_id_.store(fb_fmt, std::memory_order_release);
+#if defined(NEXUSTS_HAS_FREERDP3_BINARY) && NEXUSTS_HAS_FREERDP3_BINARY == 1
+    auto* cliprdr = static_cast<CliprdrClientContext*>(raw_cliprdr);
+    if (cliprdr->ClientFormatDataRequest) {
+        CLIPRDR_FORMAT_DATA_REQUEST req{};
+        req.common.msgType = CB_FORMAT_DATA_REQUEST;
+        req.requestedFormatId = fb_fmt;
+        if (cliprdr->ClientFormatDataRequest(cliprdr, &req) == CHANNEL_RC_OK) {
+            return;
+        }
+    }
+#endif
+    client_requested_format_id_.store(0u, std::memory_order_release);
+    gdi_presenter_->notify_frame_ready();
+}
+
 void RdpSessionContext::begin_remote_file_list_fetch(
     void* raw_cliprdr,
     uint32_t format_id,
@@ -1849,34 +1902,13 @@ void RdpSessionContext::begin_remote_file_list_fetch(
     server_fgd_is_ansi_.store(is_ansi, std::memory_order_release);
     std::lock_guard<std::mutex> lock(cliprdr_mutex_);
     abort_remote_file_transfer_locked(raw_cliprdr);
-
-#if defined(NEXUSTS_HAS_FREERDP3_BINARY) && NEXUSTS_HAS_FREERDP3_BINARY == 1
-    auto* cliprdr = static_cast<CliprdrClientContext*>(raw_cliprdr);
-    if (cliprdr &&
-        cliprdr->ClientLockClipboardData &&
-        (server_clip_caps_.load(std::memory_order_acquire) & CB_CAN_LOCK_CLIPDATA) != 0u) {
-        uint32_t lock_id = next_client_clip_data_id_++;
-        if (lock_id == 0u) {
-            lock_id = next_client_clip_data_id_++;
-        }
-        CLIPRDR_LOCK_CLIPBOARD_DATA lock_pdu{};
-        lock_pdu.common.msgType = CB_LOCK_CLIPDATA;
-        lock_pdu.common.dataLen = 4u;
-        lock_pdu.clipDataId = lock_id;
-        if (cliprdr->ClientLockClipboardData(cliprdr, &lock_pdu) == CHANNEL_RC_OK) {
-            remote_file_transfer_.has_lock = true;
-            remote_file_transfer_.clip_data_id = lock_id;
-        }
-    }
-#else
-    (void)raw_cliprdr;
-#endif
 }
 
 void RdpSessionContext::advance_remote_file_transfer_locked(void* raw_cliprdr) {
     constexpr uint32_t kFileContentsSizeFlag = 0x00000001u;
     constexpr uint32_t kFileContentsRangeFlag = 0x00000002u;
-    constexpr uint32_t kRemotePullChunkBytes = 4u * 1024u * 1024u;
+    // Match upstream FreeRDP Apple (apple_download_file) 1 MiB chunk size
+    constexpr uint32_t kRemotePullChunkBytes = 1024u * 1024u;
 
     auto send_file_contents_req = [&](
         uint32_t stream_id,
@@ -1928,26 +1960,30 @@ void RdpSessionContext::advance_remote_file_transfer_locked(void* raw_cliprdr) {
             remote_file_transfer_.current_offset = 0u;
             continue;
         }
-        // Always query FILECONTENTS_SIZE (IStream::Stat) first for every regular file:
-        // virtual/compressed Windows shell items often set FD_FILESIZE (0x40) with nFileSize=0
-        // in FILEDESCRIPTORW while reporting the real byte length via FILECONTENTS_SIZE.
+        // When FD_FILESIZE is populated with a positive byte length (standard Windows Explorer copy),
+        // proceed directly to FILECONTENTS_RANGE just like upstream FreeRDP apple_download_file;
+        // only query FILECONTENTS_SIZE when size is unknown or reported as 0 (virtual/compressed streams or 0-byte files).
         if (!remote_file_transfer_.size_queried) {
-            uint32_t stream_id = next_client_stream_id_++;
-            if (stream_id == 0u) {
-                stream_id = next_client_stream_id_++;
+            if (entry.has_known_size && entry.file_size > 0u) {
+                remote_file_transfer_.size_queried = true;
+            } else {
+                uint32_t stream_id = next_client_stream_id_++;
+                if (stream_id == 0u) {
+                    stream_id = next_client_stream_id_++;
+                }
+                remote_file_transfer_.awaiting_size = true;
+                remote_file_transfer_.active_stream_id = stream_id;
+                if (!send_file_contents_req(
+                        stream_id,
+                        static_cast<uint32_t>(remote_file_transfer_.current_index),
+                        kFileContentsSizeFlag,
+                        0u,
+                        8u
+                    )) {
+                    abort_remote_file_transfer_locked(raw_cliprdr);
+                }
+                return;
             }
-            remote_file_transfer_.awaiting_size = true;
-            remote_file_transfer_.active_stream_id = stream_id;
-            if (!send_file_contents_req(
-                    stream_id,
-                    static_cast<uint32_t>(remote_file_transfer_.current_index),
-                    kFileContentsSizeFlag,
-                    0u,
-                    8u
-                )) {
-                abort_remote_file_transfer_locked(raw_cliprdr);
-            }
-            return;
         }
         if (entry.file_size == 0u || remote_file_transfer_.current_offset >= entry.file_size) {
             if (entry.file_size == 0u && remote_file_transfer_.active_fd < 0) {
@@ -2019,6 +2055,7 @@ void RdpSessionContext::handle_remote_file_group_descriptor_response(
     constexpr uint64_t kMaxRemoteClipTotalBytes = 16ULL * 1024ULL * 1024ULL * 1024ULL;
     const bool is_ansi_fgd = server_fgd_is_ansi_.load(std::memory_order_acquire);
     std::vector<std::string> completed_roots;
+    bool aborted = false;
     {
         std::lock_guard<std::mutex> lock(cliprdr_mutex_);
         std::vector<RdpClipboardFileEntry> parsed;
@@ -2026,123 +2063,137 @@ void RdpSessionContext::handle_remote_file_group_descriptor_response(
             data_len == 0u ||
             !parse_and_sanitize_cliprdr_file_list(data, data_len, parsed, is_ansi_fgd)) {
             abort_remote_file_transfer_locked(raw_cliprdr);
-            return;
-        }
-
-        uint64_t known_total = 0u;
-        for (const auto& e : parsed) {
-            if (e.file_size > kMaxRemoteClipTotalBytes ||
-                known_total + e.file_size > kMaxRemoteClipTotalBytes) {
-                abort_remote_file_transfer_locked(raw_cliprdr);
-                return;
-            }
-            known_total += e.file_size;
-        }
-
-        std::error_code ec;
-        std::filesystem::path base_dir = !resolved_runtime_home_.empty()
-            ? (std::filesystem::path(resolved_runtime_home_) / "tmp" / "cliprdr_recv")
-            : (!params_.app_home_dir.empty()
-                ? (std::filesystem::path(params_.app_home_dir) / "tmp" / "cliprdr_recv")
-                : (std::filesystem::temp_directory_path(ec) / "nexusts_cliprdr_recv"));
-        std::filesystem::create_directories(base_dir, ec);
-
-        // Retain the 10 newest staged clipboard batches so Finder/Explorer paste operations
-        // still reading a recent batch never lose files across rapid copies or multiple tabs.
-        {
-            std::vector<std::pair<std::filesystem::file_time_type, std::filesystem::path>> existing_batches;
-            for (const auto& dir_entry : std::filesystem::directory_iterator(base_dir, ec)) {
-                if (ec) {
+            aborted = true;
+        } else {
+            uint64_t known_total = 0u;
+            for (const auto& e : parsed) {
+                if (e.file_size > kMaxRemoteClipTotalBytes ||
+                    known_total + e.file_size > kMaxRemoteClipTotalBytes) {
+                    abort_remote_file_transfer_locked(raw_cliprdr);
+                    aborted = true;
                     break;
                 }
-                const std::string fname = dir_entry.path().filename().string();
-                if (dir_entry.is_directory(ec) && fname.rfind("clip_", 0u) == 0u) {
-                    const auto mtime = dir_entry.last_write_time(ec);
-                    existing_batches.emplace_back(mtime, dir_entry.path());
-                }
-            }
-            if (existing_batches.size() >= 10u) {
-                std::sort(
-                    existing_batches.begin(),
-                    existing_batches.end(),
-                    [](const auto& a, const auto& b) { return a.first < b.first; }
-                );
-                const size_t to_prune = existing_batches.size() - 9u;
-                for (size_t i = 0u; i < to_prune; ++i) {
-                    std::filesystem::remove_all(existing_batches[i].second, ec);
-                }
+                known_total += e.file_size;
             }
         }
 
-        const uint64_t batch_id = global_remote_clip_batch_seq().fetch_add(1u, std::memory_order_relaxed);
-        const auto epoch_ms = static_cast<uint64_t>(
-            std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::system_clock::now().time_since_epoch()
-            ).count()
-        );
-        const std::filesystem::path batch_dir =
-            base_dir / ("clip_" + std::to_string(epoch_ms) + "_" + std::to_string(batch_id));
-        std::filesystem::remove_all(batch_dir, ec);
-        if (!std::filesystem::create_directories(batch_dir, ec) && ec) {
-            abort_remote_file_transfer_locked(raw_cliprdr);
-            return;
-        }
-        const std::filesystem::path canonical_batch = std::filesystem::weakly_canonical(batch_dir, ec);
-        if (ec || canonical_batch.empty()) {
-            abort_remote_file_transfer_locked(raw_cliprdr);
-            return;
-        }
-        const std::string canonical_prefix = canonical_batch.string() + "/";
+        if (!aborted) {
+            std::error_code ec;
+            std::filesystem::path base_dir = !resolved_runtime_home_.empty()
+                ? (std::filesystem::path(resolved_runtime_home_) / "tmp" / "cliprdr_recv")
+                : (!params_.app_home_dir.empty()
+                    ? (std::filesystem::path(params_.app_home_dir) / "tmp" / "cliprdr_recv")
+                    : (std::filesystem::temp_directory_path(ec) / "nexusts_cliprdr_recv"));
+            std::filesystem::create_directories(base_dir, ec);
 
-        std::vector<std::string> top_roots;
-        std::unordered_set<std::string> seen_roots;
-        for (const auto& e : parsed) {
-            const std::filesystem::path target = canonical_batch / e.local_posix_path;
-            const std::filesystem::path canonical_target = std::filesystem::weakly_canonical(target, ec);
-            const std::string target_str = canonical_target.string();
-            if (ec || target_str.size() <= canonical_prefix.size() ||
-                target_str.compare(0u, canonical_prefix.size(), canonical_prefix) != 0) {
+            // Retain the 10 newest staged clipboard batches so Finder/Explorer paste operations
+            // still reading a recent batch never lose files across rapid copies or multiple tabs.
+            {
+                std::vector<std::pair<std::filesystem::file_time_type, std::filesystem::path>> existing_batches;
+                for (const auto& dir_entry : std::filesystem::directory_iterator(base_dir, ec)) {
+                    if (ec) {
+                        break;
+                    }
+                    const std::string fname = dir_entry.path().filename().string();
+                    if (dir_entry.is_directory(ec) && fname.rfind("clip_", 0u) == 0u) {
+                        const auto mtime = dir_entry.last_write_time(ec);
+                        existing_batches.emplace_back(mtime, dir_entry.path());
+                    }
+                }
+                if (existing_batches.size() >= 10u) {
+                    std::sort(
+                        existing_batches.begin(),
+                        existing_batches.end(),
+                        [](const auto& a, const auto& b) { return a.first < b.first; }
+                    );
+                    const size_t to_prune = existing_batches.size() - 9u;
+                    for (size_t i = 0u; i < to_prune; ++i) {
+                        std::filesystem::remove_all(existing_batches[i].second, ec);
+                    }
+                }
+            }
+
+            const uint64_t batch_id = global_remote_clip_batch_seq().fetch_add(1u, std::memory_order_relaxed);
+            const auto epoch_ms = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::system_clock::now().time_since_epoch()
+                ).count()
+            );
+            const std::filesystem::path batch_dir =
+                base_dir / ("clip_" + std::to_string(epoch_ms) + "_" + std::to_string(batch_id));
+            std::filesystem::remove_all(batch_dir, ec);
+            if (!std::filesystem::create_directories(batch_dir, ec) && ec) {
                 abort_remote_file_transfer_locked(raw_cliprdr);
-                return;
-            }
-            if (e.is_directory) {
-                std::filesystem::create_directories(canonical_target, ec);
-            } else if (canonical_target.has_parent_path()) {
-                std::filesystem::create_directories(canonical_target.parent_path(), ec);
-            }
+                aborted = true;
+            } else {
+                const std::filesystem::path canonical_batch = std::filesystem::weakly_canonical(batch_dir, ec);
+                if (ec || canonical_batch.empty()) {
+                    abort_remote_file_transfer_locked(raw_cliprdr);
+                    aborted = true;
+                } else {
+                    const std::string canonical_prefix = canonical_batch.string() + "/";
+                    std::vector<std::string> top_roots;
+                    std::unordered_set<std::string> seen_roots;
+                    for (const auto& e : parsed) {
+                        const std::filesystem::path target = canonical_batch / e.local_posix_path;
+                        const std::filesystem::path canonical_target = std::filesystem::weakly_canonical(target, ec);
+                        const std::string target_str = canonical_target.string();
+                        if (ec || target_str.size() <= canonical_prefix.size() ||
+                            target_str.compare(0u, canonical_prefix.size(), canonical_prefix) != 0) {
+                            abort_remote_file_transfer_locked(raw_cliprdr);
+                            aborted = true;
+                            break;
+                        }
+                        if (e.is_directory) {
+                            std::filesystem::create_directories(canonical_target, ec);
+                        } else if (canonical_target.has_parent_path()) {
+                            std::filesystem::create_directories(canonical_target.parent_path(), ec);
+                        }
 
-            const auto slash_pos = e.local_posix_path.find('/');
-            const std::string first_seg = (slash_pos == std::string::npos)
-                ? e.local_posix_path
-                : e.local_posix_path.substr(0u, slash_pos);
-            if (!first_seg.empty() && seen_roots.insert(first_seg).second) {
-                top_roots.push_back((canonical_batch / first_seg).string());
+                        const auto slash_pos = e.local_posix_path.find('/');
+                        const std::string first_seg = (slash_pos == std::string::npos)
+                            ? e.local_posix_path
+                            : e.local_posix_path.substr(0u, slash_pos);
+                        if (!first_seg.empty() && seen_roots.insert(first_seg).second) {
+                            top_roots.push_back((canonical_batch / first_seg).string());
+                        }
+                    }
+
+                    if (!aborted) {
+                        close_active_remote_file_locked(0u);
+                        remote_file_transfer_.active = true;
+                        remote_file_transfer_.batch_id = batch_id;
+                        remote_file_transfer_.batch_root_dir = canonical_batch.string();
+                        remote_file_transfer_.entries = std::move(parsed);
+                        remote_file_transfer_.top_level_staged_paths = std::move(top_roots);
+                        remote_file_transfer_.current_index = 0u;
+                        remote_file_transfer_.size_queried = false;
+                        remote_file_transfer_.awaiting_size = false;
+                        remote_file_transfer_.current_offset = 0u;
+                        remote_file_transfer_.total_bytes_written = 0u;
+                        remote_file_transfer_.active_file_path.clear();
+
+                        advance_remote_file_transfer_locked(raw_cliprdr);
+                        if (!remote_file_transfer_.active) {
+                            if (!remote_file_transfer_.top_level_staged_paths.empty()) {
+                                completed_roots = std::move(remote_file_transfer_.top_level_staged_paths);
+                                remote_file_transfer_ = RemoteFileTransferState{};
+                            } else {
+                                aborted = true;
+                            }
+                        }
+                    }
+                }
             }
-        }
-
-        close_active_remote_file_locked(0u);
-        remote_file_transfer_.active = true;
-        remote_file_transfer_.batch_id = batch_id;
-        remote_file_transfer_.batch_root_dir = canonical_batch.string();
-        remote_file_transfer_.entries = std::move(parsed);
-        remote_file_transfer_.top_level_staged_paths = std::move(top_roots);
-        remote_file_transfer_.current_index = 0u;
-        remote_file_transfer_.size_queried = false;
-        remote_file_transfer_.awaiting_size = false;
-        remote_file_transfer_.current_offset = 0u;
-        remote_file_transfer_.total_bytes_written = 0u;
-        remote_file_transfer_.active_file_path.clear();
-
-        advance_remote_file_transfer_locked(raw_cliprdr);
-        if (!remote_file_transfer_.active && !remote_file_transfer_.top_level_staged_paths.empty()) {
-            completed_roots = std::move(remote_file_transfer_.top_level_staged_paths);
-            remote_file_transfer_ = RemoteFileTransferState{};
         }
     }
 
     if (!completed_roots.empty()) {
+        fallback_text_format_id_.store(0u, std::memory_order_release);
         channels_.on_remote_clipboard_files(completed_roots);
         gdi_presenter_->notify_frame_ready();
+    } else if (aborted) {
+        try_request_fallback_text_format(raw_cliprdr);
     }
 }
 
@@ -2155,6 +2206,7 @@ void RdpSessionContext::handle_remote_file_contents_response(
 ) {
     constexpr uint64_t kMaxRemoteClipTotalBytes = 16ULL * 1024ULL * 1024ULL * 1024ULL;
     std::vector<std::string> completed_roots;
+    bool aborted = false;
     {
         std::lock_guard<std::mutex> lock(cliprdr_mutex_);
         if (!remote_file_transfer_.active ||
@@ -2170,106 +2222,132 @@ void RdpSessionContext::handle_remote_file_contents_response(
                 remote_file_transfer_.size_queried = true;
                 remote_file_transfer_.current_offset = 0u;
                 advance_remote_file_transfer_locked(raw_cliprdr);
-                if (!remote_file_transfer_.active && !remote_file_transfer_.top_level_staged_paths.empty()) {
-                    completed_roots = std::move(remote_file_transfer_.top_level_staged_paths);
-                    remote_file_transfer_ = RemoteFileTransferState{};
+                if (!remote_file_transfer_.active) {
+                    if (!remote_file_transfer_.top_level_staged_paths.empty()) {
+                        completed_roots = std::move(remote_file_transfer_.top_level_staged_paths);
+                        remote_file_transfer_ = RemoteFileTransferState{};
+                    } else {
+                        aborted = true;
+                    }
                 }
             } else {
                 abort_remote_file_transfer_locked(raw_cliprdr);
-                return;
+                aborted = true;
             }
         } else if (remote_file_transfer_.awaiting_size) {
             if (!data || data_len < 8u) {
                 abort_remote_file_transfer_locked(raw_cliprdr);
-                return;
-            }
-            uint64_t remote_sz = 0u;
-            for (int b = 0; b < 8; ++b) {
-                remote_sz |= (static_cast<uint64_t>(data[b]) << (b * 8));
-            }
-            if (remote_sz > kMaxRemoteClipTotalBytes ||
-                remote_file_transfer_.total_bytes_written + remote_sz > kMaxRemoteClipTotalBytes) {
-                abort_remote_file_transfer_locked(raw_cliprdr);
-                return;
-            }
-            entry.file_size = remote_sz;
-            entry.has_known_size = true;
-            remote_file_transfer_.size_queried = true;
-            remote_file_transfer_.awaiting_size = false;
-            remote_file_transfer_.current_offset = 0u;
+                aborted = true;
+            } else {
+                uint64_t remote_sz = 0u;
+                for (int b = 0; b < 8; ++b) {
+                    remote_sz |= (static_cast<uint64_t>(data[b]) << (b * 8));
+                }
+                if (remote_sz > kMaxRemoteClipTotalBytes ||
+                    remote_file_transfer_.total_bytes_written + remote_sz > kMaxRemoteClipTotalBytes) {
+                    abort_remote_file_transfer_locked(raw_cliprdr);
+                    aborted = true;
+                } else {
+                    entry.file_size = remote_sz;
+                    entry.has_known_size = true;
+                    remote_file_transfer_.size_queried = true;
+                    remote_file_transfer_.awaiting_size = false;
+                    remote_file_transfer_.current_offset = 0u;
 
-            advance_remote_file_transfer_locked(raw_cliprdr);
-            if (!remote_file_transfer_.active && !remote_file_transfer_.top_level_staged_paths.empty()) {
-                completed_roots = std::move(remote_file_transfer_.top_level_staged_paths);
-                remote_file_transfer_ = RemoteFileTransferState{};
+                    advance_remote_file_transfer_locked(raw_cliprdr);
+                    if (!remote_file_transfer_.active) {
+                        if (!remote_file_transfer_.top_level_staged_paths.empty()) {
+                            completed_roots = std::move(remote_file_transfer_.top_level_staged_paths);
+                            remote_file_transfer_ = RemoteFileTransferState{};
+                        } else {
+                            aborted = true;
+                        }
+                    }
+                }
             }
         } else {
             if (!data && data_len > 0u) {
                 abort_remote_file_transfer_locked(raw_cliprdr);
-                return;
-            }
-            const std::filesystem::path target_file =
-                std::filesystem::path(remote_file_transfer_.batch_root_dir) / entry.local_posix_path;
-            const std::string target_file_str = target_file.string();
-            if (remote_file_transfer_.active_fd < 0 ||
-                remote_file_transfer_.active_file_path != target_file_str) {
-                close_active_remote_file_locked(0u);
-                const int open_flags = O_WRONLY | O_CREAT |
-                    (remote_file_transfer_.current_offset == 0u ? O_TRUNC : O_APPEND);
-                int fd = -1;
-                do {
-                    fd = ::open(target_file_str.c_str(), open_flags, 0644);
-                } while (fd < 0 && errno == EINTR);
-                if (fd < 0) {
-                    abort_remote_file_transfer_locked(raw_cliprdr);
-                    return;
-                }
-                remote_file_transfer_.active_fd = fd;
-                remote_file_transfer_.active_file_path = target_file_str;
-            }
-            if (data_len > 0u) {
-                if (remote_file_transfer_.total_bytes_written + data_len > kMaxRemoteClipTotalBytes) {
-                    abort_remote_file_transfer_locked(raw_cliprdr);
-                    return;
-                }
-                size_t total_written_chunk = 0u;
-                while (total_written_chunk < data_len) {
-                    const ssize_t nw = ::write(
-                        remote_file_transfer_.active_fd,
-                        data + total_written_chunk,
-                        data_len - total_written_chunk
-                    );
-                    if (nw < 0) {
-                        if (errno == EINTR) {
-                            continue;
-                        }
-                        abort_remote_file_transfer_locked(raw_cliprdr);
-                        return;
-                    }
-                    if (nw == 0) {
-                        abort_remote_file_transfer_locked(raw_cliprdr);
-                        return;
-                    }
-                    total_written_chunk += static_cast<size_t>(nw);
-                }
-                remote_file_transfer_.current_offset += data_len;
-                remote_file_transfer_.total_bytes_written += data_len;
+                aborted = true;
             } else {
-                // Early EOF from remote application stream
-                entry.file_size = remote_file_transfer_.current_offset;
-            }
+                const std::filesystem::path target_file =
+                    std::filesystem::path(remote_file_transfer_.batch_root_dir) / entry.local_posix_path;
+                const std::string target_file_str = target_file.string();
+                if (remote_file_transfer_.active_fd < 0 ||
+                    remote_file_transfer_.active_file_path != target_file_str) {
+                    close_active_remote_file_locked(0u);
+                    const int open_flags = O_WRONLY | O_CREAT |
+                        (remote_file_transfer_.current_offset == 0u ? O_TRUNC : O_APPEND);
+                    int fd = -1;
+                    do {
+                        fd = ::open(target_file_str.c_str(), open_flags, 0644);
+                    } while (fd < 0 && errno == EINTR);
+                    if (fd < 0) {
+                        abort_remote_file_transfer_locked(raw_cliprdr);
+                        aborted = true;
+                    } else {
+                        remote_file_transfer_.active_fd = fd;
+                        remote_file_transfer_.active_file_path = target_file_str;
+                    }
+                }
+                if (!aborted && data_len > 0u) {
+                    if (remote_file_transfer_.total_bytes_written + data_len > kMaxRemoteClipTotalBytes) {
+                        abort_remote_file_transfer_locked(raw_cliprdr);
+                        aborted = true;
+                    } else {
+                        size_t total_written_chunk = 0u;
+                        while (total_written_chunk < data_len) {
+                            const ssize_t nw = ::write(
+                                remote_file_transfer_.active_fd,
+                                data + total_written_chunk,
+                                data_len - total_written_chunk
+                            );
+                            if (nw < 0) {
+                                if (errno == EINTR) {
+                                    continue;
+                                }
+                                abort_remote_file_transfer_locked(raw_cliprdr);
+                                aborted = true;
+                                break;
+                            }
+                            if (nw == 0) {
+                                abort_remote_file_transfer_locked(raw_cliprdr);
+                                aborted = true;
+                                break;
+                            }
+                            total_written_chunk += static_cast<size_t>(nw);
+                        }
+                        if (!aborted) {
+                            remote_file_transfer_.current_offset += data_len;
+                            remote_file_transfer_.total_bytes_written += data_len;
+                        }
+                    }
+                } else if (!aborted) {
+                    // Early EOF from remote application stream
+                    entry.file_size = remote_file_transfer_.current_offset;
+                }
 
-            advance_remote_file_transfer_locked(raw_cliprdr);
-            if (!remote_file_transfer_.active && !remote_file_transfer_.top_level_staged_paths.empty()) {
-                completed_roots = std::move(remote_file_transfer_.top_level_staged_paths);
-                remote_file_transfer_ = RemoteFileTransferState{};
+                if (!aborted) {
+                    advance_remote_file_transfer_locked(raw_cliprdr);
+                    if (!remote_file_transfer_.active) {
+                        if (!remote_file_transfer_.top_level_staged_paths.empty()) {
+                            completed_roots = std::move(remote_file_transfer_.top_level_staged_paths);
+                            remote_file_transfer_ = RemoteFileTransferState{};
+                        } else {
+                            aborted = true;
+                        }
+                    }
+                }
             }
         }
     }
 
     if (!completed_roots.empty()) {
+        fallback_text_format_id_.store(0u, std::memory_order_release);
         channels_.on_remote_clipboard_files(completed_roots);
         gdi_presenter_->notify_frame_ready();
+    } else if (aborted) {
+        try_request_fallback_text_format(raw_cliprdr);
     }
 }
 
