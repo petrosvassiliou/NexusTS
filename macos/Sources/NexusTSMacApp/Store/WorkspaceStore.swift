@@ -1491,6 +1491,35 @@ public final class WorkspaceStore: ObservableObject {
         }
     }
 
+    /// Switches the main workspace to an already-open session tab for `connId` when active;
+    /// if `connId` has no active session, leaves the main workspace untouched.
+    @discardableResult
+    public func focusActiveSessionIfOpen(forConnectionId connId: String) -> Bool {
+        selectedConnectionId = connId
+        selectedCredentialId = nil
+        let (updatedTree, activatedTabId, targetPaneId) = paneTree.activatingConnectionIfPresent(
+            connId,
+            currentFocusedPaneId: focusedPaneId
+        )
+        if activatedTabId != nil {
+            paneTree = updatedTree
+            if let targetPaneId {
+                focusedPaneId = targetPaneId
+            }
+            if activeSection != .sessions {
+                activeSection = .sessions
+            }
+            return true
+        }
+        if let detachedTab = detachedWindowTabs.values.first(where: { !$0.isLocalShell && $0.connection.id == connId }) {
+            if let win = NSApp.windows.first(where: { $0.isVisible && $0.title.contains(detachedTab.title) }) {
+                win.makeKeyAndOrderFront(nil)
+            }
+            return true
+        }
+        return false
+    }
+
     public func enterFullScreenSession(tabId: UUID? = nil) {
         if let tabId {
             selectTabGlobally(tabId)

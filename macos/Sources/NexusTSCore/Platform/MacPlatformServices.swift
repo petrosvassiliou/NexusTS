@@ -718,7 +718,7 @@ public struct MacReleaseUpdateCandidate: Equatable, Sendable {
 }
 
 public enum MacGitHubReleaseUpdater {
-    public static let currentVersion = "0.8.13"
+    public static let currentVersion = "0.8.14"
     public static let githubTokenKeychainKey = "github_release_pat"
 
     private static let legacyPreRebaseVersions: Set<String> = [
@@ -1016,8 +1016,9 @@ public enum MacGitHubReleaseUpdater {
         let qParent = posixSingleQuote(targetParentDir)
         let qStageRoot = posixSingleQuote(stagingRootPath)
 
+        let lsregisterBin = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
         // Escape command for AppleScript `do shell script "..." with administrator privileges` fallback
-        let privCmd = "rm -rf \(qBackup) && (if [ -e \(qTarget) ]; then mv \(qTarget) \(qBackup); fi) && mkdir -p \(qParent) && mv \(qStaged) \(qTarget) && /usr/bin/xattr -cr \(qTarget) && rm -rf \(qBackup) \(qStageRoot)"
+        let privCmd = "rm -rf \(qBackup) && (if [ -e \(qTarget) ]; then mv \(qTarget) \(qBackup); fi) && mkdir -p \(qParent) && mv \(qStaged) \(qTarget) && /usr/bin/xattr -cr \(qTarget) && /usr/bin/touch \(qTarget) && (\(lsregisterBin) -f \(qTarget) 2>/dev/null || true) && rm -rf \(qBackup) \(qStageRoot)"
         let appleScriptEscaped = privCmd
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
@@ -1039,6 +1040,8 @@ public enum MacGitHubReleaseUpdater {
 
         if mv \(qStaged) \(qTarget) 2>/dev/null; then
           /usr/bin/xattr -cr \(qTarget) 2>/dev/null || true
+          /usr/bin/touch \(qTarget) 2>/dev/null || true
+          \(lsregisterBin) -f \(qTarget) 2>/dev/null || true
           rm -rf \(qBackup) \(qStageRoot) 2>/dev/null || true
           /usr/bin/open -n \(qTarget)
           exit 0

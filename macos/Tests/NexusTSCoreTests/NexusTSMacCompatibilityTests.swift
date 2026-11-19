@@ -352,11 +352,11 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
     }
 
     func testV118LocalizationUpgradeVersionAndVaultReplacementCompatibility() throws {
-        XCTAssertEqual(MacGitHubReleaseUpdater.currentVersion, "0.8.13")
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.13", isNewerThan: "0.8.12"))
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.13", isNewerThan: "0.8.11"))
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.13", isNewerThan: "0.8.10"))
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.13", isNewerThan: "0.3.0-beta.6"))
+        XCTAssertEqual(MacGitHubReleaseUpdater.currentVersion, "0.8.14")
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.14", isNewerThan: "0.8.13"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.14", isNewerThan: "0.8.12"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.14", isNewerThan: "0.8.11"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.14", isNewerThan: "0.3.0-beta.6"))
         XCTAssertEqual(LocalizedWorkspaceStrings.catalog(for: .en).studios, "Manage")
         XCTAssertEqual(LocalizedWorkspaceStrings.catalog(for: .en).logOffSession, "Log Off Session")
 
@@ -1367,6 +1367,113 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
         XCTAssertTrue(MacPasteboardClipboardExtractor.writeRemoteTextToPasteboard("Get-VM | Format-Table", pasteboard: pb))
         XCTAssertNil(pb.data(forType: .png), "Stale PNG item must be cleared even when .string already matched remoteText")
         XCTAssertEqual(MacPasteboardClipboardExtractor.extractClipboardPayload(from: pb), .text("Get-VM | Format-Table"))
+    }
+
+    func testV0814SidebarActiveConnectionFocusAndDiscreetTooltips() throws {
+        // 1. Exact user scenario: Server1 and Server2 connected as tabs (Server1 currently active); Server3 inactive
+        let server1 = VaultConnection(id: "conn-server-1", name: "Server1", host: "10.0.1.11", protocolType: .RDP)
+        let server2 = VaultConnection(id: "conn-server-2", name: "Server2", host: "10.0.1.12", protocolType: .RDP)
+        let server3 = VaultConnection(id: "conn-server-3", name: "Server3", host: "10.0.1.13", protocolType: .SSH)
+
+        let tab1 = WorkspaceSessionTab(connection: server1)
+        let tab2 = WorkspaceSessionTab(connection: server2)
+        let paneA = UUID()
+        let initialTree = WorkspacePaneNode.leaf(paneId: paneA, tabs: [tab1, tab2], activeTabId: tab1.id)
+        XCTAssertEqual(initialTree.focusedOrFirstActiveTab(focusedPaneId: paneA)?.id, tab1.id)
+
+        // Clicking active Server2 in the sidebar switches the active tab to Server2
+        let (afterClickServer2, activated2, pane2) = initialTree.activatingConnectionIfPresent(
+            server2.id,
+            currentFocusedPaneId: paneA
+        )
+        XCTAssertEqual(activated2, tab2.id)
+        XCTAssertEqual(pane2, paneA)
+        XCTAssertEqual(afterClickServer2.focusedOrFirstActiveTab(focusedPaneId: pane2)?.id, tab2.id)
+
+        // Clicking inactive Server3 in the sidebar does nothing and keeps Server2 active
+        let (afterClickServer3, activated3, pane3) = afterClickServer2.activatingConnectionIfPresent(
+            server3.id,
+            currentFocusedPaneId: pane2
+        )
+        XCTAssertNil(activated3)
+        XCTAssertNil(pane3)
+        XCTAssertEqual(afterClickServer3, afterClickServer2)
+        XCTAssertEqual(afterClickServer3.focusedOrFirstActiveTab(focusedPaneId: paneA)?.id, tab2.id)
+
+        // Split panes + duplicate sessions for Server2 cycle cleanly and update focused pane
+        let tab2Duplicate = WorkspaceSessionTab(connection: server2, title: "Server2 (2)")
+        let (splitTree, paneB) = afterClickServer2.splittingPane(paneA, orientation: .horizontal, newTab: tab2Duplicate)
+        let (cycledTree, cycledTabId, cycledPaneId) = splitTree.activatingConnectionIfPresent(
+            server2.id,
+            currentFocusedPaneId: paneA
+        )
+        XCTAssertEqual(cycledTabId, tab2Duplicate.id)
+        XCTAssertEqual(cycledPaneId, paneB)
+        let (backToServer1, activated1, pane1) = cycledTree.activatingConnectionIfPresent(
+            server1.id,
+            currentFocusedPaneId: cycledPaneId
+        )
+        XCTAssertEqual(activated1, tab1.id)
+        XCTAssertEqual(pane1, paneA)
+        XCTAssertEqual(backToServer1.focusedOrFirstActiveTab(focusedPaneId: pane1)?.id, tab1.id)
+
+        // 2. DiscreetTooltipSpec parsing & toolbar hit-test resolution across English and German locales
+        let parsed = DiscreetTooltipSpec.parse("Local Terminal (⌘T)")
+        XCTAssertEqual(parsed.title, "Local Terminal")
+        XCTAssertEqual(parsed.shortcut, "⌘T")
+
+        let nonShortcutParens = DiscreetTooltipSpec.parse("Change POSIX Permissions (chmod)")
+        XCTAssertEqual(nonShortcutParens.title, "Change POSIX Permissions (chmod)")
+        XCTAssertNil(nonShortcutParens.shortcut)
+
+        let en = LocalizedWorkspaceStrings.catalog(for: .en)
+        let de = LocalizedWorkspaceStrings.catalog(for: .de)
+
+        for item in MacWorkspaceShortcut.allCases {
+            let specEn = DiscreetTooltipSpec.resolveToolbarTooltip(
+                candidateText: "nexusts.toolbar.\(item.rawValue)",
+                strings: en
+            )
+            XCTAssertEqual(specEn, DiscreetTooltipSpec(title: item.title(in: en), shortcut: item.keycap))
+
+            let specDe = DiscreetTooltipSpec.resolveToolbarTooltip(
+                candidateText: item.title(in: de),
+                strings: de
+            )
+            XCTAssertEqual(specDe, DiscreetTooltipSpec(title: item.title(in: de), shortcut: item.keycap))
+        }
+
+        let chevronEn = DiscreetTooltipSpec.resolveToolbarTooltip(
+            candidateText: en.newConnection,
+            sfSymbolHint: "chevron.down",
+            isNarrowMenuChevron: true,
+            strings: en
+        )
+        XCTAssertNotNil(chevronEn)
+        XCTAssertNil(chevronEn?.shortcut)
+        XCTAssertTrue(chevronEn?.title.contains(en.newFolder) == true)
+
+        let symbolFallback = DiscreetTooltipSpec.resolveToolbarTooltip(
+            candidateText: "",
+            sfSymbolHint: "sparkle.magnifyingglass",
+            strings: de
+        )
+        XCTAssertEqual(
+            symbolFallback,
+            DiscreetTooltipSpec(title: MacWorkspaceShortcut.quickConnect.title(in: de), shortcut: "⌘K")
+        )
+
+        let studiosSpec = DiscreetTooltipSpec.resolveToolbarTooltip(
+            candidateText: "nexusts.toolbar.studios",
+            strings: en
+        )
+        XCTAssertEqual(studiosSpec, DiscreetTooltipSpec(title: en.studios, shortcut: "⌘1–⌘7"))
+
+        let reDockSpec = DiscreetTooltipSpec.resolveToolbarTooltip(
+            candidateText: "nexusts.toolbar.reDock",
+            strings: en
+        )
+        XCTAssertEqual(reDockSpec, DiscreetTooltipSpec(title: "Move Session Back to Main Window", shortcut: nil))
     }
 }
 

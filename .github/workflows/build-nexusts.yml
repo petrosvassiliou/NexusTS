@@ -21,7 +21,7 @@ on:
       release_tag:
         description: "Tag name when publishing via workflow_dispatch"
         required: false
-        default: "v0.8.13"
+        default: "v0.8.14"
         type: string
 
 permissions:
@@ -319,7 +319,7 @@ jobs:
           set -euo pipefail
           TAG_NAME="${GITHUB_REF_NAME}"
           if [[ "${TAG_NAME}" != v* ]]; then
-            TAG_NAME="${{ inputs.release_tag || 'v0.8.13' }}"
+            TAG_NAME="${{ inputs.release_tag || 'v0.8.14' }}"
           fi
           echo "tag_name=${TAG_NAME}" >> "${GITHUB_OUTPUT}"
 
@@ -346,7 +346,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.stage.outputs.tag_name }}
-          name: "NexusTS ${{ steps.stage.outputs.tag_name }} — FreeRDP 3.12 LoadChannels Virtual Channel & Clipboard Fix"
+          name: "NexusTS ${{ steps.stage.outputs.tag_name }} — macOS Tahoe AppIcon Sizing, Discreet Tooltips & Sidebar Tab Switching"
           draft: false
           prerelease: ${{ contains(steps.stage.outputs.tag_name, '-') }}
           generate_release_notes: true
@@ -354,21 +354,21 @@ jobs:
             ## NexusTS ${{ steps.stage.outputs.tag_name }} (`com.nexusts.app` / `com.nexusts.app.macos`)
             **Native Remote Management & Connection Manager for Googlebook OS, Android Tablets & macOS**
 
-            > **FreeRDP 3.12 `LoadChannels` Virtual Channel & Bidirectional Clipboard Fix (`0.8.13` / `versionCode = 10813`)**: Fixes the critical FreeRDP 3.12 `utils_reload_channels()` hook by registering **`instance->LoadChannels`** (`freerdp_on_load_channels`) so **`cliprdr`**, **`rdpdr`**, and **`drdynvc`** (`disp` + `rdpgfx`) are preserved in `MCS Connect Initial` (`CS_NET`) instead of being cleared after `PreConnect` — immediately activating bidirectional **file & text copy-paste (`Clipboard Active`)**, shared drive redirection, and dynamic Retina resize.
+            > **macOS Tahoe AppIcon Sizing, Discreet Liquid Glass Tooltips & Sidebar Active-Session Switching (`0.8.14` / `versionCode = 10814`)**: Fixes macOS Dock AppIcon sizing to match standard macOS icons (`832×832` continuous Apple superellipse + `Assets.car` with zero outer shadow bleed), introduces crisp, discreet Liquid Glass capsule tooltips with shortcut badges across the unified window toolbar and workspace controls, and switches directly to any active session tab when clicking its connection entry in the sidebar.
 
             ### Signed Deliverables (100% In-Place Upgrade Compatible)
-            - **`NexusTS-${{ steps.stage.outputs.tag_name }}-googlebook-android-release.apk`**: Cryptographically signed (APK Signature Scheme v2/v3/v4, RSA-4096) universal `arm64-v8a` + `x86_64` APK with 16 KB ELF page alignment (`0x4000`) and 100% Google Play Protect compliance (`versionCode = 10813`).
+            - **`NexusTS-${{ steps.stage.outputs.tag_name }}-googlebook-android-release.apk`**: Cryptographically signed (APK Signature Scheme v2/v3/v4, RSA-4096) universal `arm64-v8a` + `x86_64` APK with 16 KB ELF page alignment (`0x4000`) and 100% Google Play Protect compliance (`versionCode = 10814`).
             - **`NexusTS-${{ steps.stage.outputs.tag_name }}-playstore-release.aab`**: Signed Android App Bundle for optional Managed Google Play / internal distribution.
             - **`NexusTS-${{ steps.stage.outputs.tag_name }}-macOS-Universal.zip` & `.dmg`**: Self-contained Universal2 (`arm64` + `x86_64`) macOS application bundle statically linking OpenSSL 3.4.1 + Cisco OpenH264 2.5.0 + FreeRDP 3.12.0 (`.zip` powers one-click in-app updates without downloading a `.dmg`).
             - **`nexusts-upload-certificate.pem` & `oauth-and-mdm-registration.json`**: Public X.509 upload certificate (`SHA-1: A6:AF:15:A9:BF:0B:FE:38:D4:66:46:3E:3E:72:A6:5B:4F:9C:4D:F6`, `SHA-256: 4A:BD:80:F1:20:14:B9:88:09:1C:97:92:2F:87:02:D1:BF:B7:93:9C:73:B6:9A:DB:1A:9B:76:30:6A:30:27:82`) and Managed Google Play `app_restrictions` template.
 
             ### Highlights in ${{ steps.stage.outputs.tag_name }}
-            - **Hyper-V Enhanced Session Mode (`;EnhancedMode=1`) Default & Automatic Basic Console Fallback**:
-              - Defaults Hyper-V VMConnect (`TCP 2179`) to **Enhanced Session Mode** across new connections, Hyper-V Studio consoles, Royal TS `.rtsx`/`.rtsz` imports, and existing uncustomized `.nxts` vaults so Windows `rdpclip.exe` opens `CLIPRDR` for both **files** (`.ps1`, `.csv`, `.txt`, `.exe`) and **Unicode text**.
-              - Automatically retries bare `<VM-GUID>` Basic VMConnect console if the Hyper-V host or guest VM rejects `;EnhancedMode=1`, and surfaces live **`Clipboard Active` / `Clipboard Inactive`** + **`VMConnect • Enhanced` / `VMConnect • Basic Console`** status and one-click recovery in the macOS RDP HUD bar.
-            - **macOS `NSPasteboard`, Darwin Staging & Non-Coalesced Metal Wakeups**:
-              - Explicitly configures **`FreeRDP_ClipboardFeatureMask` (`0x33`)** for bidirectional text + file redirection and preserves process-wide macOS `HOME` and `TMPDIR` so Finder `DesktopServicesHelper` reads staged files from Darwin per-user temp storage.
-              - Purges stale `.png` / `.tiff` / `.fileURL` items on `NSPasteboard.general` whenever remote files or text arrive, and eliminates `RdpAsyncMetalPresenter` wakeup coalescing during resize and follow-up Metal render passes.
+            - **Standard Full-Size macOS AppIcon (`Assets.car` + `AppIcon.icns`)**:
+              - Renders the macOS icon on Apple's exact `832×832` continuous superellipse (`RoundedRectangle(..., style: .continuous)`) inside `1024×1024` with zero stray outer shadow alpha so macOS 26 Tahoe `IconFoundation` renders NexusTS at full `1.0×` Dock scale alongside native apps, and refreshes LaunchServices during in-app updates.
+            - **Discreet Liquid Glass Tooltips Across Toolbar & Workspace**:
+              - Adds non-activating, click-through Liquid Glass capsule tooltips with compact shortcut badges across all macOS unified toolbar items (including fused macOS Tahoe Liquid Glass pill buttons & menu chevron) and session controls.
+            - **Sidebar Click Switches to Active Connection**:
+              - Clicking a connection in the sidebar immediately switches to its open session tab (or brings its detached session window forward) when active, while leaving inactive connections untouched until double-clicked.
           files: release-assets/*
 
       - name: Check Optional Google Play Service Account Secret

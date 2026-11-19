@@ -142,7 +142,7 @@ public struct VaultOverviewDashboardView: View {
                                         store.editingConnection = conn
                                     }
                                 }
-                                .help("Double-click to connect to \(conn.name)")
+                                .discreetTooltip("Double-click to connect to \(conn.name)")
                             }
                         }
                     }
@@ -289,7 +289,7 @@ private struct ShortcutLegendItem: View {
         .onHover { hovering in
             isHovered = hovering
         }
-        .help("\(label) (\(keys))")
+        .discreetTooltip(label, shortcut: keys)
     }
 }
 
@@ -427,7 +427,7 @@ public struct CredentialsStudioView: View {
                                         }
                                     }
                                     .controlSize(.small)
-                                    .help("Copy 6-Digit RFC 6238 TOTP Code")
+                                    .discreetTooltip("Copy 6-Digit RFC 6238 TOTP Code")
                                 }
                             }
 

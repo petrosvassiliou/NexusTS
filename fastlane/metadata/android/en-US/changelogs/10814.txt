@@ -1,0 +1,3 @@
+• NexusTS 0.8.14: Full-size macOS Dock AppIcon (exact 832x832 Apple continuous superellipse + Assets.car with zero outer shadow bleed).
+• Discreet Liquid Glass capsule tooltips with compact keyboard shortcut badges across toolbar & workspace controls.
+• Clicking an active connection in the sidebar now switches directly to its open session tab or detached window.

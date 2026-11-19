@@ -84,11 +84,12 @@ private struct VncLiveWorkspaceBody: View {
                 Toggle("Send ⌘", isOn: $sendCommandShortcuts)
                     .toggleStyle(.checkbox)
                     .font(.caption)
-                    .help("Forward macOS Command (⌘) shortcuts to the remote Screen Sharing / VNC session")
+                    .discreetTooltip("Forward macOS Command (⌘) Shortcuts to Remote Session")
 
                 Toggle("Fit", isOn: $scaleToFit)
                     .toggleStyle(.checkbox)
                     .font(.caption)
+                    .discreetTooltip("Scale Remote Screen to Fit Pane")
 
                 Button {
                     hasPresentedFrame = false
@@ -106,7 +107,7 @@ private struct VncLiveWorkspaceBody: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
-                .help("Hand off directly to macOS built-in Screen Sharing.app with ARD / Kerberos / Apple ID support")
+                .discreetTooltip("Open in Built-in macOS Screen Sharing.app")
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 7)

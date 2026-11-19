@@ -8,6 +8,9 @@ public final class NexusMacAppDelegate: NSObject, NSApplicationDelegate {
     public func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
+        MainActor.assumeIsolated {
+            DiscreetTooltipController.shared.installIfNeeded()
+        }
     }
 
     public func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -60,6 +63,13 @@ public struct NexusTSApp: App {
             NexusMainWindowView()
                 .environmentObject(store)
                 .frame(minWidth: 980, minHeight: 620)
+                .onAppear {
+                    let s = store
+                    DiscreetTooltipController.shared.stringsProvider = { [weak s] in
+                        s?.strings ?? LocalizedWorkspaceStrings.catalog(for: .system)
+                    }
+                    DiscreetTooltipController.shared.installIfNeeded()
+                }
                 .onOpenURL { incomingURL in
                     handleIncomingURL(incomingURL)
                 }

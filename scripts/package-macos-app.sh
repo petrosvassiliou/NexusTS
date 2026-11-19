@@ -47,27 +47,32 @@ else
     echo "==> FreeRDP 3.x + OpenSSL 3.4 statically linked into Contents/MacOS/NexusTS (zero external dylibs)."
 fi
 
-echo "==> Generating Apple HIG squircle AppIcon.icns matching Android NexusTS icon..."
+echo "==> Generating Apple HIG continuous superellipse AppIcon (832x832 in 1024x1024) + Assets.car..."
 ICONSET_DIR="${DIST_DIR}/AppIcon.iconset"
-mkdir -p "${ICONSET_DIR}"
+XCASSETS_DIR="${DIST_DIR}/Assets.xcassets"
+APPICONSET_DIR="${XCASSETS_DIR}/AppIcon.appiconset"
+rm -rf "${ICONSET_DIR}" "${XCASSETS_DIR}"
+mkdir -p "${ICONSET_DIR}" "${APPICONSET_DIR}"
 
-swift - "${ICONSET_DIR}" <<'SWIFT_ICON'
+swift - "${ICONSET_DIR}" "${APPICONSET_DIR}" <<'SWIFT_ICON'
 import AppKit
 import CoreGraphics
 import Foundation
+import SwiftUI
 
 let outDir = CommandLine.arguments[1]
-let specs: [(String, Int)] = [
-    ("icon_16x16.png", 16),
-    ("icon_16x16@2x.png", 32),
-    ("icon_32x32.png", 32),
-    ("icon_32x32@2x.png", 64),
-    ("icon_128x128.png", 128),
-    ("icon_128x128@2x.png", 256),
-    ("icon_256x256.png", 256),
-    ("icon_256x256@2x.png", 512),
-    ("icon_512x512.png", 512),
-    ("icon_512x512@2x.png", 1024)
+let appIconSetDir = CommandLine.arguments[2]
+let specs: [(String, Int, Int, String)] = [
+    ("icon_16x16.png", 16, 16, "1x"),
+    ("icon_16x16@2x.png", 32, 16, "2x"),
+    ("icon_32x32.png", 32, 32, "1x"),
+    ("icon_32x32@2x.png", 64, 32, "2x"),
+    ("icon_128x128.png", 128, 128, "1x"),
+    ("icon_128x128@2x.png", 256, 128, "2x"),
+    ("icon_256x256.png", 256, 256, "1x"),
+    ("icon_256x256@2x.png", 512, 256, "2x"),
+    ("icon_512x512.png", 512, 512, "1x"),
+    ("icon_512x512@2x.png", 1024, 512, "2x")
 ]
 
 func rgba(_ hex: UInt32, alpha: CGFloat = 1.0) -> CGColor {
@@ -77,7 +82,7 @@ func rgba(_ hex: UInt32, alpha: CGFloat = 1.0) -> CGColor {
     return CGColor(red: r, green: g, blue: b, alpha: alpha)
 }
 
-for (filename, px) in specs {
+for (filename, px, pointDim, _) in specs {
     let rep = NSBitmapImageRep(
         bitmapDataPlanes: nil,
         pixelsWide: px,
@@ -94,44 +99,33 @@ for (filename, px) in specs {
     NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
     let ctx = NSGraphicsContext.current!.cgContext
     let size = CGFloat(px)
+    ctx.clear(CGRect(x: 0, y: 0, width: size, height: size))
 
     // Flip to top-down coordinate system matching Android VectorDrawable (0,0 = top-left)
     ctx.translateBy(x: 0, y: size)
     ctx.scaleBy(x: 1, y: -1)
 
-    // Standard macOS Big Sur / Sonoma / Sequoia squircle inset (824/1024 ≈ 80.5%)
-    let inset = size * 0.095
-    let squircleRect = CGRect(x: inset, y: inset, width: size - inset * 2, height: size - inset * 2)
-    let squircleRadius = squircleRect.width * 0.224
-    let squirclePath = CGPath(
-        roundedRect: squircleRect,
-        cornerWidth: squircleRadius,
-        cornerHeight: squircleRadius,
-        transform: nil
-    )
-
-    // Subtle macOS Dock drop shadow for >= 64px icons
-    if px >= 64 {
-        ctx.saveGState()
-        ctx.setShadow(
-            offset: CGSize(width: 0, height: size * 0.018),
-            blur: size * 0.032,
-            color: CGColor(red: 0, green: 0, blue: 0, alpha: 0.32)
-        )
-        ctx.setFillColor(rgba(0x081124))
-        ctx.addPath(squirclePath)
-        ctx.fillPath()
-        ctx.restoreGState()
-    }
+    // Exact Apple macOS Sonoma / Sequoia / Tahoe 26 continuous superellipse grid:
+    // 832x832 squircle centered inside 1024x1024 canvas (96px transparent margin on all 4 sides).
+    // Do NOT draw any outer CoreGraphics shadow outside squirclePath: macOS Dock & IconFoundation
+    // inspect alpha bounds and automatically downscale any icon whose non-zero alpha exceeds the
+    // standard 832x832 squircle envelope, while compositing native Dock shadow & Liquid Glass rim.
+    let inset = (96.0 / 1024.0) * size
+    let squircleRect = CGRect(x: inset, y: inset, width: size - inset * 2.0, height: size - inset * 2.0)
+    let squircleCornerRadius = squircleRect.width * 0.225
+    let squirclePath = RoundedRectangle(cornerRadius: squircleCornerRadius, style: .continuous)
+        .path(in: squircleRect)
+        .cgPath
 
     ctx.saveGState()
     ctx.addPath(squirclePath)
     ctx.clip()
 
-    // Map Android Adaptive Icon visible viewport (x=16..92, y=16..92 of 108x108) into macOS squircle
-    let cropOrigin: CGFloat = 16.0
-    let cropSpan: CGFloat = 76.0
+    // Map foreground emblem viewport (x=17.5..90.5, y=17.5..90.5 of 108x108) into full 832x832 squircle
+    let cropOrigin: CGFloat = 17.5
+    let cropSpan: CGFloat = 73.0
     let scale = squircleRect.width / cropSpan
+    ctx.saveGState()
     ctx.translateBy(x: squircleRect.minX - cropOrigin * scale, y: squircleRect.minY - cropOrigin * scale)
     ctx.scaleBy(x: scale, y: scale)
 
@@ -151,7 +145,7 @@ for (filename, px) in specs {
     ctx.addPath(sweep)
     ctx.fillPath()
 
-    // Ambient Royal Sapphire Glow (#173673, alpha 0.55)
+    // Ambient Royal Sapphire Glow (#173673, alpha 0.58)
     let glow = CGMutablePath()
     glow.move(to: CGPoint(x: 54, y: 12))
     glow.addCurve(to: CGPoint(x: 98, y: 52), control1: CGPoint(x: 82, y: 12), control2: CGPoint(x: 98, y: 28))
@@ -159,7 +153,7 @@ for (filename, px) in specs {
     glow.addCurve(to: CGPoint(x: 24, y: 34), control1: CGPoint(x: 30, y: 72), control2: CGPoint(x: 18, y: 54))
     glow.addCurve(to: CGPoint(x: 54, y: 12), control1: CGPoint(x: 29, y: 18), control2: CGPoint(x: 40, y: 12))
     glow.closeSubpath()
-    ctx.setFillColor(rgba(0x173673, alpha: 0.55))
+    ctx.setFillColor(rgba(0x173673, alpha: 0.58))
     ctx.addPath(glow)
     ctx.fillPath()
 
@@ -254,25 +248,61 @@ for (filename, px) in specs {
 
     ctx.restoreGState()
 
-    // Subtle glass rim highlight matching NexusBrandEmblem border
-    ctx.saveGState()
-    ctx.setStrokeColor(rgba(0x60A5FA, alpha: 0.28))
-    ctx.setLineWidth(max(0.75, size * 0.008))
+    // Crisp inner specular glass rim clipped strictly INSIDE squirclePath (zero outer alpha bleed)
+    ctx.setStrokeColor(rgba(0x93C5FD, alpha: 0.34))
+    ctx.setLineWidth(max(1.2, size * 0.014))
     ctx.addPath(squirclePath)
     ctx.strokePath()
+
     ctx.restoreGState()
 
     NSGraphicsContext.restoreGraphicsState()
-    let pointDim = filename.contains("@2x") ? (px / 2) : px
     rep.size = NSSize(width: pointDim, height: pointDim)
     if let png = rep.representation(using: .png, properties: [:]) {
         try png.write(to: URL(fileURLWithPath: "\(outDir)/\(filename)"))
+        try png.write(to: URL(fileURLWithPath: "\(appIconSetDir)/\(filename)"))
     }
 }
+
+let imagesJson = specs.map { (filename, _, pointDim, scaleStr) -> [String: String] in
+    [
+        "filename": filename,
+        "idiom": "mac",
+        "scale": scaleStr,
+        "size": "\(pointDim)x\(pointDim)"
+    ]
+}
+let rootCatalog: [String: Any] = [
+    "info": ["author": "xcode", "version": 1]
+]
+let appIconContents: [String: Any] = [
+    "images": imagesJson,
+    "info": ["author": "xcode", "version": 1]
+]
+let rootData = try JSONSerialization.data(withJSONObject: rootCatalog, options: [.prettyPrinted, .sortedKeys])
+try rootData.write(to: URL(fileURLWithPath: "\(appIconSetDir)/../Contents.json"))
+let iconData = try JSONSerialization.data(withJSONObject: appIconContents, options: [.prettyPrinted, .sortedKeys])
+try iconData.write(to: URL(fileURLWithPath: "\(appIconSetDir)/Contents.json"))
 SWIFT_ICON
 
+if xcrun -f actool >/dev/null 2>&1; then
+    echo "==> Compiling Assets.car via xcrun actool..."
+    xcrun actool \
+        --output-format human-readable-text \
+        --notices \
+        --warnings \
+        --platform macosx \
+        --minimum-deployment-target 14.0 \
+        --target-device mac \
+        --app-icon AppIcon \
+        --output-partial-info-plist "${DIST_DIR}/assetcatalog_info.plist" \
+        --compile "${APP_BUNDLE}/Contents/Resources" \
+        "${XCASSETS_DIR}" >/dev/null
+    rm -f "${DIST_DIR}/assetcatalog_info.plist"
+fi
+
 iconutil -c icns "${ICONSET_DIR}" -o "${APP_BUNDLE}/Contents/Resources/AppIcon.icns"
-rm -rf "${ICONSET_DIR}"
+rm -rf "${ICONSET_DIR}" "${XCASSETS_DIR}"
 
 echo "==> Code-signing NexusTS.app..."
 SIGN_IDENTITY="${CODESIGN_IDENTITY:--}"

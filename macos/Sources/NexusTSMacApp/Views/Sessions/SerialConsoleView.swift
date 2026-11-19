@@ -70,7 +70,7 @@ public struct SerialConsoleView: View {
                     Image(systemName: "pencil")
                 }
                 .controlSize(.small)
-                .help("Enter Custom /dev/cu.* or /dev/ttys* Device Path")
+                .discreetTooltip("Enter Custom /dev/cu.* or /dev/ttys* Path")
                 .popover(isPresented: $isEditingCustomDevicePath) {
                     HStack(spacing: 8) {
                         TextField("/dev/cu.usbserial", text: $selectedDevicePath)
@@ -95,7 +95,7 @@ public struct SerialConsoleView: View {
                     Image(systemName: "arrow.clockwise")
                 }
                 .controlSize(.small)
-                .help("Rescan IOKit USB-Serial Devices")
+                .discreetTooltip("Rescan IOKit USB-Serial Devices")
 
                 Picker("Baud", selection: $baudRate) {
                     ForEach(MacSerialPortSession.supportedBaudRates, id: \.self) { rate in
@@ -199,15 +199,15 @@ public struct SerialConsoleView: View {
                     Button("Ctrl+C") {
                         serialSession.write(Data([0x03]))
                     }
-                    .help("Send ETX (0x03 / SIGINT)")
+                    .discreetTooltip("Send ETX (0x03 / SIGINT)", shortcut: "⌃C")
                     Button("ESC") {
                         serialSession.write(Data([0x1B]))
                     }
-                    .help("Send Escape (0x1B)")
+                    .discreetTooltip("Send Escape (0x1B)", shortcut: "⎋")
                     Button("TAB") {
                         serialSession.write(Data([0x09]))
                     }
-                    .help("Send Tab Completion (0x09)")
+                    .discreetTooltip("Send Tab Completion (0x09)", shortcut: "⇥")
                 }
                 .controlSize(.mini)
                 .disabled(!isOpen)

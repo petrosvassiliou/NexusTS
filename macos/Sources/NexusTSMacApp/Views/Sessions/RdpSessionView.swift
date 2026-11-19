@@ -189,13 +189,14 @@ public struct RdpSessionView: View {
                     }
                     .controlSize(.small)
                     .disabled(!hudConnected)
-                    .help("Open Remote Windows Start Menu")
+                    .discreetTooltip("Open Remote Windows Start Menu")
 
                     Button("Ctrl+Alt+Del") {
                         existingSession?.sendCtrlAltDel()
                     }
                     .controlSize(.small)
                     .disabled(!hudConnected)
+                    .discreetTooltip("Send Ctrl+Alt+Del Secure Attention Sequence")
 
                     Button {
                         let panel = NSOpenPanel()
@@ -216,15 +217,17 @@ public struct RdpSessionView: View {
                         .font(.caption)
                     }
                     .controlSize(.small)
+                    .discreetTooltip("Mount Local Folder via RDPDR Drive Redirection")
 
                     Toggle("Fit", isOn: $scaleToFit)
                         .toggleStyle(.checkbox)
                         .font(.caption)
+                        .discreetTooltip("Scale Remote Desktop to Fit Pane")
 
                     Toggle("HiDPI (\(configuredHiDpiPercent)%)", isOn: $retina2xEnabled)
                         .toggleStyle(.checkbox)
                         .font(.caption)
-                        .help("Render remote Windows desktop in crisp Retina HiDPI (\(configuredHiDpiPercent)% scale) or 1× logical resolution")
+                        .discreetTooltip("Retina HiDPI (\(configuredHiDpiPercent)% Scale)")
 
                     Button {
                         if store.isFullScreenSessionMode {
@@ -242,6 +245,10 @@ public struct RdpSessionView: View {
                         .font(.caption)
                     }
                     .controlSize(.small)
+                    .discreetTooltip(
+                        store.isFullScreenSessionMode ? "Exit Full Screen" : "Full Screen Session",
+                        shortcut: "⌃⌘F"
+                    )
 
                     Button {
                         showHudBar = false
@@ -250,7 +257,7 @@ public struct RdpSessionView: View {
                             .font(.caption2)
                     }
                     .buttonStyle(.plain)
-                    .help("Collapse RDP Control Bar")
+                    .discreetTooltip("Collapse RDP Control Bar")
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 6)

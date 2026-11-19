@@ -228,7 +228,7 @@ public struct SidebarHierarchyView: View {
                                         .font(.caption)
                                 }
                                 .buttonStyle(.plain)
-                                .help(store.strings.newFolder)
+                                .discreetTooltip(store.strings.newFolder, shortcut: "⇧⌘N")
 
                                 Button {
                                     let targetFolder = store.selectedFolderId == VaultHierarchySanitizer.systemCredentialsFolderId
@@ -242,7 +242,7 @@ public struct SidebarHierarchyView: View {
                                         .font(.caption)
                                 }
                                 .buttonStyle(.plain)
-                                .help(store.strings.newConnection)
+                                .discreetTooltip(store.strings.newConnection, shortcut: "⌘N")
                             }
                         }
 
@@ -302,7 +302,7 @@ public struct SidebarHierarchyView: View {
                                         .font(.caption)
                                 }
                                 .buttonStyle(.plain)
-                                .help(store.strings.newSmartFolder)
+                                .discreetTooltip(store.strings.newSmartFolder, shortcut: "⌥⇧⌘N")
                             }
                         }
 
@@ -561,7 +561,7 @@ private struct SidebarGlassIconButton: View {
                 isHovered = hovering
             }
         }
-        .help(helpText)
+        .discreetTooltip(helpText)
     }
 }
 
@@ -599,7 +599,7 @@ private struct SidebarFilterPillButton: View {
                 isHovered = hovering
             }
         }
-        .help(helpText)
+        .discreetTooltip(helpText)
     }
 }
 
@@ -971,13 +971,13 @@ struct SidebarConnectionRow: View {
                 isHovered = hovering
             }
         }
-        .help(tooltipText)
+        .discreetTooltip(tooltipText)
         .onTapGesture(count: 2) {
             store.openConnection(connection)
         }
         .simultaneousGesture(
             TapGesture(count: 1).onEnded {
-                store.selectedConnectionId = connection.id
+                store.focusActiveSessionIfOpen(forConnectionId: connection.id)
             }
         )
         .draggable("conn:\(connection.id)")
@@ -1237,7 +1237,7 @@ private struct SidebarSystemCredentialsFolderRow: View {
                     .font(.caption2.weight(.bold))
             }
             .buttonStyle(.plain)
-            .help(store.strings.newCredential)
+            .discreetTooltip(store.strings.newCredential)
         }
         .padding(.vertical, 3)
         .padding(.horizontal, 5)

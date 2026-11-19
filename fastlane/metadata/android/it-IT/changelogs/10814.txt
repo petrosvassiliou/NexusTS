@@ -1,0 +1,3 @@
+• NexusTS 0.8.14: Icona macOS a dimensione standard nel Dock (superellisse Apple 832x832 + Assets.car).
+• Tooltip Liquid Glass discreti con scorciatoie da tastiera su barra degli strumenti e area di lavoro.
+• Un clic su una connessione attiva nella barra laterale passa direttamente alla scheda di sessione aperta.

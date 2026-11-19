@@ -170,6 +170,26 @@ public indirect enum WorkspacePaneNode: Equatable, Identifiable, Sendable {
         return (activatingTab(tabId, in: targetPaneId), targetPaneId)
     }
 
+    public func activatingConnectionIfPresent(
+        _ connectionId: String,
+        currentFocusedPaneId: UUID? = nil
+    ) -> (updatedTree: WorkspacePaneNode, activatedTabId: UUID?, paneId: UUID?) {
+        let matchingTabs = allTabs.filter { !$0.isLocalShell && $0.connection.id == connectionId }
+        guard !matchingTabs.isEmpty else {
+            return (self, nil, nil)
+        }
+        let targetTab: WorkspaceSessionTab = {
+            if matchingTabs.count > 1,
+               let currentActive = focusedOrFirstActiveTab(focusedPaneId: currentFocusedPaneId),
+               let currentIndex = matchingTabs.firstIndex(where: { $0.id == currentActive.id }) {
+                return matchingTabs[(currentIndex + 1) % matchingTabs.count]
+            }
+            return matchingTabs[0]
+        }()
+        let (updated, paneId) = activatingTabGlobally(targetTab.id)
+        return (updated, targetTab.id, paneId)
+    }
+
     public func focusedOrFirstActiveTab(focusedPaneId: UUID?) -> WorkspaceSessionTab? {
         func findActiveInLeaf(_ targetId: UUID, node: WorkspacePaneNode) -> WorkspaceSessionTab? {
             switch node {

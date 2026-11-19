@@ -112,7 +112,7 @@ public struct InspectorColumnView: View {
                                     Image(systemName: "doc.on.doc")
                                 }
                                 .buttonStyle(.borderless)
-                                .help("Copy 6-digit TOTP code")
+                                .discreetTooltip("Copy 6-Digit TOTP Code")
                             }
                         }
                     }
@@ -137,7 +137,7 @@ public struct InspectorColumnView: View {
                                             }
                                         }
                                     }
-                                    .help(item.label)
+                                    .discreetTooltip(item.label)
                             }
                         }
                     }

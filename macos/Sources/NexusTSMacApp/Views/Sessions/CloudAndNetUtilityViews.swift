@@ -303,14 +303,14 @@ public struct CloudHypervisorSessionView: View {
                         } label: {
                             Label("Start", systemImage: "play.fill")
                         }
-                        .help("Start VM (\(vm.name))")
+                        .discreetTooltip("Start VM (\(vm.name))")
 
                         Button {
                             performVmPower(vm: vm, action: .stop)
                         } label: {
                             Label("Turn Off", systemImage: "stop.fill")
                         }
-                        .help("Stop / Power Off VM (\(vm.name))")
+                        .discreetTooltip("Stop / Power Off VM (\(vm.name))")
 
                         Button {
                             performVmPower(vm: vm, action: .save)
@@ -320,14 +320,14 @@ public struct CloudHypervisorSessionView: View {
                                 systemImage: "tray.and.arrow.down.fill"
                             )
                         }
-                        .help("Save / Suspend / Deallocate VM (\(vm.name))")
+                        .discreetTooltip("Save / Suspend / Deallocate VM (\(vm.name))")
 
                         Button {
                             performVmPower(vm: vm, action: .reboot)
                         } label: {
                             Label("Restart", systemImage: "arrow.triangle.2.circlepath")
                         }
-                        .help("Restart VM (\(vm.name))")
+                        .discreetTooltip("Restart VM (\(vm.name))")
                     }
                     .controlSize(.small)
                     .disabled(isRunningPowerAction)
@@ -538,7 +538,7 @@ public struct CloudHypervisorSessionView: View {
                 .toggleStyle(.checkbox)
                 .controlSize(.small)
                 .font(.caption)
-                .help("Request Hyper-V Enhanced Session Mode (VMBus clipboard & dynamic resize) over TCP 2179")
+                .discreetTooltip("Hyper-V Enhanced Session Mode (TCP 2179)")
 
             TextField("Direct VM GUID (e.g. 8f2c1a40-…)", text: $manualVmGuid)
                 .textFieldStyle(.roundedBorder)

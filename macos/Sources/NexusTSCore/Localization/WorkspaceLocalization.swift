@@ -517,3 +517,133 @@ public enum MacWorkspaceShortcut: String, CaseIterable, Identifiable, Sendable {
         .toggleSidebar
     ]
 }
+
+public struct DiscreetTooltipSpec: Equatable, Sendable {
+    public let title: String
+    public let shortcut: String?
+
+    public init(title: String, shortcut: String? = nil) {
+        self.title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanShortcut = shortcut?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.shortcut = (cleanShortcut?.isEmpty == false) ? cleanShortcut : nil
+    }
+
+    /// Splits a combined label such as `"Local Terminal (⌘T)"` into `title: "Local Terminal"` and `shortcut: "⌘T"`.
+    public static func parse(_ raw: String, explicitShortcut: String? = nil) -> DiscreetTooltipSpec {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let exp = explicitShortcut?.trimmingCharacters(in: .whitespacesAndNewlines), !exp.isEmpty {
+            return DiscreetTooltipSpec(title: trimmed, shortcut: exp)
+        }
+        guard trimmed.hasSuffix(")"),
+              let openIdx = trimmed.lastIndex(of: "("),
+              openIdx > trimmed.startIndex else {
+            return DiscreetTooltipSpec(title: trimmed, shortcut: nil)
+        }
+        let inside = String(trimmed[trimmed.index(after: openIdx)..<trimmed.index(before: trimmed.endIndex)])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let prefix = String(trimmed[..<openIdx]).trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasShortcutGlyph = inside.contains("⌘")
+            || inside.contains("⌃")
+            || inside.contains("⌥")
+            || inside.contains("⇧")
+            || inside.hasPrefix("Ctrl+")
+            || inside.hasPrefix("Cmd+")
+        if hasShortcutGlyph && !prefix.isEmpty && inside.count <= 14 {
+            return DiscreetTooltipSpec(title: prefix, shortcut: inside)
+        }
+        return DiscreetTooltipSpec(title: trimmed, shortcut: nil)
+    }
+
+    public static func resolveToolbarTooltip(
+        candidateText: String,
+        sfSymbolHint: String? = nil,
+        isNarrowMenuChevron: Bool = false,
+        strings: LocalizedWorkspaceStrings
+    ) -> DiscreetTooltipSpec? {
+        let cleanText = candidateText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lowerSymbol = (sfSymbolHint ?? "").lowercased()
+
+        if isNarrowMenuChevron && (
+            cleanText.isEmpty ||
+            cleanText == strings.newConnection ||
+            cleanText.hasPrefix(strings.newConnection) ||
+            lowerSymbol.contains("chevron") ||
+            cleanText.lowercased() == "menu"
+        ) {
+            return DiscreetTooltipSpec(title: "\(strings.newConnection) • \(strings.newFolder) • Vault", shortcut: nil)
+        }
+
+        // 1. Check explicit shortcut matches across all workspace shortcuts
+        for item in MacWorkspaceShortcut.allCases {
+            let localizedTitle = item.title(in: strings)
+            let combined = "\(localizedTitle) (\(item.keycap))"
+            if cleanText == localizedTitle || cleanText == combined || cleanText == "nexusts.toolbar.\(item.rawValue)" {
+                return DiscreetTooltipSpec(title: localizedTitle, shortcut: item.keycap)
+            }
+        }
+
+        // 2. Navigation / Studios / Re-dock toolbar controls
+        if cleanText == strings.studios || cleanText == "\(strings.studios) (⌘1–⌘7)" || cleanText == "nexusts.toolbar.studios" {
+            return DiscreetTooltipSpec(title: strings.studios, shortcut: "⌘1–⌘7")
+        }
+        for studioTitle in [
+            strings.overview,
+            strings.templates,
+            strings.credentials,
+            strings.gateways,
+            strings.automationTasks,
+            strings.cloudSync
+        ] where cleanText == studioTitle {
+            return DiscreetTooltipSpec(title: "\(strings.studios): \(studioTitle)", shortcut: "⌘1–⌘7")
+        }
+        if cleanText == strings.connections || cleanText == "\(strings.connections) (⌘1)" || cleanText == "nexusts.toolbar.backConnections" {
+            return DiscreetTooltipSpec(title: strings.connections, shortcut: "⌘1")
+        }
+        if cleanText == "Re-Dock in Main Window" || cleanText == "nexusts.toolbar.reDock" {
+            return DiscreetTooltipSpec(title: "Move Session Back to Main Window", shortcut: nil)
+        }
+
+        // 3. Fallback via SF Symbol hint from NSControl.image
+        if !lowerSymbol.isEmpty {
+            if lowerSymbol.contains("sparkle.magnifyingglass") {
+                return DiscreetTooltipSpec(title: MacWorkspaceShortcut.quickConnect.title(in: strings), shortcut: MacWorkspaceShortcut.quickConnect.keycap)
+            }
+            if lowerSymbol.contains("rectangle.split.2x1") {
+                return DiscreetTooltipSpec(title: MacWorkspaceShortcut.splitRight.title(in: strings), shortcut: MacWorkspaceShortcut.splitRight.keycap)
+            }
+            if lowerSymbol.contains("rectangle.split.1x2") {
+                return DiscreetTooltipSpec(title: MacWorkspaceShortcut.splitDown.title(in: strings), shortcut: MacWorkspaceShortcut.splitDown.keycap)
+            }
+            if lowerSymbol.contains("dot.radiowaves.left.and.right") {
+                return DiscreetTooltipSpec(title: MacWorkspaceShortcut.broadcastInput.title(in: strings), shortcut: MacWorkspaceShortcut.broadcastInput.keycap)
+            }
+            if lowerSymbol.contains("arrow.triangle.2.circlepath.icloud") {
+                return DiscreetTooltipSpec(title: MacWorkspaceShortcut.syncNow.title(in: strings), shortcut: MacWorkspaceShortcut.syncNow.keycap)
+            }
+            if lowerSymbol.contains("sidebar.trailing") {
+                return DiscreetTooltipSpec(title: MacWorkspaceShortcut.toggleInspector.title(in: strings), shortcut: MacWorkspaceShortcut.toggleInspector.keycap)
+            }
+            if lowerSymbol.contains("line.3.horizontal") || lowerSymbol.contains("sidebar.leading") {
+                return DiscreetTooltipSpec(title: MacWorkspaceShortcut.toggleSidebar.title(in: strings), shortcut: MacWorkspaceShortcut.toggleSidebar.keycap)
+            }
+            if lowerSymbol.contains("square.grid.2x2") {
+                return DiscreetTooltipSpec(title: strings.studios, shortcut: "⌘1–⌘7")
+            }
+            if lowerSymbol.contains("terminal") {
+                return DiscreetTooltipSpec(title: MacWorkspaceShortcut.localTerminal.title(in: strings), shortcut: MacWorkspaceShortcut.localTerminal.keycap)
+            }
+            if lowerSymbol.contains("lock") {
+                return DiscreetTooltipSpec(title: MacWorkspaceShortcut.lockVault.title(in: strings), shortcut: MacWorkspaceShortcut.lockVault.keycap)
+            }
+            if lowerSymbol == "plus" || lowerSymbol.contains(" symbol = plus") || lowerSymbol.hasSuffix("plus") {
+                return DiscreetTooltipSpec(title: MacWorkspaceShortcut.newConnection.title(in: strings), shortcut: MacWorkspaceShortcut.newConnection.keycap)
+            }
+        }
+
+        if !cleanText.isEmpty {
+            return parse(cleanText)
+        }
+        return nil
+    }
+}
+

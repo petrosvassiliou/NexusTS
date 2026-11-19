@@ -316,7 +316,11 @@ public struct NexusMainWindowView: View {
             } label: {
                 Label(MacWorkspaceShortcut.toggleSidebar.title(in: store.strings), systemImage: "line.3.horizontal")
             }
-            .help("\(MacWorkspaceShortcut.toggleSidebar.title(in: store.strings)) (\(MacWorkspaceShortcut.toggleSidebar.keycap))")
+            .accessibilityIdentifier("nexusts.toolbar.toggleSidebar")
+            .discreetTooltip(
+                MacWorkspaceShortcut.toggleSidebar.title(in: store.strings),
+                shortcut: MacWorkspaceShortcut.toggleSidebar.keycap
+            )
 
             if store.activeSection != .sessions {
                 Button {
@@ -324,7 +328,8 @@ public struct NexusMainWindowView: View {
                 } label: {
                     Label(store.strings.connections, systemImage: "chevron.left")
                 }
-                .help("\(store.strings.connections) (⌘1)")
+                .accessibilityIdentifier("nexusts.toolbar.backConnections")
+                .discreetTooltip(store.strings.connections, shortcut: "⌘1")
             }
 
             Menu {
@@ -344,7 +349,8 @@ public struct NexusMainWindowView: View {
                     systemImage: store.activeSection == .sessions ? "square.grid.2x2" : store.activeSection.sfSymbol
                 )
             }
-            .help("\(store.strings.studios) (⌘1–⌘7)")
+            .accessibilityIdentifier("nexusts.toolbar.studios")
+            .discreetTooltip(store.strings.studios, shortcut: "⌘1–⌘7")
         }
 
         ToolbarItemGroup(placement: .primaryAction) {
@@ -422,61 +428,97 @@ public struct NexusMainWindowView: View {
             } primaryAction: {
                 store.presentNewConnectionSheet()
             }
-            .help("\(MacWorkspaceShortcut.newConnection.title(in: store.strings)) (\(MacWorkspaceShortcut.newConnection.keycap))")
+            .accessibilityIdentifier("nexusts.toolbar.newConnection")
+            .discreetTooltip(
+                MacWorkspaceShortcut.newConnection.title(in: store.strings),
+                shortcut: MacWorkspaceShortcut.newConnection.keycap
+            )
 
             Button {
                 store.openLocalTerminal()
             } label: {
                 Label(MacWorkspaceShortcut.localTerminal.title(in: store.strings), systemImage: "terminal")
             }
-            .help("\(MacWorkspaceShortcut.localTerminal.title(in: store.strings)) (\(MacWorkspaceShortcut.localTerminal.keycap))")
+            .accessibilityIdentifier("nexusts.toolbar.localTerminal")
+            .discreetTooltip(
+                MacWorkspaceShortcut.localTerminal.title(in: store.strings),
+                shortcut: MacWorkspaceShortcut.localTerminal.keycap
+            )
 
             Button {
                 store.toggleQuickConnect()
             } label: {
                 Label(MacWorkspaceShortcut.quickConnect.title(in: store.strings), systemImage: "sparkle.magnifyingglass")
             }
-            .help("\(MacWorkspaceShortcut.quickConnect.title(in: store.strings)) (\(MacWorkspaceShortcut.quickConnect.keycap))")
+            .accessibilityIdentifier("nexusts.toolbar.quickConnect")
+            .discreetTooltip(
+                MacWorkspaceShortcut.quickConnect.title(in: store.strings),
+                shortcut: MacWorkspaceShortcut.quickConnect.keycap
+            )
 
             Button {
                 store.splitFocusedPane(.horizontal)
             } label: {
                 Label(MacWorkspaceShortcut.splitRight.title(in: store.strings), systemImage: "rectangle.split.2x1")
             }
-            .help("\(MacWorkspaceShortcut.splitRight.title(in: store.strings)) (\(MacWorkspaceShortcut.splitRight.keycap))")
+            .accessibilityIdentifier("nexusts.toolbar.splitRight")
+            .discreetTooltip(
+                MacWorkspaceShortcut.splitRight.title(in: store.strings),
+                shortcut: MacWorkspaceShortcut.splitRight.keycap
+            )
 
             Button {
                 store.splitFocusedPane(.vertical)
             } label: {
                 Label(MacWorkspaceShortcut.splitDown.title(in: store.strings), systemImage: "rectangle.split.1x2")
             }
-            .help("\(MacWorkspaceShortcut.splitDown.title(in: store.strings)) (\(MacWorkspaceShortcut.splitDown.keycap))")
+            .accessibilityIdentifier("nexusts.toolbar.splitDown")
+            .discreetTooltip(
+                MacWorkspaceShortcut.splitDown.title(in: store.strings),
+                shortcut: MacWorkspaceShortcut.splitDown.keycap
+            )
 
             Toggle(isOn: $store.broadcastInputEnabled) {
                 Label(MacWorkspaceShortcut.broadcastInput.title(in: store.strings), systemImage: "dot.radiowaves.left.and.right")
             }
-            .help("\(MacWorkspaceShortcut.broadcastInput.title(in: store.strings)) (\(MacWorkspaceShortcut.broadcastInput.keycap))")
+            .accessibilityIdentifier("nexusts.toolbar.broadcastInput")
+            .discreetTooltip(
+                MacWorkspaceShortcut.broadcastInput.title(in: store.strings),
+                shortcut: MacWorkspaceShortcut.broadcastInput.keycap
+            )
 
             Button {
                 Task { await store.syncCloudNow(reportErrors: true) }
             } label: {
                 Label(MacWorkspaceShortcut.syncNow.title(in: store.strings), systemImage: "arrow.triangle.2.circlepath.icloud")
             }
-            .help("\(MacWorkspaceShortcut.syncNow.title(in: store.strings)) (\(MacWorkspaceShortcut.syncNow.keycap))")
+            .accessibilityIdentifier("nexusts.toolbar.syncNow")
+            .discreetTooltip(
+                MacWorkspaceShortcut.syncNow.title(in: store.strings),
+                shortcut: MacWorkspaceShortcut.syncNow.keycap
+            )
 
             Button {
                 store.lockVault()
             } label: {
                 Label(MacWorkspaceShortcut.lockVault.title(in: store.strings), systemImage: "lock")
             }
-            .help("\(MacWorkspaceShortcut.lockVault.title(in: store.strings)) (\(MacWorkspaceShortcut.lockVault.keycap))")
+            .accessibilityIdentifier("nexusts.toolbar.lockVault")
+            .discreetTooltip(
+                MacWorkspaceShortcut.lockVault.title(in: store.strings),
+                shortcut: MacWorkspaceShortcut.lockVault.keycap
+            )
 
             Button {
                 store.toggleInspector()
             } label: {
                 Label(MacWorkspaceShortcut.toggleInspector.title(in: store.strings), systemImage: "sidebar.trailing")
             }
-            .help("\(MacWorkspaceShortcut.toggleInspector.title(in: store.strings)) (\(MacWorkspaceShortcut.toggleInspector.keycap))")
+            .accessibilityIdentifier("nexusts.toolbar.toggleInspector")
+            .discreetTooltip(
+                MacWorkspaceShortcut.toggleInspector.title(in: store.strings),
+                shortcut: MacWorkspaceShortcut.toggleInspector.keycap
+            )
         }
     }
 }
@@ -910,7 +952,7 @@ private struct FullScreenSessionMacWorkspaceView: View {
                             .font(.caption)
                     }
                     .buttonStyle(.plain)
-                    .help("Collapse Full-Screen Session Bar")
+                    .discreetTooltip("Collapse Full-Screen Session Bar")
 
                     Button {
                         store.exitFullScreenSession()
@@ -919,6 +961,7 @@ private struct FullScreenSessionMacWorkspaceView: View {
                             .font(.caption.weight(.semibold))
                     }
                     .controlSize(.small)
+                    .discreetTooltip("Exit Full Screen", shortcut: "⌃⌘F")
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 6)
@@ -945,7 +988,7 @@ private struct FullScreenSessionMacWorkspaceView: View {
                             .font(.caption2)
                     }
                     .buttonStyle(.plain)
-                    .help("Exit Full Screen")
+                    .discreetTooltip("Exit Full Screen", shortcut: "⌃⌘F")
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 3)
@@ -1116,7 +1159,7 @@ private struct FullScreenFolderLauncherPopover: View {
                     .foregroundStyle(.secondary)
             }
             .buttonStyle(.borderless)
-            .help("Connect to \(conn.name)")
+            .discreetTooltip("Connect to \(conn.name)")
         }
         .padding(.leading, CGFloat(depth) * 14 + 16)
         .padding(.vertical, 5)

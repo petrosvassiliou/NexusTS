@@ -200,7 +200,7 @@ private struct TerminalLiveWorkspaceBody: View {
                     Image(systemName: "textformat.size.smaller")
                 }
                 .buttonStyle(.borderless)
-                .help("Decrease Terminal Font Size")
+                .discreetTooltip("Decrease Terminal Font Size")
 
                 Button {
                     fontScaleOffset = 0
@@ -209,6 +209,7 @@ private struct TerminalLiveWorkspaceBody: View {
                         .font(.caption2.monospacedDigit())
                 }
                 .buttonStyle(.borderless)
+                .discreetTooltip("Reset Terminal Font Size")
 
                 Button {
                     fontScaleOffset = min(12, fontScaleOffset + 1)
@@ -216,7 +217,7 @@ private struct TerminalLiveWorkspaceBody: View {
                     Image(systemName: "textformat.size.larger")
                 }
                 .buttonStyle(.borderless)
-                .help("Increase Terminal Font Size")
+                .discreetTooltip("Increase Terminal Font Size")
             }
         }
         .padding(.horizontal, 12)

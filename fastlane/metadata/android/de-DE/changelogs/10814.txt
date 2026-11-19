@@ -1,0 +1,3 @@
+• NexusTS 0.8.14: macOS-App-Icon in voller Standardgröße (exaktes 832x832 Apple-Superellipse-Raster + Assets.car).
+• Dezente Liquid-Glass-Tooltips mit Tastenkürzel-Badges in der gesamten Symbolleiste und Arbeitsfläche.
+• Ein Klick auf eine aktive Verbindung in der Seitenleiste wechselt direkt zum geöffneten Sitzungs-Tab.

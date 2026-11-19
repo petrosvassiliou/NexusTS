@@ -176,7 +176,7 @@ private struct DualPaneTransferLiveBody: View {
                             Image(systemName: "chevron.up")
                         }
                         .buttonStyle(.borderless)
-                        .help("Parent Directory")
+                        .discreetTooltip("Parent Directory")
 
                         TextField("Local Path", text: $controller.localPath)
                             .textFieldStyle(.roundedBorder)
@@ -191,7 +191,7 @@ private struct DualPaneTransferLiveBody: View {
                             Image(systemName: "folder")
                         }
                         .buttonStyle(.borderless)
-                        .help("Reveal in macOS Finder")
+                        .discreetTooltip("Reveal in macOS Finder")
                     }
                     .padding(8)
                     .background(Color(nsColor: .windowBackgroundColor))
@@ -255,6 +255,7 @@ private struct DualPaneTransferLiveBody: View {
                             Image(systemName: "chevron.up")
                         }
                         .buttonStyle(.borderless)
+                        .discreetTooltip("Parent Remote Directory")
                         .disabled(!controller.isConnected)
 
                         TextField("Remote Path", text: $controller.remotePath)
@@ -270,7 +271,7 @@ private struct DualPaneTransferLiveBody: View {
                             Image(systemName: "folder.badge.plus")
                         }
                         .buttonStyle(.borderless)
-                        .help("Create Remote Directory")
+                        .discreetTooltip("Create Remote Directory")
                         .disabled(!controller.isConnected)
                         .popover(isPresented: $isCreatingRemoteFolder) {
                             HStack(spacing: 8) {
@@ -298,7 +299,7 @@ private struct DualPaneTransferLiveBody: View {
                             Image(systemName: "pencil")
                         }
                         .buttonStyle(.borderless)
-                        .help("Rename Remote Item")
+                        .discreetTooltip("Rename Remote Item")
                         .disabled(!controller.isConnected || selectedRemoteItem == nil)
 
                         Button {
@@ -310,7 +311,7 @@ private struct DualPaneTransferLiveBody: View {
                             Image(systemName: "lock.open.rotation")
                         }
                         .buttonStyle(.borderless)
-                        .help("Change POSIX Permissions (chmod)")
+                        .discreetTooltip("Change POSIX Permissions (chmod)")
                         .disabled(!controller.isConnected || selectedRemoteItem == nil)
 
                         Button(role: .destructive) {
@@ -322,7 +323,7 @@ private struct DualPaneTransferLiveBody: View {
                             Image(systemName: "trash")
                         }
                         .buttonStyle(.borderless)
-                        .help("Delete Remote Item")
+                        .discreetTooltip("Delete Remote Item")
                         .disabled(!controller.isConnected || selectedRemoteItem == nil)
                     }
                     .padding(8)

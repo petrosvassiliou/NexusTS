@@ -174,7 +174,10 @@ private struct LeafPaneContainerView: View {
                                 .font(.caption)
                         }
                         .buttonStyle(.plain)
-                        .help("\(MacWorkspaceShortcut.fullScreenSession.title(in: store.strings)) (\(MacWorkspaceShortcut.fullScreenSession.keycap))")
+                        .discreetTooltip(
+                            MacWorkspaceShortcut.fullScreenSession.title(in: store.strings),
+                            shortcut: MacWorkspaceShortcut.fullScreenSession.keycap
+                        )
                     }
 
                     Button {
@@ -185,7 +188,10 @@ private struct LeafPaneContainerView: View {
                             .font(.caption.weight(.semibold))
                     }
                     .buttonStyle(.plain)
-                    .help("\(MacWorkspaceShortcut.localTerminal.title(in: store.strings)) (\(MacWorkspaceShortcut.localTerminal.keycap))")
+                    .discreetTooltip(
+                        MacWorkspaceShortcut.localTerminal.title(in: store.strings),
+                        shortcut: MacWorkspaceShortcut.localTerminal.keycap
+                    )
 
                     Button {
                         let (updated, newId) = store.paneTree.splittingPane(
@@ -200,7 +206,10 @@ private struct LeafPaneContainerView: View {
                             .font(.caption)
                     }
                     .buttonStyle(.plain)
-                    .help("\(MacWorkspaceShortcut.splitRight.title(in: store.strings)) (\(MacWorkspaceShortcut.splitRight.keycap))")
+                    .discreetTooltip(
+                        MacWorkspaceShortcut.splitRight.title(in: store.strings),
+                        shortcut: MacWorkspaceShortcut.splitRight.keycap
+                    )
                 }
                 .foregroundStyle(.secondary)
                 .padding(.trailing, 10)
@@ -308,6 +317,7 @@ private struct MacTabPillView: View {
             }
             .buttonStyle(.plain)
             .opacity(isHovering || isActive ? 1.0 : 0.35)
+            .discreetTooltip(disconnectLabel, shortcut: isActive ? "⌘W" : nil)
         }
         .padding(.horizontal, 11)
         .padding(.vertical, 5)
@@ -414,7 +424,8 @@ public struct DetachedSessionWindowRootView: View {
                             } label: {
                                 Label("Re-Dock in Main Window", systemImage: "macwindow.on.rectangle")
                             }
-                            .help("Move live session back into the main workspace split-pane tree without disconnecting")
+                            .accessibilityIdentifier("nexusts.toolbar.reDock")
+                            .discreetTooltip("Re-Dock in Main Window")
                         }
                     }
             } else {

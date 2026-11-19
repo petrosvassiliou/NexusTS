@@ -1,0 +1,3 @@
+• NexusTS 0.8.14 : Icône macOS plein format dans le Dock (superellipse Apple 832x832 + Assets.car).
+• Info-bulles Liquid Glass discrètes avec badges de raccourcis clavier sur la barre d'outils et l'espace de travail.
+• Un clic sur une connexion active dans la barre latérale bascule directement vers son onglet de session ouvert.

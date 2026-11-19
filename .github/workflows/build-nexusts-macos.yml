@@ -21,7 +21,7 @@ on:
       release_tag:
         description: "Tag name when publishing via workflow_dispatch"
         required: false
-        default: "v0.8.13"
+        default: "v0.8.14"
         type: string
       runner_label:
         description: "GitHub-hosted macOS runner label (macos-15-intel avoids arm64 queue backlogs)"
@@ -137,8 +137,45 @@ jobs:
           echo "${ARCHS}" | grep -q "arm64"
           echo "${ARCHS}" | grep -q "x86_64"
 
-          echo "==> Verifying AppIcon.icns is bundled and non-empty"
+          echo "==> Verifying AppIcon.icns + Assets.car and exact 832x832 Apple HIG squircle bounds"
           test -s macos/dist/NexusTS.app/Contents/Resources/AppIcon.icns
+          test -s macos/dist/NexusTS.app/Contents/Resources/Assets.car
+          VERIFY_ICONSET="${RUNNER_TEMP}/verify-appicon.iconset"
+          rm -rf "${VERIFY_ICONSET}"
+          iconutil -c iconset macos/dist/NexusTS.app/Contents/Resources/AppIcon.icns -o "${VERIFY_ICONSET}"
+          swift - "${VERIFY_ICONSET}/icon_512x512@2x.png" <<'SWIFT_CHECK_ICON'
+          import AppKit
+          import Foundation
+          let path = CommandLine.arguments[1]
+          guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+                let rep = NSBitmapImageRep(data: data) else {
+              fputs("FATAL: Unable to decode icon_512x512@2x.png\n", stderr)
+              exit(1)
+          }
+          guard rep.pixelsWide == 1024 && rep.pixelsHigh == 1024 else {
+              fputs("FATAL: Expected 1024x1024 icon, got \(rep.pixelsWide)x\(rep.pixelsHigh)\n", stderr)
+              exit(1)
+          }
+          var minX = 1024, maxX = -1, minY = 1024, maxY = -1
+          for y in 0..<1024 {
+              for x in 0..<1024 {
+                  let alpha = rep.colorAt(x: x, y: y)?.alphaComponent ?? 0
+                  if alpha > 0.001 {
+                      if x < minX { minX = x }
+                      if x > maxX { maxX = x }
+                      if y < minY { minY = y }
+                      if y > maxY { maxY = y }
+                  }
+              }
+          }
+          print("AppIcon 1024x1024 alpha bounds: x=\(minX)...\(maxX) (w=\(maxX - minX + 1)), y=\(minY)...\(maxY) (h=\(maxY - minY + 1))")
+          guard (94...98).contains(minX) && (925...929).contains(maxX) &&
+                (94...98).contains(minY) && (925...929).contains(maxY) else {
+              fputs("FATAL: AppIcon alpha bounds outside exact 832x832 Apple HIG squircle grid!\n", stderr)
+              exit(1)
+          }
+          SWIFT_CHECK_ICON
+          rm -rf "${VERIFY_ICONSET}"
 
           echo "==> Verifying zero external/@rpath/Homebrew dylib dependencies"
           OTOOL_OUT="$(otool -L "${BIN}")"
@@ -155,7 +192,7 @@ jobs:
           echo "==> Executing packaged NexusTS --self-test binary"
           SELF_TEST_OUT="$("${BIN}" --self-test)"
           echo "${SELF_TEST_OUT}"
-          echo "${SELF_TEST_OUT}" | grep -q "NEXUSTS_MACOS_SELF_TEST_OK version=0.8.13"
+          echo "${SELF_TEST_OUT}" | grep -q "NEXUSTS_MACOS_SELF_TEST_OK version=0.8.14"
 
       - name: Upload NexusTS macOS Universal DMG & App Bundle
         uses: actions/upload-artifact@v4
@@ -186,7 +223,7 @@ jobs:
           set -euo pipefail
           TAG_NAME="${GITHUB_REF_NAME}"
           if [[ "${TAG_NAME}" != v* ]]; then
-            TAG_NAME="${{ inputs.release_tag || 'v0.8.13' }}"
+            TAG_NAME="${{ inputs.release_tag || 'v0.8.14' }}"
           fi
           echo "tag_name=${TAG_NAME}" >> "${GITHUB_OUTPUT}"
 
