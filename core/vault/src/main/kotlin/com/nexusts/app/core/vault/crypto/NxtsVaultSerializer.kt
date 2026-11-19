@@ -128,17 +128,25 @@ class NxtsVaultSerializer(
 
     private fun migrateLegacyDefaultRdpScale(doc: NxtsVaultDocument): NxtsVaultDocument {
         fun migrateSettings(settings: com.nexusts.app.core.vault.model.ProtocolSpecificSettings): com.nexusts.app.core.vault.model.ProtocolSpecificSettings {
-            if (settings is com.nexusts.app.core.vault.model.ProtocolSpecificSettings.Rdp &&
-                !settings.hiDpiScaleCustomized &&
+            if (settings !is com.nexusts.app.core.vault.model.ProtocolSpecificSettings.Rdp) {
+                return settings
+            }
+            val needsScaleHeal = !settings.hiDpiScaleCustomized &&
                 settings.hiDpiEnabled &&
                 (settings.desktopScaleFactorPercent == 150 || settings.desktopScaleFactorPercent == 100)
-            ) {
-                return settings.copy(
-                    desktopScaleFactorPercent = 200,
-                    deviceScaleFactorPercent = 180
-                )
+            val needsClipHeal = !settings.redirectClipboardCustomized && !settings.redirectClipboard
+            val needsHvEnhancedHeal = !settings.hyperVEnhancedSessionCustomized &&
+                settings.hyperVVmId.isNotBlank() &&
+                !settings.hyperVEnhancedSession
+            if (!needsScaleHeal && !needsClipHeal && !needsHvEnhancedHeal) {
+                return settings
             }
-            return settings
+            return settings.copy(
+                desktopScaleFactorPercent = if (needsScaleHeal) 200 else settings.desktopScaleFactorPercent,
+                deviceScaleFactorPercent = if (needsScaleHeal) 180 else settings.deviceScaleFactorPercent,
+                redirectClipboard = if (needsClipHeal) true else settings.redirectClipboard,
+                hyperVEnhancedSession = if (needsHvEnhancedHeal) true else settings.hyperVEnhancedSession
+            )
         }
         return doc.copy(
             connections = doc.connections.map { conn ->

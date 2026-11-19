@@ -15,6 +15,8 @@ public struct RdpSessionView: View {
     @State private var isReconnecting: Bool = false
     @State private var reconnectAttempt: Int = 0
     @State private var hasPresentedFrame: Bool = false
+    @State private var isCliprdrReady: Bool = false
+    @State private var isEnhancedFallback: Bool = false
     @State private var lastNativeError: String = ""
     @State private var scaleToFit: Bool = true
     @State private var retina2xEnabled: Bool = true
@@ -34,7 +36,10 @@ public struct RdpSessionView: View {
     }
 
     private var latestConnection: VaultConnection {
-        store.activeConnections.first(where: { $0.id == tab.connection.id }) ?? tab.connection
+        store.activeConnections.first(where: { $0.id == tab.connection.id })
+            ?? store.paneTree.findTab(id: tab.id)?.connection
+            ?? store.detachedWindowTabs[tab.id]?.connection
+            ?? tab.connection
     }
 
     private var rdpSettings: RdpProtocolSettings {
@@ -61,6 +66,10 @@ public struct RdpSessionView: View {
         let existingSession = store.existingRdpController(for: tab)
         let hudReconnecting = isReconnecting || (existingSession?.isReconnecting ?? false)
         let hudConnected = !hudReconnecting && (isConnected || (existingSession?.isConnected ?? false))
+        let hudCliprdrReady = hudConnected && (isCliprdrReady || (existingSession?.isCliprdrReady ?? false))
+        let hudEnhancedFallback = isEnhancedFallback || (existingSession?.isEnhancedSessionFallback ?? false)
+        let isBasicVmConnect = !rdpSettings.effectivePreconnectionBlob.isEmpty
+            && (!rdpSettings.hyperVEnhancedSession || hudEnhancedFallback)
 
         VStack(spacing: 0) {
             // External Remote Desktop Control & Telemetry Bar (strictly outside/above the RDP viewport)
@@ -87,11 +96,13 @@ public struct RdpSessionView: View {
                         .foregroundStyle(.secondary)
 
                     if !rdpSettings.effectivePreconnectionBlob.isEmpty {
-                        Text(rdpSettings.hyperVEnhancedSession ? "VMConnect • Enhanced" : "VMConnect • \(rdpSettings.effectiveRdpPort)")
+                        Text(isBasicVmConnect ? "VMConnect • Basic Console" : "VMConnect • Enhanced")
                             .font(.caption2.weight(.bold))
                             .padding(.horizontal, 6)
                             .padding(.vertical, 2)
-                            .background(Capsule().fill(Color.cyan.opacity(0.22)))
+                            .background(
+                                Capsule().fill((isBasicVmConnect ? Color.orange : Color.cyan).opacity(0.22))
+                            )
                     }
 
                     if rdpSettings.connectToConsoleAdmin {
@@ -103,9 +114,65 @@ public struct RdpSessionView: View {
                     }
 
                     if rdpSettings.redirectClipboard {
-                        Label("Clipboard Sync (⌘C / ⌘V)", systemImage: "arrow.left.arrow.right.circle")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
+                        Menu {
+                            if hudCliprdrReady {
+                                Text("CLIPRDR Virtual Channel Ready (Files & Text)")
+                                Divider()
+                                Button("Sync Mac Clipboard to Windows Now") {
+                                    guard let s = existingSession else { return }
+                                    switch MacPasteboardClipboardExtractor.extractClipboardPayload(from: .general) {
+                                    case .files(let paths):
+                                        s.pushLocalClipboardFiles(paths)
+                                    case .text(let text):
+                                        s.pushLocalClipboard(text)
+                                    case .fileIntentEmpty, .empty:
+                                        break
+                                    }
+                                }
+                                Button("Restart Remote rdpclip.exe (Win+R)") {
+                                    launchRemoteRdpClip(session: existingSession)
+                                }
+                            } else if hudConnected {
+                                if isBasicVmConnect {
+                                    Text("Hyper-V Basic Console does not expose CLIPRDR clipboard.")
+                                    Text("Enable Enhanced Session Mode on the Hyper-V host & guest VM.")
+                                } else {
+                                    Text("Waiting for Windows rdpclip.exe CLIPRDR channel…")
+                                }
+                                Divider()
+                                if !rdpSettings.effectivePreconnectionBlob.isEmpty {
+                                    Button("Reconnect in Enhanced Session Mode") {
+                                        store.setRdpHyperVEnhancedSession(
+                                            forTab: tab.id,
+                                            connectionId: latestConnection.id,
+                                            enabled: true
+                                        )
+                                        triggerReconnect()
+                                    }
+                                }
+                                Button("Start Remote rdpclip.exe (Win+R)") {
+                                    launchRemoteRdpClip(session: existingSession)
+                                }
+                            } else {
+                                Text("Clipboard redirection will activate once connected.")
+                            }
+                        } label: {
+                            if hudCliprdrReady {
+                                Label("Clipboard Active", systemImage: "arrow.left.arrow.right.circle.fill")
+                                    .font(.caption2)
+                                    .foregroundStyle(Color(nsColor: .systemGreen))
+                            } else if hudConnected {
+                                Label("Clipboard Inactive", systemImage: "exclamationmark.triangle.fill")
+                                    .font(.caption2)
+                                    .foregroundStyle(Color(nsColor: .systemOrange))
+                            } else {
+                                Label("Clipboard Sync (⌘C / ⌘V)", systemImage: "arrow.left.arrow.right.circle")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .menuStyle(.borderlessButton)
+                        .fixedSize()
                     }
 
                     Spacer(minLength: 8)
@@ -236,17 +303,19 @@ public struct RdpSessionView: View {
                             retina2xEnabled: desiredRetina,
                             redirectClipboard: rdpSettings.redirectClipboard,
                             captureRemoteShortcuts: store.remoteKeyCaptureEnabled,
-                            onTelemetryChange: { connected, connecting, reconnecting, attempt, hasFrame, dimsText, errorText in
-                                if isConnected != connected { isConnected = connected }
-                                if isConnecting != connecting { isConnecting = connecting }
-                                if isReconnecting != reconnecting { isReconnecting = reconnecting }
-                                if reconnectAttempt != attempt { reconnectAttempt = attempt }
-                                if hasPresentedFrame != hasFrame { hasPresentedFrame = hasFrame }
-                                if !dimsText.isEmpty && frameDimensionsText != dimsText {
-                                    frameDimensionsText = dimsText
+                            onTelemetryChange: { snap in
+                                if isConnected != snap.isConnected { isConnected = snap.isConnected }
+                                if isConnecting != snap.isConnecting { isConnecting = snap.isConnecting }
+                                if isReconnecting != snap.isReconnecting { isReconnecting = snap.isReconnecting }
+                                if reconnectAttempt != snap.reconnectAttempt { reconnectAttempt = snap.reconnectAttempt }
+                                if hasPresentedFrame != snap.hasPresentedFrame { hasPresentedFrame = snap.hasPresentedFrame }
+                                if isCliprdrReady != snap.isCliprdrReady { isCliprdrReady = snap.isCliprdrReady }
+                                if isEnhancedFallback != snap.isEnhancedFallback { isEnhancedFallback = snap.isEnhancedFallback }
+                                if !snap.dimensionsText.isEmpty && frameDimensionsText != snap.dimensionsText {
+                                    frameDimensionsText = snap.dimensionsText
                                 }
-                                if lastNativeError != errorText {
-                                    lastNativeError = errorText
+                                if lastNativeError != snap.errorText {
+                                    lastNativeError = snap.errorText
                                 }
                             }
                         )
@@ -438,6 +507,8 @@ public struct RdpSessionView: View {
         isReconnecting = session.isReconnecting
         reconnectAttempt = session.reconnectAttempt
         hasPresentedFrame = session.hasValidFrame
+        isCliprdrReady = session.isCliprdrReady
+        isEnhancedFallback = session.isEnhancedSessionFallback
         lastNativeError = session.lastErrorMessage()
         if !session.hasValidFrame {
             frameDimensionsText = "\(session.initialPixelWidth)×\(session.initialPixelHeight)"
@@ -504,6 +575,8 @@ public struct RdpSessionView: View {
     private func triggerReconnect() {
         lastNativeError = ""
         hasPresentedFrame = false
+        isCliprdrReady = false
+        isEnhancedFallback = false
         isConnecting = true
         isReconnecting = false
         reconnectAttempt = 0
@@ -519,6 +592,23 @@ public struct RdpSessionView: View {
         syncedGeneration = sessionGeneration
         lastSentResizeSpec = (reconnected.initialPixelWidth, reconnected.initialPixelHeight, reconnected.initialScalePercent)
         frameDimensionsText = "\(reconnected.initialPixelWidth)×\(reconnected.initialPixelHeight)"
+    }
+
+    private func launchRemoteRdpClip(session: NativeRdpSession?) {
+        guard let session else { return }
+        // Win+R opens the Run dialog; "rdpclip" uses scancodes identical across US/DE/FR/UK/ES/IT layouts.
+        session.sendScancode(0x5B, keyDown: true, extended: true)
+        session.sendScancode(0x13, keyDown: true, extended: false)
+        session.sendScancode(0x13, keyDown: false, extended: false)
+        session.sendScancode(0x5B, keyDown: false, extended: true)
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            let rdpclipScancodes: [UInt16] = [0x13, 0x20, 0x19, 0x2E, 0x26, 0x17, 0x19, 0x1C]
+            for sc in rdpclipScancodes {
+                session.sendScancode(sc, keyDown: true, extended: false)
+                session.sendScancode(sc, keyDown: false, extended: false)
+            }
+        }
     }
 
     public static func makeCGImage(rgba: Data, width: Int, height: Int) -> CGImage? {
@@ -680,6 +770,8 @@ private final class RdpAsyncMetalPresenter: @unchecked Sendable {
     private var lastNotifiedConnected: Bool?
     private var lastNotifiedConnecting: Bool?
     private var lastNotifiedReconnecting: Bool?
+    private var lastNotifiedCliprdrReady: Bool?
+    private var lastNotifiedEnhancedFallback: Bool?
     private var lastNotifiedAttempt: Int = -1
 
     private let mainWakeSignal: MainThreadRdpFrameSignal
@@ -714,6 +806,8 @@ private final class RdpAsyncMetalPresenter: @unchecked Sendable {
             self.lastNotifiedConnected = nil
             self.lastNotifiedConnecting = nil
             self.lastNotifiedReconnecting = nil
+            self.lastNotifiedCliprdrReady = nil
+            self.lastNotifiedEnhancedFallback = nil
             self.lastNotifiedAttempt = -1
         }
         stateLock.unlock()
@@ -732,6 +826,7 @@ private final class RdpAsyncMetalPresenter: @unchecked Sendable {
         stateLock.lock()
         let sizeChanged = self.targetDrawableSize != drawableSize
         let fitChanged = self.scaleToFit != scaleToFit
+        let clipPrefChanged = self.redirectClipboard != redirectClipboard
         self.targetDrawableSize = drawableSize
         self.scaleToFit = scaleToFit
         self.redirectClipboard = redirectClipboard
@@ -740,20 +835,52 @@ private final class RdpAsyncMetalPresenter: @unchecked Sendable {
         }
         stateLock.unlock()
 
-        if sizeChanged || fitChanged {
-            scheduleRenderPass(forceFull: false, checkNonFrameWakeup: false)
+        if sizeChanged || fitChanged || clipPrefChanged {
+            scheduleRenderPass(forceFull: false)
         }
     }
 
     func requestPresent(forceFull: Bool) {
-        scheduleRenderPass(forceFull: forceFull, checkNonFrameWakeup: true)
+        scheduleRenderPass(forceFull: forceFull)
     }
 
     func handleNativeCallback() {
-        scheduleRenderPass(forceFull: false, checkNonFrameWakeup: true)
+        scheduleRenderPass(forceFull: false)
     }
 
-    private func scheduleRenderPass(forceFull: Bool, checkNonFrameWakeup: Bool) {
+    private func evaluateNonFrameWakeupLocked() -> Bool {
+        guard let s = self.session else { return false }
+        let checkClip = self.redirectClipboard
+        let curSeq = s.cursorSequence
+        let clipSeq = checkClip ? s.remoteClipboardSequence : self.lastNotifiedClipSeq
+        let conn = s.isConnected
+        let connecting = s.isConnecting
+        let reconn = s.isReconnecting
+        let clipReady = s.isCliprdrReady
+        let enhancedFb = s.isEnhancedSessionFallback
+        let attempt = s.reconnectAttempt
+        if curSeq != self.lastNotifiedCursorSeq
+            || (checkClip && clipSeq != self.lastNotifiedClipSeq)
+            || self.lastNotifiedConnected != conn
+            || self.lastNotifiedConnecting != connecting
+            || self.lastNotifiedReconnecting != reconn
+            || self.lastNotifiedCliprdrReady != clipReady
+            || self.lastNotifiedEnhancedFallback != enhancedFb
+            || self.lastNotifiedAttempt != attempt {
+            self.lastNotifiedCursorSeq = curSeq
+            self.lastNotifiedClipSeq = clipSeq
+            self.lastNotifiedConnected = conn
+            self.lastNotifiedConnecting = connecting
+            self.lastNotifiedReconnecting = reconn
+            self.lastNotifiedCliprdrReady = clipReady
+            self.lastNotifiedEnhancedFallback = enhancedFb
+            self.lastNotifiedAttempt = attempt
+            return true
+        }
+        return false
+    }
+
+    private func scheduleRenderPass(forceFull: Bool) {
         var needsMainWake = false
         var shouldDispatchMetal = false
 
@@ -766,30 +893,7 @@ private final class RdpAsyncMetalPresenter: @unchecked Sendable {
             self.renderPending = true
             shouldDispatchMetal = true
         }
-        let activeSession = self.session
-        let checkClip = self.redirectClipboard
-        if checkNonFrameWakeup, let s = activeSession {
-            let curSeq = s.cursorSequence
-            let clipSeq = checkClip ? s.remoteClipboardSequence : self.lastNotifiedClipSeq
-            let conn = s.isConnected
-            let connecting = s.isConnecting
-            let reconn = s.isReconnecting
-            let attempt = s.reconnectAttempt
-            if curSeq != self.lastNotifiedCursorSeq
-                || (checkClip && clipSeq != self.lastNotifiedClipSeq)
-                || self.lastNotifiedConnected != conn
-                || self.lastNotifiedConnecting != connecting
-                || self.lastNotifiedReconnecting != reconn
-                || self.lastNotifiedAttempt != attempt {
-                self.lastNotifiedCursorSeq = curSeq
-                self.lastNotifiedClipSeq = clipSeq
-                self.lastNotifiedConnected = conn
-                self.lastNotifiedConnecting = connecting
-                self.lastNotifiedReconnecting = reconn
-                self.lastNotifiedAttempt = attempt
-                needsMainWake = true
-            }
-        }
+        needsMainWake = evaluateNonFrameWakeupLocked()
         stateLock.unlock()
 
         if needsMainWake {
@@ -959,15 +1063,34 @@ private final class RdpAsyncMetalPresenter: @unchecked Sendable {
             }
         }
 
-        if notifyMainAfterPresent {
+        var postRenderWake = notifyMainAfterPresent
+        stateLock.lock()
+        if evaluateNonFrameWakeupLocked() {
+            postRenderWake = true
+        }
+        stateLock.unlock()
+
+        if postRenderWake {
             mainWakeSignal.signalFromAnyThread()
         }
 
         // Catch any frame that arrived while we were encoding/presenting
         if activeSession.frameSequence != lastUploadedFrameSeq {
-            scheduleRenderPass(forceFull: false, checkNonFrameWakeup: false)
+            scheduleRenderPass(forceFull: false)
         }
     }
+}
+
+private struct RdpSurfaceTelemetrySnapshot {
+    let isConnected: Bool
+    let isConnecting: Bool
+    let isReconnecting: Bool
+    let reconnectAttempt: Int
+    let hasPresentedFrame: Bool
+    let isCliprdrReady: Bool
+    let isEnhancedFallback: Bool
+    let dimensionsText: String
+    let errorText: String
 }
 
 private struct RdpInteractiveSurfaceNSViewRepresentable: NSViewRepresentable {
@@ -977,7 +1100,7 @@ private struct RdpInteractiveSurfaceNSViewRepresentable: NSViewRepresentable {
     let retina2xEnabled: Bool
     let redirectClipboard: Bool
     let captureRemoteShortcuts: Bool
-    let onTelemetryChange: (Bool, Bool, Bool, Int, Bool, String, String) -> Void
+    let onTelemetryChange: (RdpSurfaceTelemetrySnapshot) -> Void
 
     func makeNSView(context: Context) -> RdpPointerAndKeyNSView {
         let view = RdpPointerAndKeyNSView()
@@ -1023,7 +1146,7 @@ final class RdpPointerAndKeyNSView: NSView {
     var retina2xEnabled: Bool = false
     var redirectClipboard: Bool = true
     var captureRemoteShortcuts: Bool = false
-    var onTelemetryChange: ((Bool, Bool, Bool, Int, Bool, String, String) -> Void)?
+    var onTelemetryChange: ((RdpSurfaceTelemetrySnapshot) -> Void)?
 
     private var activeGeneration: Int = -1
     private var housekeepingTimer: Timer?
@@ -1048,6 +1171,8 @@ final class RdpPointerAndKeyNSView: NSView {
     private var lastReportedReconnecting: Bool?
     private var lastReportedAttempt: Int = -1
     private var lastReportedHasFrame: Bool?
+    private var lastReportedCliprdrReady: Bool?
+    private var lastReportedEnhancedFallback: Bool?
     private var lastReportedDims: String = ""
     private var cachedNativeError: String = ""
     private var lastReportedError: String = ""
@@ -1181,6 +1306,8 @@ final class RdpPointerAndKeyNSView: NSView {
             lastReportedReconnecting = nil
             lastReportedAttempt = -1
             lastReportedHasFrame = nil
+            lastReportedCliprdrReady = nil
+            lastReportedEnhancedFallback = nil
             lastReportedDims = ""
             lastReportedError = ""
             layer?.contents = nil
@@ -1543,12 +1670,18 @@ final class RdpPointerAndKeyNSView: NSView {
         let connecting = session.isConnecting
         let reconnecting = session.isReconnecting
         let attempt = session.reconnectAttempt
+        let cliprdrReady = session.isCliprdrReady
+        let enhancedFallback = session.isEnhancedSessionFallback
+        let cliprdrJustBecameReady = cliprdrReady && (lastReportedCliprdrReady != true)
         let stateTransitioned = (connected != lastReportedConnected)
             || (connecting != lastReportedConnecting)
             || (reconnecting != lastReportedReconnecting)
+            || cliprdrJustBecameReady
+            || (enhancedFallback != lastReportedEnhancedFallback)
         let justConnected = connected && (lastReportedConnected != true)
         let reconnectedNow = connected && !reconnecting && (lastReportedReconnecting == true)
-        let forceInitialClipSync = (justConnected && session.remoteClipboardSequence == 0) || reconnectedNow
+        let forceInitialClipSync = ((justConnected || cliprdrJustBecameReady) && session.remoteClipboardSequence == 0)
+            || reconnectedNow
 
         // Pull remote clipboard immediately on event-driven wakeup (<1ms after Windows Ctrl+C / Cmd+C)
         if connected && redirectClipboard {
@@ -1572,32 +1705,32 @@ final class RdpPointerAndKeyNSView: NSView {
             || lastReportedReconnecting != reconnecting
             || lastReportedAttempt != attempt
             || lastReportedHasFrame != hasPresentedFrame
+            || lastReportedCliprdrReady != cliprdrReady
+            || lastReportedEnhancedFallback != enhancedFallback
             || lastReportedError != cachedNativeError {
             lastReportedConnected = connected
             lastReportedConnecting = connecting
             lastReportedReconnecting = reconnecting
             lastReportedAttempt = attempt
             lastReportedHasFrame = hasPresentedFrame
+            lastReportedCliprdrReady = cliprdrReady
+            lastReportedEnhancedFallback = enhancedFallback
             lastReportedError = cachedNativeError
 
-            let snapConnected = connected
-            let snapConnecting = connecting
-            let snapReconnecting = reconnecting
-            let snapAttempt = attempt
-            let snapHasFrame = hasPresentedFrame
-            let snapDims = currentDims
-            let snapError = cachedNativeError
+            let snapshot = RdpSurfaceTelemetrySnapshot(
+                isConnected: connected,
+                isConnecting: connecting,
+                isReconnecting: reconnecting,
+                reconnectAttempt: attempt,
+                hasPresentedFrame: hasPresentedFrame,
+                isCliprdrReady: cliprdrReady,
+                isEnhancedFallback: enhancedFallback,
+                dimensionsText: currentDims,
+                errorText: cachedNativeError
+            )
             // Always dispatch asynchronously outside makeNSView/updateNSView so SwiftUI never discards @State mutations
             DispatchQueue.main.async { [weak self] in
-                self?.onTelemetryChange?(
-                    snapConnected,
-                    snapConnecting,
-                    snapReconnecting,
-                    snapAttempt,
-                    snapHasFrame,
-                    snapDims,
-                    snapError
-                )
+                self?.onTelemetryChange?(snapshot)
             }
         }
     }
@@ -1645,23 +1778,21 @@ final class RdpPointerAndKeyNSView: NSView {
         switch session.remoteClipboardKind {
         case .files:
             let stagedPaths = session.pullRemoteClipboardFiles()
-            guard !stagedPaths.isEmpty else { return }
-            let existingPaths = stagedPaths.filter { FileManager.default.fileExists(atPath: $0) }
-            guard !existingPaths.isEmpty else { return }
-            let existingUrls: [NSURL] = existingPaths.map { NSURL(fileURLWithPath: $0) }
             let pb = NSPasteboard.general
-            pb.clearContents()
-            pb.writeObjects(existingUrls)
+            let existingPaths = MacPasteboardClipboardExtractor.writeStagedFilesToPasteboard(
+                stagedPaths,
+                pasteboard: pb
+            )
+            guard !existingPaths.isEmpty else { return }
             lastPasteboardChangeCount = pb.changeCount
             lastPushedPayload = .files(existingPaths)
         case .text:
             let remoteText = session.pullRemoteClipboard()
-            guard !remoteText.isEmpty else { return }
             let pb = NSPasteboard.general
-            if pb.string(forType: .string) != remoteText {
-                pb.clearContents()
-                pb.setString(remoteText, forType: .string)
-            }
+            guard MacPasteboardClipboardExtractor.writeRemoteTextToPasteboard(
+                remoteText,
+                pasteboard: pb
+            ) else { return }
             lastPasteboardChangeCount = pb.changeCount
             lastPushedPayload = .text(remoteText)
         case .none:

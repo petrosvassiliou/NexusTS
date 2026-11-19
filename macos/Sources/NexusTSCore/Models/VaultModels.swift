@@ -420,6 +420,7 @@ public struct RdpProtocolSettings: Codable, Equatable, Hashable, Sendable {
     public var selectedMonitorIds: [Int] = []
     public var colorDepthBits: Int = 32
     public var redirectClipboard: Bool = true
+    public var redirectClipboardCustomized: Bool = false
     public var audioRedirectionMode: RdpAudioRedirectionMode = .PLAY_ON_THIS_DEVICE
     public var redirectAudioPlayback: Bool = true
     public var redirectMicrophone: Bool = false
@@ -445,28 +446,32 @@ public struct RdpProtocolSettings: Codable, Equatable, Hashable, Sendable {
     public var restrictedAdminMode: Bool = false
     public var ignoreCertificateWarnings: Bool = false
     public var hyperVVmId: String = ""
-    public var hyperVEnhancedSession: Bool = false
+    public var hyperVEnhancedSession: Bool = true
+    public var hyperVEnhancedSessionCustomized: Bool = false
 
     public init(
         port: Int = 3389,
         hyperVVmId: String = "",
-        hyperVEnhancedSession: Bool = false
+        hyperVEnhancedSession: Bool = true
     ) {
         self.port = port
         self.hyperVVmId = hyperVVmId
         self.hyperVEnhancedSession = hyperVEnhancedSession
+        if !hyperVEnhancedSession {
+            self.hyperVEnhancedSessionCustomized = true
+        }
     }
 
     enum CodingKeys: String, CodingKey {
         case port, connectToConsoleAdmin, hiDpiEnabled, desktopScaleFactorPercent, deviceScaleFactorPercent, hiDpiScaleCustomized
         case enableGfxPipeline, gfxCodecProfile, enableH264Avc444, enableRemoteFx, resizeBehavior
         case customDesktopWidth, customDesktopHeight, multiMonitorSpanning, selectedMonitorIds
-        case colorDepthBits, redirectClipboard, audioRedirectionMode, redirectAudioPlayback, redirectMicrophone
+        case colorDepthBits, redirectClipboard, redirectClipboardCustomized, audioRedirectionMode, redirectAudioPlayback, redirectMicrophone
         case redirectDrives, redirectedDriveSafUris, redirectPrinters, redirectPorts, redirectSmartcardYubiKey
         case enableFontSmoothing, enableDesktopComposition, enableWallpaper, enableFullWindowDrag
         case enableMenuAnimations, enableThemes, compressionEnabled, remoteAppMode, remoteAppProgram
         case remoteAppArguments, rdGatewayHostname, rdGatewayPort, nlaSecurityRequired, tlsSecurity
-        case restrictedAdminMode, ignoreCertificateWarnings, hyperVVmId, hyperVEnhancedSession
+        case restrictedAdminMode, ignoreCertificateWarnings, hyperVVmId, hyperVEnhancedSession, hyperVEnhancedSessionCustomized
     }
 
     public init(from decoder: Decoder) throws {
@@ -502,7 +507,10 @@ public struct RdpProtocolSettings: Codable, Equatable, Hashable, Sendable {
         self.multiMonitorSpanning = try c.decodeIfPresent(Bool.self, forKey: .multiMonitorSpanning) ?? false
         self.selectedMonitorIds = try c.decodeIfPresent([Int].self, forKey: .selectedMonitorIds) ?? []
         self.colorDepthBits = try c.decodeIfPresent(Int.self, forKey: .colorDepthBits) ?? 32
-        self.redirectClipboard = try c.decodeIfPresent(Bool.self, forKey: .redirectClipboard) ?? true
+        let clipCustomized = try c.decodeIfPresent(Bool.self, forKey: .redirectClipboardCustomized) ?? false
+        self.redirectClipboardCustomized = clipCustomized
+        let decodedClip = try c.decodeIfPresent(Bool.self, forKey: .redirectClipboard) ?? true
+        self.redirectClipboard = clipCustomized ? decodedClip : true
         self.audioRedirectionMode = try c.decodeIfPresent(RdpAudioRedirectionMode.self, forKey: .audioRedirectionMode) ?? .PLAY_ON_THIS_DEVICE
         self.redirectAudioPlayback = try c.decodeIfPresent(Bool.self, forKey: .redirectAudioPlayback) ?? true
         self.redirectMicrophone = try c.decodeIfPresent(Bool.self, forKey: .redirectMicrophone) ?? false
@@ -527,8 +535,12 @@ public struct RdpProtocolSettings: Codable, Equatable, Hashable, Sendable {
         self.tlsSecurity = try c.decodeIfPresent(Bool.self, forKey: .tlsSecurity) ?? true
         self.restrictedAdminMode = try c.decodeIfPresent(Bool.self, forKey: .restrictedAdminMode) ?? false
         self.ignoreCertificateWarnings = try c.decodeIfPresent(Bool.self, forKey: .ignoreCertificateWarnings) ?? false
-        self.hyperVVmId = try c.decodeIfPresent(String.self, forKey: .hyperVVmId) ?? ""
-        self.hyperVEnhancedSession = try c.decodeIfPresent(Bool.self, forKey: .hyperVEnhancedSession) ?? false
+        let decodedVmId = try c.decodeIfPresent(String.self, forKey: .hyperVVmId) ?? ""
+        self.hyperVVmId = decodedVmId
+        let hvEnhancedCustomized = try c.decodeIfPresent(Bool.self, forKey: .hyperVEnhancedSessionCustomized) ?? false
+        self.hyperVEnhancedSessionCustomized = hvEnhancedCustomized
+        let decodedHvEnhanced = try c.decodeIfPresent(Bool.self, forKey: .hyperVEnhancedSession) ?? true
+        self.hyperVEnhancedSession = hvEnhancedCustomized ? decodedHvEnhanced : true
     }
 
     public var effectivePreconnectionBlob: String {

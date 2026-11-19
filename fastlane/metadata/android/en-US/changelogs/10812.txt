@@ -1,0 +1,1 @@
+• v0.8.12: Enables Hyper-V Enhanced Session Mode (;EnhancedMode=1) by default with automatic Basic VMConnect fallback so CLIPRDR (rdpclip.exe) works for both files and text, self-heals legacy .nxts & Royal TS Hyper-V imports, sets FreeRDP_ClipboardFeatureMask (0x33), preserves macOS HOME/TMPDIR staging, and clears stale PNG/TIFF items from NSPasteboard.

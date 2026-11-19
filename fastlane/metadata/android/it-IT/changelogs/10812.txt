@@ -1,0 +1,1 @@
+• v0.8.12: Attiva per impostazione predefinita Hyper-V Enhanced Session Mode (;EnhancedMode=1) con fallback automatico alla console di base per appunti di file e testo (CLIPRDR), aggiorna connessioni .nxts e Royal TS esistenti, imposta FreeRDP_ClipboardFeatureMask (0x33) e rimuove vecchi elementi PNG/TIFF da NSPasteboard su macOS.

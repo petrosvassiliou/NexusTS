@@ -47,6 +47,7 @@
 #include <freerdp/client/rdpgfx.h>
 #include <freerdp/input.h>
 #include <freerdp/settings.h>
+#include <freerdp/settings_types.h>
 #include <winpr/environment.h>
 #include <winpr/handle.h>
 #include <winpr/synch.h>
@@ -334,11 +335,22 @@ bool ensure_freerdp_runtime_environment(const std::string& preferred_home_dir, s
     std::filesystem::create_directories(xdg_cache, ec);
     std::filesystem::create_directories(tmp_dir, ec);
 
+#ifdef __APPLE__
+    const char* current_macos_home = std::getenv("HOME");
+    if (!current_macos_home || current_macos_home[0] == '\0' || std::strcmp(current_macos_home, "/") == 0) {
+        set_posix_and_winpr_env("HOME", home_path.string());
+    }
+    const char* current_macos_tmp = std::getenv("TMPDIR");
+    if (!current_macos_tmp || current_macos_tmp[0] == '\0') {
+        set_posix_and_winpr_env("TMPDIR", tmp_dir.string());
+    }
+#else
     set_posix_and_winpr_env("HOME", home_path.string());
+    set_posix_and_winpr_env("TMPDIR", tmp_dir.string());
+#endif
     set_posix_and_winpr_env("XDG_CONFIG_HOME", xdg_config.string());
     set_posix_and_winpr_env("XDG_DATA_HOME", xdg_data.string());
     set_posix_and_winpr_env("XDG_CACHE_HOME", xdg_cache.string());
-    set_posix_and_winpr_env("TMPDIR", tmp_dir.string());
 
     if (!env.addin_provider_registered) {
         if (freerdp_register_addin_provider(freerdp_channels_load_static_addin_entry, 0) == CHANNEL_RC_OK) {
@@ -1502,6 +1514,41 @@ std::string normalize_hyperv_preconnection_blob(
     return guid_part;
 }
 
+std::string strip_hyperv_enhanced_mode_suffix(const std::string& normalized_pcb) {
+    const auto semi_pos = normalized_pcb.find(';');
+    if (semi_pos == std::string::npos || semi_pos == 0u) {
+        return {};
+    }
+    std::string guid_part = normalized_pcb.substr(0u, semi_pos);
+    while (!guid_part.empty() && (guid_part.back() == ' ' || guid_part.back() == '\t')) {
+        guid_part.pop_back();
+    }
+    if (guid_part.empty()) {
+        return {};
+    }
+    std::string suffix = normalized_pcb.substr(semi_pos + 1u);
+    const auto first_non_ws = suffix.find_first_not_of(" \t\r\n");
+    if (first_non_ws == std::string::npos) {
+        return {};
+    }
+    suffix = suffix.substr(first_non_ws);
+    constexpr const char* kEnhancedPrefix = "enhancedmode=1";
+    constexpr size_t kEnhancedLen = 14u;
+    if (suffix.size() < kEnhancedLen) {
+        return {};
+    }
+    for (size_t i = 0u; i < kEnhancedLen; ++i) {
+        char c = suffix[i];
+        if (c >= 'A' && c <= 'Z') {
+            c = static_cast<char>(c - 'A' + 'a');
+        }
+        if (c != kEnhancedPrefix[i]) {
+            return {};
+        }
+    }
+    return guid_part;
+}
+
 uint16_t resolve_effective_rdp_port(
     uint16_t configured_port,
     bool port_from_host_literal,
@@ -1586,8 +1633,9 @@ void RdpSessionContext::set_disp_context(void* disp_context) noexcept {
 }
 
 void RdpSessionContext::set_cliprdr_context(void* cliprdr_context) {
+    bool was_ready = false;
     if (!cliprdr_context) {
-        cliprdr_ready_.store(false, std::memory_order_release);
+        was_ready = cliprdr_ready_.exchange(false, std::memory_order_acq_rel);
         server_clip_caps_.store(0u, std::memory_order_release);
         server_fgd_format_id_.store(0u, std::memory_order_release);
         server_fgd_is_ansi_.store(false, std::memory_order_release);
@@ -1597,22 +1645,30 @@ void RdpSessionContext::set_cliprdr_context(void* cliprdr_context) {
             pending_synchronized_paste_ = false;
         }
     }
-    std::lock_guard<std::mutex> lock(cliprdr_mutex_);
-    if (!cliprdr_context) {
-        has_active_server_clip_data_id_ = false;
-        active_server_clip_data_id_ = 0u;
-        active_fgd_snapshot_.reset();
-        locked_local_file_snapshots_.clear();
-        close_active_remote_file_locked(0u);
-        remote_file_transfer_ = RemoteFileTransferState{};
+    {
+        std::lock_guard<std::mutex> lock(cliprdr_mutex_);
+        if (!cliprdr_context) {
+            has_active_server_clip_data_id_ = false;
+            active_server_clip_data_id_ = 0u;
+            active_fgd_snapshot_.reset();
+            locked_local_file_snapshots_.clear();
+            close_active_remote_file_locked(0u);
+            remote_file_transfer_ = RemoteFileTransferState{};
+        }
+        cliprdr_context_ = cliprdr_context;
     }
-    cliprdr_context_ = cliprdr_context;
+    if (was_ready && gdi_presenter_) {
+        gdi_presenter_->notify_frame_ready();
+    }
 }
 
 void RdpSessionContext::set_cliprdr_ready(bool ready) noexcept {
-    cliprdr_ready_.store(ready, std::memory_order_release);
+    const bool changed = (cliprdr_ready_.exchange(ready, std::memory_order_acq_rel) != ready);
     if (ready) {
         signal_event_loop_wakeup();
+    }
+    if (changed && gdi_presenter_) {
+        gdi_presenter_->notify_frame_ready();
     }
 }
 
@@ -2079,12 +2135,34 @@ void RdpSessionContext::handle_remote_file_group_descriptor_response(
 
         if (!aborted) {
             std::error_code ec;
-            std::filesystem::path base_dir = !resolved_runtime_home_.empty()
+            std::filesystem::path base_dir;
+#ifdef __APPLE__
+            // When app_home_dir points inside ~/Library/Application Support in production, stage
+            // received clipboard files in the per-user Darwin temporary directory (/var/folders/.../T)
+            // so Finder / DesktopServicesHelper can copy staged items without ~/Library friction.
+            const bool is_prod_library_home =
+                params_.app_home_dir.find("/Library/Application Support/") != std::string::npos;
+            if (!params_.app_home_dir.empty() && !is_prod_library_home) {
+                base_dir = std::filesystem::path(params_.app_home_dir) / "tmp" / "cliprdr_recv";
+            } else {
+                const auto sys_tmp = std::filesystem::temp_directory_path(ec);
+                if (!ec && !sys_tmp.empty()) {
+                    base_dir = sys_tmp / "nexusts_cliprdr_recv";
+                } else if (!resolved_runtime_home_.empty()) {
+                    base_dir = std::filesystem::path(resolved_runtime_home_) / "tmp" / "cliprdr_recv";
+                } else {
+                    base_dir = std::filesystem::path("/tmp") / "nexusts_cliprdr_recv";
+                }
+            }
+#else
+            base_dir = !resolved_runtime_home_.empty()
                 ? (std::filesystem::path(resolved_runtime_home_) / "tmp" / "cliprdr_recv")
                 : (!params_.app_home_dir.empty()
                     ? (std::filesystem::path(params_.app_home_dir) / "tmp" / "cliprdr_recv")
                     : (std::filesystem::temp_directory_path(ec) / "nexusts_cliprdr_recv"));
+#endif
             std::filesystem::create_directories(base_dir, ec);
+            ::chmod(base_dir.c_str(), 0755);
 
             // Retain the 10 newest staged clipboard batches so Finder/Explorer paste operations
             // still reading a recent batch never lose files across rapid copies or multiple tabs.
@@ -2126,6 +2204,7 @@ void RdpSessionContext::handle_remote_file_group_descriptor_response(
                 abort_remote_file_transfer_locked(raw_cliprdr);
                 aborted = true;
             } else {
+                ::chmod(batch_dir.c_str(), 0755);
                 const std::filesystem::path canonical_batch = std::filesystem::weakly_canonical(batch_dir, ec);
                 if (ec || canonical_batch.empty()) {
                     abort_remote_file_transfer_locked(raw_cliprdr);
@@ -2687,6 +2766,7 @@ bool RdpSessionContext::connect() {
     logoff_requested_.store(false, std::memory_order_release);
     reconnecting_.store(false, std::memory_order_release);
     reconnect_attempt_.store(0u, std::memory_order_release);
+    enhanced_session_fallback_.store(false, std::memory_order_release);
     wakeup_signaled_.store(false, std::memory_order_relaxed);
     {
         std::lock_guard<std::mutex> input_lock(input_mutex_);
@@ -2726,296 +2806,326 @@ bool RdpSessionContext::connect() {
         }
     }
 
-    freerdp* instance = freerdp_new();
-    if (!instance) {
-        set_last_error("INTERNAL: freerdp_new() allocation failed.");
-        NX_RDP_LOGE("freerdp_new() allocation failed");
-        return false;
-    }
-    instance->PreConnect = &freerdp_on_pre_connect;
-    instance->PostConnect = &freerdp_on_post_connect;
-    instance->PostDisconnect = &freerdp_on_post_disconnect;
-    instance->AuthenticateEx = &freerdp_on_authenticate_ex;
-    instance->VerifyCertificateEx = &freerdp_on_verify_certificate_ex;
-    instance->VerifyChangedCertificateEx = &freerdp_on_verify_changed_certificate_ex;
+    auto attempt_freerdp_connect = [&](const std::string& pcb_for_attempt) -> std::pair<freerdp*, HANDLE> {
+        freerdp* inst = freerdp_new();
+        if (!inst) {
+            set_last_error("INTERNAL: freerdp_new() allocation failed.");
+            NX_RDP_LOGE("freerdp_new() allocation failed");
+            return {nullptr, nullptr};
+        }
+        inst->PreConnect = &freerdp_on_pre_connect;
+        inst->PostConnect = &freerdp_on_post_connect;
+        inst->PostDisconnect = &freerdp_on_post_disconnect;
+        inst->AuthenticateEx = &freerdp_on_authenticate_ex;
+        inst->VerifyCertificateEx = &freerdp_on_verify_certificate_ex;
+        inst->VerifyChangedCertificateEx = &freerdp_on_verify_changed_certificate_ex;
 
-    const bool effective_ignore_cert = connect_params.ignore_certificate || !effective_pcb.empty();
-    register_freerdp_callbacks(
-        instance,
-        this,
-        effective_ignore_cert,
-        env_ready,
-        effective_username,
-        connect_params.password,
-        effective_domain
-    );
-
-    if (!freerdp_context_new(instance)) {
-        set_last_error(
-            "INTERNAL: freerdp_context_new() initialization failed (HOME=" +
-            (resolved_home.empty() ? std::string("<unset>") : resolved_home) + ")."
+        const bool effective_ignore_cert = connect_params.ignore_certificate || !pcb_for_attempt.empty();
+        register_freerdp_callbacks(
+            inst,
+            this,
+            effective_ignore_cert,
+            env_ready,
+            effective_username,
+            connect_params.password,
+            effective_domain
         );
-        NX_RDP_LOGE("freerdp_context_new() failed (resolved_home='%s', env_ready=%d)",
-                    resolved_home.c_str(), env_ready ? 1 : 0);
-        unregister_freerdp_callbacks(instance);
-        freerdp_free(instance);
-        return false;
-    }
 
-    rdpSettings* settings = instance->context->settings;
-    if (!resolved_home.empty()) {
-        const char* cur_home = freerdp_settings_get_string(settings, FreeRDP_HomePath);
-        if (!cur_home || cur_home[0] == '\0') {
-            freerdp_settings_set_string(settings, FreeRDP_HomePath, resolved_home.c_str());
+        if (!freerdp_context_new(inst)) {
+            set_last_error(
+                "INTERNAL: freerdp_context_new() initialization failed (HOME=" +
+                (resolved_home.empty() ? std::string("<unset>") : resolved_home) + ")."
+            );
+            NX_RDP_LOGE("freerdp_context_new() failed (resolved_home='%s', env_ready=%d)",
+                        resolved_home.c_str(), env_ready ? 1 : 0);
+            unregister_freerdp_callbacks(inst);
+            freerdp_free(inst);
+            return {nullptr, nullptr};
         }
-        const char* cur_cfg = freerdp_settings_get_string(settings, FreeRDP_ConfigPath);
-        if (!cur_cfg || cur_cfg[0] == '\0') {
-            const std::string cfg_dir = (std::filesystem::path(resolved_home) / ".config" / "freerdp").string();
-            freerdp_settings_set_string(settings, FreeRDP_ConfigPath, cfg_dir.c_str());
+
+        rdpSettings* settings = inst->context->settings;
+        if (!resolved_home.empty()) {
+            const char* cur_home = freerdp_settings_get_string(settings, FreeRDP_HomePath);
+            if (!cur_home || cur_home[0] == '\0') {
+                freerdp_settings_set_string(settings, FreeRDP_HomePath, resolved_home.c_str());
+            }
+            const char* cur_cfg = freerdp_settings_get_string(settings, FreeRDP_ConfigPath);
+            if (!cur_cfg || cur_cfg[0] == '\0') {
+                const std::string cfg_dir = (std::filesystem::path(resolved_home) / ".config" / "freerdp").string();
+                freerdp_settings_set_string(settings, FreeRDP_ConfigPath, cfg_dir.c_str());
+            }
         }
-    }
 
-    freerdp_settings_set_bool(settings, FreeRDP_SoftwareGdi, TRUE);
-    freerdp_settings_set_bool(settings, FreeRDP_UseCommonStdioCallbacks, FALSE);
-    freerdp_settings_set_uint32(settings, FreeRDP_TlsSecLevel, 0u);
-    freerdp_settings_set_uint32(settings, FreeRDP_TcpConnectTimeout, 8000u);
-    freerdp_settings_set_bool(settings, FreeRDP_SupportErrorInfoPdu, TRUE);
-    freerdp_settings_set_bool(settings, FreeRDP_SupportStatusInfoPdu, TRUE);
-    // Disable unused UDP multitransport negotiation so Windows Server never stalls probing UDP 3389
-    freerdp_settings_set_bool(settings, FreeRDP_SupportMultitransport, FALSE);
-    freerdp_settings_set_uint32(settings, FreeRDP_MultitransportFlags, 0u);
-    // Request ServerAutoReconnectCookie, RTT auto-detect, Heartbeat PDUs, and fast TCP dead-peer detection
-    freerdp_settings_set_bool(settings, FreeRDP_AutoReconnectionEnabled, TRUE);
-    freerdp_settings_set_uint32(settings, FreeRDP_AutoReconnectMaxRetries, 20u);
-    freerdp_settings_set_bool(settings, FreeRDP_NetworkAutoDetect, TRUE);
-    freerdp_settings_set_bool(settings, FreeRDP_SupportHeartbeatPdu, TRUE);
-    freerdp_settings_set_bool(settings, FreeRDP_TcpKeepAlive, TRUE);
-    freerdp_settings_set_uint32(settings, FreeRDP_TcpKeepAliveDelay, 10u);
-    freerdp_settings_set_uint32(settings, FreeRDP_TcpKeepAliveInterval, 3u);
-    freerdp_settings_set_uint32(settings, FreeRDP_TcpKeepAliveRetries, 3u);
-    if (effective_gateway_host.empty()) {
-        // Prevent FreeRDP proxy_prepare() from hijacking direct LAN RDP sockets via OS HTTPS_PROXY env vars
-        freerdp_settings_set_uint32(settings, FreeRDP_ProxyType, PROXY_TYPE_IGNORE);
-    }
+        freerdp_settings_set_bool(settings, FreeRDP_SoftwareGdi, TRUE);
+        freerdp_settings_set_bool(settings, FreeRDP_UseCommonStdioCallbacks, FALSE);
+        freerdp_settings_set_uint32(settings, FreeRDP_TlsSecLevel, 0u);
+        freerdp_settings_set_uint32(settings, FreeRDP_TcpConnectTimeout, 8000u);
+        freerdp_settings_set_bool(settings, FreeRDP_SupportErrorInfoPdu, TRUE);
+        freerdp_settings_set_bool(settings, FreeRDP_SupportStatusInfoPdu, TRUE);
+        // Disable unused UDP multitransport negotiation so Windows Server never stalls probing UDP 3389
+        freerdp_settings_set_bool(settings, FreeRDP_SupportMultitransport, FALSE);
+        freerdp_settings_set_uint32(settings, FreeRDP_MultitransportFlags, 0u);
+        // Request ServerAutoReconnectCookie, RTT auto-detect, Heartbeat PDUs, and fast TCP dead-peer detection
+        freerdp_settings_set_bool(settings, FreeRDP_AutoReconnectionEnabled, TRUE);
+        freerdp_settings_set_uint32(settings, FreeRDP_AutoReconnectMaxRetries, 20u);
+        freerdp_settings_set_bool(settings, FreeRDP_NetworkAutoDetect, TRUE);
+        freerdp_settings_set_bool(settings, FreeRDP_SupportHeartbeatPdu, TRUE);
+        freerdp_settings_set_bool(settings, FreeRDP_TcpKeepAlive, TRUE);
+        freerdp_settings_set_uint32(settings, FreeRDP_TcpKeepAliveDelay, 10u);
+        freerdp_settings_set_uint32(settings, FreeRDP_TcpKeepAliveInterval, 3u);
+        freerdp_settings_set_uint32(settings, FreeRDP_TcpKeepAliveRetries, 3u);
+        if (effective_gateway_host.empty()) {
+            // Prevent FreeRDP proxy_prepare() from hijacking direct LAN RDP sockets via OS HTTPS_PROXY env vars
+            freerdp_settings_set_uint32(settings, FreeRDP_ProxyType, PROXY_TYPE_IGNORE);
+        }
 
-    freerdp_settings_set_string(settings, FreeRDP_ServerHostname, effective_host.c_str());
-    freerdp_settings_set_uint32(settings, FreeRDP_ServerPort, effective_port);
-    freerdp_settings_set_uint32(settings, FreeRDP_DesktopWidth, w);
-    freerdp_settings_set_uint32(settings, FreeRDP_DesktopHeight, h);
-    freerdp_settings_set_uint32(settings, FreeRDP_ColorDepth, connect_params.color_depth_bits);
-    freerdp_settings_set_bool(settings, FreeRDP_ConsoleSession, connect_params.connect_to_console);
+        freerdp_settings_set_string(settings, FreeRDP_ServerHostname, effective_host.c_str());
+        freerdp_settings_set_uint32(settings, FreeRDP_ServerPort, effective_port);
+        freerdp_settings_set_uint32(settings, FreeRDP_DesktopWidth, w);
+        freerdp_settings_set_uint32(settings, FreeRDP_DesktopHeight, h);
+        freerdp_settings_set_uint32(settings, FreeRDP_ColorDepth, connect_params.color_depth_bits);
+        freerdp_settings_set_bool(settings, FreeRDP_ConsoleSession, connect_params.connect_to_console);
 
-    if (connect_params.hidpi_enabled && connect_params.desktop_scale_factor > 100) {
-        const uint32_t scale = std::clamp(connect_params.desktop_scale_factor, 100u, 500u);
-        const uint32_t dev_scale = map_device_scale_factor(scale);
-        const uint32_t effective_dpi = (96u * scale) / 100u;
-        const uint32_t dpi_x10 = std::max<uint32_t>(960u, effective_dpi * 10u);
-        const uint32_t phys_w = std::clamp<uint32_t>((w * 254u) / dpi_x10, 10u, 10000u);
-        const uint32_t phys_h = std::clamp<uint32_t>((h * 254u) / dpi_x10, 10u, 10000u);
-        // Per [MS-RDPBCGR] 2.2.1.3.2, Windows ignores DesktopScaleFactor unless DesktopPhysicalWidth/Height are [10..10000] mm
-        freerdp_settings_set_uint32(settings, FreeRDP_DesktopPhysicalWidth, phys_w);
-        freerdp_settings_set_uint32(settings, FreeRDP_DesktopPhysicalHeight, phys_h);
-        freerdp_settings_set_uint32(settings, FreeRDP_DesktopScaleFactor, scale);
-        freerdp_settings_set_uint32(settings, FreeRDP_DeviceScaleFactor, dev_scale);
-    }
+        if (connect_params.hidpi_enabled && connect_params.desktop_scale_factor > 100) {
+            const uint32_t scale = std::clamp(connect_params.desktop_scale_factor, 100u, 500u);
+            const uint32_t dev_scale = map_device_scale_factor(scale);
+            const uint32_t effective_dpi = (96u * scale) / 100u;
+            const uint32_t dpi_x10 = std::max<uint32_t>(960u, effective_dpi * 10u);
+            const uint32_t phys_w = std::clamp<uint32_t>((w * 254u) / dpi_x10, 10u, 10000u);
+            const uint32_t phys_h = std::clamp<uint32_t>((h * 254u) / dpi_x10, 10u, 10000u);
+            // Per [MS-RDPBCGR] 2.2.1.3.2, Windows ignores DesktopScaleFactor unless DesktopPhysicalWidth/Height are [10..10000] mm
+            freerdp_settings_set_uint32(settings, FreeRDP_DesktopPhysicalWidth, phys_w);
+            freerdp_settings_set_uint32(settings, FreeRDP_DesktopPhysicalHeight, phys_h);
+            freerdp_settings_set_uint32(settings, FreeRDP_DesktopScaleFactor, scale);
+            freerdp_settings_set_uint32(settings, FreeRDP_DeviceScaleFactor, dev_scale);
+        }
 
-    bool enable_gfx_h264 = false;
-    bool enable_gfx_avc444 = false;
-    if (connect_params.enable_gfx_pipeline && (connect_params.gfx_codec_mode == 1 || connect_params.gfx_codec_mode == 2)) {
-        // Mode 1 = Single-stream H.264 AVC420 (CAPVERSION_81, zero dual-stream OpenH264 DPB corruption).
-        // Mode 2 = Dual-stream H.264 AVC444 (only enabled on desktop; Android AMediaCodec lacks High 4:4:4).
-        H264_CONTEXT* probe_h264 = h264_context_new(FALSE);
-        if (probe_h264) {
-            enable_gfx_h264 = true;
+        bool enable_gfx_h264 = false;
+        bool enable_gfx_avc444 = false;
+        if (connect_params.enable_gfx_pipeline && (connect_params.gfx_codec_mode == 1 || connect_params.gfx_codec_mode == 2)) {
+            // Mode 1 = Single-stream H.264 AVC420 (CAPVERSION_81, zero dual-stream OpenH264 DPB corruption).
+            // Mode 2 = Dual-stream H.264 AVC444 (only enabled on desktop; Android AMediaCodec lacks High 4:4:4).
+            H264_CONTEXT* probe_h264 = h264_context_new(FALSE);
+            if (probe_h264) {
+                enable_gfx_h264 = true;
 #ifndef __ANDROID__
-            enable_gfx_avc444 = (connect_params.gfx_codec_mode == 2);
+                enable_gfx_avc444 = (connect_params.gfx_codec_mode == 2);
 #endif
-            h264_context_free(probe_h264);
-        }
-    }
-
-    // Preserve FreeRDP 3.12's freerdp_settings_new() defaults for FastPathInput/Output (TRUE),
-    // FrameMarkerCommandEnabled (TRUE), SurfaceCommandsSupported (TRUE), ConnectionType
-    // (CONNECTION_TYPE_AUTODETECT), BitmapCacheEnabled (FALSE), and
-    // OffscreenSupportLevel (0). Setting BitmapCacheEnabled or OffscreenSupportLevel directly on
-    // raw rdpSettings without OrderSupport[NEG_MEMBLT_INDEX] or prior to PostConnect gdi_init()
-    // causes rdp_client_wait_for_activation() to abort with FREERDP_ERROR_CONNECT_TRANSPORT_FAILED (0x0002000D).
-    freerdp_settings_set_bool(settings, FreeRDP_SupportGraphicsPipeline, connect_params.enable_gfx_pipeline);
-    freerdp_settings_set_bool(settings, FreeRDP_GfxH264, enable_gfx_h264);
-    freerdp_settings_set_bool(settings, FreeRDP_GfxAVC444, enable_gfx_avc444);
-    freerdp_settings_set_bool(settings, FreeRDP_GfxAVC444v2, enable_gfx_avc444);
-    freerdp_settings_set_bool(settings, FreeRDP_GfxProgressive, connect_params.enable_gfx_pipeline);
-    freerdp_settings_set_bool(settings, FreeRDP_GfxProgressiveV2, connect_params.enable_gfx_pipeline);
-    freerdp_settings_set_bool(settings, FreeRDP_GfxPlanar, TRUE);
-    freerdp_settings_set_bool(settings, FreeRDP_GfxSmallCache, FALSE);
-    freerdp_settings_set_bool(settings, FreeRDP_GfxSendQoeAck, TRUE);
-    freerdp_settings_set_bool(settings, FreeRDP_RemoteFxCodec, connect_params.enable_remotefx);
-    freerdp_settings_set_bool(settings, FreeRDP_NSCodec, TRUE);
-
-    const bool enable_disp_channel =
-        connect_params.enable_dynamic_resize || connect_params.hidpi_enabled || connect_params.multi_monitor_spanning;
-    freerdp_settings_set_bool(settings, FreeRDP_SupportDisplayControl, enable_disp_channel);
-    freerdp_settings_set_bool(settings, FreeRDP_DynamicResolutionUpdate, enable_disp_channel);
-    freerdp_settings_set_bool(settings, FreeRDP_UseMultimon, connect_params.multi_monitor_spanning);
-
-    freerdp_settings_set_bool(settings, FreeRDP_RedirectClipboard, connect_params.redirect_clipboard);
-#if defined(CLIPRDR_FLAG_DEFAULT_MASK)
-    freerdp_settings_set_uint32(
-        settings,
-        FreeRDP_ClipboardFeatureMask,
-        connect_params.redirect_clipboard ? static_cast<UINT32>(CLIPRDR_FLAG_DEFAULT_MASK) : 0u
-    );
-#endif
-#ifdef __APPLE__
-    // macOS Universal2 static SDK builds with -DWITH_PCSC=OFF and -DWITH_MACAUDIO=OFF; advertising
-    // virtual SmartCard or RDPSND without backends stalls Windows Winlogon/SCardSvr by ~1.5-2.0s.
-    freerdp_settings_set_bool(settings, FreeRDP_RedirectSmartCards, FALSE);
-#else
-    freerdp_settings_set_bool(settings, FreeRDP_RedirectSmartCards, connect_params.redirect_smartcard);
-#endif
-    freerdp_settings_set_bool(settings, FreeRDP_RedirectDrives, connect_params.redirect_drives);
-    if (connect_params.redirect_drives && !connect_params.shared_drive_local_path.empty()) {
-        const std::string drive_name =
-            connect_params.shared_drive_name.empty() ? "NexusTS" : connect_params.shared_drive_local_path.empty() ? "NexusTS" : connect_params.shared_drive_name;
-        const char* drive_args[2] = {
-            drive_name.c_str(),
-            connect_params.shared_drive_local_path.c_str()
-        };
-        RDPDR_DEVICE* drive_device = freerdp_device_new(RDPDR_DTYP_FILESYSTEM, 2, drive_args);
-        if (drive_device) {
-            if (!freerdp_device_collection_add(settings, drive_device)) {
-                freerdp_device_free(drive_device);
-                NX_RDP_LOGE("freerdp_device_collection_add failed for drive '%s'", drive_name.c_str());
-            } else {
-                NX_RDP_LOGI("Registered RDPDR shared filesystem drive '\\\\tsclient\\%s' -> '%s'",
-                            drive_name.c_str(), connect_params.shared_drive_local_path.c_str());
+                h264_context_free(probe_h264);
             }
         }
-    }
-    freerdp_settings_set_bool(settings, FreeRDP_RedirectPrinters, connect_params.redirect_printers);
-    freerdp_settings_set_bool(settings, FreeRDP_RedirectSerialPorts, connect_params.redirect_serial_ports);
+
+        // Preserve FreeRDP 3.12's freerdp_settings_new() defaults for FastPathInput/Output (TRUE),
+        // FrameMarkerCommandEnabled (TRUE), SurfaceCommandsSupported (TRUE), ConnectionType
+        // (CONNECTION_TYPE_AUTODETECT), BitmapCacheEnabled (FALSE), and
+        // OffscreenSupportLevel (0). Setting BitmapCacheEnabled or OffscreenSupportLevel directly on
+        // raw rdpSettings without OrderSupport[NEG_MEMBLT_INDEX] or prior to PostConnect gdi_init()
+        // causes rdp_client_wait_for_activation() to abort with FREERDP_ERROR_CONNECT_TRANSPORT_FAILED (0x0002000D).
+        freerdp_settings_set_bool(settings, FreeRDP_SupportGraphicsPipeline, connect_params.enable_gfx_pipeline);
+        freerdp_settings_set_bool(settings, FreeRDP_GfxH264, enable_gfx_h264);
+        freerdp_settings_set_bool(settings, FreeRDP_GfxAVC444, enable_gfx_avc444);
+        freerdp_settings_set_bool(settings, FreeRDP_GfxAVC444v2, enable_gfx_avc444);
+        freerdp_settings_set_bool(settings, FreeRDP_GfxProgressive, connect_params.enable_gfx_pipeline);
+        freerdp_settings_set_bool(settings, FreeRDP_GfxProgressiveV2, connect_params.enable_gfx_pipeline);
+        freerdp_settings_set_bool(settings, FreeRDP_GfxPlanar, TRUE);
+        freerdp_settings_set_bool(settings, FreeRDP_GfxSmallCache, FALSE);
+        freerdp_settings_set_bool(settings, FreeRDP_GfxSendQoeAck, TRUE);
+        freerdp_settings_set_bool(settings, FreeRDP_RemoteFxCodec, connect_params.enable_remotefx);
+        freerdp_settings_set_bool(settings, FreeRDP_NSCodec, TRUE);
+
+        const bool enable_disp_channel =
+            connect_params.enable_dynamic_resize || connect_params.hidpi_enabled || connect_params.multi_monitor_spanning;
+        freerdp_settings_set_bool(settings, FreeRDP_SupportDisplayControl, enable_disp_channel);
+        freerdp_settings_set_bool(settings, FreeRDP_DynamicResolutionUpdate, enable_disp_channel);
+        freerdp_settings_set_bool(settings, FreeRDP_UseMultimon, connect_params.multi_monitor_spanning);
+
+        freerdp_settings_set_bool(settings, FreeRDP_RedirectClipboard, connect_params.redirect_clipboard);
+        constexpr UINT32 kFullCliprdrFeatureMask =
+            CLIPRDR_FLAG_LOCAL_TO_REMOTE |
+            CLIPRDR_FLAG_LOCAL_TO_REMOTE_FILES |
+            CLIPRDR_FLAG_REMOTE_TO_LOCAL |
+            CLIPRDR_FLAG_REMOTE_TO_LOCAL_FILES;
+        freerdp_settings_set_uint32(
+            settings,
+            FreeRDP_ClipboardFeatureMask,
+            connect_params.redirect_clipboard ? kFullCliprdrFeatureMask : 0u
+        );
 #ifdef __APPLE__
-    (void)local_audio_out;
-    freerdp_settings_set_bool(settings, FreeRDP_AudioPlayback, FALSE);
-    freerdp_settings_set_bool(settings, FreeRDP_RemoteConsoleAudio, connect_params.audio_redirection_mode == 1);
-    freerdp_settings_set_bool(settings, FreeRDP_AudioCapture, FALSE);
+        // macOS Universal2 static SDK builds with -DWITH_PCSC=OFF and -DWITH_MACAUDIO=OFF; advertising
+        // virtual SmartCard or RDPSND without backends stalls Windows Winlogon/SCardSvr by ~1.5-2.0s.
+        freerdp_settings_set_bool(settings, FreeRDP_RedirectSmartCards, FALSE);
 #else
-    freerdp_settings_set_bool(settings, FreeRDP_AudioPlayback, local_audio_out);
-    freerdp_settings_set_bool(settings, FreeRDP_RemoteConsoleAudio, connect_params.audio_redirection_mode == 1);
-    freerdp_settings_set_bool(settings, FreeRDP_AudioCapture, connect_params.redirect_mic_in);
+        freerdp_settings_set_bool(settings, FreeRDP_RedirectSmartCards, connect_params.redirect_smartcard);
+#endif
+        freerdp_settings_set_bool(settings, FreeRDP_RedirectDrives, connect_params.redirect_drives);
+        if (connect_params.redirect_drives && !connect_params.shared_drive_local_path.empty()) {
+            const std::string drive_name =
+                connect_params.shared_drive_name.empty() ? "NexusTS" : connect_params.shared_drive_local_path.empty() ? "NexusTS" : connect_params.shared_drive_name;
+            const char* drive_args[2] = {
+                drive_name.c_str(),
+                connect_params.shared_drive_local_path.c_str()
+            };
+            RDPDR_DEVICE* drive_device = freerdp_device_new(RDPDR_DTYP_FILESYSTEM, 2, drive_args);
+            if (drive_device) {
+                if (!freerdp_device_collection_add(settings, drive_device)) {
+                    freerdp_device_free(drive_device);
+                    NX_RDP_LOGE("freerdp_device_collection_add failed for drive '%s'", drive_name.c_str());
+                } else {
+                    NX_RDP_LOGI("Registered RDPDR shared filesystem drive '\\\\tsclient\\%s' -> '%s'",
+                                drive_name.c_str(), connect_params.shared_drive_local_path.c_str());
+                }
+            }
+        }
+        freerdp_settings_set_bool(settings, FreeRDP_RedirectPrinters, connect_params.redirect_printers);
+        freerdp_settings_set_bool(settings, FreeRDP_RedirectSerialPorts, connect_params.redirect_serial_ports);
+#ifdef __APPLE__
+        (void)local_audio_out;
+        freerdp_settings_set_bool(settings, FreeRDP_AudioPlayback, FALSE);
+        freerdp_settings_set_bool(settings, FreeRDP_RemoteConsoleAudio, connect_params.audio_redirection_mode == 1);
+        freerdp_settings_set_bool(settings, FreeRDP_AudioCapture, FALSE);
+#else
+        freerdp_settings_set_bool(settings, FreeRDP_AudioPlayback, local_audio_out);
+        freerdp_settings_set_bool(settings, FreeRDP_RemoteConsoleAudio, connect_params.audio_redirection_mode == 1);
+        freerdp_settings_set_bool(settings, FreeRDP_AudioCapture, connect_params.redirect_mic_in);
 #endif
 
-    freerdp_settings_set_bool(settings, FreeRDP_AllowFontSmoothing, connect_params.enable_font_smoothing);
-    freerdp_settings_set_bool(settings, FreeRDP_AllowDesktopComposition, connect_params.enable_desktop_composition);
-    freerdp_settings_set_bool(settings, FreeRDP_DisableWallpaper, !connect_params.enable_wallpaper);
-    freerdp_settings_set_bool(settings, FreeRDP_DisableFullWindowDrag, !connect_params.enable_full_window_drag);
-    freerdp_settings_set_bool(settings, FreeRDP_DisableMenuAnims, !connect_params.enable_menu_animations);
-    freerdp_settings_set_bool(settings, FreeRDP_DisableThemes, !connect_params.enable_themes);
-    // Pack the individual visual performance booleans into FreeRDP_PerformanceFlags for TS_INFO_PACKET
-    freerdp_performance_flags_make(settings);
-    if (!connect_params.enable_menu_animations) {
-        const UINT32 perf_flags = freerdp_settings_get_uint32(settings, FreeRDP_PerformanceFlags);
-        freerdp_settings_set_uint32(settings, FreeRDP_PerformanceFlags, perf_flags | PERF_DISABLE_CURSOR_SHADOW);
-    }
-    freerdp_settings_set_bool(settings, FreeRDP_CompressionEnabled, connect_params.compression_enabled);
-
-    const bool has_credentials =
-        !effective_username.empty() || !connect_params.password.empty() || connect_params.restricted_admin_mode;
-    const bool effective_nla = connect_params.nla_security && has_credentials;
-    freerdp_settings_set_bool(settings, FreeRDP_NlaSecurity, effective_nla);
-    freerdp_settings_set_bool(settings, FreeRDP_TlsSecurity, connect_params.tls_security);
-    freerdp_settings_set_bool(settings, FreeRDP_RestrictedAdminModeRequired, connect_params.restricted_admin_mode);
-    freerdp_settings_set_bool(settings, FreeRDP_IgnoreCertificate, effective_ignore_cert);
-    freerdp_settings_set_bool(settings, FreeRDP_RemoteApplicationMode, connect_params.remote_app_mode);
-
-    if (!effective_pcb.empty()) {
-        // Hyper-V VMConnect (vmms.exe on TCP 2179): send RDP_PRECONNECTION_PDU_V2 before X.224
-        // Connection Request and enforce CredSSP/NLA directly without NegotiateSecurityLayer,
-        // matching FreeRDP 3.x `/vmconnect:<VM-GUID>[;EnhancedMode=1]`.
-        freerdp_settings_set_bool(settings, FreeRDP_SendPreconnectionPdu, TRUE);
-        freerdp_settings_set_string(settings, FreeRDP_PreconnectionBlob, effective_pcb.c_str());
-        freerdp_settings_set_bool(settings, FreeRDP_NegotiateSecurityLayer, FALSE);
-        freerdp_settings_set_bool(settings, FreeRDP_NlaSecurity, TRUE);
-        freerdp_settings_set_bool(settings, FreeRDP_TlsSecurity, FALSE);
-        freerdp_settings_set_bool(settings, FreeRDP_RdpSecurity, FALSE);
-        NX_RDP_LOGI("Configured Hyper-V VMConnect Preconnection PDU v2 (host='%s', port=%u, PCB='%s')",
-                    effective_host.c_str(), effective_port, effective_pcb.c_str());
-    }
-
-    if (!effective_username.empty()) {
-        freerdp_settings_set_string(settings, FreeRDP_Username, effective_username.c_str());
-    }
-    if (!connect_params.password.empty()) {
-        freerdp_settings_set_string(settings, FreeRDP_Password, connect_params.password.c_str());
-    }
-    if (!effective_domain.empty()) {
-        freerdp_settings_set_string(settings, FreeRDP_Domain, effective_domain.c_str());
-    }
-    if (!effective_gateway_host.empty()) {
-        freerdp_settings_set_bool(settings, FreeRDP_GatewayEnabled, TRUE);
-        freerdp_settings_set_string(settings, FreeRDP_GatewayHostname, effective_gateway_host.c_str());
-        freerdp_settings_set_uint32(settings, FreeRDP_GatewayPort, connect_params.rd_gateway_port);
-        freerdp_settings_set_bool(settings, FreeRDP_GatewayUseSameCredentials, TRUE);
-    }
-    if (connect_params.remote_app_mode && !connect_params.remote_app_program.empty()) {
-        freerdp_settings_set_string(settings, FreeRDP_RemoteApplicationProgram, connect_params.remote_app_program.c_str());
-        freerdp_settings_set_string(settings, FreeRDP_RemoteApplicationCmdLine, connect_params.remote_app_args.c_str());
-    }
-
-    disp_context_.store(nullptr, std::memory_order_release);
-    set_cliprdr_context(nullptr);
-
-    HANDLE wakeup_ev = CreateEventA(nullptr, TRUE, FALSE, nullptr);
-    {
-        std::lock_guard<std::mutex> input_lock(input_mutex_);
-        freerdp_instance_ = instance;
-        wakeup_event_ = wakeup_ev;
-        wakeup_signaled_.store(false, std::memory_order_relaxed);
-        if (stop_requested_.load(std::memory_order_acquire) && instance->context) {
-            freerdp_abort_connect_context(instance->context);
+        freerdp_settings_set_bool(settings, FreeRDP_AllowFontSmoothing, connect_params.enable_font_smoothing);
+        freerdp_settings_set_bool(settings, FreeRDP_AllowDesktopComposition, connect_params.enable_desktop_composition);
+        freerdp_settings_set_bool(settings, FreeRDP_DisableWallpaper, !connect_params.enable_wallpaper);
+        freerdp_settings_set_bool(settings, FreeRDP_DisableFullWindowDrag, !connect_params.enable_full_window_drag);
+        freerdp_settings_set_bool(settings, FreeRDP_DisableMenuAnims, !connect_params.enable_menu_animations);
+        freerdp_settings_set_bool(settings, FreeRDP_DisableThemes, !connect_params.enable_themes);
+        // Pack the individual visual performance booleans into FreeRDP_PerformanceFlags for TS_INFO_PACKET
+        freerdp_performance_flags_make(settings);
+        if (!connect_params.enable_menu_animations) {
+            const UINT32 perf_flags = freerdp_settings_get_uint32(settings, FreeRDP_PerformanceFlags);
+            freerdp_settings_set_uint32(settings, FreeRDP_PerformanceFlags, perf_flags | PERF_DISABLE_CURSOR_SHADOW);
         }
-    }
+        freerdp_settings_set_bool(settings, FreeRDP_CompressionEnabled, connect_params.compression_enabled);
 
-    const BOOL connect_ok = !stop_requested_.load(std::memory_order_acquire)
-        ? freerdp_connect(instance)
-        : FALSE;
-    if (!connect_ok || stop_requested_.load(std::memory_order_acquire)) {
-        if (!connect_ok) {
-            const std::string callback_err = last_error();
-            const std::string freerdp_err = format_freerdp_last_error(instance->context, effective_host, effective_port);
-            std::string captured;
-            if (!callback_err.empty() && !freerdp_err.empty()) {
-                captured = callback_err + " [" + freerdp_err + "]";
-            } else if (!callback_err.empty()) {
-                captured = callback_err;
-            } else if (!freerdp_err.empty()) {
-                captured = freerdp_err;
-            } else {
-                captured = "CONNECT_TRANSPORT_FAILED: FreeRDP 3.x connection failed to " +
-                    effective_host + ":" + std::to_string(effective_port);
-            }
-            set_last_error(captured);
-            NX_RDP_LOGE("FreeRDP 3.x connection failed to %s:%u (%s)",
-                        effective_host.c_str(), effective_port, captured.c_str());
+        const bool has_credentials =
+            !effective_username.empty() || !connect_params.password.empty() || connect_params.restricted_admin_mode;
+        const bool effective_nla = connect_params.nla_security && has_credentials;
+        freerdp_settings_set_bool(settings, FreeRDP_NlaSecurity, effective_nla);
+        freerdp_settings_set_bool(settings, FreeRDP_TlsSecurity, connect_params.tls_security);
+        freerdp_settings_set_bool(settings, FreeRDP_RestrictedAdminModeRequired, connect_params.restricted_admin_mode);
+        freerdp_settings_set_bool(settings, FreeRDP_IgnoreCertificate, effective_ignore_cert);
+        freerdp_settings_set_bool(settings, FreeRDP_RemoteApplicationMode, connect_params.remote_app_mode);
+
+        if (!pcb_for_attempt.empty()) {
+            // Hyper-V VMConnect (vmms.exe on TCP 2179): send RDP_PRECONNECTION_PDU_V2 before X.224
+            // Connection Request and enforce CredSSP/NLA directly without NegotiateSecurityLayer,
+            // matching FreeRDP 3.x `/vmconnect:<VM-GUID>[;EnhancedMode=1]`.
+            freerdp_settings_set_bool(settings, FreeRDP_SendPreconnectionPdu, TRUE);
+            freerdp_settings_set_string(settings, FreeRDP_PreconnectionBlob, pcb_for_attempt.c_str());
+            freerdp_settings_set_bool(settings, FreeRDP_NegotiateSecurityLayer, FALSE);
+            freerdp_settings_set_bool(settings, FreeRDP_NlaSecurity, TRUE);
+            freerdp_settings_set_bool(settings, FreeRDP_TlsSecurity, FALSE);
+            freerdp_settings_set_bool(settings, FreeRDP_RdpSecurity, FALSE);
+            NX_RDP_LOGI("Configured Hyper-V VMConnect Preconnection PDU v2 (host='%s', port=%u, PCB='%s')",
+                        effective_host.c_str(), effective_port, pcb_for_attempt.c_str());
         }
-        {
-            std::lock_guard<std::mutex> input_lock(input_mutex_);
-            freerdp_instance_ = nullptr;
-            wakeup_event_ = nullptr;
-            wakeup_signaled_.store(false, std::memory_order_relaxed);
+
+        if (!effective_username.empty()) {
+            freerdp_settings_set_string(settings, FreeRDP_Username, effective_username.c_str());
         }
-        if (wakeup_ev) {
-            CloseHandle(wakeup_ev);
+        if (!connect_params.password.empty()) {
+            freerdp_settings_set_string(settings, FreeRDP_Password, connect_params.password.c_str());
         }
+        if (!effective_domain.empty()) {
+            freerdp_settings_set_string(settings, FreeRDP_Domain, effective_domain.c_str());
+        }
+        if (!effective_gateway_host.empty()) {
+            freerdp_settings_set_bool(settings, FreeRDP_GatewayEnabled, TRUE);
+            freerdp_settings_set_string(settings, FreeRDP_GatewayHostname, effective_gateway_host.c_str());
+            freerdp_settings_set_uint32(settings, FreeRDP_GatewayPort, connect_params.rd_gateway_port);
+            freerdp_settings_set_bool(settings, FreeRDP_GatewayUseSameCredentials, TRUE);
+        }
+        if (connect_params.remote_app_mode && !connect_params.remote_app_program.empty()) {
+            freerdp_settings_set_string(settings, FreeRDP_RemoteApplicationProgram, connect_params.remote_app_program.c_str());
+            freerdp_settings_set_string(settings, FreeRDP_RemoteApplicationCmdLine, connect_params.remote_app_args.c_str());
+        }
+
         disp_context_.store(nullptr, std::memory_order_release);
         set_cliprdr_context(nullptr);
-        if (connect_ok) {
-            freerdp_disconnect(instance);
+
+        HANDLE ev = CreateEventA(nullptr, TRUE, FALSE, nullptr);
+        {
+            std::lock_guard<std::mutex> input_lock(input_mutex_);
+            freerdp_instance_ = inst;
+            wakeup_event_ = ev;
+            wakeup_signaled_.store(false, std::memory_order_relaxed);
+            if (stop_requested_.load(std::memory_order_acquire) && inst->context) {
+                freerdp_abort_connect_context(inst->context);
+            }
         }
-        unregister_freerdp_callbacks(instance);
-        gdi_free(instance);
-        freerdp_context_free(instance);
-        freerdp_free(instance);
+
+        const BOOL connect_ok = !stop_requested_.load(std::memory_order_acquire)
+            ? freerdp_connect(inst)
+            : FALSE;
+        if (!connect_ok || stop_requested_.load(std::memory_order_acquire)) {
+            if (!connect_ok) {
+                const std::string callback_err = last_error();
+                const std::string freerdp_err = format_freerdp_last_error(inst->context, effective_host, effective_port);
+                std::string captured;
+                if (!callback_err.empty() && !freerdp_err.empty()) {
+                    captured = callback_err + " [" + freerdp_err + "]";
+                } else if (!callback_err.empty()) {
+                    captured = callback_err;
+                } else if (!freerdp_err.empty()) {
+                    captured = freerdp_err;
+                } else {
+                    captured = "CONNECT_TRANSPORT_FAILED: FreeRDP 3.x connection failed to " +
+                        effective_host + ":" + std::to_string(effective_port);
+                }
+                set_last_error(captured);
+                NX_RDP_LOGE("FreeRDP 3.x connection failed to %s:%u (%s)",
+                            effective_host.c_str(), effective_port, captured.c_str());
+            }
+            {
+                std::lock_guard<std::mutex> input_lock(input_mutex_);
+                freerdp_instance_ = nullptr;
+                wakeup_event_ = nullptr;
+                wakeup_signaled_.store(false, std::memory_order_relaxed);
+            }
+            if (ev) {
+                CloseHandle(ev);
+            }
+            disp_context_.store(nullptr, std::memory_order_release);
+            set_cliprdr_context(nullptr);
+            if (connect_ok) {
+                freerdp_disconnect(inst);
+            }
+            unregister_freerdp_callbacks(inst);
+            gdi_free(inst);
+            freerdp_context_free(inst);
+            freerdp_free(inst);
+            return {nullptr, nullptr};
+        }
+        return {inst, ev};
+    };
+
+    auto [instance, wakeup_ev] = attempt_freerdp_connect(effective_pcb);
+    if (!instance && !stop_requested_.load(std::memory_order_acquire)) {
+        const std::string fallback_basic_pcb = strip_hyperv_enhanced_mode_suffix(effective_pcb);
+        if (!fallback_basic_pcb.empty()) {
+            const std::string enhanced_err = last_error();
+            NX_RDP_LOGI("Hyper-V Enhanced Session connect failed (%s); retrying Basic VMConnect console (PCB='%s')",
+                        enhanced_err.c_str(), fallback_basic_pcb.c_str());
+            set_last_error("");
+            enhanced_session_fallback_.store(true, std::memory_order_release);
+            std::tie(instance, wakeup_ev) = attempt_freerdp_connect(fallback_basic_pcb);
+            if (!instance) {
+                enhanced_session_fallback_.store(false, std::memory_order_release);
+                if (last_error().empty() && !enhanced_err.empty()) {
+                    set_last_error(enhanced_err);
+                }
+            } else if (gdi_presenter_) {
+                gdi_presenter_->notify_frame_ready();
+            }
+        }
+    }
+    if (!instance) {
         return false;
     }
 

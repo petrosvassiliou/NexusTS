@@ -1455,6 +1455,100 @@ class EnterpriseVaultImporterTest {
         assertEquals("11111111-2222-3333-4444-555555555555;EnhancedMode=1", roundTrippedVm.effectivePreconnectionBlob())
         assertEquals(2179, roundTrippedVm.effectivePort())
     }
+
+    @Test
+    fun v0812HyperVEnhancedSessionDefaultLegacyVaultSelfHealingAndRoyalTsImport() {
+        val defaultHv = ProtocolSpecificSettings.Rdp(hyperVVmId = "{11111111-2222-3333-4444-555555555555}")
+        assertTrue(defaultHv.hyperVEnhancedSession)
+        assertTrue(defaultHv.redirectClipboard)
+        assertEquals(2179, defaultHv.effectivePort())
+        assertEquals("11111111-2222-3333-4444-555555555555;EnhancedMode=1", defaultHv.effectivePreconnectionBlob())
+
+        val fastSerializer = NxtsVaultSerializer(
+            NxtsVaultSerializer.Argon2idParameters(memoryKiB = 8_192, iterations = 1, parallelism = 1)
+        )
+        val preV0812Doc = NxtsVaultDocument(
+            id = "doc-v0812-heal",
+            name = "Pre-v0.8.12 Hyper-V Vault",
+            connections = listOf(
+                VaultConnection(
+                    id = "hv-legacy-uncustomized",
+                    name = "Legacy Hyper-V VM",
+                    protocol = VaultProtocolType.RDP,
+                    host = "hv01.corp.internal",
+                    settings = ProtocolSpecificSettings.Rdp(
+                        port = 2179,
+                        hyperVVmId = "11111111-2222-3333-4444-555555555555",
+                        hyperVEnhancedSession = false,
+                        hyperVEnhancedSessionCustomized = false,
+                        redirectClipboard = false,
+                        redirectClipboardCustomized = false
+                    )
+                ),
+                VaultConnection(
+                    id = "hv-explicit-basic",
+                    name = "Explicit Basic VM",
+                    protocol = VaultProtocolType.RDP,
+                    host = "hv01.corp.internal",
+                    settings = ProtocolSpecificSettings.Rdp(
+                        port = 2179,
+                        hyperVVmId = "22222222-3333-4444-5555-666666666666",
+                        hyperVEnhancedSession = false,
+                        hyperVEnhancedSessionCustomized = true,
+                        redirectClipboard = false,
+                        redirectClipboardCustomized = true
+                    )
+                )
+            )
+        )
+
+        val sealed = fastSerializer.sealDocument(preV0812Doc, "test-pass".toCharArray())
+        val unsealed = fastSerializer.unsealDocument(sealed, "test-pass".toCharArray())
+        val healedVm = unsealed.connections.first { it.id == "hv-legacy-uncustomized" }.settings as ProtocolSpecificSettings.Rdp
+        val explicitBasicVm = unsealed.connections.first { it.id == "hv-explicit-basic" }.settings as ProtocolSpecificSettings.Rdp
+
+        assertTrue(healedVm.hyperVEnhancedSession)
+        assertTrue(healedVm.redirectClipboard)
+        assertEquals("11111111-2222-3333-4444-555555555555;EnhancedMode=1", healedVm.effectivePreconnectionBlob())
+
+        assertEquals(false, explicitBasicVm.hyperVEnhancedSession)
+        assertEquals(false, explicitBasicVm.redirectClipboard)
+        assertEquals("22222222-3333-4444-5555-666666666666", explicitBasicVm.effectivePreconnectionBlob())
+
+        val rtsxOmittedAndExplicit = """
+            <?xml version="1.0" encoding="utf-8"?>
+            <RTSZDocument>
+              <RoyalDocument>
+                <ID>doc-hv-omit</ID>
+                <Name>Hyper-V Omitted Tag</Name>
+                <RoyalRDSConnection>
+                  <ID>hv-omit</ID>
+                  <Name>Win11-VM</Name>
+                  <URI>hv01.corp.internal</URI>
+                  <HyperVMode>2</HyperVMode>
+                  <HyperVInstance>{33333333-4444-5555-6666-777777777777}</HyperVInstance>
+                </RoyalRDSConnection>
+                <RoyalRDSConnection>
+                  <ID>hv-false</ID>
+                  <Name>Linux-VM</Name>
+                  <URI>hv01.corp.internal</URI>
+                  <HyperVMode>2</HyperVMode>
+                  <HyperVInstance>{88888888-9999-aaaa-bbbb-cccccccccccc}</HyperVInstance>
+                  <HyperVEnhancedSessionMode>False</HyperVEnhancedSessionMode>
+                </RoyalRDSConnection>
+              </RoyalDocument>
+            </RTSZDocument>
+        """.trimIndent().toByteArray(StandardCharsets.UTF_8)
+
+        val imported = RtszDocumentImporter().importRtszBytes(rtsxOmittedAndExplicit)
+        val rdpOmit = imported.connections.first { it.id == "hv-omit" }.settings as ProtocolSpecificSettings.Rdp
+        val rdpFalse = imported.connections.first { it.id == "hv-false" }.settings as ProtocolSpecificSettings.Rdp
+        assertTrue(rdpOmit.hyperVEnhancedSession)
+        assertEquals("33333333-4444-5555-6666-777777777777;EnhancedMode=1", rdpOmit.effectivePreconnectionBlob())
+        assertEquals(false, rdpFalse.hyperVEnhancedSession)
+        assertTrue(rdpFalse.hyperVEnhancedSessionCustomized)
+        assertEquals("88888888-9999-aaaa-bbbb-cccccccccccc", rdpFalse.effectivePreconnectionBlob())
+    }
 }
 
 

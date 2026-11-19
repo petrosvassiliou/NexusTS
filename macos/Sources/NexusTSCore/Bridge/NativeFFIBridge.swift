@@ -1980,6 +1980,20 @@ public final class NativeRdpSession: @unchecked Sendable {
         return h > 0 ? Int(nexusts_rdp_reconnect_attempt(h)) : 0
     }
 
+    public var isCliprdrReady: Bool {
+        stateLock.lock()
+        let h = handle
+        stateLock.unlock()
+        return h > 0 && nexusts_rdp_is_cliprdr_ready(h)
+    }
+
+    public var isEnhancedSessionFallback: Bool {
+        stateLock.lock()
+        let h = handle
+        stateLock.unlock()
+        return h > 0 && nexusts_rdp_is_enhanced_session_fallback(h)
+    }
+
     @discardableResult
     public func requestDynamicResize(width: Int, height: Int, scalePercent: Int = 100) -> Bool {
         stateLock.lock()
@@ -2630,6 +2644,46 @@ public enum MacPasteboardClipboardExtractor {
             return .text(localText)
         }
         return .empty
+    }
+
+    @discardableResult
+    public static func writeStagedFilesToPasteboard(
+        _ stagedPaths: [String],
+        pasteboard: NSPasteboard = .general
+    ) -> [String] {
+        var existingPaths: [String] = []
+        var seen = Set<String>()
+        for rawPath in stagedPaths {
+            let trimmed = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            let stdPath = URL(fileURLWithPath: trimmed).standardizedFileURL.path
+            guard FileManager.default.fileExists(atPath: stdPath) else { continue }
+            if seen.insert(stdPath).inserted {
+                existingPaths.append(stdPath)
+            }
+        }
+        guard !existingPaths.isEmpty else { return [] }
+
+        let nsUrls: [NSURL] = existingPaths.map { NSURL(fileURLWithPath: $0) }
+        pasteboard.clearContents()
+        _ = pasteboard.writeObjects(nsUrls)
+        return existingPaths
+    }
+
+    @discardableResult
+    public static func writeRemoteTextToPasteboard(
+        _ remoteText: String,
+        pasteboard: NSPasteboard = .general
+    ) -> Bool {
+        guard !remoteText.isEmpty else { return false }
+        let currentTypes = pasteboard.types ?? []
+        if currentTypes.count == 1 &&
+            currentTypes.first == .string &&
+            pasteboard.string(forType: .string) == remoteText {
+            return true
+        }
+        pasteboard.clearContents()
+        return pasteboard.setString(remoteText, forType: .string)
     }
 }
 #endif

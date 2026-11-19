@@ -897,7 +897,16 @@ class RtszDocumentImporter {
             } else {
                 elem.childInt("RDPPort", "Port", "ServerPort") ?: uriPortFallback ?: 3389
             }
-            val hvEnhancedSession = elem.childBoolean("HyperVEnhancedSessionMode", "EnhancedSessionMode", default = false)
+            val hasExplicitHvEnhanced = elem.hasDirectChild("HyperVEnhancedSessionMode") || elem.hasDirectChild("EnhancedSessionMode")
+            val hvEnhancedSession = elem.childBoolean("HyperVEnhancedSessionMode", "EnhancedSessionMode", default = true)
+            val hasExplicitClip = elem.hasDirectChild("RedirectClipboard") || elem.hasDirectChild("DisableClipboard")
+            val redirectClip = if (elem.hasDirectChild("RedirectClipboard")) {
+                elem.childBoolean("RedirectClipboard", default = true)
+            } else if (elem.hasDirectChild("DisableClipboard")) {
+                !elem.childBoolean("DisableClipboard", default = false)
+            } else {
+                true
+            }
             val audioModeRaw = elem.childText("AudioRedirectionMode").trim()
             val audioMode = when {
                 audioModeRaw == "1" || audioModeRaw.contains("Remote", true) ->
@@ -961,7 +970,8 @@ class RtszDocumentImporter {
                 multiMonitorSpanning = elem.childBoolean("UseMultimon", default = false),
                 selectedMonitorIds = monitorIds,
                 colorDepthBits = elem.childText("ColorDepth").toIntOrNull()?.takeIf { it in listOf(8, 15, 16, 24, 32) } ?: 32,
-                redirectClipboard = elem.childBoolean("RedirectClipboard", default = true),
+                redirectClipboard = redirectClip,
+                redirectClipboardCustomized = hasExplicitClip,
                 audioRedirectionMode = audioMode,
                 redirectAudioPlayback = if (elem.hasDirectChild("RedirectAudioPlayback")) {
                     elem.childBoolean("RedirectAudioPlayback", default = true)
@@ -1001,7 +1011,8 @@ class RtszDocumentImporter {
                     default = isHyperVVm
                 ),
                 hyperVVmId = hvInstance,
-                hyperVEnhancedSession = hvEnhancedSession
+                hyperVEnhancedSession = hvEnhancedSession,
+                hyperVEnhancedSessionCustomized = hasExplicitHvEnhanced
             )
         }
 

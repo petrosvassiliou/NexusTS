@@ -128,6 +128,8 @@ void nexusts_rdp_send_extended_pointer_event(
 
 void nexusts_rdp_set_local_clipboard(int64_t handle, const char* utf8_text);
 void nexusts_rdp_set_local_clipboard_files(int64_t handle, const char* newline_joined_utf8_paths);
+bool nexusts_rdp_is_cliprdr_ready(int64_t handle);
+bool nexusts_rdp_is_enhanced_session_fallback(int64_t handle);
 uint32_t nexusts_rdp_remote_clipboard_kind(int64_t handle);
 char* nexusts_rdp_copy_remote_clipboard(int64_t handle);
 char* nexusts_rdp_copy_remote_clipboard_files(int64_t handle);

@@ -1,0 +1,1 @@
+• v0.8.12: Activa por defecto el modo de sesión mejorada de Hyper-V (;EnhancedMode=1) con respaldo automático a consola básica para copiar archivos y texto (CLIPRDR), repara conexiones .nxts y Royal TS heredadas, configura FreeRDP_ClipboardFeatureMask (0x33) y limpia imágenes PNG/TIFF antiguas en NSPasteboard de macOS.

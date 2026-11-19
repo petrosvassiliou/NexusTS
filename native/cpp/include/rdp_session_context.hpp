@@ -149,6 +149,8 @@ std::string normalize_hyperv_preconnection_blob(
     bool force_enhanced_session = false
 );
 
+std::string strip_hyperv_enhanced_mode_suffix(const std::string& normalized_pcb);
+
 uint16_t resolve_effective_rdp_port(
     uint16_t configured_port,
     bool port_from_host_literal,
@@ -381,6 +383,8 @@ public:
     bool is_connected() const noexcept { return connected_.load(std::memory_order_acquire); }
     bool is_reconnecting() const noexcept { return reconnecting_.load(std::memory_order_acquire); }
     uint32_t reconnect_attempt() const noexcept { return reconnect_attempt_.load(std::memory_order_acquire); }
+    bool is_cliprdr_ready() const noexcept { return cliprdr_ready_.load(std::memory_order_acquire); }
+    bool is_enhanced_session_fallback() const noexcept { return enhanced_session_fallback_.load(std::memory_order_acquire); }
     std::string last_error() const;
     void set_last_error(std::string message);
 
@@ -589,6 +593,7 @@ private:
     std::chrono::steady_clock::time_point logoff_command_due_tp_{};
     std::atomic<void*> disp_context_{nullptr};
     std::atomic<bool> cliprdr_ready_{false};
+    std::atomic<bool> enhanced_session_fallback_{false};
     std::atomic<uint32_t> server_clip_caps_{0};
     std::atomic<uint32_t> server_fgd_format_id_{0};
     std::atomic<bool> server_fgd_is_ansi_{false};

@@ -1,0 +1,1 @@
+• v0.8.12 : Active par défaut le mode session étendue Hyper-V (;EnhancedMode=1) avec repli automatique en console de base pour le presse-papiers fichiers et texte (CLIPRDR), répare les connexions .nxts et Royal TS existantes, définit FreeRDP_ClipboardFeatureMask (0x33) et purge les anciens éléments PNG/TIFF du NSPasteboard macOS.

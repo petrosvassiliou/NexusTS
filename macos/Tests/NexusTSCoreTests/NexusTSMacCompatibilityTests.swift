@@ -352,11 +352,11 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
     }
 
     func testV118LocalizationUpgradeVersionAndVaultReplacementCompatibility() throws {
-        XCTAssertEqual(MacGitHubReleaseUpdater.currentVersion, "0.8.11")
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.11", isNewerThan: "0.8.10"))
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.11", isNewerThan: "0.8.9"))
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.11", isNewerThan: "0.8.8"))
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.11", isNewerThan: "0.3.0-beta.6"))
+        XCTAssertEqual(MacGitHubReleaseUpdater.currentVersion, "0.8.12")
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.12", isNewerThan: "0.8.11"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.12", isNewerThan: "0.8.10"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.12", isNewerThan: "0.8.9"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.8.12", isNewerThan: "0.3.0-beta.6"))
         XCTAssertEqual(LocalizedWorkspaceStrings.catalog(for: .en).studios, "Manage")
         XCTAssertEqual(LocalizedWorkspaceStrings.catalog(for: .en).logOffSession, "Log Off Session")
 
@@ -1242,6 +1242,131 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
         pb.clearContents()
         XCTAssertTrue(pb.setString(remoteText, forType: .string))
         XCTAssertEqual(MacPasteboardClipboardExtractor.extractClipboardPayload(from: pb), .text(remoteText))
+    }
+
+    func testV0812HyperVEnhancedDefaultLegacySelfHealingAndPasteboardPngReplacement() throws {
+        // 1. Default Hyper-V VMConnect settings enable Enhanced Session Mode (;EnhancedMode=1) + clipboard redirection
+        let defaultHv = RdpProtocolSettings(hyperVVmId: "{11111111-2222-3333-4444-555555555555}")
+        XCTAssertTrue(defaultHv.hyperVEnhancedSession)
+        XCTAssertTrue(defaultHv.redirectClipboard)
+        XCTAssertEqual(defaultHv.effectiveRdpPort, 2179)
+        XCTAssertEqual(defaultHv.effectivePreconnectionBlob, "11111111-2222-3333-4444-555555555555;EnhancedMode=1")
+
+        // 2. Legacy pre-v0.8.12 .nxts JSON without *Customized flags self-heals hyperVEnhancedSession & redirectClipboard to true
+        let legacyJson = """
+        {
+          "port": 2179,
+          "hyperVVmId": "11111111-2222-3333-4444-555555555555",
+          "hyperVEnhancedSession": false,
+          "redirectClipboard": false
+        }
+        """
+        let healed = try JSONDecoder().decode(RdpProtocolSettings.self, from: Data(legacyJson.utf8))
+        XCTAssertTrue(healed.hyperVEnhancedSession, "Legacy uncustomized Hyper-V connection must self-heal to Enhanced Session Mode")
+        XCTAssertTrue(healed.redirectClipboard, "Legacy uncustomized RDP connection must self-heal clipboard redirection")
+        XCTAssertEqual(healed.effectivePreconnectionBlob, "11111111-2222-3333-4444-555555555555;EnhancedMode=1")
+
+        // 3. Explicit customized false overrides are preserved across JSON round-trips
+        let customizedJson = """
+        {
+          "port": 2179,
+          "hyperVVmId": "11111111-2222-3333-4444-555555555555",
+          "hyperVEnhancedSession": false,
+          "hyperVEnhancedSessionCustomized": true,
+          "redirectClipboard": false,
+          "redirectClipboardCustomized": true
+        }
+        """
+        let customized = try JSONDecoder().decode(RdpProtocolSettings.self, from: Data(customizedJson.utf8))
+        XCTAssertFalse(customized.hyperVEnhancedSession)
+        XCTAssertFalse(customized.redirectClipboard)
+        XCTAssertEqual(customized.effectivePreconnectionBlob, "11111111-2222-3333-4444-555555555555")
+
+        // 4. Royal TS .rtsx HyperVMode=2 defaults to Enhanced Session Mode when <HyperVEnhancedSessionMode> is omitted,
+        //    and honors explicit <HyperVEnhancedSessionMode>False</HyperVEnhancedSessionMode>
+        let rtsxHv = """
+        <?xml version="1.0" encoding="utf-8"?>
+        <RTSZDocument>
+          <RoyalDocument>
+            <ID>doc-hv-v0812</ID>
+            <Name>HyperV Enhanced Default</Name>
+            <RoyalRDSConnection>
+              <ID>hv-default-enhanced</ID>
+              <Name>Win11-Admin-VM</Name>
+              <URI>hv01.corp.local</URI>
+              <HyperVMode>2</HyperVMode>
+              <HyperVInstance>{22222222-3333-4444-5555-666666666666}</HyperVInstance>
+            </RoyalRDSConnection>
+            <RoyalRDSConnection>
+              <ID>hv-explicit-basic</ID>
+              <Name>Linux-Basic-VM</Name>
+              <URI>hv01.corp.local</URI>
+              <HyperVMode>2</HyperVMode>
+              <HyperVInstance>{77777777-8888-9999-aaaa-bbbbbbbbbbbb}</HyperVInstance>
+              <HyperVEnhancedSessionMode>False</HyperVEnhancedSessionMode>
+            </RoyalRDSConnection>
+          </RoyalDocument>
+        </RTSZDocument>
+        """
+        let importedHv = try EnterpriseVaultFormatImporter.importRoyalTsXml(Data(rtsxHv.utf8), vaultName: "HyperV Enhanced Default")
+        let vmDefault = try XCTUnwrap(importedHv.document.connections.first(where: { $0.id == "hv-default-enhanced" }))
+        if case .rdp(let sDef) = vmDefault.settings {
+            XCTAssertTrue(sDef.hyperVEnhancedSession)
+            XCTAssertEqual(sDef.effectivePreconnectionBlob, "22222222-3333-4444-5555-666666666666;EnhancedMode=1")
+        } else {
+            XCTFail("Expected RDP settings")
+        }
+        let vmBasic = try XCTUnwrap(importedHv.document.connections.first(where: { $0.id == "hv-explicit-basic" }))
+        if case .rdp(let sBasic) = vmBasic.settings {
+            XCTAssertFalse(sBasic.hyperVEnhancedSession)
+            XCTAssertTrue(sBasic.hyperVEnhancedSessionCustomized)
+            XCTAssertEqual(sBasic.effectivePreconnectionBlob, "77777777-8888-9999-aaaa-bbbbbbbbbbbb")
+        } else {
+            XCTFail("Expected RDP settings")
+        }
+
+        // 5. Reproduce exact screenshot regression: prior PNG/TIFF screenshot on NSPasteboard MUST be purged when
+        //    staging remote Windows file (neueschulen.ps1) OR remote text (even when .string already matches!)
+        let baseTmp = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+        let tempDir = baseTmp.appendingPathComponent("nexusts-v0812-clip-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let ps1File = tempDir.appendingPathComponent("neueschulen.ps1")
+        try Data("Write-Host 'Neue Schulen Provisioning'\r\n".utf8).write(to: ps1File)
+        let expectedPs1Path = ps1File.resolvingSymlinksInPath().standardizedFileURL.path
+
+        let fakePngBytes = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D])
+        let pb = NSPasteboard.withUniqueName()
+        defer { pb.releaseGlobally() }
+
+        pb.clearContents()
+        pb.declareTypes([.png, .tiff, .string], owner: nil)
+        XCTAssertTrue(pb.setData(fakePngBytes, forType: .png))
+        XCTAssertTrue(pb.setData(fakePngBytes, forType: .tiff))
+        XCTAssertTrue(pb.setString("Screenshot Metadata", forType: .string))
+        XCTAssertNotNil(pb.data(forType: .png))
+
+        let writtenFiles = MacPasteboardClipboardExtractor.writeStagedFilesToPasteboard([ps1File.path], pasteboard: pb)
+        XCTAssertEqual(writtenFiles.map { $0.resolvingSymlinksIfPossible() }, [expectedPs1Path])
+        XCTAssertNil(pb.data(forType: .png), "Stale screenshot PNG must be cleared when writing staged remote files")
+        XCTAssertNil(pb.data(forType: .tiff), "Stale screenshot TIFF must be cleared when writing staged remote files")
+        XCTAssertNil(pb.string(forType: .string), "Stale string must be cleared when writing staged remote files")
+        if case .files(let paths) = MacPasteboardClipboardExtractor.extractClipboardPayload(from: pb) {
+            XCTAssertEqual(paths.map { $0.resolvingSymlinksIfPossible() }, [expectedPs1Path])
+        } else {
+            XCTFail("Expected .files([neueschulen.ps1]) on pasteboard")
+        }
+
+        // Seed pasteboard with BOTH .png AND matching .string, then writeRemoteTextToPasteboard with the same string:
+        // must still clearContents() so .png does not remain on NSPasteboard!
+        pb.clearContents()
+        pb.declareTypes([.png, .string], owner: nil)
+        XCTAssertTrue(pb.setData(fakePngBytes, forType: .png))
+        XCTAssertTrue(pb.setString("Get-VM | Format-Table", forType: .string))
+        XCTAssertTrue(MacPasteboardClipboardExtractor.writeRemoteTextToPasteboard("Get-VM | Format-Table", pasteboard: pb))
+        XCTAssertNil(pb.data(forType: .png), "Stale PNG item must be cleared even when .string already matched remoteText")
+        XCTAssertEqual(MacPasteboardClipboardExtractor.extractClipboardPayload(from: pb), .text("Get-VM | Format-Table"))
     }
 }
 

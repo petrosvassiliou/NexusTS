@@ -999,7 +999,7 @@ fun CloudHypervisorConsoleView(
     var statusBanner by remember { mutableStateOf("") }
     var isErrorBanner by remember { mutableStateOf(false) }
     var isSyncing by remember { mutableStateOf(false) }
-    var hyperVEnhancedSession by remember { mutableStateOf(false) }
+    var hyperVEnhancedSession by remember { mutableStateOf(true) }
     var directVmGuidInput by remember { mutableStateOf("") }
 
     val instances = remember(protocol, endpointHost) {

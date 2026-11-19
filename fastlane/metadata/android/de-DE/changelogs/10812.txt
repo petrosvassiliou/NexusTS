@@ -1,0 +1,1 @@
+• v0.8.12: Aktiviert den Hyper-V-Modus für erweiterte Sitzungen (;EnhancedMode=1) standardmäßig mit automatischem Basic-VMConnect-Fallback für Datei- und Text-Zwischenablage (CLIPRDR), aktualisiert bestehende .nxts- und Royal-TS-Importe, setzt FreeRDP_ClipboardFeatureMask (0x33) und bereinigt veraltete PNG/TIFF-Einträge im macOS NSPasteboard.

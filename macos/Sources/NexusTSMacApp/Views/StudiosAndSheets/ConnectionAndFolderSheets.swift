@@ -290,13 +290,22 @@ public struct ConnectionEditorSheet: View {
                                     rdpSettings.port = 2179
                                 }
                                 rdpSettings.ignoreCertificateWarnings = true
+                                if !rdpSettings.hyperVEnhancedSessionCustomized {
+                                    rdpSettings.hyperVEnhancedSession = true
+                                }
                             } else if !wasEmpty && nowEmpty && rdpSettings.port == 2179 {
                                 rdpSettings.port = 3389
                             }
                         }
                     )
                 )
-                Toggle("Enhanced Session Mode (VMBus)", isOn: $rdpSettings.hyperVEnhancedSession)
+                Toggle("Enhanced Session Mode (VMBus)", isOn: Binding(
+                    get: { rdpSettings.hyperVEnhancedSession },
+                    set: { newVal in
+                        rdpSettings.hyperVEnhancedSession = newVal
+                        rdpSettings.hyperVEnhancedSessionCustomized = true
+                    }
+                ))
                     .disabled(rdpSettings.hyperVVmId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
 
@@ -581,6 +590,10 @@ public struct ConnectionEditorSheet: View {
         case .RDP, .WINDOWS_TERMINAL_SERVICES:
             var savedRdp = rdpSettings
             savedRdp.hiDpiScaleCustomized = true
+            savedRdp.redirectClipboardCustomized = true
+            if !savedRdp.hyperVVmId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                savedRdp.hyperVEnhancedSessionCustomized = true
+            }
             return .rdp(savedRdp)
         case .SSH, .TELNET:
             return .ssh(sshSettings)

@@ -1834,15 +1834,16 @@ public final class WorkspaceStore: ObservableObject {
         backingScaleFactor: CGFloat? = nil,
         useRetinaOverride: Bool? = nil
     ) -> NativeRdpSession {
-        let latestConnection = activeConnections.first(where: { $0.id == tab.connection.id }) ?? tab.connection
+        let liveTab = paneTree.findTab(id: tab.id) ?? detachedWindowTabs[tab.id] ?? tab
+        let latestConnection = activeConnections.first(where: { $0.id == liveTab.connection.id }) ?? liveTab.connection
         let resolved = PropertyInheritanceResolver.resolve(connection: latestConnection, in: document)
         let rdpSettings: RdpProtocolSettings = {
             if case .rdp(let s) = latestConnection.settings { return s }
             return RdpProtocolSettings()
         }()
-        let user = tab.adHocUsernameOverride ?? resolved.effectiveCredential?.username ?? "Administrator"
-        let pass = tab.adHocPasswordOverride ?? resolved.effectiveCredential?.secretPassword ?? ""
-        let dom = tab.adHocDomainOverride ?? resolved.effectiveCredential?.domain ?? ""
+        let user = liveTab.adHocUsernameOverride ?? resolved.effectiveCredential?.username ?? "Administrator"
+        let pass = liveTab.adHocPasswordOverride ?? resolved.effectiveCredential?.secretPassword ?? ""
+        let dom = liveTab.adHocDomainOverride ?? resolved.effectiveCredential?.domain ?? ""
 
         let effectiveBackingScale = max(1.0, backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2.0)
         let defaultRetina = rdpSettings.hiDpiEnabled && (effectiveBackingScale >= 1.5 || rdpSettings.desktopScaleFactorPercent > 100)
@@ -2526,6 +2527,49 @@ public final class WorkspaceStore: ObservableObject {
             }
             doc.connections[idx].settings = .rdp(rdp)
             doc.connections[idx].updatedAtEpochMs = VaultClock.nowMs()
+        }
+    }
+
+    public func setRdpHyperVEnhancedSession(
+        forTab tabId: UUID,
+        connectionId: String,
+        enabled: Bool
+    ) {
+        if document.connections.contains(where: { $0.id == connectionId }) {
+            commitMutation(enabled ? "Enabled Hyper-V Enhanced Session Mode" : "Disabled Hyper-V Enhanced Session Mode") { doc in
+                guard let idx = doc.connections.firstIndex(where: { $0.id == connectionId }),
+                      case .rdp(var rdp) = doc.connections[idx].settings else { return }
+                rdp.hyperVEnhancedSession = enabled
+                rdp.hyperVEnhancedSessionCustomized = true
+                if enabled {
+                    rdp.redirectClipboard = true
+                    rdp.redirectClipboardCustomized = true
+                }
+                doc.connections[idx].settings = .rdp(rdp)
+                doc.connections[idx].updatedAtEpochMs = VaultClock.nowMs()
+            }
+        }
+        paneTree = paneTree.updatingTab(tabId) { tabItem in
+            if case .rdp(var rdp) = tabItem.connection.settings {
+                rdp.hyperVEnhancedSession = enabled
+                rdp.hyperVEnhancedSessionCustomized = true
+                if enabled {
+                    rdp.redirectClipboard = true
+                    rdp.redirectClipboardCustomized = true
+                }
+                tabItem.connection.settings = .rdp(rdp)
+            }
+        }
+        if var detached = detachedWindowTabs[tabId],
+           case .rdp(var rdp) = detached.connection.settings {
+            rdp.hyperVEnhancedSession = enabled
+            rdp.hyperVEnhancedSessionCustomized = true
+            if enabled {
+                rdp.redirectClipboard = true
+                rdp.redirectClipboardCustomized = true
+            }
+            detached.connection.settings = .rdp(rdp)
+            detachedWindowTabs[tabId] = detached
         }
     }
 

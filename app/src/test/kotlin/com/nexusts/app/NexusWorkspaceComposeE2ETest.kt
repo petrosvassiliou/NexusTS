@@ -1504,10 +1504,10 @@ class NexusWorkspaceComposeE2ETest {
 
     @Test
     fun compactFlushLeftSidebarFolderContextMenusStartAllRdpRenameDeleteAndV117UpgradeParity() {
-        assertEquals(10811, BuildConfig.VERSION_CODE)
+        assertEquals(10812, BuildConfig.VERSION_CODE)
         assertTrue(
-            "Expected BuildConfig.VERSION_NAME (${BuildConfig.VERSION_NAME}) to start with 0.8.11",
-            BuildConfig.VERSION_NAME.startsWith("0.8.11")
+            "Expected BuildConfig.VERSION_NAME (${BuildConfig.VERSION_NAME}) to start with 0.8.12",
+            BuildConfig.VERSION_NAME.startsWith("0.8.12")
         )
         assertEquals("Manage", WorkspaceLocalizedStrings.defaultEnglish().navStudiosMenu)
 

@@ -21,7 +21,7 @@ on:
       release_tag:
         description: "Tag name when publishing via workflow_dispatch"
         required: false
-        default: "v0.8.11"
+        default: "v0.8.12"
         type: string
 
 permissions:
@@ -319,7 +319,7 @@ jobs:
           set -euo pipefail
           TAG_NAME="${GITHUB_REF_NAME}"
           if [[ "${TAG_NAME}" != v* ]]; then
-            TAG_NAME="${{ inputs.release_tag || 'v0.8.11' }}"
+            TAG_NAME="${{ inputs.release_tag || 'v0.8.12' }}"
           fi
           echo "tag_name=${TAG_NAME}" >> "${GITHUB_OUTPUT}"
 
@@ -346,7 +346,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.stage.outputs.tag_name }}
-          name: "NexusTS ${{ steps.stage.outputs.tag_name }} — Reliable Bidirectional RDP Text & File Copy-Paste (CLIPRDR + macOS ⌘C/⌘V)"
+          name: "NexusTS ${{ steps.stage.outputs.tag_name }} — Hyper-V Enhanced Session Clipboard & macOS NSPasteboard Fix"
           draft: false
           prerelease: ${{ contains(steps.stage.outputs.tag_name, '-') }}
           generate_release_notes: true
@@ -354,22 +354,21 @@ jobs:
             ## NexusTS ${{ steps.stage.outputs.tag_name }} (`com.nexusts.app` / `com.nexusts.app.macos`)
             **Native Remote Management & Connection Manager for Googlebook OS, Android Tablets & macOS**
 
-            > **Bidirectional RDP Text & File Copy-Paste Fix Release (`0.8.11` / `versionCode = 10811`)**: Resolves **MS-RDPECLIP (`CLIPRDR`)** protocol regressions and macOS **`⌘C` / `⌘V` / Edit menu** shortcut collisions so both **UTF-8/Unicode text** and **raw binary files & folders** (`.csv`, `.txt`, `.exe`, multi-GB installers, 0-byte files, symlinks, and nested folders) copy and paste reliably in both directions without Finder `.textClipping` artifacts.
+            > **RDP & Hyper-V Enhanced Session Clipboard Fix Release (`0.8.12` / `versionCode = 10812`)**: Enables **Hyper-V Enhanced Session Mode (`;EnhancedMode=1`)** by default with automatic Basic VMConnect fallback, self-heals legacy `.nxts` and Royal TS `.rtsx` Hyper-V VM connections so **`CLIPRDR` (`rdpclip.exe`)** opens for both **files and text**, explicitly sets **`FreeRDP_ClipboardFeatureMask` (`0x33`)**, stages macOS remote files in Darwin per-user temporary storage without clobbering `HOME`/`TMPDIR`, and purges stale PNG/TIFF items from `NSPasteboard.general`.
 
             ### Signed Deliverables (100% In-Place Upgrade Compatible)
-            - **`NexusTS-${{ steps.stage.outputs.tag_name }}-googlebook-android-release.apk`**: Cryptographically signed (APK Signature Scheme v2/v3/v4, RSA-4096) universal `arm64-v8a` + `x86_64` APK with 16 KB ELF page alignment (`0x4000`) and 100% Google Play Protect compliance (`versionCode = 10811`).
+            - **`NexusTS-${{ steps.stage.outputs.tag_name }}-googlebook-android-release.apk`**: Cryptographically signed (APK Signature Scheme v2/v3/v4, RSA-4096) universal `arm64-v8a` + `x86_64` APK with 16 KB ELF page alignment (`0x4000`) and 100% Google Play Protect compliance (`versionCode = 10812`).
             - **`NexusTS-${{ steps.stage.outputs.tag_name }}-playstore-release.aab`**: Signed Android App Bundle for optional Managed Google Play / internal distribution.
             - **`NexusTS-${{ steps.stage.outputs.tag_name }}-macOS-Universal.zip` & `.dmg`**: Self-contained Universal2 (`arm64` + `x86_64`) macOS application bundle statically linking OpenSSL 3.4.1 + Cisco OpenH264 2.5.0 + FreeRDP 3.12.0 (`.zip` powers one-click in-app updates without downloading a `.dmg`).
             - **`nexusts-upload-certificate.pem` & `oauth-and-mdm-registration.json`**: Public X.509 upload certificate (`SHA-1: A6:AF:15:A9:BF:0B:FE:38:D4:66:46:3E:3E:72:A6:5B:4F:9C:4D:F6`, `SHA-256: 4A:BD:80:F1:20:14:B9:88:09:1C:97:92:2F:87:02:D1:BF:B7:93:9C:73:B6:9A:DB:1A:9B:76:30:6A:30:27:82`) and Managed Google Play `app_restrictions` template.
 
             ### Highlights in ${{ steps.stage.outputs.tag_name }}
-            - **MS-RDPECLIP (`CLIPRDR`) File & Text Fixes (`Windows <-> macOS/Android`)**:
-              - **Eliminated Client-Fabricated `CB_LOCK_CLIPDATA` (`clipDataId`)**: Aligns client capability negotiation and `FileContentsRequest` PDUs with upstream FreeRDP 3.12 (`client_cliprdr_file.c`), fixing Windows `rdpclip.exe` rejecting file transfers and leaving stale text on `NSPasteboard` (which previously caused Finder `⌘V` to create `.textClipping` files).
-              - **Direct `FILECONTENTS_RANGE` for Known-Size Files + Hybrid Text Fallback**: Immediately streams `1 MiB` `FILECONTENTS_RANGE` chunks when `FD_FILESIZE > 0` (matching FreeRDP Apple `apple_download_file`), retains `FILECONTENTS_SIZE` discovery for virtual/0-byte items, tracks `client_requested_format_id_` independently from FreeRDP's overwritten `lastRequestedFormatId`, and automatically falls back to `CF_UNICODETEXT` when hybrid Windows apps (Excel/Outlook/OneNote/Teams) advertise synthetic `FileGroupDescriptorW`.
-              - **Decoupled Local & Remote Clipboard State**: Incoming `ServerFormatList` PDUs no longer wipe queued local text or file payloads before Windows issues `ServerFormatDataRequest`.
-            - **macOS `⌘C` / `⌘V`, `Edit` Menu & Focus Restoration**:
-              - **Stopped Bare `⌘` from Holding `VK_LWIN`**: Pressing `⌘C` / `⌘V` / `⌘X` / `⌘A` / `⌘Z` in an RDP session now sends clean `Ctrl+<Key>` scancodes without `Win+C` / `Win+V` collisions (and `⌘Tab` no longer opens the Windows Start Menu; added a dedicated **Start** HUD button alongside `Win+<Key>` combos).
-              - **Native macOS `Edit` Menu & Automatic Focus Recovery**: Wires `Edit -> Copy / Paste / Cut / Select All / Undo / Redo` directly to active RDP and SSH/Terminal views while preserving standard `NSText` editing in text fields and sheets, and syncs `NSPasteboard.general` on window activation/deactivation.
+            - **Hyper-V Enhanced Session Mode (`;EnhancedMode=1`) Default & Automatic Basic Console Fallback**:
+              - Defaults Hyper-V VMConnect (`TCP 2179`) to **Enhanced Session Mode** across new connections, Hyper-V Studio consoles, Royal TS `.rtsx`/`.rtsz` imports, and existing uncustomized `.nxts` vaults so Windows `rdpclip.exe` opens `CLIPRDR` for both **files** (`.ps1`, `.csv`, `.txt`, `.exe`) and **Unicode text**.
+              - Automatically retries bare `<VM-GUID>` Basic VMConnect console if the Hyper-V host or guest VM rejects `;EnhancedMode=1`, and surfaces live **`Clipboard Active` / `Clipboard Inactive`** + **`VMConnect • Enhanced` / `VMConnect • Basic Console`** status and one-click recovery in the macOS RDP HUD bar.
+            - **macOS `NSPasteboard`, Darwin Staging & Non-Coalesced Metal Wakeups**:
+              - Explicitly configures **`FreeRDP_ClipboardFeatureMask` (`0x33`)** for bidirectional text + file redirection and preserves process-wide macOS `HOME` and `TMPDIR` so Finder `DesktopServicesHelper` reads staged files from Darwin per-user temp storage.
+              - Purges stale `.png` / `.tiff` / `.fileURL` items on `NSPasteboard.general` whenever remote files or text arrive, and eliminates `RdpAsyncMetalPresenter` wakeup coalescing during resize and follow-up Metal render passes.
           files: release-assets/*
 
       - name: Check Optional Google Play Service Account Secret

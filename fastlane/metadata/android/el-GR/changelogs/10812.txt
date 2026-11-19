@@ -1,0 +1,1 @@
+• v0.8.12: Ενεργοποιεί από προεπιλογή το Hyper-V Enhanced Session Mode (;EnhancedMode=1) με αυτόματη εφεδρική σύνδεση Basic VMConnect για αντιγραφή αρχείων και κειμένου (CLIPRDR), αναβαθμίζει υπάρχουσες συνδέσεις .nxts/Royal TS, ορίζει FreeRDP_ClipboardFeatureMask (0x33) και καθαρίζει παλιά αντικείμενα PNG/TIFF στο macOS NSPasteboard.

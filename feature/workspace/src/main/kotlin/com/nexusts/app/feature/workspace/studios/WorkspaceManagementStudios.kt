@@ -920,6 +920,9 @@ fun NewOrEditConnectionDialog(
                                 if (wasBlank && !nowBlank) {
                                     if (rdpPortText == "3389") rdpPortText = "2179"
                                     ignoreCertWarnings = true
+                                    if (!initialRdp.hyperVEnhancedSessionCustomized) {
+                                        hyperVEnhancedSession = true
+                                    }
                                 } else if (!wasBlank && nowBlank && rdpPortText == "2179") {
                                     rdpPortText = "3389"
                                 }
@@ -1853,6 +1856,7 @@ fun NewOrEditConnectionDialog(
                                 multiMonitorSpanning = multiMonitorSpanning,
                                 colorDepthBits = colorDepthBits,
                                 redirectClipboard = redirectClipboard,
+                                redirectClipboardCustomized = true,
                                 audioRedirectionMode = audioRedirectionMode,
                                 redirectAudioPlayback = audioRedirectionMode == RdpAudioRedirectionMode.PLAY_ON_THIS_DEVICE,
                                 redirectMicrophone = redirectMicrophone,
@@ -1869,7 +1873,8 @@ fun NewOrEditConnectionDialog(
                                 ignoreCertificateWarnings = ignoreCertWarnings,
                                 rdGatewayHostname = rdGatewayHost.trim(),
                                 hyperVVmId = trimmedVmId,
-                                hyperVEnhancedSession = hyperVEnhancedSession && trimmedVmId.isNotBlank()
+                                hyperVEnhancedSession = if (trimmedVmId.isNotBlank()) hyperVEnhancedSession else true,
+                                hyperVEnhancedSessionCustomized = trimmedVmId.isNotBlank()
                             )
                         }
 

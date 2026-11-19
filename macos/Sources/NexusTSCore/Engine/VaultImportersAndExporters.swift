@@ -884,7 +884,12 @@ private final class RoyalTsXmlSAXParser: NSObject, XMLParserDelegate {
                     let isHyperVVm = hyperVMode == "2" || !vmGuid.isEmpty
                     if isHyperVVm {
                         rdp.hyperVVmId = vmGuid
-                        rdp.hyperVEnhancedSession = parseBool(node.fields["HyperVEnhancedSessionMode"] ?? node.fields["EnhancedSessionMode"])
+                        if let explicitEnhanced = node.fields["HyperVEnhancedSessionMode"] ?? node.fields["EnhancedSessionMode"] {
+                            rdp.hyperVEnhancedSession = parseBool(explicitEnhanced, default: true)
+                            rdp.hyperVEnhancedSessionCustomized = true
+                        } else {
+                            rdp.hyperVEnhancedSession = true
+                        }
                         rdp.port = Int(node.fields["HyperVPort"] ?? node.fields["RDPPort"] ?? node.fields["Port"] ?? "2179") ?? 2179
                         let explicitIgnore = node.fields["IgnoreCertificateWarning"] ?? node.fields["IgnoreCertificate"]
                         rdp.ignoreCertificateWarnings = explicitIgnore == nil
@@ -899,8 +904,10 @@ private final class RoyalTsXmlSAXParser: NSObject, XMLParserDelegate {
                     rdp.connectToConsoleAdmin = parseBool(node.fields["ConnectToAdministerOrConsole"])
                     if let explicitClip = node.fields["RedirectClipboard"] {
                         rdp.redirectClipboard = parseBool(explicitClip, default: true)
+                        rdp.redirectClipboardCustomized = true
                     } else if let disableClip = node.fields["DisableClipboard"] {
                         rdp.redirectClipboard = !parseBool(disableClip, default: false)
+                        rdp.redirectClipboardCustomized = true
                     }
                     if let explicitScaleStr = node.fields["DesktopScaleFactor"] ?? node.fields["ScaleFactor"],
                        let explicitScale = Int(explicitScaleStr.trimmingCharacters(in: .whitespacesAndNewlines)),
@@ -1459,6 +1466,7 @@ public enum VaultDocumentExporter {
                 lines.append("      <RDPPort>\(rdp.effectiveRdpPort)</RDPPort>")
                 lines.append("      <IgnoreCertificateWarning>\(rdp.ignoreCertificateWarnings ? "True" : "False")</IgnoreCertificateWarning>")
                 lines.append("      <ConnectToAdministerOrConsole>\(rdp.connectToConsoleAdmin ? "True" : "False")</ConnectToAdministerOrConsole>")
+                lines.append("      <RedirectClipboard>\(rdp.redirectClipboard ? "True" : "False")</RedirectClipboard>")
                 if rdp.hiDpiScaleCustomized {
                     lines.append("      <DesktopScaleFactor>\(rdp.desktopScaleFactorPercent)</DesktopScaleFactor>")
                 }

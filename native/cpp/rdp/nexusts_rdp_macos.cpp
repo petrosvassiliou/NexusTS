@@ -16,6 +16,15 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#if defined(NEXUSTS_HAS_FREERDP3_BINARY) && NEXUSTS_HAS_FREERDP3_BINARY == 1
+#include <freerdp/addin.h>
+#include <freerdp/channels/channels.h>
+#include <freerdp/client/channels.h>
+#include <freerdp/freerdp.h>
+#include <freerdp/settings.h>
+#include <freerdp/settings_types.h>
+#endif
+
 namespace {
 
 struct MacosRdpRegistry {
@@ -307,6 +316,20 @@ void nexusts_rdp_set_local_clipboard_files(int64_t handle, const char* newline_j
             ctx->channels().on_local_clipboard_files(paths);
         }
     }
+}
+
+bool nexusts_rdp_is_cliprdr_ready(int64_t handle) {
+    if (auto ctx = lookup_session(handle)) {
+        return ctx->is_cliprdr_ready();
+    }
+    return false;
+}
+
+bool nexusts_rdp_is_enhanced_session_fallback(int64_t handle) {
+    if (auto ctx = lookup_session(handle)) {
+        return ctx->is_enhanced_session_fallback();
+    }
+    return false;
 }
 
 uint32_t nexusts_rdp_remote_clipboard_kind(int64_t handle) {
@@ -995,6 +1018,109 @@ bool nexusts_rdp_self_test_cliprdr_binary_roundtrip(const char* work_dir_utf8) {
     if (session.consume_fallback_text_format_id() != 0u) {
         return false;
     }
+
+    // v0.8.12 Regression 4: PowerShell script (neueschulen.ps1) Windows 11 Explorer -> macOS Finder roundtrip
+    const std::filesystem::path src_ps1 = src_dir / "neueschulen.ps1";
+    const std::string ps1_body =
+        "\xEF\xBB\xBF# Neue Schulen Provisioning (Windows 11 Hyper-V Enhanced Session)\r\n"
+        "param([string]$Standort = 'München-Nord')\r\n"
+        "Write-Host \"Initialisiere Schule für $Standort...\"\r\n";
+    const std::vector<uint8_t> ps1_payload(ps1_body.begin(), ps1_body.end());
+    if (!write_raw_file(src_ps1, ps1_payload)) {
+        return false;
+    }
+    session.channels().on_local_clipboard_files({src_ps1.string()});
+    const auto ps1_snapshot = session.bind_active_file_group_descriptor_snapshot();
+    if (!ps1_snapshot || ps1_snapshot->size() != 1u) {
+        return false;
+    }
+    const std::vector<uint8_t> ps1_fgdw = nexusts::rdp::serialize_cliprdr_file_list(*ps1_snapshot);
+    session.begin_remote_file_list_fetch(nullptr, 0xC09Du, /*is_ansi=*/false);
+    session.handle_remote_file_group_descriptor_response(nullptr, ps1_fgdw.data(), ps1_fgdw.size());
+    while (!req_queue.empty()) {
+        const PendingReq req = req_queue.front();
+        req_queue.pop_front();
+        if (req.has_clip_data_id || req.dw_flags != 0x2u) {
+            return false;
+        }
+        const size_t avail = req.offset < ps1_payload.size()
+            ? (ps1_payload.size() - static_cast<size_t>(req.offset))
+            : 0u;
+        const size_t take = std::min<size_t>(avail, req.cb_requested);
+        const uint8_t dummy = 0u;
+        session.handle_remote_file_contents_response(
+            nullptr,
+            req.stream_id,
+            true,
+            take > 0u ? (ps1_payload.data() + req.offset) : &dummy,
+            take
+        );
+    }
+    const std::vector<std::string> ps1_staged = session.channels().latest_remote_clipboard_files();
+    std::vector<uint8_t> got_ps1;
+    if (ps1_staged.size() != 1u ||
+        std::filesystem::path(ps1_staged[0]).filename().string() != "neueschulen.ps1" ||
+        !read_raw_file(ps1_staged[0], got_ps1) ||
+        got_ps1 != ps1_payload) {
+        return false;
+    }
+
+    // v0.8.12 Regression 5: Hyper-V Enhanced Session PCB normalization & Basic Console fallback stripping
+    const std::string enhanced_pcb = nexusts::rdp::normalize_hyperv_preconnection_blob(
+        "{a1b2c3d4-e5f6-7890-abcd-ef1234567890}",
+        /*force_enhanced_session=*/true
+    );
+    if (enhanced_pcb != "a1b2c3d4-e5f6-7890-abcd-ef1234567890;EnhancedMode=1") {
+        return false;
+    }
+    if (nexusts::rdp::strip_hyperv_enhanced_mode_suffix(enhanced_pcb) !=
+        "a1b2c3d4-e5f6-7890-abcd-ef1234567890") {
+        return false;
+    }
+    if (!nexusts::rdp::strip_hyperv_enhanced_mode_suffix("a1b2c3d4-e5f6-7890-abcd-ef1234567890").empty()) {
+        return false;
+    }
+
+#if defined(NEXUSTS_HAS_FREERDP3_BINARY) && NEXUSTS_HAS_FREERDP3_BINARY == 1
+    // v0.8.12 Regression 6: Verify FreeRDP 3.x static virtual channel table & CLIPRDR feature mask
+    if (!freerdp_channels_load_static_addin_entry("cliprdr", nullptr, nullptr, FREERDP_ADDIN_CHANNEL_STATIC) ||
+        !freerdp_channels_load_static_addin_entry("rdpdr", nullptr, nullptr, FREERDP_ADDIN_CHANNEL_STATIC) ||
+        !freerdp_channels_load_static_addin_entry("disp", nullptr, nullptr, FREERDP_ADDIN_CHANNEL_DYNAMIC) ||
+        !freerdp_channels_load_static_addin_entry("rdpgfx", nullptr, nullptr, FREERDP_ADDIN_CHANNEL_DYNAMIC)) {
+        return false;
+    }
+    if (freerdp_register_addin_provider(freerdp_channels_load_static_addin_entry, 0) != CHANNEL_RC_OK) {
+        return false;
+    }
+    freerdp* probe_inst = freerdp_new();
+    if (!probe_inst) {
+        return false;
+    }
+    if (!freerdp_context_new(probe_inst)) {
+        freerdp_free(probe_inst);
+        return false;
+    }
+    rdpSettings* probe_settings = probe_inst->context->settings;
+    freerdp_settings_set_string(probe_settings, FreeRDP_HomePath, app_home.string().c_str());
+    const std::string probe_cfg = (app_home / ".config" / "freerdp").string();
+    std::filesystem::create_directories(probe_cfg, ec);
+    freerdp_settings_set_string(probe_settings, FreeRDP_ConfigPath, probe_cfg.c_str());
+    freerdp_settings_set_bool(probe_settings, FreeRDP_RedirectClipboard, TRUE);
+    constexpr UINT32 kExpectedMask =
+        CLIPRDR_FLAG_LOCAL_TO_REMOTE |
+        CLIPRDR_FLAG_LOCAL_TO_REMOTE_FILES |
+        CLIPRDR_FLAG_REMOTE_TO_LOCAL |
+        CLIPRDR_FLAG_REMOTE_TO_LOCAL_FILES;
+    freerdp_settings_set_uint32(probe_settings, FreeRDP_ClipboardFeatureMask, kExpectedMask);
+    const BOOL addins_ok =
+        (freerdp_settings_get_uint32(probe_settings, FreeRDP_ClipboardFeatureMask) == 0x33u) &&
+        freerdp_client_load_addins(probe_inst->context->channels, probe_settings);
+    freerdp_context_free(probe_inst);
+    freerdp_free(probe_inst);
+    if (!addins_ok) {
+        return false;
+    }
+#endif
 
     session.set_file_contents_request_hook(nullptr);
     std::filesystem::remove_all(src_dir, ec);

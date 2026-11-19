@@ -259,7 +259,7 @@ public struct CloudHypervisorSessionView: View {
     @State private var isLoading: Bool = false
     @State private var isRunningPowerAction: Bool = false
     @State private var statusMessage: String = "Ready to query hypervisor API"
-    @State private var enhancedSessionMode: Bool = false
+    @State private var enhancedSessionMode: Bool = true
     @State private var manualVmGuid: String = ""
     @State private var portDiagnostics: [HyperVPortDiagnostic] = []
 
@@ -707,6 +707,7 @@ public struct CloudHypervisorSessionView: View {
         var rdpCfg = RdpProtocolSettings(port: 2179)
         rdpCfg.hyperVVmId = vm.id
         rdpCfg.hyperVEnhancedSession = enhancedSessionMode
+        rdpCfg.hyperVEnhancedSessionCustomized = true
         rdpCfg.ignoreCertificateWarnings = true
         let saved = VaultConnection(
             parentFolderId: parent.parentFolderId,

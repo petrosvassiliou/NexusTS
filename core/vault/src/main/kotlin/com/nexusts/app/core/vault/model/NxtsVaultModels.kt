@@ -225,6 +225,7 @@ sealed interface ProtocolSpecificSettings {
         val selectedMonitorIds: List<Int> = emptyList(),
         val colorDepthBits: Int = 32,
         val redirectClipboard: Boolean = true,
+        val redirectClipboardCustomized: Boolean = false,
         val audioRedirectionMode: RdpAudioRedirectionMode = RdpAudioRedirectionMode.PLAY_ON_THIS_DEVICE,
         val redirectAudioPlayback: Boolean = true,
         val redirectMicrophone: Boolean = false,
@@ -250,7 +251,8 @@ sealed interface ProtocolSpecificSettings {
         val restrictedAdminMode: Boolean = false,
         val ignoreCertificateWarnings: Boolean = false,
         val hyperVVmId: String = "",
-        val hyperVEnhancedSession: Boolean = false
+        val hyperVEnhancedSession: Boolean = true,
+        val hyperVEnhancedSessionCustomized: Boolean = false
     ) : ProtocolSpecificSettings {
         fun effectivePreconnectionBlob(): String {
             var cleaned = hyperVVmId.trim()
