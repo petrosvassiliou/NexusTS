@@ -879,7 +879,7 @@ public final class DiscreetTooltipController {
                            axRect.insetBy(dx: -3, dy: -3).contains(mouseScreen) {
                             let isNarrowChevron = (role == .popUpButton || role == .menuButton) && axRect.width <= 29
                             let candidates: [String] = [
-                                ax.accessibilityIdentifier(),
+                                ax.accessibilityIdentifier() ?? "",
                                 ax.accessibilityHelp() ?? "",
                                 ax.accessibilityLabel() ?? "",
                                 ax.accessibilityTitle() ?? ""
