@@ -2497,11 +2497,11 @@ class NexusWorkspaceComposeE2ETest {
         }
         val bridge = SafLiveGoogleDriveBridge(context, serializer, fakeTransport)
         val uri = Uri.parse("content://com.google.android.apps.docs.storage/document/acc%3D1%3Bdoc%3Dv0814")
-        bridge.linkPersistentVaultUri(uri, takePersistable = false, documentId = vm.uiState.value.vault.documentId)
+        bridge.linkPersistentVaultUri(uri, takePersistable = false, documentId = vm.uiState.value.vaultDocument.documentId)
 
         runBlocking {
             val initialPush = bridge.synchronizeLinkedSafVault(
-                currentDocument = vm.uiState.value.vault,
+                currentDocument = vm.uiState.value.vaultDocument,
                 vaultPassphrase = passphrase,
                 localDeviceId = "Chromebook-A"
             )
