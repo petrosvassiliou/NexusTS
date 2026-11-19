@@ -200,6 +200,7 @@
     <string name="action_delete_folder_and_contents">Delete Folder &amp; All Contents</string>
     <string name="action_delete_folder_keep_contents">Delete Folder Only (Move Items Up)</string>
     <string name="nav_studios_menu">Manage</string>
+    <string name="nav_settings">Settings</string>
 
     <!-- v1.2.0 Royal TS Import Placement, System Credentials Folder, Smart/Dynamic Folders, Database Reset & Error Diagnostics -->
     <string name="action_edit_smart_folder">Edit Smart Folder…</string>

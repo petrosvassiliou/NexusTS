@@ -1463,17 +1463,91 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
             DiscreetTooltipSpec(title: MacWorkspaceShortcut.quickConnect.title(in: de), shortcut: "⌘K")
         )
 
-        let studiosSpec = DiscreetTooltipSpec.resolveToolbarTooltip(
-            candidateText: "nexusts.toolbar.studios",
+        let settingsSpecEn = DiscreetTooltipSpec.resolveToolbarTooltip(
+            candidateText: "nexusts.toolbar.settings",
             strings: en
         )
-        XCTAssertEqual(studiosSpec, DiscreetTooltipSpec(title: en.studios, shortcut: "⌘1–⌘7"))
+        XCTAssertEqual(settingsSpecEn, DiscreetTooltipSpec(title: "Settings", shortcut: "⌘,"))
+
+        let settingsSpecDe = DiscreetTooltipSpec.resolveToolbarTooltip(
+            candidateText: "",
+            sfSymbolHint: "gearshape",
+            strings: de
+        )
+        XCTAssertEqual(settingsSpecDe, DiscreetTooltipSpec(title: "Einstellungen", shortcut: "⌘,"))
 
         let reDockSpec = DiscreetTooltipSpec.resolveToolbarTooltip(
             candidateText: "nexusts.toolbar.reDock",
             strings: en
         )
         XCTAssertEqual(reDockSpec, DiscreetTooltipSpec(title: "Move Session Back to Main Window", shortcut: nil))
+
+        // 3. Automatic Google Drive / Cloud Sync: starter-vault pull on startup + live external file-change detection
+        let baseTmp = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+        let syncDir = baseTmp.appendingPathComponent("nexusts-v0814-sync-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: syncDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: syncDir) }
+
+        let suiteName = "com.nexusts.tests.sync.\(UUID().uuidString)"
+        let testDefaults = UserDefaults(suiteName: suiteName)!
+        defer { testDefaults.removePersistentDomain(forName: suiteName) }
+
+        let bridge = MacCloudBookmarkSyncBridge(defaults: testDefaults)
+        let driveVaultURL = syncDir.appendingPathComponent("NexusTS-Vault.nxts")
+
+        var remoteVault = NxtsVaultDocument(
+            documentId: "vault-shared-gdrive",
+            name: "Shared Production Vault",
+            revision: 4,
+            vectorClock: ["googlebook": 4],
+            connections: [server1, server2]
+        )
+        let initialRemoteBytes = try NxtsVaultSerializer.seal(
+            document: remoteVault,
+            passphrase: NxtsVaultSerializer.defaultTransparentPassphrase,
+            kdf: .interactiveFast
+        )
+        try initialRemoteBytes.write(to: driveVaultURL)
+        try bridge.linkVaultFileURL(driveVaultURL)
+
+        // Before first sync, external change on disk is detected
+        XCTAssertTrue(bridge.hasExternalChangeOnDisk(explicitURL: driveVaultURL))
+
+        // Startup sync with uninitialized starter vault adopts remote Google Drive vault cleanly without starter pollution
+        let starterLocal = NxtsVaultDocument.sampleStarterVault()
+        let startupRes = try bridge.syncWithLinkedFile(
+            localDocument: starterLocal,
+            passphrase: NxtsVaultSerializer.defaultTransparentPassphrase,
+            explicitURL: driveVaultURL,
+            kdf: .interactiveFast,
+            localIsStarterVault: true
+        )
+        XCTAssertEqual(startupRes.action, .pulledRemote)
+        XCTAssertEqual(startupRes.document.documentId, "vault-shared-gdrive")
+        XCTAssertEqual(startupRes.document.connections.map(\.id), ["conn-server-1", "conn-server-2"])
+        XCTAssertFalse(bridge.hasExternalChangeOnDisk(explicitURL: driveVaultURL))
+
+        // Simulate another device pushing Server3 to Google Drive -> hasExternalChangeOnDisk returns true & pulls cleanly
+        remoteVault.connections.append(server3)
+        remoteVault.bumpRevision(actor: "chromebook")
+        let updatedRemoteBytes = try NxtsVaultSerializer.seal(
+            document: remoteVault,
+            passphrase: NxtsVaultSerializer.defaultTransparentPassphrase,
+            kdf: .interactiveFast
+        )
+        try updatedRemoteBytes.write(to: driveVaultURL)
+        XCTAssertTrue(bridge.hasExternalChangeOnDisk(explicitURL: driveVaultURL))
+
+        let livePullRes = try bridge.syncWithLinkedFile(
+            localDocument: startupRes.document,
+            passphrase: NxtsVaultSerializer.defaultTransparentPassphrase,
+            explicitURL: driveVaultURL,
+            kdf: .interactiveFast,
+            localIsStarterVault: false
+        )
+        XCTAssertEqual(livePullRes.action, .pulledRemote)
+        XCTAssertEqual(livePullRes.document.connections.count, 3)
+        XCTAssertFalse(bridge.hasExternalChangeOnDisk(explicitURL: driveVaultURL))
     }
 }
 

@@ -209,6 +209,7 @@ data class WorkspaceLocalizedStrings(
     val actionDeleteFolderAndContents: String = "Delete Folder & All Contents",
     val actionDeleteFolderKeepContents: String = "Delete Folder Only (Move Items Up)",
     val navStudiosMenu: String = "Manage",
+    val navSettings: String = "Settings",
     val actionEditSmartFolder: String = "Edit Smart Folder…",
     val actionDuplicateSmartFolder: String = "Duplicate Smart Folder",
     val smartFolderAllFolders: String = "All Folders (Entire Vault)",
@@ -246,6 +247,36 @@ data class WorkspaceLocalizedStrings(
         SupportedNexusLocale.FRENCH to "Français"
     )
 ) {
+    val settingsTabGeneral: String
+        get() = when (navConnections) {
+            "Verbindungen" -> "Allgemein"
+            "Connessioni" -> "Generali"
+            "Conexiones" -> "General"
+            "Συνδέσεις" -> "Γενικά"
+            "Connexions" -> "Général"
+            else -> "General"
+        }
+
+    val settingsTabSecurity: String
+        get() = when (navConnections) {
+            "Verbindungen" -> "Sicherheit"
+            "Connessioni" -> "Sicurezza"
+            "Conexiones" -> "Seguridad"
+            "Συνδέσεις" -> "Ασφάλεια"
+            "Connexions" -> "Sécurité"
+            else -> "Security"
+        }
+
+    val settingsTabUpdates: String
+        get() = when (navConnections) {
+            "Verbindungen" -> "Updates"
+            "Connessioni" -> "Aggiornamenti"
+            "Conexiones" -> "Actualizaciones"
+            "Συνδέσεις" -> "Ενημερώσεις"
+            "Connexions" -> "Mises à jour"
+            else -> "Updates"
+        }
+
     companion object {
         fun defaultEnglish(): WorkspaceLocalizedStrings = WorkspaceLocalizedStrings(
             appName = "NexusTS",

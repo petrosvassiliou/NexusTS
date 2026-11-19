@@ -1,3 +1,4 @@
-• NexusTS 0.8.14: Full-size macOS Dock AppIcon (exact 832x832 Apple continuous superellipse + Assets.car with zero outer shadow bleed).
-• Discreet Liquid Glass capsule tooltips with compact keyboard shortcut badges across toolbar & workspace controls.
-• Clicking an active connection in the sidebar now switches directly to its open session tab or detached window.
+• NexusTS 0.8.14: Simplified Google Drive Sync with automatic sync on startup, local saves & remote changes.
+• New Settings button in the top bar opening a unified tabbed Settings screen for all configuration areas.
+• Clicking an active connection in the sidebar switches straight to its open session tab.
+• Full-size macOS Dock AppIcon (832x832 Apple superellipse + Assets.car) & discreet Liquid Glass tooltips.

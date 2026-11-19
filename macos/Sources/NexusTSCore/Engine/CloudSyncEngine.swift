@@ -207,19 +207,49 @@ public final class MacCloudBookmarkSyncBridge: @unchecked Sendable {
         let fm = FileManager.default
         let home = fm.homeDirectoryForCurrentUser
 
-        // 1. iCloud Drive
+        // 1. Google Drive for Desktop (~/Library/CloudStorage/GoogleDrive-*) across all localized Drive folder names
+        let cloudStorage = home.appendingPathComponent("Library/CloudStorage")
+        if let entries = try? fm.contentsOfDirectory(at: cloudStorage, includingPropertiesForKeys: [.isDirectoryKey]) {
+            let knownDriveRoots = [
+                "My Drive",
+                "Meine Ablage",
+                "Mon Drive",
+                "Il mio Drive",
+                "Mi unidad",
+                "Ο Drive μου"
+            ]
+            for entry in entries.sorted(by: { $0.lastPathComponent < $1.lastPathComponent })
+            where entry.lastPathComponent.hasPrefix("GoogleDrive") {
+                let accountSuffix = entry.lastPathComponent
+                    .replacingOccurrences(of: "GoogleDrive-", with: "")
+                let label = accountSuffix.isEmpty || accountSuffix == "GoogleDrive"
+                    ? "Google Drive"
+                    : "Google Drive (\(accountSuffix))"
+                var resolvedRoot: URL? = nil
+                for candidate in knownDriveRoots {
+                    let candidateUrl = entry.appendingPathComponent(candidate)
+                    if fm.fileExists(atPath: candidateUrl.path) {
+                        resolvedRoot = candidateUrl
+                        break
+                    }
+                }
+                if resolvedRoot == nil,
+                   let children = try? fm.contentsOfDirectory(at: entry, includingPropertiesForKeys: [.isDirectoryKey]) {
+                    resolvedRoot = children.first { child in
+                        guard !child.lastPathComponent.hasPrefix(".") else { return false }
+                        var isDir: ObjCBool = false
+                        return fm.fileExists(atPath: child.path, isDirectory: &isDir) && isDir.boolValue
+                    }
+                }
+                let baseRoot = resolvedRoot ?? entry.appendingPathComponent("My Drive")
+                locations.append((label, baseRoot.appendingPathComponent("NexusTS Vaults")))
+            }
+        }
+
+        // 2. iCloud Drive
         let icloudDocs = home.appendingPathComponent("Library/Mobile Documents/com~apple~CloudDocs")
         if fm.fileExists(atPath: icloudDocs.path) {
             locations.append(("iCloud Drive", icloudDocs.appendingPathComponent("NexusTS Vaults")))
-        }
-
-        // 2. Google Drive for Desktop (~/Library/CloudStorage/GoogleDrive-*)
-        let cloudStorage = home.appendingPathComponent("Library/CloudStorage")
-        if let entries = try? fm.contentsOfDirectory(at: cloudStorage, includingPropertiesForKeys: nil) {
-            for entry in entries where entry.lastPathComponent.hasPrefix("GoogleDrive") {
-                let myDrive = entry.appendingPathComponent("My Drive/NexusTS Vaults")
-                locations.append(("Google Drive (\(entry.lastPathComponent))", myDrive))
-            }
         }
         return locations
     }
@@ -244,6 +274,9 @@ public final class MacCloudBookmarkSyncBridge: @unchecked Sendable {
         let bookmark = try url.bookmarkData()
         #endif
         defaults.set(bookmark, forKey: bookmarkKey)
+        defaults.removeObject(forKey: lastShaKey)
+        defaults.removeObject(forKey: lastRevKey)
+        defaults.removeObject(forKey: linkedDocIdKey)
     }
 
     public func unlinkVaultFile() {
@@ -278,14 +311,35 @@ public final class MacCloudBookmarkSyncBridge: @unchecked Sendable {
         #endif
     }
 
+    /// Lightweight check returning `true` when the linked Google Drive / iCloud `.nxts` file on disk
+    /// has changed externally relative to our last recorded sync hash.
+    public func hasExternalChangeOnDisk(explicitURL: URL? = nil) -> Bool {
+        guard let targetURL = explicitURL ?? resolveLinkedURL() else { return false }
+        #if os(macOS)
+        let scoped = targetURL.startAccessingSecurityScopedResource()
+        defer { if scoped { targetURL.stopAccessingSecurityScopedResource() } }
+        #endif
+        guard FileManager.default.fileExists(atPath: targetURL.path),
+              let remoteBytes = try? Data(contentsOf: targetURL),
+              !remoteBytes.isEmpty else {
+            return false
+        }
+        let currentSha = sha256Hex(remoteBytes)
+        guard let lastSha = defaults.string(forKey: lastShaKey), !lastSha.isEmpty else {
+            return true
+        }
+        return currentSha != lastSha
+    }
+
     public func syncWithLinkedFile(
         localDocument: NxtsVaultDocument,
         passphrase: String,
         explicitURL: URL? = nil,
-        kdf: Argon2KdfConfiguration = .enterpriseDefault
+        kdf: Argon2KdfConfiguration = .enterpriseDefault,
+        localIsStarterVault: Bool = false
     ) throws -> LiveBookmarkSyncResult {
         guard let targetURL = explicitURL ?? resolveLinkedURL() else {
-            throw NativeBridgeError.serializationFailed("No iCloud Drive or Google Drive .nxts file linked.")
+            throw NativeBridgeError.serializationFailed("No Google Drive or iCloud Drive .nxts file linked.")
         }
         #if os(macOS)
         let scoped = targetURL.startAccessingSecurityScopedResource()
@@ -348,6 +402,31 @@ public final class MacCloudBookmarkSyncBridge: @unchecked Sendable {
         }
 
         let remoteDoc = try NxtsVaultSerializer.open(sealedData: remoteBytes, passphrase: passphrase)
+
+        // Fresh starter vault linking to an existing Google Drive vault -> adopt remote vault cleanly
+        if localIsStarterVault || (lastSha == nil && localDocument.revision <= 1 && remoteDoc.documentId != localDocument.documentId) {
+            recordSyncState(docId: remoteDoc.documentId, rev: remoteDoc.revision, sha256: remoteSha)
+            return LiveBookmarkSyncResult(
+                document: remoteDoc,
+                action: .pulledRemote,
+                conflictCount: 0,
+                syncedFileURL: targetURL
+            )
+        }
+
+        // Remote file changed on Google Drive while zero local edits occurred since our last sync -> pull remote cleanly
+        if let lastSha, !lastSha.isEmpty, remoteSha != lastSha,
+           localDocument.revision <= lastRev,
+           remoteDoc.documentId == localDocument.documentId {
+            recordSyncState(docId: remoteDoc.documentId, rev: remoteDoc.revision, sha256: remoteSha)
+            return LiveBookmarkSyncResult(
+                document: remoteDoc,
+                action: .pulledRemote,
+                conflictCount: 0,
+                syncedFileURL: targetURL
+            )
+        }
+
         let clockRel = VaultDeltaConflictResolver.compareVectorClocks(
             local: localDocument.vectorClock,
             remote: remoteDoc.vectorClock

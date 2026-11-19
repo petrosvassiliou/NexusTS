@@ -1,3 +1,4 @@
-• NexusTS 0.8.14: Icono de macOS de tamaño estándar en el Dock (superelipse Apple 832x832 + Assets.car).
-• Descripciones emergentes Liquid Glass discretas con atajos de teclado en la barra de herramientas.
-• Al hacer clic en una conexión activa en la barra lateral se cambia directamente a su pestaña abierta.
+• NexusTS 0.8.14: Sincronización con Google Drive simplificada y automática al iniciar y detectar cambios.
+• Nuevo botón Ajustes en la barra superior con interfaz por pestañas para todas las áreas.
+• Hacer clic en una conexión activa en la barra lateral cambia directamente a su pestaña abierta.
+• Icono de macOS de tamaño estándar (832x832 + Assets.car) y descripciones emergentes Liquid Glass discretas.

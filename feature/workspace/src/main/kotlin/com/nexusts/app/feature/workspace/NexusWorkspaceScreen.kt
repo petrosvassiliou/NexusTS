@@ -88,6 +88,7 @@ import androidx.compose.material.icons.outlined.PowerSettingsNew
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Security
+import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material.icons.outlined.StarBorder
 import androidx.compose.material.icons.outlined.SystemUpdateAlt
@@ -626,82 +627,28 @@ fun NexusWorkspaceScreen(
                 )
             },
             mainWorkspaceContent = {
-                when (uiState.activeRailId) {
-                    "templates" -> ConnectionTemplatesStudioView(
-                        templates = uiState.vaultDocument.templates,
+                if (uiState.activeRailId != "connections") {
+                    UnifiedWorkspaceSettingsScreen(
+                        viewModel = viewModel,
+                        uiState = uiState,
                         strings = strings,
-                        onCreateConnectionFromTemplate = viewModel::createConnectionFromTemplate,
-                        onOpenNewTemplateDialog = viewModel::openNewTemplateDialog,
-                        onDeleteTemplate = viewModel::deleteTemplateFromVault,
-                        onSaveTemplate = viewModel::saveTemplateToVault,
-                        onDuplicateTemplate = viewModel::duplicateTemplate
-                    )
-
-                    "credentials" -> CredentialVaultStudioView(
-                        credentials = uiState.vaultDocument.credentials,
-                        strings = strings,
-                        onGenerateEd25519Key = viewModel::generateAndStoreSshKeyPair,
-                        onCreateCredential = viewModel::addCredentialToVault,
-                        onUpdateCredential = viewModel::updateCredentialInVault,
-                        onDuplicateCredential = viewModel::duplicateCredential,
-                        onDeleteCredential = viewModel::deleteCredentialFromVault,
-                        onRequestImportVaultFile = onRequestImportFilePicker
-                    )
-
-                    "gateways" -> SecureGatewayStudioView(
-                        gateways = uiState.vaultDocument.gateways,
-                        healthReports = uiState.gatewayHealthReports,
-                        strings = strings,
-                        onProbeGateway = viewModel::probeGatewayLatency,
-                        onAddGateway = viewModel::addGatewayToVault,
-                        activeLeases = uiState.activeGatewayLeases,
-                        credentials = uiState.vaultDocument.credentials,
-                        onUpdateGateway = viewModel::updateGatewayInVault,
-                        onDeleteGateway = viewModel::deleteGatewayFromVault,
-                        onOpenGatewayLease = { gw -> viewModel.openGatewayLoopbackLease(gw) },
-                        onCloseGatewayLease = viewModel::closeGatewayLease
-                    )
-
-                    "tasks" -> AutomationTasksStudioView(
-                        commandTasks = uiState.vaultDocument.commandTasks,
-                        keySequenceTasks = uiState.vaultDocument.keySequenceTasks,
-                        strings = strings,
-                        onRunCommandTask = viewModel::executeCommandTask,
-                        onRunKeySequenceTask = viewModel::executeKeySequenceTask,
-                        onAddCommandTask = viewModel::addCommandTaskToVault,
-                        onUpdateCommandTask = viewModel::updateCommandTaskInVault,
-                        onAddKeySequenceTask = viewModel::addKeySequenceTaskToVault,
-                        onUpdateKeySequenceTask = viewModel::updateKeySequenceTaskInVault,
-                        onDeleteCommandTask = viewModel::deleteCommandTask,
-                        onDeleteKeySequenceTask = viewModel::deleteKeySequenceTask
-                    )
-
-                    "sync" -> DriveSyncAndConflictStudioView(
-                        vaultDocument = uiState.vaultDocument,
-                        useSharedTeamDrive = uiState.useSharedTeamDriveZone,
-                        strings = strings,
-                        onSelectSyncZone = viewModel::setDriveSyncZone,
-                        onTriggerDeltaSync = onRequestGoogleDriveSync,
-                        initialOAuthWebClientId = initialOAuthWebClientId,
-                        initialSharedFolderId = initialSharedDriveFolderId,
-                        onSaveOAuthConfig = onSaveOAuthConfig,
-                        driveSignedInEmail = uiState.driveSignedInEmail,
-                        driveLinkedSafLabel = uiState.driveLinkedSafLabel,
-                        driveSyncStatusBanner = uiState.driveSyncStatusBanner,
-                        driveIsSyncing = uiState.driveIsSyncing,
-                        driveAutoSyncOnSave = uiState.driveAutoSyncOnSave,
-                        onToggleAutoSyncOnSave = onToggleAutoSyncOnSave,
-                        rememberVaultPassphrase = uiState.driveRememberVaultPassphrase,
-                        onSaveVaultSyncPassphrase = onSaveVaultSyncPassphrase,
-                        onClearVaultSyncPassphrase = onClearVaultSyncPassphrase,
+                        currentLocale = currentSupportedLocale,
+                        onSelectLocale = { locale -> NexusLocaleController.switchLanguage(locale) },
+                        onRequestImportFilePicker = onRequestImportFilePicker,
+                        onRequestExportVault = onRequestExportVault,
+                        onRequestGoogleDriveSync = onRequestGoogleDriveSync,
                         onCreateLiveSafDriveVault = onCreateLiveSafDriveVault,
                         onLinkExistingSafDriveVault = onLinkExistingSafDriveVault,
                         onUnlinkSafDriveVault = onUnlinkSafDriveVault,
-                        onAuthorizeAndSyncOAuthDrive = onAuthorizeAndSyncOAuthDrive,
                         onSignOutOAuthDrive = onSignOutOAuthDrive,
-                        githubReleaseBanner = uiState.githubLatestReleaseBanner,
-                        githubReleaseUrl = uiState.githubLatestReleaseUrl,
+                        onSaveVaultSyncPassphrase = onSaveVaultSyncPassphrase,
+                        onClearVaultSyncPassphrase = onClearVaultSyncPassphrase,
+                        onToggleBiometricUnlock = onToggleBiometricUnlock,
+                        onChangeIdleAutoLockMinutes = onChangeIdleAutoLockMinutes,
+                        onQuickLockVault = onQuickLockVault ?: viewModel::openLockVaultDialog,
+                        onToggleAutoCheckUpdates = onToggleAutoCheckUpdates,
                         onCheckGitHubReleases = onCheckGitHubReleases,
+                        onDownloadVerifiedUpdateToFiles = onDownloadVerifiedUpdateToFiles,
                         onOpenGitHubReleaseUrl = onOpenGitHubReleaseUrl,
                         onRequestResetDatabase = if (onResetNexusDatabase != null) {
                             viewModel::openResetDatabaseDialog
@@ -709,8 +656,8 @@ fun NexusWorkspaceScreen(
                             null
                         }
                     )
-
-                    else -> SplitPaneWorkspaceContainer(
+                } else {
+                    SplitPaneWorkspaceContainer(
                         node = rootPane,
                         focusedPaneId = focusedPaneId,
                         connectedDisplays = connectedDisplays,
@@ -2218,10 +2165,6 @@ private fun DesktopTopWindowChrome(
 ) {
     var createMenuExpanded by remember { mutableStateOf(false) }
     var toolsMenuExpanded by remember { mutableStateOf(false) }
-    var studiosMenuExpanded by remember { mutableStateOf(false) }
-    val activeStudio = remember(destinations, selectedDestinationId) {
-        destinations.firstOrNull { it.id == selectedDestinationId }
-    }
     val inNonSessionStudio = selectedDestinationId != "connections"
 
     Surface(
@@ -2278,150 +2221,76 @@ private fun DesktopTopWindowChrome(
                     }
                 }
 
-                // Top-Toolbar Studios Switcher (replaces the wide 96dp left NavigationRail)
-                if (destinations.isNotEmpty()) {
-                    Box {
-                        val studiosHover = rememberDesktopHoverState()
-                        val studiosInteraction = remember { MutableInteractionSource() }
-                        val isStudiosHovered = studiosHover.value.isHovered
-                        Surface(
-                            modifier = Modifier
-                                .height(38.dp)
-                                .semantics(mergeDescendants = true) {
-                                    contentDescription = strings.navStudiosMenu
-                                }
-                                .nexusHoverTracker(studiosHover, PointerIcon.Hand)
-                                .clip(RoundedCornerShape(99.dp))
-                                .clickable(
-                                    interactionSource = studiosInteraction,
-                                    indication = null,
-                                    onClick = { studiosMenuExpanded = true }
-                                ),
-                            shape = RoundedCornerShape(99.dp),
-                            color = when {
-                                inNonSessionStudio && (studiosMenuExpanded || isStudiosHovered) ->
-                                    androidx.compose.ui.graphics.lerp(
-                                        MaterialTheme.colorScheme.secondaryContainer,
-                                        MaterialTheme.colorScheme.onSecondaryContainer,
-                                        0.08f
-                                    )
-                                inNonSessionStudio -> MaterialTheme.colorScheme.secondaryContainer
-                                studiosMenuExpanded || isStudiosHovered -> MaterialTheme.colorScheme.surfaceContainerHighest
-                                else -> MaterialTheme.colorScheme.surfaceContainerHigh
-                            },
-                            border = BorderStroke(
-                                1.dp,
-                                if (inNonSessionStudio || studiosMenuExpanded || isStudiosHovered) {
-                                    MaterialTheme.colorScheme.outline.copy(alpha = 0.55f)
+                // Top-Toolbar Settings Button (replaces the old Studios dropdown menu)
+                val settingsHover = rememberDesktopHoverState()
+                val settingsInteraction = remember { MutableInteractionSource() }
+                val isSettingsHovered = settingsHover.value.isHovered
+                Surface(
+                    modifier = Modifier
+                        .height(38.dp)
+                        .semantics(mergeDescendants = true) {
+                            contentDescription = strings.navSettings
+                        }
+                        .nexusHoverTracker(settingsHover, PointerIcon.Hand)
+                        .clip(RoundedCornerShape(99.dp))
+                        .clickable(
+                            interactionSource = settingsInteraction,
+                            indication = null,
+                            onClick = {
+                                if (inNonSessionStudio) {
+                                    onSelectDestination("connections")
                                 } else {
-                                    MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
+                                    onSelectDestination("settings")
                                 }
+                            }
+                        ),
+                    shape = RoundedCornerShape(99.dp),
+                    color = when {
+                        inNonSessionStudio && isSettingsHovered ->
+                            androidx.compose.ui.graphics.lerp(
+                                MaterialTheme.colorScheme.secondaryContainer,
+                                MaterialTheme.colorScheme.onSecondaryContainer,
+                                0.08f
                             )
-                        ) {
-                            val studiosFg = if (inNonSessionStudio) {
+                        inNonSessionStudio -> MaterialTheme.colorScheme.secondaryContainer
+                        isSettingsHovered -> MaterialTheme.colorScheme.surfaceContainerHighest
+                        else -> MaterialTheme.colorScheme.surfaceContainerHigh
+                    },
+                    border = BorderStroke(
+                        1.dp,
+                        if (inNonSessionStudio || isSettingsHovered) {
+                            MaterialTheme.colorScheme.outline.copy(alpha = 0.55f)
+                        } else {
+                            MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
+                        }
+                    )
+                ) {
+                    val settingsFg = if (inNonSessionStudio) {
+                        MaterialTheme.colorScheme.onSecondaryContainer
+                    } else {
+                        MaterialTheme.colorScheme.onSurface
+                    }
+                    Row(
+                        modifier = Modifier.padding(horizontal = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Settings,
+                            contentDescription = null,
+                            modifier = Modifier.size(17.dp),
+                            tint = if (inNonSessionStudio) {
                                 MaterialTheme.colorScheme.onSecondaryContainer
                             } else {
-                                MaterialTheme.colorScheme.onSurface
+                                MaterialTheme.colorScheme.onSurfaceVariant
                             }
-                            Row(
-                                modifier = Modifier.padding(start = 15.dp, end = 13.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(9.dp)
-                            ) {
-                                Icon(
-                                    imageVector = if (inNonSessionStudio && activeStudio != null) {
-                                        activeStudio.icon
-                                    } else {
-                                        Icons.Outlined.Tune
-                                    },
-                                    contentDescription = null,
-                                    modifier = Modifier.size(17.dp),
-                                    tint = if (inNonSessionStudio) {
-                                        MaterialTheme.colorScheme.onSecondaryContainer
-                                    } else {
-                                        MaterialTheme.colorScheme.onSurfaceVariant
-                                    }
-                                )
-                                Text(
-                                    text = if (inNonSessionStudio && activeStudio != null) {
-                                        activeStudio.label
-                                    } else {
-                                        strings.navStudiosMenu
-                                    },
-                                    style = MaterialTheme.typography.labelLarge,
-                                    color = studiosFg,
-                                    maxLines = 1
-                                )
-                                Icon(
-                                    imageVector = Icons.Outlined.KeyboardArrowDown,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(17.dp),
-                                    tint = if (inNonSessionStudio) {
-                                        MaterialTheme.colorScheme.onSecondaryContainer
-                                    } else {
-                                        MaterialTheme.colorScheme.onSurfaceVariant
-                                    }
-                                )
-                            }
-                        }
-
-                        DropdownMenu(
-                            expanded = studiosMenuExpanded,
-                            onDismissRequest = { studiosMenuExpanded = false },
-                            shape = NexusDropdownMenuShape
-                        ) {
-                            destinations.forEach { dest ->
-                                val isSelected = dest.id == selectedDestinationId
-                                NexusSpacedDropdownMenuItem(
-                                    text = {
-                                        Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(10.dp)
-                                        ) {
-                                            Text(dest.label)
-                                            if (dest.badgeCount > 0) {
-                                                Surface(
-                                                    shape = RoundedCornerShape(99.dp),
-                                                    color = MaterialTheme.colorScheme.primaryContainer
-                                                ) {
-                                                    Text(
-                                                        text = dest.badgeCount.toString(),
-                                                        style = NexusTheme.monospace.keycapShortcut,
-                                                        color = MaterialTheme.colorScheme.onPrimaryContainer,
-                                                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 1.dp)
-                                                    )
-                                                }
-                                            }
-                                        }
-                                    },
-                                    leadingIcon = {
-                                        Icon(
-                                            imageVector = dest.icon,
-                                            contentDescription = null,
-                                            tint = if (isSelected) {
-                                                MaterialTheme.colorScheme.primary
-                                            } else {
-                                                MaterialTheme.colorScheme.onSurfaceVariant
-                                            }
-                                        )
-                                    },
-                                    trailingIcon = {
-                                        if (isSelected) {
-                                            Icon(
-                                                imageVector = Icons.Outlined.CheckCircle,
-                                                contentDescription = null,
-                                                tint = MaterialTheme.colorScheme.primary,
-                                                modifier = Modifier.size(16.dp)
-                                            )
-                                        }
-                                    },
-                                    onClick = {
-                                        studiosMenuExpanded = false
-                                        onSelectDestination(dest.id)
-                                    }
-                                )
-                            }
-                        }
+                        )
+                        Text(
+                            text = strings.navSettings,
+                            style = MaterialTheme.typography.labelLarge,
+                            color = settingsFg,
+                            maxLines = 1
+                        )
                     }
                 }
 
@@ -8274,6 +8143,544 @@ private fun NexusErrorDialog(
         }
     )
 }
+
+private data class SettingsTabItem(
+    val id: String,
+    val label: String,
+    val icon: androidx.compose.ui.graphics.vector.ImageVector
+)
+
+@Composable
+private fun UnifiedWorkspaceSettingsScreen(
+    viewModel: NexusWorkspaceViewModel,
+    uiState: WorkspaceUiState,
+    strings: WorkspaceLocalizedStrings,
+    currentLocale: SupportedNexusLocale,
+    onSelectLocale: (SupportedNexusLocale) -> Unit,
+    onRequestImportFilePicker: () -> Unit,
+    onRequestExportVault: (VaultExportFormat) -> Unit,
+    onRequestGoogleDriveSync: () -> Unit,
+    onCreateLiveSafDriveVault: () -> Unit,
+    onLinkExistingSafDriveVault: () -> Unit,
+    onUnlinkSafDriveVault: () -> Unit,
+    onSignOutOAuthDrive: () -> Unit,
+    onSaveVaultSyncPassphrase: (String, Boolean) -> Unit,
+    onClearVaultSyncPassphrase: () -> Unit,
+    onToggleBiometricUnlock: ((Boolean) -> Unit)?,
+    onChangeIdleAutoLockMinutes: ((Int) -> Unit)?,
+    onQuickLockVault: () -> Unit,
+    onToggleAutoCheckUpdates: (Boolean) -> Unit,
+    onCheckGitHubReleases: () -> Unit,
+    onDownloadVerifiedUpdateToFiles: () -> Unit,
+    onOpenGitHubReleaseUrl: (String) -> Unit,
+    onRequestResetDatabase: (() -> Unit)?
+) {
+    val tabs = remember(strings) {
+        listOf(
+            SettingsTabItem("settings", strings.settingsTabGeneral, Icons.Outlined.Settings),
+            SettingsTabItem("sync", strings.navDriveSync, Icons.Outlined.CloudSync),
+            SettingsTabItem("security", strings.settingsTabSecurity, Icons.Outlined.Security),
+            SettingsTabItem("credentials", strings.navCredentials, Icons.Outlined.Key),
+            SettingsTabItem("gateways", strings.navGateways, Icons.Outlined.DeviceHub),
+            SettingsTabItem("templates", strings.navTemplates, Icons.Outlined.Bookmarks),
+            SettingsTabItem("tasks", strings.navTasks, Icons.Outlined.AutoAwesome),
+            SettingsTabItem("updates", strings.settingsTabUpdates, Icons.Outlined.SystemUpdateAlt)
+        )
+    }
+
+    val effectiveTabId = remember(uiState.activeRailId) {
+        if (tabs.any { it.id == uiState.activeRailId }) uiState.activeRailId else "settings"
+    }
+
+    var newPassInput by remember { mutableStateOf("") }
+    var rememberPassToggle by remember(uiState.driveRememberVaultPassphrase) {
+        mutableStateOf(uiState.driveRememberVaultPassphrase)
+    }
+    var passSavedNotice by remember { mutableStateOf(false) }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.surfaceContainerLowest)
+    ) {
+        // Tabbed Settings Top Strip
+        Surface(
+            color = MaterialTheme.colorScheme.surfaceContainerLow,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Settings,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(22.dp)
+                        )
+                        Text(
+                            text = strings.navSettings,
+                            style = MaterialTheme.typography.titleLarge,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+
+                    FilledTonalButton(
+                        onClick = { viewModel.selectRailDestination("connections") }
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Outlined.ArrowBack,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(strings.navConnections)
+                    }
+                }
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    tabs.forEach { tab ->
+                        val isSelected = tab.id == effectiveTabId
+                        FilterChip(
+                            selected = isSelected,
+                            onClick = { viewModel.selectRailDestination(tab.id) },
+                            label = { Text(tab.label) },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = tab.icon,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                        )
+                    }
+                }
+            }
+        }
+
+        HorizontalDivider()
+
+        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+            when (effectiveTabId) {
+                "sync" -> DriveSyncAndConflictStudioView(
+                    vaultDocument = uiState.vaultDocument,
+                    useSharedTeamDrive = uiState.useSharedTeamDriveZone,
+                    strings = strings,
+                    onSelectSyncZone = viewModel::setDriveSyncZone,
+                    onTriggerDeltaSync = onRequestGoogleDriveSync,
+                    driveSignedInEmail = uiState.driveSignedInEmail,
+                    driveLinkedSafLabel = uiState.driveLinkedSafLabel,
+                    driveSyncStatusBanner = uiState.driveSyncStatusBanner,
+                    driveIsSyncing = uiState.driveIsSyncing,
+                    driveAutoSyncOnSave = uiState.driveAutoSyncOnSave,
+                    rememberVaultPassphrase = uiState.driveRememberVaultPassphrase,
+                    onSaveVaultSyncPassphrase = onSaveVaultSyncPassphrase,
+                    onClearVaultSyncPassphrase = onClearVaultSyncPassphrase,
+                    onCreateLiveSafDriveVault = onCreateLiveSafDriveVault,
+                    onLinkExistingSafDriveVault = onLinkExistingSafDriveVault,
+                    onUnlinkSafDriveVault = onUnlinkSafDriveVault,
+                    onSignOutOAuthDrive = onSignOutOAuthDrive
+                )
+
+                "security" -> Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .verticalScroll(rememberScrollState())
+                        .padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(18.dp),
+                        color = MaterialTheme.colorScheme.surfaceContainerLow,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)),
+                        modifier = Modifier.widthIn(max = 760.dp).fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(22.dp),
+                            verticalArrangement = Arrangement.spacedBy(14.dp)
+                        ) {
+                            Text(
+                                text = strings.settingsTabSecurity,
+                                style = MaterialTheme.typography.titleLarge
+                            )
+                            OutlinedTextField(
+                                value = newPassInput,
+                                onValueChange = {
+                                    newPassInput = it
+                                    passSavedNotice = false
+                                },
+                                label = { Text(strings.vaultPassphraseLabel) },
+                                visualTransformation = PasswordVisualTransformation(),
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = "Save Passphrase in Hardware Keystore",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Switch(
+                                    checked = rememberPassToggle,
+                                    onCheckedChange = { rememberPassToggle = it }
+                                )
+                            }
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Button(
+                                    enabled = newPassInput.length >= 6,
+                                    onClick = {
+                                        onSaveVaultSyncPassphrase(newPassInput, rememberPassToggle)
+                                        newPassInput = ""
+                                        passSavedNotice = true
+                                    }
+                                ) {
+                                    Icon(Icons.Outlined.VpnKey, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Apply Passphrase")
+                                }
+                                if (uiState.driveRememberVaultPassphrase) {
+                                    OutlinedButton(
+                                        onClick = {
+                                            onClearVaultSyncPassphrase()
+                                            rememberPassToggle = false
+                                            passSavedNotice = false
+                                        }
+                                    ) {
+                                        Text("Clear Saved Passphrase")
+                                    }
+                                }
+                                FilledTonalButton(onClick = onQuickLockVault) {
+                                    Icon(Icons.Outlined.Lock, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(strings.actionLockVault)
+                                }
+                            }
+                            if (passSavedNotice) {
+                                Text(
+                                    text = "Vault passphrase updated.",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = NexusTheme.extendedColors.statusConnected
+                                )
+                            }
+
+                            if (uiState.biometricHardwareAvailable && onToggleBiometricUnlock != null) {
+                                HorizontalDivider()
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(
+                                        text = "Biometric / Device Unlock",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    Switch(
+                                        checked = uiState.biometricUnlockEnabled,
+                                        onCheckedChange = onToggleBiometricUnlock
+                                    )
+                                }
+                            }
+
+                            if (onChangeIdleAutoLockMinutes != null) {
+                                HorizontalDivider()
+                                Text(
+                                    text = "Idle Auto-Lock",
+                                    style = MaterialTheme.typography.titleSmall
+                                )
+                                Row(
+                                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    listOf(0 to "Off", 5 to "5 min", 15 to "15 min", 30 to "30 min").forEach { (mins, title) ->
+                                        FilterChip(
+                                            selected = uiState.idleAutoLockMinutes == mins,
+                                            onClick = { onChangeIdleAutoLockMinutes(mins) },
+                                            label = { Text(title) }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                "credentials" -> CredentialVaultStudioView(
+                    credentials = uiState.vaultDocument.credentials,
+                    strings = strings,
+                    onGenerateEd25519Key = viewModel::generateAndStoreSshKeyPair,
+                    onCreateCredential = viewModel::addCredentialToVault,
+                    onUpdateCredential = viewModel::updateCredentialInVault,
+                    onDuplicateCredential = viewModel::duplicateCredential,
+                    onDeleteCredential = viewModel::deleteCredentialFromVault,
+                    onRequestImportVaultFile = onRequestImportFilePicker
+                )
+
+                "gateways" -> SecureGatewayStudioView(
+                    gateways = uiState.vaultDocument.gateways,
+                    healthReports = uiState.gatewayHealthReports,
+                    strings = strings,
+                    onProbeGateway = viewModel::probeGatewayLatency,
+                    onAddGateway = viewModel::addGatewayToVault,
+                    activeLeases = uiState.activeGatewayLeases,
+                    credentials = uiState.vaultDocument.credentials,
+                    onUpdateGateway = viewModel::updateGatewayInVault,
+                    onDeleteGateway = viewModel::deleteGatewayFromVault,
+                    onOpenGatewayLease = { gw -> viewModel.openGatewayLoopbackLease(gw) },
+                    onCloseGatewayLease = viewModel::closeGatewayLease
+                )
+
+                "templates" -> ConnectionTemplatesStudioView(
+                    templates = uiState.vaultDocument.templates,
+                    strings = strings,
+                    onCreateConnectionFromTemplate = viewModel::createConnectionFromTemplate,
+                    onOpenNewTemplateDialog = viewModel::openNewTemplateDialog,
+                    onDeleteTemplate = viewModel::deleteTemplateFromVault,
+                    onSaveTemplate = viewModel::saveTemplateToVault,
+                    onDuplicateTemplate = viewModel::duplicateTemplate
+                )
+
+                "tasks" -> AutomationTasksStudioView(
+                    commandTasks = uiState.vaultDocument.commandTasks,
+                    keySequenceTasks = uiState.vaultDocument.keySequenceTasks,
+                    strings = strings,
+                    onRunCommandTask = viewModel::executeCommandTask,
+                    onRunKeySequenceTask = viewModel::executeKeySequenceTask,
+                    onAddCommandTask = viewModel::addCommandTaskToVault,
+                    onUpdateCommandTask = viewModel::updateCommandTaskInVault,
+                    onAddKeySequenceTask = viewModel::addKeySequenceTaskToVault,
+                    onUpdateKeySequenceTask = viewModel::updateKeySequenceTaskInVault,
+                    onDeleteCommandTask = viewModel::deleteCommandTask,
+                    onDeleteKeySequenceTask = viewModel::deleteKeySequenceTask
+                )
+
+                "updates" -> Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .verticalScroll(rememberScrollState())
+                        .padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(18.dp),
+                        color = MaterialTheme.colorScheme.surfaceContainerLow,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)),
+                        modifier = Modifier.widthIn(max = 760.dp).fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(22.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Text(
+                                text = strings.settingsTabUpdates,
+                                style = MaterialTheme.typography.titleLarge
+                            )
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = "Automatically check for updates",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Switch(
+                                    checked = uiState.autoCheckUpdatesEnabled,
+                                    onCheckedChange = onToggleAutoCheckUpdates
+                                )
+                            }
+                            if (uiState.githubLatestReleaseBanner.isNotBlank()) {
+                                Text(
+                                    text = uiState.githubLatestReleaseBanner,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            if (uiState.updateVerificationMessage.isNotBlank()) {
+                                Text(
+                                    text = uiState.updateVerificationMessage,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.secondary
+                                )
+                            }
+                            Row(
+                                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Button(
+                                    enabled = !uiState.isCheckingForUpdates,
+                                    onClick = onCheckGitHubReleases
+                                ) {
+                                    Icon(Icons.Outlined.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(if (uiState.isCheckingForUpdates) "Checking…" else strings.syncCheckGitHubUpdates)
+                                }
+                                if (uiState.updateAvailable) {
+                                    FilledTonalButton(onClick = onDownloadVerifiedUpdateToFiles) {
+                                        Icon(Icons.Outlined.Download, contentDescription = null, modifier = Modifier.size(16.dp))
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text("Download ${uiState.updateLatestTag}")
+                                    }
+                                }
+                                if (uiState.githubLatestReleaseUrl.isNotBlank()) {
+                                    OutlinedButton(onClick = { onOpenGitHubReleaseUrl(uiState.githubLatestReleaseUrl) }) {
+                                        Text("Release Notes")
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if (onRequestResetDatabase != null) {
+                        Surface(
+                            shape = RoundedCornerShape(18.dp),
+                            color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.25f),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.45f)),
+                            modifier = Modifier.widthIn(max = 760.dp).fillMaxWidth()
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(22.dp),
+                                verticalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Text(
+                                    text = strings.resetDatabaseTitle,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = MaterialTheme.colorScheme.error
+                                )
+                                Text(
+                                    text = strings.resetDatabaseWarningBody,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Button(
+                                    onClick = onRequestResetDatabase,
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = MaterialTheme.colorScheme.error,
+                                        contentColor = MaterialTheme.colorScheme.onError
+                                    )
+                                ) {
+                                    Icon(Icons.Outlined.Delete, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(strings.actionResetDatabase)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                else -> Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .verticalScroll(rememberScrollState())
+                        .padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    // General Tab: Language, Workspace Behavior, Import & Export Vault
+                    Surface(
+                        shape = RoundedCornerShape(18.dp),
+                        color = MaterialTheme.colorScheme.surfaceContainerLow,
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)),
+                        modifier = Modifier.widthIn(max = 760.dp).fillMaxWidth()
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(22.dp),
+                            verticalArrangement = Arrangement.spacedBy(14.dp)
+                        ) {
+                            Text(
+                                text = strings.actionLanguagePicker,
+                                style = MaterialTheme.typography.titleMedium
+                            )
+                            Row(
+                                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                SupportedNexusLocale.entries.forEach { locale ->
+                                    FilterChip(
+                                        selected = locale == currentLocale,
+                                        onClick = { onSelectLocale(locale) },
+                                        label = { Text(strings.languageLabels[locale] ?: locale.name) }
+                                    )
+                                }
+                            }
+
+                            HorizontalDivider()
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = "Capture Remote Shortcut Keys in Active Sessions",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Switch(
+                                    checked = uiState.remoteKeyCaptureEnabled,
+                                    onCheckedChange = { viewModel.toggleRemoteKeyCapture() }
+                                )
+                            }
+
+                            HorizontalDivider()
+
+                            Text(
+                                text = "Import & Export Vault",
+                                style = MaterialTheme.typography.titleMedium
+                            )
+                            Row(
+                                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Button(onClick = onRequestImportFilePicker) {
+                                    Icon(Icons.Outlined.UploadFile, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(strings.actionImportRtsz)
+                                }
+                                FilledTonalButton(onClick = { onRequestExportVault(VaultExportFormat.NXTS_VAULT) }) {
+                                    Text(strings.actionExportNxts)
+                                }
+                                OutlinedButton(onClick = { onRequestExportVault(VaultExportFormat.RTSZ_ROYAL_ARCHIVE) }) {
+                                    Text(strings.actionExportRtsz)
+                                }
+                                OutlinedButton(onClick = { onRequestExportVault(VaultExportFormat.ENTERPRISE_CSV) }) {
+                                    Text(strings.actionExportCsv)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 
 
 

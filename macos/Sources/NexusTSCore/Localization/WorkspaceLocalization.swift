@@ -582,7 +582,10 @@ public struct DiscreetTooltipSpec: Equatable, Sendable {
             }
         }
 
-        // 2. Navigation / Studios / Re-dock toolbar controls
+        // 2. Navigation / Settings / Studios / Re-dock toolbar controls
+        if cleanText == strings.settings || cleanText == "\(strings.settings) (⌘,)" || cleanText == "nexusts.toolbar.settings" {
+            return DiscreetTooltipSpec(title: strings.settings, shortcut: "⌘,")
+        }
         if cleanText == strings.studios || cleanText == "\(strings.studios) (⌘1–⌘7)" || cleanText == "nexusts.toolbar.studios" {
             return DiscreetTooltipSpec(title: strings.studios, shortcut: "⌘1–⌘7")
         }
@@ -594,7 +597,7 @@ public struct DiscreetTooltipSpec: Equatable, Sendable {
             strings.automationTasks,
             strings.cloudSync
         ] where cleanText == studioTitle {
-            return DiscreetTooltipSpec(title: "\(strings.studios): \(studioTitle)", shortcut: "⌘1–⌘7")
+            return DiscreetTooltipSpec(title: "\(strings.settings): \(studioTitle)", shortcut: "⌘,")
         }
         if cleanText == strings.connections || cleanText == "\(strings.connections) (⌘1)" || cleanText == "nexusts.toolbar.backConnections" {
             return DiscreetTooltipSpec(title: strings.connections, shortcut: "⌘1")
@@ -605,6 +608,9 @@ public struct DiscreetTooltipSpec: Equatable, Sendable {
 
         // 3. Fallback via SF Symbol hint from NSControl.image
         if !lowerSymbol.isEmpty {
+            if lowerSymbol.contains("gearshape") {
+                return DiscreetTooltipSpec(title: strings.settings, shortcut: "⌘,")
+            }
             if lowerSymbol.contains("sparkle.magnifyingglass") {
                 return DiscreetTooltipSpec(title: MacWorkspaceShortcut.quickConnect.title(in: strings), shortcut: MacWorkspaceShortcut.quickConnect.keycap)
             }
@@ -644,6 +650,52 @@ public struct DiscreetTooltipSpec: Equatable, Sendable {
             return parse(cleanText)
         }
         return nil
+    }
+}
+
+public extension LocalizedWorkspaceStrings {
+    var settings: String {
+        switch connections {
+        case "Verbindungen": return "Einstellungen"
+        case "Connessioni": return "Impostazioni"
+        case "Conexiones": return "Ajustes"
+        case "Συνδέσεις": return "Ρυθμίσεις"
+        case "Connexions": return "Paramètres"
+        default: return "Settings"
+        }
+    }
+
+    var generalSettings: String {
+        switch connections {
+        case "Verbindungen": return "Allgemein"
+        case "Connessioni": return "Generali"
+        case "Conexiones": return "General"
+        case "Συνδέσεις": return "Γενικά"
+        case "Connexions": return "Général"
+        default: return "General"
+        }
+    }
+
+    var securitySettings: String {
+        switch connections {
+        case "Verbindungen": return "Sicherheit"
+        case "Connessioni": return "Sicurezza"
+        case "Conexiones": return "Seguridad"
+        case "Συνδέσεις": return "Ασφάλεια"
+        case "Connexions": return "Sécurité"
+        default: return "Security"
+        }
+    }
+
+    var updatesSettings: String {
+        switch connections {
+        case "Verbindungen": return "Updates"
+        case "Connessioni": return "Aggiornamenti"
+        case "Conexiones": return "Actualizaciones"
+        case "Συνδέσεις": return "Ενημερώσεις"
+        case "Connexions": return "Mises à jour"
+        default: return "Updates"
+        }
     }
 }
 

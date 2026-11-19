@@ -541,10 +541,12 @@ class NexusWorkspaceViewModel @Inject constructor(
     }
 
     fun selectConnectionInTree(connectionId: String) {
+        val switchedToActiveTab = tilingController.activateConnectionIfPresent(connectionId)
         _uiState.update {
             it.copy(
                 selectedConnectionId = connectionId,
-                selectedFolderId = null
+                selectedFolderId = null,
+                activeRailId = if (switchedToActiveTab) "connections" else it.activeRailId
             )
         }
     }

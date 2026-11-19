@@ -271,21 +271,10 @@ public struct NexusMainWindowView: View {
                 Divider()
             }
 
-            switch store.activeSection {
-            case .sessions:
+            if store.activeSection == .sessions {
                 SplitPaneWorkspaceView()
-            case .overview:
-                VaultOverviewDashboardView()
-            case .templates:
-                TemplatesStudioView()
-            case .credentials:
-                CredentialsStudioView()
-            case .gateways:
-                GatewaysStudioView()
-            case .automationTasks:
-                AutomationTasksStudioView()
-            case .cloudSync:
-                CloudSyncStudioView()
+            } else {
+                UnifiedWorkspaceSettingsView(showsWorkspaceHeader: true)
             }
 
             if store.isBottomConsolePresented {
@@ -293,18 +282,6 @@ public struct NexusMainWindowView: View {
                 BottomAuditAndBroadcastConsole()
                     .frame(height: 175)
             }
-        }
-    }
-
-    private func studioTitle(for section: WorkspacePrimarySection) -> String {
-        switch section {
-        case .sessions: return store.strings.connections
-        case .overview: return store.strings.overview
-        case .templates: return store.strings.templates
-        case .credentials: return store.strings.credentials
-        case .gateways: return store.strings.gateways
-        case .automationTasks: return store.strings.automationTasks
-        case .cloudSync: return store.strings.cloudSync
         }
     }
 
@@ -322,6 +299,17 @@ public struct NexusMainWindowView: View {
                 shortcut: MacWorkspaceShortcut.toggleSidebar.keycap
             )
 
+            Button {
+                store.toggleUnifiedSettings()
+            } label: {
+                Label(
+                    store.strings.settings,
+                    systemImage: store.activeSection == .sessions ? "gearshape" : "gearshape.fill"
+                )
+            }
+            .accessibilityIdentifier("nexusts.toolbar.settings")
+            .discreetTooltip(store.strings.settings, shortcut: "⌘,")
+
             if store.activeSection != .sessions {
                 Button {
                     store.selectSection(.sessions)
@@ -331,26 +319,6 @@ public struct NexusMainWindowView: View {
                 .accessibilityIdentifier("nexusts.toolbar.backConnections")
                 .discreetTooltip(store.strings.connections, shortcut: "⌘1")
             }
-
-            Menu {
-                ForEach(WorkspacePrimarySection.allCases) { section in
-                    Button {
-                        store.selectSection(section)
-                    } label: {
-                        Label(
-                            studioTitle(for: section),
-                            systemImage: store.activeSection == section ? "checkmark.circle.fill" : section.sfSymbol
-                        )
-                    }
-                }
-            } label: {
-                Label(
-                    store.activeSection == .sessions ? store.strings.studios : studioTitle(for: store.activeSection),
-                    systemImage: store.activeSection == .sessions ? "square.grid.2x2" : store.activeSection.sfSymbol
-                )
-            }
-            .accessibilityIdentifier("nexusts.toolbar.studios")
-            .discreetTooltip(store.strings.studios, shortcut: "⌘1–⌘7")
         }
 
         ToolbarItemGroup(placement: .primaryAction) {

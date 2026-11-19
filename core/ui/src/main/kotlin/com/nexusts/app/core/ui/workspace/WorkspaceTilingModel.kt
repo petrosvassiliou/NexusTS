@@ -157,6 +157,30 @@ class WorkspaceTilingController(
         _focusedPaneId.value = paneId
     }
 
+    /**
+     * Switches to an already-open tab for [connectionId] if active (cycling if multiple tabs exist);
+     * returns `false` and leaves the workspace untouched when [connectionId] has no active tab.
+     */
+    fun activateConnectionIfPresent(connectionId: String): Boolean {
+        if (connectionId.startsWith("local-shell-")) return false
+        val leaves = collectLeaves(_rootNode.value)
+        val matches = leaves.flatMap { leaf ->
+            leaf.tabs
+                .filter { it.connectionId == connectionId }
+                .map { tab -> leaf.nodeId to tab }
+        }
+        if (matches.isEmpty()) return false
+        val currentActiveTabId = findLeaf(_rootNode.value, _focusedPaneId.value)?.activeTab?.tabId
+        val targetPair = if (matches.size > 1 && currentActiveTabId != null) {
+            val currentIndex = matches.indexOfFirst { it.second.tabId == currentActiveTabId }
+            if (currentIndex >= 0) matches[(currentIndex + 1) % matches.size] else matches.first()
+        } else {
+            matches.first()
+        }
+        selectTab(targetPair.first, targetPair.second.tabId)
+        return true
+    }
+
     fun selectNextTabInFocusedPane() {
         val leaf = findLeaf(_rootNode.value, _focusedPaneId.value) ?: return
         if (leaf.tabs.size <= 1) return

@@ -1,3 +1,4 @@
-• NexusTS 0.8.14: macOS-App-Icon in voller Standardgröße (exaktes 832x832 Apple-Superellipse-Raster + Assets.car).
-• Dezente Liquid-Glass-Tooltips mit Tastenkürzel-Badges in der gesamten Symbolleiste und Arbeitsfläche.
-• Ein Klick auf eine aktive Verbindung in der Seitenleiste wechselt direkt zum geöffneten Sitzungs-Tab.
+• NexusTS 0.8.14: Vereinfachter Google-Drive-Sync mit Auto-Sync beim Start sowie bei lokalen & entfernten Änderungen.
+• Neuer Einstellungen-Button oben mit übersichtlicher Tab-Oberfläche für alle Einstellungsbereiche.
+• Klick auf eine aktive Verbindung in der Seitenleiste wechselt direkt zum geöffneten Sitzungs-Tab.
+• macOS-App-Icon in voller Standardgröße (832x832 + Assets.car) & dezente Liquid-Glass-Tooltips.

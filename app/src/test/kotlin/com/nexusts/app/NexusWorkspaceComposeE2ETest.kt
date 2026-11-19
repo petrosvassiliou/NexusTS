@@ -3,6 +3,7 @@ package com.nexusts.app
 import android.app.Application
 import android.content.Context
 import android.content.res.Configuration
+import android.net.Uri
 import android.os.Looper
 import android.view.KeyEvent
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -13,7 +14,11 @@ import androidx.compose.ui.test.onLast
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.test.core.app.ApplicationProvider
+import com.nexusts.app.core.gdrivesync.sync.SafByteTransport
+import com.nexusts.app.core.gdrivesync.sync.SafDriveSyncOutcome
+import com.nexusts.app.core.gdrivesync.sync.SafLiveGoogleDriveBridge
 import com.nexusts.app.core.ui.input.NexusShortcutAction
+import kotlinx.coroutines.runBlocking
 import com.nexusts.app.core.ui.theme.NexusTSTheme
 import com.nexusts.app.core.ui.workspace.AdHocConnectionSyntaxParser
 import com.nexusts.app.core.ui.workspace.PaneNode
@@ -389,25 +394,33 @@ class NexusWorkspaceComposeE2ETest {
         }
         composeRule.waitForIdle()
 
-        // Navigate to Google Drive Sync Studio
+        // Navigate to simplified Google Drive Sync tab inside Unified Settings
         composeRule.runOnIdle {
             vm.selectRailDestination("sync")
         }
         composeRule.waitForIdle()
 
-        assertTextRendered("17C98pGqQUAoQwQ-OSLUHPj4_dtb4_wtS")
+        assertEquals(
+            "Simplified Google Drive Sync UI must not expose cryptic raw Folder IDs",
+            0,
+            composeRule.onAllNodesWithText("17C98pGqQUAoQwQ-OSLUHPj4_dtb4_wtS", substring = true).fetchSemanticsNodes().size
+        )
         assertTextRendered(strings.syncLinkDriveSafCreate)
-        assertTextRendered(strings.syncCheckGitHubUpdates)
+        assertTextRendered(strings.syncLinkDriveSafOpen)
 
         composeRule.onAllNodesWithText(strings.syncLinkDriveSafCreate).onFirst().performScrollTo().performClick()
         composeRule.waitForIdle()
         assertTrue(safCreateClicked.get())
 
+        // Switch to Updates tab inside Unified Settings and verify GitHub Releases check
+        composeRule.onAllNodesWithText(strings.settingsTabUpdates, substring = false).onFirst().performClick()
+        composeRule.waitForIdle()
+        assertTextRendered(strings.syncCheckGitHubUpdates)
         composeRule.onAllNodesWithText(strings.syncCheckGitHubUpdates).onFirst().performScrollTo().performClick()
         composeRule.waitForIdle()
         assertTrue(githubCheckClicked.get())
 
-        // Navigate to Credentials Studio and verify external password manager import
+        // Navigate to Credentials tab and verify external password manager import
         composeRule.runOnIdle {
             vm.selectRailDestination("credentials")
         }
@@ -1613,13 +1626,13 @@ class NexusWorkspaceComposeE2ETest {
             }
             composeRule.waitForIdle()
 
-            // 2. Verify flush far-left sidebar renders Folders & Connections immediately + Quick Filters + Top Studios menu
+            // 2. Verify flush far-left sidebar renders Folders & Connections immediately + Quick Filters + Top Settings button
             assertEquals("connections", vm.uiState.value.activeRailId)
             assertEquals(SidebarQuickFilter.ALL, vm.uiState.value.sidebarQuickFilter)
             assertTextRendered("EU-Central Datacenter")
             assertTextRendered("Windows RDS Tier")
             assertTextRendered("DC-Core-RDP-01")
-            assertTextRendered(strings.navStudiosMenu)
+            assertTextRendered(strings.navSettings)
             // Verify Dynamic Folders UI has been completely removed from the workspace sidebar
             assertEquals(
                 "Dynamic Folders section header must never be rendered in the sidebar",
@@ -1669,9 +1682,9 @@ class NexusWorkspaceComposeE2ETest {
             }
             composeRule.waitForIdle()
 
-            // Switch to Templates Studio via top toolbar Studios menu and return via "Connections" back chip
+            // Switch to Unified Settings via top toolbar Settings button, select Templates tab, and return via "Connections" back chip
             composeRule
-                .onAllNodesWithText(strings.navStudiosMenu, substring = false)
+                .onAllNodesWithText(strings.navSettings, substring = false)
                 .onFirst()
                 .performClick()
             composeRule.waitForIdle()
@@ -2417,6 +2430,112 @@ class NexusWorkspaceComposeE2ETest {
             0,
             composeRule.onAllNodesWithText("FTP • 10.2.200.41", substring = true).fetchSemanticsNodes().size
         )
+    }
+
+    @Test
+    fun v0814SidebarActiveConnectionFocusAndRemoteDriveChangeDetection() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val vm = buildTestViewModel()
+
+        val server1 = VaultConnection(
+            id = "conn-srv-1",
+            name = "Server1",
+            host = "10.10.0.1",
+            protocol = VaultProtocolType.SSH,
+            settings = ProtocolSpecificSettings.Ssh(port = 22)
+        )
+        val server2 = VaultConnection(
+            id = "conn-srv-2",
+            name = "Server2",
+            host = "10.10.0.2",
+            protocol = VaultProtocolType.SSH,
+            settings = ProtocolSpecificSettings.Ssh(port = 22)
+        )
+        val inactiveServer3 = VaultConnection(
+            id = "conn-srv-3",
+            name = "Server3-Inactive",
+            host = "10.10.0.3",
+            protocol = VaultProtocolType.SSH,
+            settings = ProtocolSpecificSettings.Ssh(port = 22)
+        )
+
+        vm.saveConnectionToVault(server1)
+        vm.saveConnectionToVault(server2)
+        vm.saveConnectionToVault(inactiveServer3)
+
+        // Open both Server1 and Server2, then focus Server1 so Server1 is currently active
+        vm.launchConnection(server1)
+        vm.launchConnection(server2)
+        assertTrue(vm.tilingController.activateConnectionIfPresent(server1.id))
+        assertEquals(server1.id, vm.tilingController.focusedOrFirstActiveTab()?.connectionId)
+
+        // Clicking active Server2 in the sidebar switches the main workspace tab to Server2 (even if Settings was open)
+        vm.selectRailDestination("settings")
+        assertEquals("settings", vm.uiState.value.activeRailId)
+        vm.selectConnectionInTree(server2.id)
+        assertEquals("connections", vm.uiState.value.activeRailId)
+        assertEquals(server2.id, vm.tilingController.focusedOrFirstActiveTab()?.connectionId)
+
+        // Clicking inactive Server3 in the sidebar leaves Server2 active and does NOT launch Server3
+        vm.selectConnectionInTree(inactiveServer3.id)
+        assertEquals(server2.id, vm.tilingController.focusedOrFirstActiveTab()?.connectionId)
+        assertEquals(
+            setOf(server1.id, server2.id),
+            vm.tilingController.allActiveTabs().map { it.connectionId }.toSet()
+        )
+
+        // Verify SafLiveGoogleDriveBridge live remote change detection & automatic pull
+        val serializer = NxtsVaultSerializer(KdfSecurityParameters.interactiveTestParameters())
+        val passphrase = "test-vault-passphrase".toCharArray()
+        var remoteBytes = ByteArray(0)
+        val fakeTransport = object : SafByteTransport {
+            override fun readBytes(uriString: String): ByteArray = remoteBytes.copyOf()
+            override fun writeBytes(uriString: String, payload: ByteArray) {
+                remoteBytes = payload.copyOf()
+            }
+            override fun resolveDisplayName(uriString: String): String = "NexusTS-Vault.nxts"
+        }
+        val bridge = SafLiveGoogleDriveBridge(context, serializer, fakeTransport)
+        val uri = Uri.parse("content://com.google.android.apps.docs.storage/document/acc%3D1%3Bdoc%3Dv0814")
+        bridge.linkPersistentVaultUri(uri, takePersistable = false, documentId = vm.uiState.value.vault.documentId)
+
+        runBlocking {
+            val initialPush = bridge.synchronizeLinkedSafVault(
+                currentDocument = vm.uiState.value.vault,
+                vaultPassphrase = passphrase,
+                localDeviceId = "Chromebook-A"
+            )
+            assertTrue(initialPush is SafDriveSyncOutcome.PushedToDrive)
+            val syncedDoc = (initialPush as SafDriveSyncOutcome.PushedToDrive).updatedDocument
+            assertFalse("No remote change right after push", bridge.hasRemoteContentChanged())
+
+            // Simulate another device updating the same .nxts file in Google Drive
+            val peerConn = VaultConnection(
+                id = "conn-from-mac",
+                name = "MacBook-Peer-Server",
+                host = "10.99.0.50",
+                protocol = VaultProtocolType.RDP,
+                settings = ProtocolSpecificSettings.Rdp(port = 3389)
+            )
+            val remoteUpdatedDoc = syncedDoc.copy(
+                revision = syncedDoc.revision + 1,
+                vectorClock = syncedDoc.vectorClock + ("MacBook-Pro" to 1L),
+                connections = syncedDoc.connections + peerConn
+            )
+            remoteBytes = serializer.sealDocument(remoteUpdatedDoc, passphrase.copyOf())
+
+            assertTrue("Remote change must be detected immediately", bridge.hasRemoteContentChanged())
+            val pullOutcome = bridge.synchronizeLinkedSafVault(
+                currentDocument = syncedDoc,
+                vaultPassphrase = passphrase,
+                localDeviceId = "Chromebook-A"
+            )
+            assertTrue(pullOutcome is SafDriveSyncOutcome.PulledFromDrive)
+            val pulled = (pullOutcome as SafDriveSyncOutcome.PulledFromDrive).remoteDocument
+            assertTrue(pulled.connections.any { it.id == "conn-from-mac" })
+            assertFalse("Remote change flag resets after pull", bridge.hasRemoteContentChanged())
+        }
+        bridge.unlinkPersistentVaultUri()
     }
 }
 

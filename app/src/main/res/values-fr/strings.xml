@@ -200,6 +200,7 @@
     <string name="action_delete_folder_and_contents">Supprimer le dossier et tout son contenu</string>
     <string name="action_delete_folder_keep_contents">Supprimer uniquement le dossier (Remonter les éléments)</string>
     <string name="nav_studios_menu">Gérer</string>
+    <string name="nav_settings">Paramètres</string>
 
     <!-- v1.2.0 -->
     <string name="action_edit_smart_folder">Modifier le dossier intelligent…</string>

@@ -3721,405 +3721,178 @@ fun DriveSyncAndConflictStudioView(
     onRequestResetDatabase: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
-    val clipboard = LocalClipboardManager.current
-    var webClientIdInput by remember(initialOAuthWebClientId) { mutableStateOf(initialOAuthWebClientId) }
-    var sharedFolderInput by remember(initialSharedFolderId) {
-        mutableStateOf(initialSharedFolderId.ifBlank { "17C98pGqQUAoQwQ-OSLUHPj4_dtb4_wtS" })
+    val isLinked = driveLinkedSafLabel.isNotBlank() || driveSignedInEmail.isNotBlank()
+    val linkedDisplayTitle = when {
+        driveLinkedSafLabel.isNotBlank() -> driveLinkedSafLabel
+        driveSignedInEmail.isNotBlank() -> driveSignedInEmail
+        else -> ""
     }
-    var savedBanner by remember { mutableStateOf(false) }
-    var syncPassInput by remember { mutableStateOf("") }
-    var rememberPassToggle by remember(rememberVaultPassphrase) { mutableStateOf(rememberVaultPassphrase) }
-    var passSavedBanner by remember { mutableStateOf(false) }
 
     Column(
         modifier = modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.surfaceContainerLowest)
             .verticalScroll(rememberScrollState())
-            .padding(20.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+            .padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
+        Surface(
+            shape = RoundedCornerShape(18.dp),
+            color = MaterialTheme.colorScheme.surfaceContainerLow,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)),
+            modifier = Modifier.widthIn(max = 760.dp).fillMaxWidth()
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                Icon(
-                    imageVector = Icons.Outlined.CloudSync,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(26.dp)
-                )
-                Spacer(modifier = Modifier.width(12.dp))
-                Column {
-                    Text(strings.navDriveSync, style = MaterialTheme.typography.headlineSmall)
-                    Text(
-                        text = strings.studioSyncSubtitle,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-            Spacer(modifier = Modifier.width(12.dp))
-            Button(
-                enabled = !driveIsSyncing,
-                onClick = onTriggerDeltaSync
+            Column(
+                modifier = Modifier.padding(22.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
-                Icon(Icons.Outlined.CloudSync, contentDescription = null, modifier = Modifier.size(16.dp))
-                Spacer(modifier = Modifier.width(6.dp))
-                Text(if (driveIsSyncing) "Syncing…" else strings.actionSyncNow)
-            }
-        }
-
-        HorizontalDivider()
-
-        if (driveSyncStatusBanner.isNotBlank()) {
-            Surface(
-                shape = RoundedCornerShape(14.dp),
-                color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.55f),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text(
-                    text = driveSyncStatusBanner,
-                    style = NexusTheme.monospace.keycapShortcut,
-                    color = MaterialTheme.colorScheme.onSecondaryContainer,
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
-                )
-            }
-        }
-
-        Surface(
-            shape = RoundedCornerShape(16.dp),
-            color = MaterialTheme.colorScheme.surfaceContainer,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text(vaultDocument.name, style = MaterialTheme.typography.titleMedium)
-                Text(
-                    text = String.format(strings.syncStatusSyncedFormat, vaultDocument.revision) +
-                        " • VectorClock=${vaultDocument.vectorClock}",
-                    style = NexusTheme.monospace.keycapShortcut,
-                    color = NexusTheme.extendedColors.statusConnected
-                )
-                Text(
-                    text = "Argon2id (64 MiB, t=3, p=4) + AES-256-GCM • Provisioned Folder: NexusTS Vaults (17C98pGqQUAoQwQ-OSLUHPj4_dtb4_wtS)",
-                    style = NexusTheme.monospace.keycapShortcut,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        }
-
-        // Card 0: Zero-Knowledge Vault Encryption Passphrase (Android Keystore Backed)
-        Surface(
-            shape = RoundedCornerShape(16.dp),
-            color = MaterialTheme.colorScheme.surfaceContainerLow,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text(
-                    text = "Zero-Knowledge Vault Encryption Passphrase (Local + Live Drive Sync)",
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.primary
-                )
-                OutlinedTextField(
-                    value = syncPassInput,
-                    onValueChange = {
-                        syncPassInput = it
-                        passSavedBanner = false
-                    },
-                    label = { Text(strings.vaultPassphraseLabel) },
-                    visualTransformation = PasswordVisualTransformation(),
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                RdpOptionSwitchRow(
-                    label = "Store Vault Passphrase in Hardware-Backed Android Keystore (AES-256-GCM)",
-                    checked = rememberPassToggle,
-                    onCheckedChange = { rememberPassToggle = it }
-                )
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    FilledTonalButton(
-                        enabled = syncPassInput.length >= 6,
-                        onClick = {
-                            onSaveVaultSyncPassphrase(syncPassInput, rememberPassToggle)
-                            syncPassInput = ""
-                            passSavedBanner = true
-                        }
-                    ) {
-                        Icon(Icons.Outlined.VpnKey, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Apply Vault Passphrase")
-                    }
-                    if (rememberVaultPassphrase) {
-                        OutlinedButton(
-                            onClick = {
-                                onClearVaultSyncPassphrase()
-                                rememberPassToggle = false
-                                passSavedBanner = false
-                            }
-                        ) {
-                            Text("Clear Keystore Passphrase")
-                        }
-                    }
-                    if (passSavedBanner || rememberVaultPassphrase) {
-                        Text(
-                            text = if (rememberVaultPassphrase) "Keystore Protected" else "Session Active",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = NexusTheme.extendedColors.statusConnected
-                        )
-                    }
-                }
-            }
-        }
-
-        // Card 1: Zero-Cloud-Console Live Google Drive SAF Sync (Works Immediately on Direct APK Installs!)
-        Surface(
-            shape = RoundedCornerShape(16.dp),
-            color = MaterialTheme.colorScheme.surfaceContainerLow,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text(
-                    text = "1. Zero-Setup Live Google Drive Sync (Direct SAF — Recommended for Direct Installs)",
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.primary
-                )
-                Text(
-                    text = if (driveLinkedSafLabel.isNotBlank()) {
-                        "Linked Live Google Drive Vault: $driveLinkedSafLabel"
-                    } else {
-                        "Select 'NexusTS Vaults' in Google Drive once to grant persistent two-way 3-way-merge sync — zero Cloud Console OAuth setup required."
-                    },
-                    style = NexusTheme.monospace.keycapShortcut,
-                    color = if (driveLinkedSafLabel.isNotBlank()) {
-                        NexusTheme.extendedColors.statusConnected
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    }
-                )
-                Row(
-                    modifier = Modifier.horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Button(onClick = onCreateLiveSafDriveVault) {
-                        Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(strings.syncLinkDriveSafCreate)
-                    }
-                    FilledTonalButton(onClick = onLinkExistingSafDriveVault) {
-                        Icon(Icons.Outlined.Folder, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(strings.syncLinkDriveSafOpen)
-                    }
-                    if (driveLinkedSafLabel.isNotBlank()) {
-                        OutlinedButton(onClick = onUnlinkSafDriveVault) {
-                            Icon(Icons.Outlined.Delete, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Unlink")
-                        }
-                    }
-                }
-                RdpOptionSwitchRow(
-                    label = "Auto-Sync Encrypted .nxts to Google Drive on Every Vault Save",
-                    checked = driveAutoSyncOnSave,
-                    onCheckedChange = onToggleAutoSyncOnSave
-                )
-            }
-        }
-
-        // Card 2: Google Drive REST API v3 (OAuth 2.0 AuthorizationClient — Web Client ID Optional)
-        Surface(
-            shape = RoundedCornerShape(16.dp),
-            color = MaterialTheme.colorScheme.surfaceContainerLow,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text(
-                    text = "2. Google Drive REST API v3 & Team Drive Advisory Locking (OAuth 2.0)",
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.primary
-                )
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    NexusChoiceChip(
-                        selected = !useSharedTeamDrive,
-                        onClick = { onSelectSyncZone(false) },
-                        label = strings.syncZoneAppData
-                    )
-                    NexusChoiceChip(
-                        selected = useSharedTeamDrive,
-                        onClick = { onSelectSyncZone(true) },
-                        label = strings.syncZoneTeamDrive
-                    )
-                }
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Text(
-                        text = if (driveSignedInEmail.isNotBlank()) {
-                            "Authorized Account: $driveSignedInEmail"
-                        } else {
-                            "com.nexusts.app • Release SHA-1: A6:AF:15:A9:BF:0B:FE:38:D4:66:46:3E:3E:72:A6:5B:4F:9C:4D:F6"
-                        },
-                        style = NexusTheme.monospace.keycapShortcut,
-                        color = if (driveSignedInEmail.isNotBlank()) {
-                            NexusTheme.extendedColors.statusConnected
-                        } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        },
-                        modifier = Modifier.weight(1f)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    NexusActionChip(
-                        onClick = {
-                            clipboard.setText(AnnotatedString("A6:AF:15:A9:BF:0B:FE:38:D4:66:46:3E:3E:72:A6:5B:4F:9C:4D:F6"))
-                        },
-                        label = "Copy SHA-1",
-                        leadingIcon = Icons.Outlined.ContentCopy
-                    )
-                }
-                Row(
-                    modifier = Modifier.horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Button(onClick = onAuthorizeAndSyncOAuthDrive) {
-                        Icon(Icons.Outlined.CloudSync, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(strings.syncOAuthConnectButton)
-                    }
-                    if (driveSignedInEmail.isNotBlank()) {
-                        OutlinedButton(onClick = onSignOutOAuthDrive) {
-                            Text("Sign Out")
-                        }
-                    }
-                }
-                OutlinedTextField(
-                    value = webClientIdInput,
-                    onValueChange = {
-                        webClientIdInput = it
-                        savedBanner = false
-                    },
-                    label = { Text("Optional Enterprise OIDC Web Client ID (*.apps.googleusercontent.com)") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                OutlinedTextField(
-                    value = sharedFolderInput,
-                    onValueChange = {
-                        sharedFolderInput = it
-                        savedBanner = false
-                    },
-                    label = { Text("Google Drive Folder ID (Default: NexusTS Vaults)") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    FilledTonalButton(
-                        onClick = {
-                            onSaveOAuthConfig(webClientIdInput.trim(), sharedFolderInput.trim())
-                            savedBanner = true
-                        }
-                    ) {
-                        Icon(Icons.Outlined.Key, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Save OAuth 2.0 Configuration")
-                    }
-                    if (savedBanner) {
-                        Text(
-                            text = "Saved to Credential Manager Sync Store",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = NexusTheme.extendedColors.statusConnected
-                        )
-                    }
-                }
-            }
-        }
-
-        // Card 3: Direct-Install GitHub Releases Update Checker (Play Protect Compliant)
-        Surface(
-            shape = RoundedCornerShape(16.dp),
-            color = MaterialTheme.colorScheme.surfaceContainerLow,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text(
-                    text = "3. Direct-Install GitHub Releases Update Checker (Play Protect Compliant)",
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.primary
-                )
-                Text(
-                    text = githubReleaseBanner.ifBlank {
-                        "Checks https://github.com/petrosvassiliou/NexusTS/releases/latest over TLS with zero REQUEST_INSTALL_PACKAGES permissions."
-                    },
-                    style = NexusTheme.monospace.keycapShortcut,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilledTonalButton(onClick = onCheckGitHubReleases) {
-                        Icon(Icons.Outlined.SystemUpdateAlt, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(strings.syncCheckGitHubUpdates)
-                    }
-                    if (githubReleaseUrl.isNotBlank()) {
-                        Button(onClick = { onOpenGitHubReleaseUrl(githubReleaseUrl) }) {
-                            Text("Open Verified GitHub Release")
-                        }
-                    }
-                }
-            }
-        }
-
-        // Card 4: Danger Zone — Reset Local NexusTS Database
-        if (onRequestResetDatabase != null) {
-            Surface(
-                shape = RoundedCornerShape(16.dp),
-                color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.28f),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.45f)),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        horizontalArrangement = Arrangement.spacedBy(14.dp),
+                        modifier = Modifier.weight(1f)
                     ) {
-                        Icon(
-                            imageVector = Icons.Outlined.WarningAmber,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.error,
-                            modifier = Modifier.size(20.dp)
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = if (isLinked) {
+                                NexusTheme.extendedColors.statusConnected.copy(alpha = 0.16f)
+                            } else {
+                                MaterialTheme.colorScheme.primaryContainer
+                            },
+                            modifier = Modifier.size(46.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = if (isLinked) Icons.Outlined.CheckCircle else Icons.Outlined.CloudSync,
+                                    contentDescription = null,
+                                    tint = if (isLinked) {
+                                        NexusTheme.extendedColors.statusConnected
+                                    } else {
+                                        MaterialTheme.colorScheme.primary
+                                    },
+                                    modifier = Modifier.size(24.dp)
+                                )
+                            }
+                        }
+
+                        Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Text(
+                                    text = strings.navDriveSync,
+                                    style = MaterialTheme.typography.titleLarge
+                                )
+                                if (isLinked) {
+                                    Surface(
+                                        shape = RoundedCornerShape(99.dp),
+                                        color = NexusTheme.extendedColors.statusConnected.copy(alpha = 0.16f)
+                                    ) {
+                                        Text(
+                                            text = if (driveIsSyncing) "Syncing…" else "Active",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = NexusTheme.extendedColors.statusConnected,
+                                            modifier = Modifier.padding(horizontal = 9.dp, vertical = 3.dp)
+                                        )
+                                    }
+                                }
+                            }
+                            Text(
+                                text = "Automatically syncs on startup, when you save changes, and when remote changes are detected in Google Drive.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+
+                    if (isLinked) {
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Button(
+                            enabled = !driveIsSyncing,
+                            onClick = onTriggerDeltaSync
+                        ) {
+                            Icon(Icons.Outlined.CloudSync, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(if (driveIsSyncing) "Syncing…" else strings.actionSyncNow)
+                        }
+                    }
+                }
+
+                HorizontalDivider()
+
+                if (isLinked) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            text = linkedDisplayTitle,
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onSurface
                         )
                         Text(
-                            text = strings.resetDatabaseTitle,
-                            style = MaterialTheme.typography.titleSmall,
-                            color = MaterialTheme.colorScheme.error
+                            text = driveSyncStatusBanner.ifBlank {
+                                String.format(strings.syncStatusSyncedFormat, vaultDocument.revision)
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+                        Row(
+                            modifier = Modifier.padding(top = 6.dp),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            FilledTonalButton(onClick = onLinkExistingSafDriveVault) {
+                                Icon(Icons.Outlined.Folder, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(strings.syncLinkDriveSafOpen)
+                            }
+                            OutlinedButton(
+                                onClick = {
+                                    if (driveLinkedSafLabel.isNotBlank()) {
+                                        onUnlinkSafDriveVault()
+                                    } else {
+                                        onSignOutOAuthDrive()
+                                    }
+                                }
+                            ) {
+                                Icon(Icons.Outlined.Delete, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("Disconnect")
+                            }
+                        }
                     }
-                    Text(
-                        text = strings.resetDatabaseWarningBody,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Button(
-                        onClick = onRequestResetDatabase,
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = MaterialTheme.colorScheme.error,
-                            contentColor = MaterialTheme.colorScheme.onError
+                } else {
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Text(
+                            text = "Pick or create a vault file in Google Drive once. NexusTS keeps all your connections, folders, and credentials encrypted and synchronized automatically across Chromebook, Android, and macOS.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
-                    ) {
-                        Icon(Icons.Outlined.Delete, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(strings.actionResetDatabase)
+                        if (driveSyncStatusBanner.isNotBlank()) {
+                            Text(
+                                text = driveSyncStatusBanner,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.secondary
+                            )
+                        }
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Button(onClick = onCreateLiveSafDriveVault) {
+                                Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(strings.syncLinkDriveSafCreate)
+                            }
+                            FilledTonalButton(onClick = onLinkExistingSafDriveVault) {
+                                Icon(Icons.Outlined.Folder, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(strings.syncLinkDriveSafOpen)
+                            }
+                        }
                     }
                 }
             }

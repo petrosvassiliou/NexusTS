@@ -792,101 +792,194 @@ public struct AutomationTasksStudioView: View {
     }
 }
 
-// MARK: - 6. Cloud Sync Studio (iCloud Drive + Google Drive for Desktop + Drive REST API v3)
+// MARK: - 6. Simplified Automatic Google Drive & Cloud Sync View
 
 public struct CloudSyncStudioView: View {
     @EnvironmentObject private var store: WorkspaceStore
-    @State private var isPickingCloudFile: Bool = false
-    @State private var googleOauthBearerInput: String = ""
+    @State private var isPickingExistingCloudFile: Bool = false
     @State private var discoveredCloudFolders: [(provider: String, url: URL)] = []
+
+    private static let timeFormatter: DateFormatter = {
+        let df = DateFormatter()
+        df.dateStyle = .none
+        df.timeStyle = .medium
+        return df
+    }()
 
     public init() {}
 
     public var body: some View {
-        Form {
-            Section("Zero-Knowledge Cloud Sync Status") {
-                LabeledContent("Vault Document ID", value: store.document.documentId)
-                LabeledContent("Revision", value: "\(store.document.revision)")
-                LabeledContent("Status", value: store.syncStatusSummary)
-                LabeledContent("Vector Clock") {
-                    Text(
-                        store.document.vectorClock
-                            .sorted(by: { $0.key < $1.key })
-                            .map { "\($0.key):\($0.value)" }
-                            .joined(separator: "  •  ")
-                    )
-                    .font(.system(.caption, design: .monospaced))
-                }
-                Toggle("Auto-Sync on Every Vault Save", isOn: $store.autoSyncOnSave)
-
-                HStack {
-                    Button {
-                        Task { await store.syncCloudNow(reportErrors: true) }
-                    } label: {
-                        Label("Synchronize & 3-Way Delta Merge Now", systemImage: "arrow.triangle.2.circlepath.icloud.fill")
-                    }
-                    .buttonStyle(.borderedProminent)
-                }
-            }
-
-            Section("iCloud Drive & Google Drive for Desktop (Security-Scoped Bookmark)") {
-                if let linked = store.linkedCloudFileURL {
-                    LabeledContent("Linked .nxts File", value: linked.path)
-                    HStack {
-                        Button("Reveal in Finder") {
-                            NSWorkspace.shared.activateFileViewerSelecting([linked])
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                // Single clean, approachable Google Drive / Cloud Sync card
+                VStack(alignment: .leading, spacing: 16) {
+                    HStack(spacing: 12) {
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .fill(
+                                    (store.linkedCloudFileURL != nil ? Color(nsColor: .systemGreen) : Color.accentColor)
+                                        .opacity(0.14)
+                                )
+                                .frame(width: 44, height: 44)
+                            Image(systemName: store.linkedCloudFileURL != nil ? "checkmark.icloud.fill" : "icloud.and.arrow.up")
+                                .font(.system(size: 20, weight: .semibold))
+                                .foregroundStyle(store.linkedCloudFileURL != nil ? Color(nsColor: .systemGreen) : Color.accentColor)
                         }
-                        Button("Unlink Cloud File", role: .destructive) {
-                            store.cloudBookmarkBridge.unlinkVaultFile()
-                            store.linkedCloudFileURL = nil
-                            store.syncStatusSummary = "Local Zero-Knowledge Vault"
-                        }
-                    }
-                } else {
-                    Text("Link an encrypted `.nxts` file inside iCloud Drive or Google Drive for Desktop to seamlessly sync with Android, Chromebook, and other Macs.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
 
-                ForEach(Array(discoveredCloudFolders.enumerated()), id: \.offset) { _, entry in
-                    HStack {
-                        Label(entry.provider, systemImage: "icloud")
-                        Spacer()
-                        Button("Create & Link Shared Vault Here") {
-                            let fileUrl = entry.url.appendingPathComponent("NexusTS-Shared-Vault.nxts")
-                            do {
-                                try FileManager.default.createDirectory(at: entry.url, withIntermediateDirectories: true)
-                                try store.linkCloudVaultURL(fileUrl)
-                            } catch {
-                                store.reportError(error, operationTitle: "Cloud Vault Link Failed")
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack(spacing: 8) {
+                                Text(store.strings.cloudSync)
+                                    .font(.title3.weight(.semibold))
+                                if store.isSyncingCloud {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                } else if store.linkedCloudFileURL != nil {
+                                    Text("Active")
+                                        .font(.caption2.weight(.bold))
+                                        .foregroundStyle(Color(nsColor: .systemGreen))
+                                        .padding(.horizontal, 7)
+                                        .padding(.vertical, 2)
+                                        .background(
+                                            Capsule(style: .continuous)
+                                                .fill(Color(nsColor: .systemGreen).opacity(0.15))
+                                        )
+                                }
                             }
+                            Text("Automatically syncs on startup, when you make changes, and whenever remote changes are detected.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                         }
-                        .controlSize(.small)
+
+                        Spacer()
+
+                        if store.hasConfiguredCloudSync {
+                            Button {
+                                Task { await store.syncCloudNow(reportErrors: true) }
+                            } label: {
+                                Label(store.isSyncingCloud ? "Syncing…" : store.strings.syncNow, systemImage: "arrow.triangle.2.circlepath")
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(store.isSyncingCloud)
+                        }
+                    }
+
+                    Divider()
+
+                    if let linked = store.linkedCloudFileURL {
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack(spacing: 8) {
+                                Image(systemName: "doc.badge.gearshape.fill")
+                                    .foregroundStyle(Color.accentColor)
+                                Text(linked.lastPathComponent)
+                                    .font(.callout.weight(.semibold))
+                                if let syncedAt = store.lastCloudSyncDate {
+                                    Text("• Last synced \(Self.timeFormatter.string(from: syncedAt))")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+
+                            Text(linked.path)
+                                .font(.system(.caption, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+
+                            Text(store.syncStatusSummary)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+
+                            HStack(spacing: 10) {
+                                Button {
+                                    NSWorkspace.shared.activateFileViewerSelecting([linked])
+                                } label: {
+                                    Label("Show in Finder", systemImage: "folder")
+                                }
+
+                                Button {
+                                    isPickingExistingCloudFile = true
+                                } label: {
+                                    Label("Switch Vault File…", systemImage: "arrow.left.arrow.right")
+                                }
+
+                                Spacer()
+
+                                Button(role: .destructive) {
+                                    store.unlinkCloudVault()
+                                } label: {
+                                    Label("Disconnect Sync", systemImage: "xmark.circle")
+                                }
+                            }
+                            .padding(.top, 4)
+                        }
+                    } else {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("Choose a Google Drive (or iCloud Drive) vault file once. NexusTS keeps your connections, folders, and credentials encrypted and synchronized automatically across all your devices.")
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+
+                            if !discoveredCloudFolders.isEmpty {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    ForEach(Array(discoveredCloudFolders.enumerated()), id: \.offset) { _, entry in
+                                        HStack {
+                                            Image(systemName: entry.provider.contains("Google") ? "externaldrive.fill.badge.icloud" : "icloud.fill")
+                                                .foregroundStyle(Color.accentColor)
+                                            VStack(alignment: .leading, spacing: 1) {
+                                                Text(entry.provider)
+                                                    .font(.callout.weight(.medium))
+                                                Text(entry.url.path)
+                                                    .font(.caption2)
+                                                    .foregroundStyle(.secondary)
+                                                    .lineLimit(1)
+                                            }
+                                            Spacer()
+                                            Button("Sync Here") {
+                                                let fileUrl = entry.url.appendingPathComponent("NexusTS-Vault.nxts")
+                                                do {
+                                                    try FileManager.default.createDirectory(at: entry.url, withIntermediateDirectories: true)
+                                                    try store.linkCloudVaultURL(fileUrl)
+                                                } catch {
+                                                    store.reportError(error, operationTitle: "Cloud Vault Link Failed")
+                                                }
+                                            }
+                                            .buttonStyle(.borderedProminent)
+                                            .controlSize(.small)
+                                        }
+                                        .padding(10)
+                                        .background(
+                                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                                .fill(Color.primary.opacity(0.04))
+                                        )
+                                    }
+                                }
+                            }
+
+                            HStack(spacing: 10) {
+                                Button {
+                                    presentCreateSyncedVaultSavePanel()
+                                } label: {
+                                    Label("Create New Synced Vault…", systemImage: "plus.circle.fill")
+                                }
+                                .buttonStyle(.borderedProminent)
+
+                                Button {
+                                    isPickingExistingCloudFile = true
+                                } label: {
+                                    Label("Open Existing Vault (.nxts)…", systemImage: "folder.badge.person.crop")
+                                }
+                            }
+                            .padding(.top, 2)
+                        }
                     }
                 }
-
-                Button("Choose Existing .nxts Vault File in Finder…") {
-                    isPickingCloudFile = true
-                }
+                .padding(20)
+                .liquidGlassSurface(cornerRadius: 14, prominence: .regular)
             }
-
-            Section("Google Drive REST API v3 Direct Sync (Cross-Platform Android Parity)") {
-                Picker("Drive Storage Zone", selection: $store.driveStorageZone) {
-                    ForEach(DriveStorageZone.allCases, id: \.self) { z in
-                        Text(z.displayTitle).tag(z)
-                    }
-                }
-                SecureField("Google OAuth 2.0 Bearer Token (drive.file / drive.appdata)", text: $googleOauthBearerInput)
-                Button("Save Google Drive Token to macOS Keychain & Sync") {
-                    MacKeychainAndBiometrics.shared.saveToken(googleOauthBearerInput, key: "gdrive_oauth_bearer")
-                    Task { await store.syncCloudNow(reportErrors: true) }
-                }
-                .disabled(googleOauthBearerInput.trimmingCharacters(in: .whitespaces).isEmpty)
-            }
+            .frame(maxWidth: 760)
+            .padding(24)
+            .frame(maxWidth: .infinity)
         }
-        .formStyle(.grouped)
         .fileImporter(
-            isPresented: $isPickingCloudFile,
+            isPresented: $isPickingExistingCloudFile,
             allowedContentTypes: [.data],
             allowsMultipleSelection: false
         ) { res in
@@ -904,7 +997,28 @@ public struct CloudSyncStudioView: View {
         }
         .onAppear {
             discoveredCloudFolders = MacCloudBookmarkSyncBridge.discoverCloudVaultDirectories()
-            googleOauthBearerInput = MacKeychainAndBiometrics.shared.loadToken(key: "gdrive_oauth_bearer") ?? ""
+        }
+    }
+
+    private func presentCreateSyncedVaultSavePanel() {
+        let panel = NSSavePanel()
+        panel.title = "Create Synced Vault in Google Drive"
+        panel.prompt = "Create & Sync"
+        panel.nameFieldStringValue = "NexusTS-Vault.nxts"
+        panel.canCreateDirectories = true
+        if let preferredDir = discoveredCloudFolders.first?.url {
+            try? FileManager.default.createDirectory(at: preferredDir, withIntermediateDirectories: true)
+            panel.directoryURL = preferredDir
+        }
+        if panel.runModal() == .OK, let targetURL = panel.url {
+            let finalURL = targetURL.pathExtension.lowercased() == "nxts"
+                ? targetURL
+                : targetURL.appendingPathExtension("nxts")
+            do {
+                try store.linkCloudVaultURL(finalURL)
+            } catch {
+                store.reportError(error, operationTitle: "Cloud Vault Link Failed")
+            }
         }
     }
 }

@@ -154,6 +154,14 @@ class SafLiveGoogleDriveBridge(
         )
     }
 
+    suspend fun hasRemoteContentChanged(): Boolean = withContext(Dispatchers.IO) {
+        val linked = getLinkedVaultInfo() ?: return@withContext false
+        val remoteBytes = runCatching { byteTransport.readBytes(linked.uriString) }.getOrDefault(ByteArray(0))
+        if (remoteBytes.isEmpty()) return@withContext false
+        val currentSha = sha256Hex(remoteBytes)
+        linked.lastSyncedRemoteSha256.isBlank() || currentSha != linked.lastSyncedRemoteSha256
+    }
+
     @JvmOverloads
     suspend fun synchronizeLinkedSafVault(
         currentDocument: NxtsVaultDocument,

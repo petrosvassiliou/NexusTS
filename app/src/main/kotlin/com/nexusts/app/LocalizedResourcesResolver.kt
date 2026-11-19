@@ -168,6 +168,7 @@ fun rememberLocalizedWorkspaceStrings(): WorkspaceLocalizedStrings {
         actionDeleteFolderAndContents = stringResource(R.string.action_delete_folder_and_contents),
         actionDeleteFolderKeepContents = stringResource(R.string.action_delete_folder_keep_contents),
         navStudiosMenu = stringResource(R.string.nav_studios_menu),
+        navSettings = stringResource(R.string.nav_settings),
         actionEditSmartFolder = stringResource(R.string.action_edit_smart_folder),
         actionDuplicateSmartFolder = stringResource(R.string.action_duplicate_smart_folder),
         smartFolderAllFolders = stringResource(R.string.smart_folder_all_folders),

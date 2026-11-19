@@ -7,6 +7,7 @@ import SwiftUI
 
 public enum WorkspacePrimarySection: String, CaseIterable, Identifiable, Hashable {
     case sessions
+    case settings
     case overview
     case templates
     case credentials
@@ -19,12 +20,52 @@ public enum WorkspacePrimarySection: String, CaseIterable, Identifiable, Hashabl
     public var sfSymbol: String {
         switch self {
         case .sessions: return "macwindow.split.2x1"
+        case .settings: return "gearshape"
         case .overview: return "square.grid.2x2"
         case .templates: return "doc.on.doc"
         case .credentials: return "key.horizontal"
         case .gateways: return "network.badge.shield.half.filled"
         case .automationTasks: return "bolt.horizontal"
         case .cloudSync: return "icloud.and.arrow.trianglehead.2.clockwise.rotate.90"
+        }
+    }
+}
+
+public enum UnifiedSettingsTab: String, CaseIterable, Identifiable, Hashable {
+    case general
+    case cloudSync
+    case security
+    case credentials
+    case gateways
+    case templates
+    case tasks
+    case updates
+
+    public var id: String { rawValue }
+
+    public var sfSymbol: String {
+        switch self {
+        case .general: return "slider.horizontal.3"
+        case .cloudSync: return "arrow.triangle.2.circlepath.icloud"
+        case .security: return "lock.shield"
+        case .credentials: return "key.fill"
+        case .gateways: return "network.badge.shield.half.filled"
+        case .templates: return "doc.on.doc"
+        case .tasks: return "bolt.horizontal"
+        case .updates: return "arrow.down.circle"
+        }
+    }
+
+    public func title(in strings: LocalizedWorkspaceStrings) -> String {
+        switch self {
+        case .general: return strings.generalSettings
+        case .cloudSync: return strings.cloudSync
+        case .security: return strings.securitySettings
+        case .credentials: return strings.credentials
+        case .gateways: return strings.gateways
+        case .templates: return strings.templates
+        case .tasks: return strings.automationTasks
+        case .updates: return strings.updatesSettings
         }
     }
 }
@@ -1006,6 +1047,7 @@ public final class WorkspaceStore: ObservableObject {
     // Navigation & Chrome State
     @Published public var columnVisibility: NavigationSplitViewVisibility = .all
     @Published public var activeSection: WorkspacePrimarySection = .sessions
+    @Published public var activeSettingsTab: UnifiedSettingsTab = .general
     @Published public var sidebarFilterMode: SidebarFilterMode = .all
     @Published public var collapsedFolderIds: Set<String> = []
     @Published public var isSystemCredentialsCollapsed: Bool = false
@@ -1032,8 +1074,10 @@ public final class WorkspaceStore: ObservableObject {
     @Published public var spotlightIndexingEnabled: Bool = true
     @Published public var autoSyncOnSave: Bool = true
     @Published public var driveStorageZone: DriveStorageZone = .SHARED_TEAM_DRIVE
-    @Published public var syncStatusSummary: String = "Local Zero-Knowledge Vault"
+    @Published public var syncStatusSummary: String = "Not connected"
     @Published public var linkedCloudFileURL: URL? = nil
+    @Published public var isSyncingCloud: Bool = false
+    @Published public var lastCloudSyncDate: Date? = nil
     @Published public var updateCandidate: MacReleaseUpdateCandidate? = nil
     @Published public var updateInstallPhase: MacUpdateInstallPhase = .idle
     @Published public var autoCheckUpdatesEnabled: Bool = (UserDefaults.standard.object(forKey: "nexusts.macos.autoCheckUpdates") as? Bool) ?? true {
@@ -1065,14 +1109,33 @@ public final class WorkspaceStore: ObservableObject {
     @Published public var statusToastMessage: String? = nil
 
     private var activePassphrase: String = NxtsVaultSerializer.defaultTransparentPassphrase
+    private var isStarterVaultUninitialized: Bool = false
     private var terminalControllers: [UUID: LiveTerminalController] = [:]
     private var rdpSessions: [UUID: NativeRdpSession] = [:]
     private var transferControllers: [UUID: LiveTransferController] = [:]
     private var vncControllers: [UUID: LiveVncController] = [:]
     private var didShutdownForTermination: Bool = false
     private var appWillTerminateObserver: NSObjectProtocol?
+    private var appDidBecomeActiveObserver: NSObjectProtocol?
+    private var cloudDebouncedSyncTask: Task<Void, Never>? = nil
+    private var cloudWatcherLoopTask: Task<Void, Never>? = nil
+    private var pendingFollowUpCloudSync: Bool = false
+    private var watchedFileFd: Int32 = -1
+    private var watchedDirFd: Int32 = -1
+    private var watchedFileSource: DispatchSourceFileSystemObject? = nil
+    private var watchedDirSource: DispatchSourceFileSystemObject? = nil
     public let cloudBookmarkBridge = MacCloudBookmarkSyncBridge()
     public let googleDriveEngine = GoogleDriveRestSyncEngine()
+
+    public var hasConfiguredCloudSync: Bool {
+        if linkedCloudFileURL != nil || cloudBookmarkBridge.resolveLinkedURL() != nil {
+            return true
+        }
+        if let token = MacKeychainAndBiometrics.shared.loadToken(key: "gdrive_oauth_bearer"), !token.isEmpty {
+            return true
+        }
+        return false
+    }
 
     public var strings: LocalizedWorkspaceStrings {
         LocalizedWorkspaceStrings.catalog(for: appLanguage)
@@ -1089,6 +1152,9 @@ public final class WorkspaceStore: ObservableObject {
         let initial = NxtsVaultDocument.sampleStarterVault()
         self.document = initial
         self.linkedCloudFileURL = cloudBookmarkBridge.resolveLinkedURL()
+        if let linked = self.linkedCloudFileURL {
+            self.syncStatusSummary = "Connected to \(linked.lastPathComponent)"
+        }
         loadPersistedLocalVault()
         appendAudit("Vault", "NexusTS macOS initialized (\(document.connections.count) connections).")
         self.appWillTerminateObserver = NotificationCenter.default.addObserver(
@@ -1104,6 +1170,23 @@ public final class WorkspaceStore: ObservableObject {
                 Task { @MainActor [weak self] in
                     self?.shutdownAllSessionsForAppTermination()
                 }
+            }
+        }
+        self.appDidBecomeActiveObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, !self.isVaultLocked, self.hasConfiguredCloudSync else { return }
+                self.scheduleDebouncedCloudSync(delayNanoseconds: 350_000_000)
+            }
+        }
+        installCloudFileWatcher()
+        startCloudChangeWatcherLoop()
+        if !isVaultLocked && hasConfiguredCloudSync {
+            Task { [weak self] in
+                await self?.syncCloudNow(reportErrors: false)
             }
         }
         Task { [weak self] in
@@ -1145,7 +1228,8 @@ public final class WorkspaceStore: ObservableObject {
     private func loadPersistedLocalVault() {
         let url = Self.localVaultFileURL
         guard FileManager.default.fileExists(atPath: url.path) else {
-            persistLocalVault()
+            self.isStarterVaultUninitialized = true
+            persistLocalVault(triggerCloudSync: false)
             MacSpotlightVaultIndexer.reindexConnections(in: document, enabled: spotlightIndexingEnabled)
             return
         }
@@ -1164,7 +1248,8 @@ public final class WorkspaceStore: ObservableObject {
                 .appendingPathComponent("nexusts_local_vault.corrupt-\(VaultClock.nowMs()).nxts.bak")
             try? FileManager.default.moveItem(at: url, to: backupURL)
             self.document = NxtsVaultDocument.sampleStarterVault()
-            persistLocalVault()
+            self.isStarterVaultUninitialized = true
+            persistLocalVault(triggerCloudSync: false)
             MacSpotlightVaultIndexer.reindexConnections(in: document, enabled: spotlightIndexingEnabled)
             reportAppError(
                 NexusAppError(
@@ -1184,10 +1269,11 @@ public final class WorkspaceStore: ObservableObject {
         ) {
             let sanitized = VaultHierarchySanitizer.sanitizeVaultDocument(opened)
             self.document = sanitized
+            self.isStarterVaultUninitialized = false
             self.hasCustomPassphrase = false
             self.isVaultLocked = false
             if sanitized != opened {
-                persistLocalVault()
+                persistLocalVault(triggerCloudSync: false)
             }
             MacSpotlightVaultIndexer.reindexConnections(in: sanitized, enabled: spotlightIndexingEnabled)
         } else {
@@ -1197,7 +1283,7 @@ public final class WorkspaceStore: ObservableObject {
         }
     }
 
-    public func persistLocalVault() {
+    public func persistLocalVault(triggerCloudSync: Bool = true) {
         do {
             let sealed = try NxtsVaultSerializer.seal(
                 document: document,
@@ -1214,8 +1300,8 @@ public final class WorkspaceStore: ObservableObject {
             }
             MacSpotlightVaultIndexer.reindexConnections(in: document, enabled: spotlightIndexingEnabled)
 
-            if autoSyncOnSave && linkedCloudFileURL != nil {
-                Task { await syncCloudNow() }
+            if triggerCloudSync && autoSyncOnSave && hasConfiguredCloudSync && !isVaultLocked {
+                scheduleDebouncedCloudSync()
             }
         } catch {
             reportError(error, operationTitle: "Vault Persistence Failed")
@@ -1223,9 +1309,10 @@ public final class WorkspaceStore: ObservableObject {
     }
 
     public func commitMutation(_ reason: String, mutate: (inout NxtsVaultDocument) -> Void) {
+        isStarterVaultUninitialized = false
         mutate(&document)
         document.bumpRevision(actor: "macos")
-        persistLocalVault()
+        persistLocalVault(triggerCloudSync: true)
         appendAudit("Vault", "\(reason) (rev \(document.revision))")
     }
 
@@ -1244,6 +1331,9 @@ public final class WorkspaceStore: ObservableObject {
     public func shutdownAllSessionsForAppTermination() {
         guard !didShutdownForTermination else { return }
         didShutdownForTermination = true
+        teardownCloudFileWatcher()
+        cloudWatcherLoopTask?.cancel()
+        cloudDebouncedSyncTask?.cancel()
         for (_, rdp) in rdpSessions {
             rdp.setFrameReadyHandler(nil)
         }
@@ -1289,9 +1379,15 @@ public final class WorkspaceStore: ObservableObject {
                     self.isVaultLocked = false
                     self.unlockErrorText = nil
                     if sanitized != opened {
-                        persistLocalVault()
+                        persistLocalVault(triggerCloudSync: false)
                     }
                     appendAudit("Security", "Vault unlocked successfully.")
+                    if hasConfiguredCloudSync {
+                        installCloudFileWatcher()
+                        Task { [weak self] in
+                            await self?.syncCloudNow(reportErrors: false)
+                        }
+                    }
                     return true
                 }
             }
@@ -1299,6 +1395,12 @@ public final class WorkspaceStore: ObservableObject {
             return false
         }
         self.isVaultLocked = false
+        if hasConfiguredCloudSync {
+            installCloudFileWatcher()
+            Task { [weak self] in
+                await self?.syncCloudNow(reportErrors: false)
+            }
+        }
         return true
     }
 
@@ -1426,7 +1528,45 @@ public final class WorkspaceStore: ObservableObject {
 
     public func selectSection(_ section: WorkspacePrimarySection) {
         isFullScreenSessionMode = false
-        activeSection = section
+        switch section {
+        case .sessions:
+            activeSection = .sessions
+        case .settings, .overview:
+            activeSection = .settings
+            activeSettingsTab = .general
+        case .cloudSync:
+            activeSection = .settings
+            activeSettingsTab = .cloudSync
+        case .credentials:
+            activeSection = .settings
+            activeSettingsTab = .credentials
+        case .gateways:
+            activeSection = .settings
+            activeSettingsTab = .gateways
+        case .templates:
+            activeSection = .settings
+            activeSettingsTab = .templates
+        case .automationTasks:
+            activeSection = .settings
+            activeSettingsTab = .tasks
+        }
+    }
+
+    public func openUnifiedSettings(tab: UnifiedSettingsTab? = nil) {
+        isFullScreenSessionMode = false
+        if let tab {
+            activeSettingsTab = tab
+        }
+        activeSection = .settings
+    }
+
+    public func toggleUnifiedSettings() {
+        isFullScreenSessionMode = false
+        if activeSection == .sessions {
+            activeSection = .settings
+        } else {
+            activeSection = .sessions
+        }
     }
 
     public func toggleInspector() {
@@ -2671,22 +2811,200 @@ public final class WorkspaceStore: ObservableObject {
     public func linkCloudVaultURL(_ url: URL) throws {
         try cloudBookmarkBridge.linkVaultFileURL(url)
         linkedCloudFileURL = url
+        autoSyncOnSave = true
+        installCloudFileWatcher()
         Task { await syncCloudNow(reportErrors: true) }
     }
 
+    public func unlinkCloudVault() {
+        teardownCloudFileWatcher()
+        cloudDebouncedSyncTask?.cancel()
+        cloudBookmarkBridge.unlinkVaultFile()
+        linkedCloudFileURL = nil
+        lastCloudSyncDate = nil
+        syncStatusSummary = "Not connected"
+        appendAudit("Cloud Sync", "Disconnected cloud vault synchronization.")
+    }
+
+    public func scheduleDebouncedCloudSync(delayNanoseconds: UInt64 = 1_100_000_000) {
+        guard !isVaultLocked, hasConfiguredCloudSync else { return }
+        cloudDebouncedSyncTask?.cancel()
+        cloudDebouncedSyncTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: delayNanoseconds)
+            guard !Task.isCancelled, let self, !self.isVaultLocked else { return }
+            await self.syncCloudNow(reportErrors: false)
+        }
+    }
+
+    public func installCloudFileWatcher() {
+        teardownCloudFileWatcher()
+        guard !CommandLine.arguments.contains("--self-test"),
+              let url = linkedCloudFileURL ?? cloudBookmarkBridge.resolveLinkedURL() else {
+            return
+        }
+
+        let dirPath = url.deletingLastPathComponent().path
+        let dirFd = Darwin.open(dirPath, O_EVTONLY)
+        if dirFd >= 0 {
+            watchedDirFd = dirFd
+            let dirSrc = DispatchSource.makeFileSystemObjectSource(
+                fileDescriptor: dirFd,
+                eventMask: [.write, .rename],
+                queue: .main
+            )
+            let capturedDirFd = dirFd
+            dirSrc.setEventHandler { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self, !self.isVaultLocked else { return }
+                    if self.watchedFileSource == nil {
+                        self.armWatchedFileSourceIfPresent(for: url)
+                    }
+                    if self.cloudBookmarkBridge.hasExternalChangeOnDisk(explicitURL: url) {
+                        self.scheduleDebouncedCloudSync(delayNanoseconds: 900_000_000)
+                    }
+                }
+            }
+            dirSrc.setCancelHandler {
+                Darwin.close(capturedDirFd)
+            }
+            watchedDirSource = dirSrc
+            dirSrc.resume()
+        }
+
+        armWatchedFileSourceIfPresent(for: url)
+    }
+
+    private func armWatchedFileSourceIfPresent(for url: URL) {
+        if let existing = watchedFileSource {
+            watchedFileSource = nil
+            watchedFileFd = -1
+            existing.cancel()
+        }
+        let fileFd = Darwin.open(url.path, O_EVTONLY)
+        guard fileFd >= 0 else { return }
+        watchedFileFd = fileFd
+        let fileSrc = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: fileFd,
+            eventMask: [.write, .extend, .attrib, .rename, .delete],
+            queue: .main
+        )
+        let capturedFileFd = fileFd
+        fileSrc.setEventHandler { [weak self, weak fileSrc] in
+            let flags = fileSrc?.data ?? []
+            MainActor.assumeIsolated {
+                guard let self, !self.isVaultLocked else { return }
+                if flags.contains(.delete) || flags.contains(.rename) {
+                    // Cloud providers (Google Drive / iCloud) write via atomic temp-file rename; re-arm on the new inode
+                    Task { @MainActor [weak self] in
+                        try? await Task.sleep(nanoseconds: 500_000_000)
+                        guard let self, !self.isVaultLocked else { return }
+                        self.armWatchedFileSourceIfPresent(for: url)
+                        if self.cloudBookmarkBridge.hasExternalChangeOnDisk(explicitURL: url) {
+                            await self.syncCloudNow(reportErrors: false)
+                        }
+                    }
+                } else if self.cloudBookmarkBridge.hasExternalChangeOnDisk(explicitURL: url) {
+                    self.scheduleDebouncedCloudSync(delayNanoseconds: 850_000_000)
+                }
+            }
+        }
+        fileSrc.setCancelHandler {
+            Darwin.close(capturedFileFd)
+        }
+        watchedFileSource = fileSrc
+        fileSrc.resume()
+    }
+
+    public func teardownCloudFileWatcher() {
+        if let fSrc = watchedFileSource {
+            watchedFileSource = nil
+            watchedFileFd = -1
+            fSrc.cancel()
+        } else if watchedFileFd >= 0 {
+            Darwin.close(watchedFileFd)
+            watchedFileFd = -1
+        }
+        if let dSrc = watchedDirSource {
+            watchedDirSource = nil
+            watchedDirFd = -1
+            dSrc.cancel()
+        } else if watchedDirFd >= 0 {
+            Darwin.close(watchedDirFd)
+            watchedDirFd = -1
+        }
+    }
+
+    private func startCloudChangeWatcherLoop() {
+        guard !CommandLine.arguments.contains("--self-test") else { return }
+        cloudWatcherLoopTask?.cancel()
+        cloudWatcherLoopTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 12_000_000_000)
+                guard !Task.isCancelled, let self else { break }
+                guard !self.isVaultLocked, !self.isSyncingCloud else { continue }
+                if let url = self.linkedCloudFileURL ?? self.cloudBookmarkBridge.resolveLinkedURL(),
+                   self.cloudBookmarkBridge.hasExternalChangeOnDisk(explicitURL: url) {
+                    await self.syncCloudNow(reportErrors: false)
+                }
+            }
+        }
+    }
+
     public func syncCloudNow(reportErrors: Bool = false) async {
+        guard !isVaultLocked else { return }
+        if isSyncingCloud {
+            pendingFollowUpCloudSync = true
+            return
+        }
+        isSyncingCloud = true
+        defer {
+            isSyncingCloud = false
+            if pendingFollowUpCloudSync {
+                pendingFollowUpCloudSync = false
+                scheduleDebouncedCloudSync(delayNanoseconds: 600_000_000)
+            }
+        }
+
         if let url = linkedCloudFileURL ?? cloudBookmarkBridge.resolveLinkedURL() {
             do {
-                let res = try cloudBookmarkBridge.syncWithLinkedFile(
-                    localDocument: document,
-                    passphrase: activePassphrase,
-                    explicitURL: url,
-                    kdf: .interactiveFast
-                )
-                self.document = VaultHierarchySanitizer.sanitizeVaultDocument(res.document)
+                let starterFlag = isStarterVaultUninitialized
+                let bridge = cloudBookmarkBridge
+                let docSnapshot = document
+                let passSnapshot = activePassphrase
+                let res = try await Task.detached(priority: .utility) {
+                    try bridge.syncWithLinkedFile(
+                        localDocument: docSnapshot,
+                        passphrase: passSnapshot,
+                        explicitURL: url,
+                        kdf: .interactiveFast,
+                        localIsStarterVault: starterFlag
+                    )
+                }.value
+                let sanitized = VaultHierarchySanitizer.sanitizeVaultDocument(res.document)
+                let docChanged = (sanitized != self.document)
+                self.document = sanitized
+                self.isStarterVaultUninitialized = false
                 self.linkedCloudFileURL = res.syncedFileURL
-                self.syncStatusSummary = "\(res.action.rawValue) (\(res.syncedFileURL.lastPathComponent))"
-                appendAudit("Cloud Sync", "\(res.action.rawValue) via \(res.syncedFileURL.path) (\(res.conflictCount) conflicts resolved).")
+                self.lastCloudSyncDate = Date()
+                if docChanged || res.action == .pulledRemote || res.action == .deltaMerged {
+                    persistLocalVault(triggerCloudSync: false)
+                }
+                if watchedFileSource == nil {
+                    installCloudFileWatcher()
+                }
+                switch res.action {
+                case .alreadyUpToDate:
+                    self.syncStatusSummary = "Up to date with \(res.syncedFileURL.lastPathComponent)"
+                case .pushedLocal:
+                    self.syncStatusSummary = "Synced changes to \(res.syncedFileURL.lastPathComponent)"
+                case .pulledRemote:
+                    self.syncStatusSummary = "Updated from \(res.syncedFileURL.lastPathComponent)"
+                case .deltaMerged:
+                    self.syncStatusSummary = "Merged changes with \(res.syncedFileURL.lastPathComponent)"
+                }
+                if res.action != .alreadyUpToDate {
+                    appendAudit("Cloud Sync", "\(res.action.rawValue) via \(res.syncedFileURL.path) (\(res.conflictCount) conflicts resolved).")
+                }
             } catch {
                 syncStatusSummary = "Sync error: \(error.localizedDescription)"
                 appendAudit("Cloud Sync", "Error: \(error.localizedDescription)")
@@ -2705,11 +3023,13 @@ public final class WorkspaceStore: ObservableObject {
                     kdf: .interactiveFast
                 )
                 self.document = VaultHierarchySanitizer.sanitizeVaultDocument(res.document)
-                self.syncStatusSummary = "Google Drive: \(res.action.rawValue)"
-                persistLocalVault()
+                self.isStarterVaultUninitialized = false
+                self.lastCloudSyncDate = Date()
+                self.syncStatusSummary = "Synced with Google Drive"
+                persistLocalVault(triggerCloudSync: false)
                 appendAudit("Google Drive", "\(res.action.rawValue) (\(res.conflicts) conflicts merged).")
             } catch {
-                syncStatusSummary = "Drive API error"
+                syncStatusSummary = "Drive sync error"
                 appendAudit("Google Drive", error.localizedDescription)
                 if reportErrors {
                     reportError(error, operationTitle: "Google Drive Sync Failed")

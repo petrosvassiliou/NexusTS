@@ -133,51 +133,89 @@ public struct MenuBarQuickAgentView: View {
     }
 }
 
-// MARK: - 2. Native macOS Settings Window (⌘,)
+// MARK: - 2. Unified Tabbed Workspace Settings (Toolbar ⚙ Button & ⌘,)
 
-public struct MacSettingsView: View {
+public struct UnifiedWorkspaceSettingsView: View {
     @EnvironmentObject private var store: WorkspaceStore
+    public let showsWorkspaceHeader: Bool
 
     @State private var newMasterPassphrase: String = ""
     @State private var confirmMasterPassphrase: String = ""
     @State private var saveToTouchIdKeychain: Bool = true
     @State private var securityStatusBanner: String? = nil
 
-    public init() {}
+    public init(showsWorkspaceHeader: Bool = true) {
+        self.showsWorkspaceHeader = showsWorkspaceHeader
+    }
 
     public var body: some View {
-        TabView {
-            generalTab
-                .tabItem {
-                    Label("General", systemImage: "gearshape")
+        VStack(spacing: 0) {
+            VStack(spacing: 10) {
+                if showsWorkspaceHeader {
+                    HStack(spacing: 10) {
+                        Image(systemName: "gearshape.fill")
+                            .font(.title3.weight(.semibold))
+                            .foregroundStyle(Color.accentColor)
+                        Text(store.strings.settings)
+                            .font(.title3.weight(.semibold))
+                        Spacer()
+                        Button {
+                            store.selectSection(.sessions)
+                        } label: {
+                            Label(store.strings.connections, systemImage: "arrow.left")
+                        }
+                        .controlSize(.small)
+                    }
                 }
 
-            securityTab
-                .tabItem {
-                    Label("Security & Touch ID", systemImage: "touchid")
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(UnifiedSettingsTab.allCases) { tab in
+                            SettingsTabCapsuleButton(
+                                title: tab.title(in: store.strings),
+                                systemImage: tab.sfSymbol,
+                                isSelected: store.activeSettingsTab == tab
+                            ) {
+                                store.activeSettingsTab = tab
+                            }
+                        }
+                    }
+                    .padding(.vertical, 2)
                 }
+            }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 12)
+            .background(.bar)
 
-            terminalTab
-                .tabItem {
-                    Label("Terminal", systemImage: "terminal")
-                }
+            Divider()
 
-            cloudSyncTab
-                .tabItem {
-                    Label("Cloud Sync", systemImage: "icloud")
+            Group {
+                switch store.activeSettingsTab {
+                case .general:
+                    generalTab
+                case .cloudSync:
+                    CloudSyncStudioView()
+                case .security:
+                    securityTab
+                case .credentials:
+                    CredentialsStudioView()
+                case .gateways:
+                    GatewaysStudioView()
+                case .templates:
+                    TemplatesStudioView()
+                case .tasks:
+                    AutomationTasksStudioView()
+                case .updates:
+                    MacSoftwareUpdateContentView(showsSheetChrome: false)
                 }
-
-            updatesTab
-                .tabItem {
-                    Label("Updates", systemImage: "arrow.down.circle")
-                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(width: 560, height: 470)
     }
 
     private var generalTab: some View {
         Form {
-            Section("Workspace Preferences") {
+            Section("Language & Appearance") {
                 Picker("Workspace Language", selection: $store.appLanguage) {
                     ForEach(NexusAppLanguage.allCases) { lang in
                         Text(lang.nativeDisplayName).tag(lang)
@@ -188,16 +226,30 @@ public struct MacSettingsView: View {
                     .onChange(of: store.spotlightIndexingEnabled) { _, enabled in
                         MacSpotlightVaultIndexer.reindexConnections(in: store.document, enabled: enabled)
                     }
+            }
 
+            Section("Terminal & Remote Sessions") {
+                Picker("Monospaced Font Family", selection: $store.terminalFontName) {
+                    Text("SF Mono").tag("SF Mono")
+                    Text("Menlo").tag("Menlo")
+                    Text("Monaco").tag("Monaco")
+                }
+
+                Slider(value: $store.terminalFontSize, in: 10...22, step: 1) {
+                    Text("Default Font Size (\(Int(store.terminalFontSize)) pt)")
+                }
+
+                Toggle("Capture Remote Shortcut Keys Inside Active Sessions", isOn: $store.remoteKeyCaptureEnabled)
+            }
+
+            Section("Vault Storage & Maintenance") {
                 LabeledContent("Local Vault Path") {
                     Text(WorkspaceStore.localVaultFileURL.path)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
-            }
 
-            Section("Database Maintenance") {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(store.strings.resetDatabase)
@@ -220,7 +272,7 @@ public struct MacSettingsView: View {
 
     private var securityTab: some View {
         Form {
-            Section("Argon2id + AES-256-GCM Master Passphrase") {
+            Section("Vault Encryption Passphrase (AES-256-GCM)") {
                 SecureField("New Master Passphrase (blank resets to transparent key)", text: $newMasterPassphrase)
                 SecureField("Confirm Master Passphrase", text: $confirmMasterPassphrase)
 
@@ -237,7 +289,7 @@ public struct MacSettingsView: View {
                             try store.configureMasterPassphrase(newMasterPassphrase, saveForTouchId: saveToTouchIdKeychain)
                             securityStatusBanner = newMasterPassphrase.isEmpty
                                 ? "Reset to transparent sync key."
-                                : "Master passphrase sealed with Argon2id + Keychain."
+                                : "Master passphrase sealed in macOS Keychain."
                             newMasterPassphrase = ""
                             confirmMasterPassphrase = ""
                         } catch {
@@ -245,6 +297,12 @@ public struct MacSettingsView: View {
                         }
                     }
                     .buttonStyle(.borderedProminent)
+
+                    Button {
+                        store.lockVault()
+                    } label: {
+                        Label(store.strings.lockVault, systemImage: "lock.fill")
+                    }
 
                     if let msg = securityStatusBanner {
                         Text(msg)
@@ -264,39 +322,50 @@ public struct MacSettingsView: View {
         }
         .formStyle(.grouped)
     }
+}
 
-    private var terminalTab: some View {
-        Form {
-            Picker("Monospaced Font Family", selection: $store.terminalFontName) {
-                Text("SF Mono").tag("SF Mono")
-                Text("Menlo").tag("Menlo")
-                Text("Monaco").tag("Monaco")
+private struct SettingsTabCapsuleButton: View {
+    let title: String
+    let systemImage: String
+    let isSelected: Bool
+    let action: () -> Void
+    @State private var isHovered: Bool = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 11.5, weight: .semibold))
+                Text(title)
+                    .font(.system(size: 12, weight: isSelected ? .semibold : .medium))
+                    .lineLimit(1)
             }
-
-            Slider(value: $store.terminalFontSize, in: 10...22, step: 1) {
-                Text("Default Font Size (\(Int(store.terminalFontSize)) pt)")
-            }
-
-            Toggle("Capture Remote Shortcut Keys Inside Active Sessions", isOn: $store.remoteKeyCaptureEnabled)
+            .foregroundStyle(isSelected || isHovered ? Color.primary : Color.secondary)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .liquidGlassCapsule(
+                tint: Color.accentColor,
+                isSelected: isSelected,
+                isHovered: isHovered
+            )
         }
-        .formStyle(.grouped)
-    }
-
-    private var cloudSyncTab: some View {
-        Form {
-            Toggle("Automatically Sync Linked Cloud Vault on Save", isOn: $store.autoSyncOnSave)
-            Picker("Google Drive Storage Zone", selection: $store.driveStorageZone) {
-                ForEach(DriveStorageZone.allCases, id: \.self) { z in
-                    Text(z.displayTitle).tag(z)
-                }
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            withAnimation(LiquidGlassMetrics.hoverAnimation) {
+                isHovered = hovering
             }
-            LabeledContent("Current Cloud Status", value: store.syncStatusSummary)
         }
-        .formStyle(.grouped)
     }
+}
 
-    private var updatesTab: some View {
-        MacSoftwareUpdateContentView(showsSheetChrome: false)
+public struct MacSettingsView: View {
+    @EnvironmentObject private var store: WorkspaceStore
+
+    public init() {}
+
+    public var body: some View {
+        UnifiedWorkspaceSettingsView(showsWorkspaceHeader: false)
+            .frame(minWidth: 780, minHeight: 540)
     }
 }
 

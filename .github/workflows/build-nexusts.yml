@@ -346,7 +346,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.stage.outputs.tag_name }}
-          name: "NexusTS ${{ steps.stage.outputs.tag_name }} — macOS Tahoe AppIcon Sizing, Discreet Tooltips & Sidebar Tab Switching"
+          name: "NexusTS ${{ steps.stage.outputs.tag_name }} — Automatic Google Drive Sync, Tabbed Settings, Full-Size macOS AppIcon & Discreet Tooltips"
           draft: false
           prerelease: ${{ contains(steps.stage.outputs.tag_name, '-') }}
           generate_release_notes: true
@@ -354,7 +354,7 @@ jobs:
             ## NexusTS ${{ steps.stage.outputs.tag_name }} (`com.nexusts.app` / `com.nexusts.app.macos`)
             **Native Remote Management & Connection Manager for Googlebook OS, Android Tablets & macOS**
 
-            > **macOS Tahoe AppIcon Sizing, Discreet Liquid Glass Tooltips & Sidebar Active-Session Switching (`0.8.14` / `versionCode = 10814`)**: Fixes macOS Dock AppIcon sizing to match standard macOS icons (`832×832` continuous Apple superellipse + `Assets.car` with zero outer shadow bleed), introduces crisp, discreet Liquid Glass capsule tooltips with shortcut badges across the unified window toolbar and workspace controls, and switches directly to any active session tab when clicking its connection entry in the sidebar.
+            > **Automatic & Simplified Google Drive Sync, Unified Tabbed Settings, Full-Size macOS AppIcon, Discreet Tooltips & Sidebar Tab Switching (`0.8.14` / `versionCode = 10814`)**: Simplifies Google Drive Sync into a single one-click card with automatic sync on startup, local edits, and remote changes; replaces the top-bar dropdown with a `⚙ Settings` button opening a unified tabbed Settings screen; fixes macOS Dock AppIcon sizing (`832×832` continuous Apple superellipse + `Assets.car`); adds discreet Liquid Glass tooltips with shortcut pills; and switches directly to active session tabs when clicking connections in the sidebar.
 
             ### Signed Deliverables (100% In-Place Upgrade Compatible)
             - **`NexusTS-${{ steps.stage.outputs.tag_name }}-googlebook-android-release.apk`**: Cryptographically signed (APK Signature Scheme v2/v3/v4, RSA-4096) universal `arm64-v8a` + `x86_64` APK with 16 KB ELF page alignment (`0x4000`) and 100% Google Play Protect compliance (`versionCode = 10814`).
@@ -363,12 +363,16 @@ jobs:
             - **`nexusts-upload-certificate.pem` & `oauth-and-mdm-registration.json`**: Public X.509 upload certificate (`SHA-1: A6:AF:15:A9:BF:0B:FE:38:D4:66:46:3E:3E:72:A6:5B:4F:9C:4D:F6`, `SHA-256: 4A:BD:80:F1:20:14:B9:88:09:1C:97:92:2F:87:02:D1:BF:B7:93:9C:73:B6:9A:DB:1A:9B:76:30:6A:30:27:82`) and Managed Google Play `app_restrictions` template.
 
             ### Highlights in ${{ steps.stage.outputs.tag_name }}
+            - **Simplified & Automatic Google Drive Sync**:
+              - Streamlines Google Drive Sync into a single clean card (Create Synced Vault, Open Existing Vault, Sync Now, Disconnect — zero OAuth Client IDs, Folder IDs, SHA-1s, or VectorClock noise) and automatically syncs **(1) on startup / unlock**, **(2) on local vault saves (debounced)**, and **(3) whenever remote vault changes are detected** (`DispatchSource` + activation & hash watcher on macOS; `ContentObserver` + `ON_RESUME` & SHA-256 watcher on Android/Chromebook).
+            - **Unified `⚙` Settings Button & Tabbed Settings Screen**:
+              - Replaces the top-bar dropdown menu with a clean `⚙ Settings` button (`⌘,` on macOS) opening a unified tabbed Settings screen (`General`, `Google Drive Sync`, `Security`, `Credentials`, `Gateways`, `Templates`, `Tasks`, `Updates`) with instant `← Connections` return to live sessions.
             - **Standard Full-Size macOS AppIcon (`Assets.car` + `AppIcon.icns`)**:
-              - Renders the macOS icon on Apple's exact `832×832` continuous superellipse (`RoundedRectangle(..., style: .continuous)`) inside `1024×1024` with zero stray outer shadow alpha so macOS 26 Tahoe `IconFoundation` renders NexusTS at full `1.0×` Dock scale alongside native apps, and refreshes LaunchServices during in-app updates.
+              - Renders the macOS icon on Apple's exact `832×832` continuous superellipse (`RoundedRectangle(..., style: .continuous)`) inside `1024×1024` with zero outer shadow bleed so macOS 26 Tahoe renders NexusTS at full `1.0×` Dock scale alongside native apps.
             - **Discreet Liquid Glass Tooltips Across Toolbar & Workspace**:
-              - Adds non-activating, click-through Liquid Glass capsule tooltips with compact shortcut badges across all macOS unified toolbar items (including fused macOS Tahoe Liquid Glass pill buttons & menu chevron) and session controls.
+              - Adds non-activating, click-through Liquid Glass capsule tooltips with compact shortcut badges across all macOS unified toolbar items and workspace controls.
             - **Sidebar Click Switches to Active Connection**:
-              - Clicking a connection in the sidebar immediately switches to its open session tab (or brings its detached session window forward) when active, while leaving inactive connections untouched until double-clicked.
+              - Clicking a connection in the sidebar switches immediately to its open session tab (or brings its detached session window forward) when active, while leaving inactive connections untouched until launched.
           files: release-assets/*
 
       - name: Check Optional Google Play Service Account Secret

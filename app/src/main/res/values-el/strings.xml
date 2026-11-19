@@ -200,6 +200,7 @@
     <string name="action_delete_folder_and_contents">Διαγραφή φακέλου &amp; όλου του περιεχομένου</string>
     <string name="action_delete_folder_keep_contents">Διαγραφή μόνο φακέλου (Μετακίνηση στοιχείων πάνω)</string>
     <string name="nav_studios_menu">Διαχείριση</string>
+    <string name="nav_settings">Ρυθμίσεις</string>
 
     <!-- v1.2.0 -->
     <string name="action_edit_smart_folder">Επεξεργασία έξυπνου φακέλου…</string>
