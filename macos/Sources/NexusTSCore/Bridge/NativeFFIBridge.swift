@@ -2129,6 +2129,14 @@ public final class NativeRdpSession: @unchecked Sendable {
         nexusts_rdp_logoff_session(h)
     }
 
+    public func restartRemoteRdpClip() {
+        stateLock.lock()
+        let h = handle
+        stateLock.unlock()
+        guard h > 0 else { return }
+        nexusts_rdp_restart_remote_rdpclip(h)
+    }
+
     public func lastErrorMessage() -> String {
         stateLock.lock()
         let h = handle

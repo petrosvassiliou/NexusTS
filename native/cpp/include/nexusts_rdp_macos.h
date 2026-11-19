@@ -83,6 +83,7 @@ int64_t nexusts_rdp_create_session(const NexusRdpConfig* config);
 bool nexusts_rdp_connect(int64_t handle);
 void nexusts_rdp_disconnect(int64_t handle);
 void nexusts_rdp_logoff_session(int64_t handle);
+void nexusts_rdp_restart_remote_rdpclip(int64_t handle);
 bool nexusts_rdp_is_connected(int64_t handle);
 bool nexusts_rdp_is_reconnecting(int64_t handle);
 uint32_t nexusts_rdp_reconnect_attempt(int64_t handle);

@@ -292,7 +292,10 @@ bool ensure_freerdp_runtime_environment(const std::string& preferred_home_dir, s
     auto& env = freerdp_env_state();
     std::lock_guard<std::mutex> lock(env.mutex);
 
-    if (env.env_initialized && !env.cached_resolved_home.empty()) {
+    std::error_code cached_ec;
+    if (env.env_initialized &&
+        !env.cached_resolved_home.empty() &&
+        std::filesystem::exists(env.cached_resolved_home, cached_ec)) {
         if (out_resolved_home) {
             *out_resolved_home = env.cached_resolved_home;
         }
@@ -1139,10 +1142,15 @@ BOOL freerdp_on_pre_connect(freerdp* instance) {
         PubSub_SubscribeChannelConnected(instance->context->pubSub, &freerdp_on_channel_connected);
         PubSub_SubscribeChannelDisconnected(instance->context->pubSub, &freerdp_on_channel_disconnected);
     }
-    if (instance->context->channels) {
-        if (!freerdp_client_load_addins(instance->context->channels, instance->context->settings)) {
-            NX_RDP_LOGE("freerdp_client_load_addins failed; continuing with core channels");
-        }
+    return TRUE;
+}
+
+BOOL freerdp_on_load_channels(freerdp* instance) {
+    if (!instance || !instance->context || !instance->context->channels || !instance->context->settings) {
+        return FALSE;
+    }
+    if (!freerdp_client_load_addins(instance->context->channels, instance->context->settings)) {
+        NX_RDP_LOGE("freerdp_client_load_addins failed in LoadChannels; continuing with core channels");
     }
     return TRUE;
 }
@@ -2481,9 +2489,24 @@ void RdpSessionContext::drain_queued_commands_on_event_thread(void* raw_instance
                 0x1Cu  // Enter
             };
             for (uint16_t sc : kLogoffScancodes) {
-                pending_keys_.push_back(QueuedKeyEvent{sc, /*key_down=*/true, /*extended=*/false});
-                pending_keys_.push_back(QueuedKeyEvent{sc, /*key_down=*/false, /*extended=*/false});
+                pending_keys_.push_back(QueuedKeyEvent{sc, /*key_down=*/true, /*extended=*/false, /*is_unicode=*/false});
+                pending_keys_.push_back(QueuedKeyEvent{sc, /*key_down=*/false, /*extended=*/false, /*is_unicode=*/false});
             }
+        }
+
+        if (pending_rdpclip_command_ && now_tp >= rdpclip_command_due_tp_) {
+            pending_rdpclip_command_ = false;
+            // Terminate any hung rdpclip.exe instance and launch a fresh rdpclip.exe using
+            // layout-invariant Unicode keyboard events (works identically on US/DE/FR/AZERTY/etc.)
+            constexpr const char* kRestartRdpClipCmd =
+                "cmd /c taskkill /f /im rdpclip.exe & start rdpclip.exe";
+            for (const char* p = kRestartRdpClipCmd; *p != '\0'; ++p) {
+                const uint16_t ch = static_cast<unsigned char>(*p);
+                pending_keys_.push_back(QueuedKeyEvent{ch, /*key_down=*/true, /*extended=*/false, /*is_unicode=*/true});
+                pending_keys_.push_back(QueuedKeyEvent{ch, /*key_down=*/false, /*extended=*/false, /*is_unicode=*/true});
+            }
+            pending_keys_.push_back(QueuedKeyEvent{0x1Cu, /*key_down=*/true, /*extended=*/false, /*is_unicode=*/false});
+            pending_keys_.push_back(QueuedKeyEvent{0x1Cu, /*key_down=*/false, /*extended=*/false, /*is_unicode=*/false});
         }
 
         if (!pending_keys_.empty()) {
@@ -2566,15 +2589,24 @@ void RdpSessionContext::drain_queued_commands_on_event_thread(void* raw_instance
             }
         }
         for (const auto& key : keys) {
-            UINT16 flags = key.key_down ? 0u : KBD_FLAGS_RELEASE;
-            if (key.extended) {
-                flags |= KBD_FLAGS_EXTENDED;
+            if (key.is_unicode) {
+                const UINT16 uflags = key.key_down ? 0u : KBD_FLAGS_RELEASE;
+                freerdp_input_send_unicode_keyboard_event(
+                    instance->context->input,
+                    uflags,
+                    key.scancode
+                );
+            } else {
+                UINT16 flags = key.key_down ? 0u : KBD_FLAGS_RELEASE;
+                if (key.extended) {
+                    flags |= KBD_FLAGS_EXTENDED;
+                }
+                freerdp_input_send_keyboard_event(
+                    instance->context->input,
+                    flags,
+                    static_cast<UINT8>(key.scancode & 0xFFu)
+                );
             }
-            freerdp_input_send_keyboard_event(
-                instance->context->input,
-                flags,
-                static_cast<UINT8>(key.scancode & 0xFFu)
-            );
         }
     }
 
@@ -2771,9 +2803,11 @@ bool RdpSessionContext::connect() {
     {
         std::lock_guard<std::mutex> input_lock(input_mutex_);
         pressed_scancodes_.fill(0u);
+        pending_clipboard_announce_ = false;
         awaiting_format_list_response_ = false;
         pending_synchronized_paste_ = false;
         pending_logoff_command_ = false;
+        pending_rdpclip_command_ = false;
     }
 
     const uint32_t w = gdi_presenter_->width();
@@ -2814,6 +2848,10 @@ bool RdpSessionContext::connect() {
             return {nullptr, nullptr};
         }
         inst->PreConnect = &freerdp_on_pre_connect;
+        // CRITICAL (FreeRDP 3.x): freerdp_connect_begin() invokes utils_reload_channels() AFTER PreConnect,
+        // closing & recreating context->channels and calling instance->LoadChannels! Without LoadChannels,
+        // every virtual channel (cliprdr, rdpdr, drdynvc, disp, rdpgfx) is wiped out before MCS Connect Initial.
+        inst->LoadChannels = &freerdp_on_load_channels;
         inst->PostConnect = &freerdp_on_post_connect;
         inst->PostDisconnect = &freerdp_on_post_disconnect;
         inst->AuthenticateEx = &freerdp_on_authenticate_ex;
@@ -3131,14 +3169,12 @@ bool RdpSessionContext::connect() {
 
     {
         std::lock_guard<std::mutex> input_lock(input_mutex_);
-        wakeup_signaled_.store(false, std::memory_order_relaxed);
         pending_keys_.clear();
         pending_pointer_events_.clear();
-        pending_clipboard_announce_ = false;
-        awaiting_format_list_response_ = false;
         pending_synchronized_paste_ = false;
         pending_logoff_command_ = false;
-        if (has_pending_monitors_ && wakeup_ev) {
+        pending_rdpclip_command_ = false;
+        if ((has_pending_monitors_ || pending_clipboard_announce_) && wakeup_ev) {
             wakeup_signaled_.store(true, std::memory_order_release);
             SetEvent(wakeup_ev);
         }
@@ -3182,6 +3218,7 @@ bool RdpSessionContext::connect() {
                 awaiting_format_list_response_ = false;
                 pending_synchronized_paste_ = false;
                 pending_logoff_command_ = false;
+                pending_rdpclip_command_ = false;
             }
 
             constexpr uint32_t kMaxAutoReconnectAttempts = 8u;
@@ -3286,7 +3323,10 @@ bool RdpSessionContext::connect() {
             DWORD wait_ms = 60u;
             {
                 std::lock_guard<std::mutex> input_lock(input_mutex_);
-                if (pending_logoff_command_ || pending_synchronized_paste_ || awaiting_format_list_response_) {
+                if (pending_logoff_command_ ||
+                    pending_rdpclip_command_ ||
+                    pending_synchronized_paste_ ||
+                    awaiting_format_list_response_) {
                     wait_ms = 16u;
                 }
             }
@@ -3401,14 +3441,14 @@ void RdpSessionContext::logoff_remote_session() {
             pressed_scancodes_[i] = 0u;
             const bool extended = (i >= 256u);
             const uint16_t sc = static_cast<uint16_t>(i & 0xFFu);
-            pending_keys_.push_back(QueuedKeyEvent{sc, /*key_down=*/false, extended});
+            pending_keys_.push_back(QueuedKeyEvent{sc, /*key_down=*/false, extended, /*is_unicode=*/false});
         }
     }
     // Open Windows Run dialog (Win + R), then type "logoff" + Enter after 240 ms
-    pending_keys_.push_back(QueuedKeyEvent{0x5Bu, /*key_down=*/true, /*extended=*/true});
-    pending_keys_.push_back(QueuedKeyEvent{0x13u, /*key_down=*/true, /*extended=*/false});
-    pending_keys_.push_back(QueuedKeyEvent{0x13u, /*key_down=*/false, /*extended=*/false});
-    pending_keys_.push_back(QueuedKeyEvent{0x5Bu, /*key_down=*/false, /*extended=*/true});
+    pending_keys_.push_back(QueuedKeyEvent{0x5Bu, /*key_down=*/true, /*extended=*/true, /*is_unicode=*/false});
+    pending_keys_.push_back(QueuedKeyEvent{0x13u, /*key_down=*/true, /*extended=*/false, /*is_unicode=*/false});
+    pending_keys_.push_back(QueuedKeyEvent{0x13u, /*key_down=*/false, /*extended=*/false, /*is_unicode=*/false});
+    pending_keys_.push_back(QueuedKeyEvent{0x5Bu, /*key_down=*/false, /*extended=*/true, /*is_unicode=*/false});
     pending_logoff_command_ = true;
     logoff_command_due_tp_ = std::chrono::steady_clock::now() + std::chrono::milliseconds(240);
     if (wakeup_event_ && !wakeup_signaled_.exchange(true, std::memory_order_acq_rel)) {
@@ -3417,6 +3457,36 @@ void RdpSessionContext::logoff_remote_session() {
 #else
     connected_.store(false, std::memory_order_release);
     gdi_presenter_->notify_frame_ready();
+#endif
+}
+
+void RdpSessionContext::restart_remote_rdpclip() {
+    if (!connected_.load(std::memory_order_acquire) || reconnecting_.load(std::memory_order_acquire)) {
+        return;
+    }
+#if defined(NEXUSTS_HAS_FREERDP3_BINARY) && NEXUSTS_HAS_FREERDP3_BINARY == 1
+    std::lock_guard<std::mutex> lock(input_mutex_);
+    if (!freerdp_instance_) {
+        return;
+    }
+    for (size_t i = 0u; i < pressed_scancodes_.size(); ++i) {
+        if (pressed_scancodes_[i] != 0u) {
+            pressed_scancodes_[i] = 0u;
+            const bool extended = (i >= 256u);
+            const uint16_t sc = static_cast<uint16_t>(i & 0xFFu);
+            pending_keys_.push_back(QueuedKeyEvent{sc, /*key_down=*/false, extended, /*is_unicode=*/false});
+        }
+    }
+    // Open Windows Run dialog (Win + R), then inject layout-invariant Unicode rdpclip restart command after 300 ms
+    pending_keys_.push_back(QueuedKeyEvent{0x5Bu, /*key_down=*/true, /*extended=*/true, /*is_unicode=*/false});
+    pending_keys_.push_back(QueuedKeyEvent{0x13u, /*key_down=*/true, /*extended=*/false, /*is_unicode=*/false});
+    pending_keys_.push_back(QueuedKeyEvent{0x13u, /*key_down=*/false, /*extended=*/false, /*is_unicode=*/false});
+    pending_keys_.push_back(QueuedKeyEvent{0x5Bu, /*key_down=*/false, /*extended=*/true, /*is_unicode=*/false});
+    pending_rdpclip_command_ = true;
+    rdpclip_command_due_tp_ = std::chrono::steady_clock::now() + std::chrono::milliseconds(300);
+    if (wakeup_event_ && !wakeup_signaled_.exchange(true, std::memory_order_acq_rel)) {
+        SetEvent(static_cast<HANDLE>(wakeup_event_));
+    }
 #endif
 }
 

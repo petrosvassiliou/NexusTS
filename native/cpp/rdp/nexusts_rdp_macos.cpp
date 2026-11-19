@@ -17,6 +17,11 @@
 #include <unistd.h>
 
 #if defined(NEXUSTS_HAS_FREERDP3_BINARY) && NEXUSTS_HAS_FREERDP3_BINARY == 1
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <poll.h>
+#include <sys/socket.h>
+#include <thread>
 #include <freerdp/addin.h>
 #include <freerdp/channels/channels.h>
 #include <freerdp/client/channels.h>
@@ -254,6 +259,12 @@ void nexusts_rdp_release_all_keys(int64_t handle) {
 void nexusts_rdp_logoff_session(int64_t handle) {
     if (auto ctx = lookup_session(handle)) {
         ctx->logoff_remote_session();
+    }
+}
+
+void nexusts_rdp_restart_remote_rdpclip(int64_t handle) {
+    if (auto ctx = lookup_session(handle)) {
+        ctx->restart_remote_rdpclip();
     }
 }
 
@@ -1147,6 +1158,129 @@ bool nexusts_rdp_self_test_cliprdr_binary_roundtrip(const char* work_dir_utf8) {
             "[NexusTS Self-Test] FreeRDP addins/mask probe failed (mask_ok=%d, addins_ok=%d)\n",
             mask_ok ? 1 : 0,
             addins_ok ? 1 : 0
+        );
+        return false;
+    }
+
+    // v0.8.13 Regression 7: End-to-end loopback TCP X.224 + MCS Connect Initial wire verification!
+    // Proves RdpSessionContext::connect() registers instance->LoadChannels so FreeRDP 3.12's
+    // utils_reload_channels() preserves and negotiates "cliprdr", "rdpdr", and "drdynvc" in CS_NET!
+    const int srv_fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (srv_fd < 0) {
+        std::fprintf(stderr, "[NexusTS Self-Test] socket() failed\n");
+        return false;
+    }
+    int reuse_one = 1;
+    (void)::setsockopt(srv_fd, SOL_SOCKET, SO_REUSEADDR, &reuse_one, sizeof(reuse_one));
+    sockaddr_in srv_addr{};
+    srv_addr.sin_family = AF_INET;
+    srv_addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    srv_addr.sin_port = 0;
+    if (::bind(srv_fd, reinterpret_cast<const sockaddr*>(&srv_addr), sizeof(srv_addr)) != 0 ||
+        ::listen(srv_fd, 1) != 0) {
+        std::fprintf(stderr, "[NexusTS Self-Test] loopback bind/listen failed\n");
+        (void)::close(srv_fd);
+        return false;
+    }
+    socklen_t addr_len = sizeof(srv_addr);
+    if (::getsockname(srv_fd, reinterpret_cast<sockaddr*>(&srv_addr), &addr_len) != 0) {
+        (void)::close(srv_fd);
+        return false;
+    }
+    const uint16_t loopback_port = ntohs(srv_addr.sin_port);
+
+    std::vector<uint8_t> mcs_wire_bytes;
+    std::thread wire_srv([srv_fd, &mcs_wire_bytes]() {
+        pollfd pfd{};
+        pfd.fd = srv_fd;
+        pfd.events = POLLIN;
+        if (::poll(&pfd, 1, 5000) <= 0) {
+            return;
+        }
+        const int cfd = ::accept(srv_fd, nullptr, nullptr);
+        if (cfd < 0) {
+            return;
+        }
+#ifdef SO_NOSIGPIPE
+        int nosig = 1;
+        (void)::setsockopt(cfd, SOL_SOCKET, SO_NOSIGPIPE, &nosig, sizeof(nosig));
+#endif
+        timeval tv{};
+        tv.tv_sec = 2;
+        tv.tv_usec = 0;
+        (void)::setsockopt(cfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        (void)::setsockopt(cfd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+        // 1. Read X.224 Connection Request TPKT
+        uint8_t x224_req[512]{};
+        const ssize_t n_req = ::recv(cfd, x224_req, sizeof(x224_req), 0);
+        if (n_req >= 11) {
+            // 2. Reply with 11-byte X.224 Connection Confirm (Classic RDP PROTOCOL_RDP -> NEGO_STATE_FINAL)
+            constexpr uint8_t kX224Confirm[11] = {
+                0x03u, 0x00u, 0x00u, 0x0Bu, 0x06u, 0xD0u, 0x00u, 0x00u, 0x12u, 0x34u, 0x00u
+            };
+            if (::send(cfd, kX224Confirm, sizeof(kX224Confirm), 0) == static_cast<ssize_t>(sizeof(kX224Confirm))) {
+                // 3. Read client's MCS Connect Initial TPKT containing GCC Client Network Data (CS_NET)
+                uint8_t chunk[1024]{};
+                while (mcs_wire_bytes.size() < 8192u) {
+                    const ssize_t nr = ::recv(cfd, chunk, sizeof(chunk), 0);
+                    if (nr <= 0) {
+                        break;
+                    }
+                    mcs_wire_bytes.insert(mcs_wire_bytes.end(), chunk, chunk + nr);
+                    if (mcs_wire_bytes.size() >= 4u && mcs_wire_bytes[0] == 0x03u) {
+                        const size_t tpkt_len =
+                            (static_cast<size_t>(mcs_wire_bytes[2]) << 8) |
+                            static_cast<size_t>(mcs_wire_bytes[3]);
+                        if (tpkt_len >= 4u && mcs_wire_bytes.size() >= tpkt_len) {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        (void)::shutdown(cfd, SHUT_RDWR);
+        (void)::close(cfd);
+    });
+
+    nexusts::rdp::RdpConnectParams wire_params{};
+    wire_params.host = "127.0.0.1";
+    wire_params.port = loopback_port;
+    wire_params.redirect_clipboard = true;
+    wire_params.redirect_drives = true;
+    wire_params.shared_drive_name = "MacShare";
+    wire_params.shared_drive_local_path = src_dir.string();
+    wire_params.enable_dynamic_resize = true;
+    wire_params.enable_gfx_pipeline = true;
+    wire_params.nla_security = false;
+    wire_params.tls_security = false;
+    wire_params.app_home_dir = app_home.string();
+    {
+        nexusts::rdp::RdpSessionContext wire_session(wire_params);
+        (void)wire_session.connect();
+        wire_session.disconnect();
+    }
+    wire_srv.join();
+    (void)::close(srv_fd);
+
+    auto wire_contains_channel = [&](const char (&name8)[8]) -> bool {
+        const auto* begin = mcs_wire_bytes.data();
+        const auto* end = begin + mcs_wire_bytes.size();
+        return std::search(begin, end, name8, name8 + 8) != end;
+    };
+    const char kCliprdrName8[8] = {'c', 'l', 'i', 'p', 'r', 'd', 'r', '\0'};
+    const char kRdpdrName8[8] = {'r', 'd', 'p', 'd', 'r', '\0', '\0', '\0'};
+    const char kDrdynvcName8[8] = {'d', 'r', 'd', 'y', 'n', 'v', 'c', '\0'};
+    if (!wire_contains_channel(kCliprdrName8) ||
+        !wire_contains_channel(kRdpdrName8) ||
+        !wire_contains_channel(kDrdynvcName8)) {
+        std::fprintf(
+            stderr,
+            "[NexusTS Self-Test] MCS Connect Initial missing virtual channels in CS_NET (wire_bytes=%zu, cliprdr=%d, rdpdr=%d, drdynvc=%d)\n",
+            mcs_wire_bytes.size(),
+            wire_contains_channel(kCliprdrName8) ? 1 : 0,
+            wire_contains_channel(kRdpdrName8) ? 1 : 0,
+            wire_contains_channel(kDrdynvcName8) ? 1 : 0
         );
         return false;
     }

@@ -1,0 +1,1 @@
+• v0.8.13: Registra instance->LoadChannels in FreeRDP 3.12 (freerdp_on_load_channels) affinché utils_reload_channels() mantenga i canali virtuali cliprdr, rdpdr e drdynvc (disp + rdpgfx) durante MCS Connect Initial, attivando subito gli appunti bidirezionali per file e testo (Clipboard Active) e il reindirizzamento cartelle.

@@ -132,6 +132,9 @@ public struct RdpSessionView: View {
                                 Button("Restart Remote rdpclip.exe (Win+R)") {
                                     launchRemoteRdpClip(session: existingSession)
                                 }
+                                Button("Reconnect Session & Reset Clipboard Channel") {
+                                    triggerReconnect()
+                                }
                             } else if hudConnected {
                                 if isBasicVmConnect {
                                     Text("Hyper-V Basic Console does not expose CLIPRDR clipboard.")
@@ -150,7 +153,10 @@ public struct RdpSessionView: View {
                                         triggerReconnect()
                                     }
                                 }
-                                Button("Start Remote rdpclip.exe (Win+R)") {
+                                Button("Reconnect Session & Reset Clipboard Channel") {
+                                    triggerReconnect()
+                                }
+                                Button("Restart Remote rdpclip.exe (Win+R)") {
                                     launchRemoteRdpClip(session: existingSession)
                                 }
                             } else {
@@ -596,18 +602,10 @@ public struct RdpSessionView: View {
 
     private func launchRemoteRdpClip(session: NativeRdpSession?) {
         guard let session else { return }
-        // Win+R opens the Run dialog; "rdpclip" uses scancodes identical across US/DE/FR/UK/ES/IT layouts.
-        session.sendScancode(0x5B, keyDown: true, extended: true)
-        session.sendScancode(0x13, keyDown: true, extended: false)
-        session.sendScancode(0x13, keyDown: false, extended: false)
-        session.sendScancode(0x5B, keyDown: false, extended: true)
         Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 350_000_000)
-            let rdpclipScancodes: [UInt16] = [0x13, 0x20, 0x19, 0x2E, 0x26, 0x17, 0x19, 0x1C]
-            for sc in rdpclipScancodes {
-                session.sendScancode(sc, keyDown: true, extended: false)
-                session.sendScancode(sc, keyDown: false, extended: false)
-            }
+            // Allow AppKit NSMenu tracking loop to close cleanly before dispatching Win+R + Unicode restart
+            try? await Task.sleep(nanoseconds: 80_000_000)
+            session.restartRemoteRdpClip()
         }
     }
 

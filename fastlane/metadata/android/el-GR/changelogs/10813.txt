@@ -1,0 +1,1 @@
+• v0.8.13: Καταχωρεί το instance->LoadChannels στο FreeRDP 3.12 (freerdp_on_load_channels) ώστε η utils_reload_channels() να διατηρεί τα εικονικά κανάλια cliprdr, rdpdr και drdynvc (disp + rdpgfx) στο MCS Connect Initial, ενεργοποιώντας άμεσα την αμφίδρομη αντιγραφή αρχείων και κειμένου (Clipboard Active) και την ανακατεύθυνση φακέλων.

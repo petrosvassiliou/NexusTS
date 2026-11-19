@@ -380,6 +380,7 @@ public:
     void request_stop() noexcept;
     void disconnect();
     void logoff_remote_session();
+    void restart_remote_rdpclip();
     bool is_connected() const noexcept { return connected_.load(std::memory_order_acquire); }
     bool is_reconnecting() const noexcept { return reconnecting_.load(std::memory_order_acquire); }
     uint32_t reconnect_attempt() const noexcept { return reconnect_attempt_.load(std::memory_order_acquire); }
@@ -512,6 +513,7 @@ private:
         uint16_t scancode{0};
         bool key_down{false};
         bool extended{false};
+        bool is_unicode{false};
     };
 
     struct QueuedPointerEvent {
@@ -589,8 +591,10 @@ private:
     [[maybe_unused]] bool awaiting_format_list_response_{false};
     [[maybe_unused]] bool pending_synchronized_paste_{false};
     [[maybe_unused]] bool pending_logoff_command_{false};
+    [[maybe_unused]] bool pending_rdpclip_command_{false};
     std::chrono::steady_clock::time_point format_list_sent_tp_{};
     std::chrono::steady_clock::time_point logoff_command_due_tp_{};
+    std::chrono::steady_clock::time_point rdpclip_command_due_tp_{};
     std::atomic<void*> disp_context_{nullptr};
     std::atomic<bool> cliprdr_ready_{false};
     std::atomic<bool> enhanced_session_fallback_{false};
