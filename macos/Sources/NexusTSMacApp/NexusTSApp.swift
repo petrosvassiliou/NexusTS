@@ -429,7 +429,7 @@ struct NexusMenuBarCommands: Commands {
         }
         if keyWin?.firstResponder is NSText ||
             keyWin?.attachedSheet != nil ||
-            store.isPresentingQuickConnect {
+            store.isQuickConnectPresented {
             _ = NSApp.sendAction(selector, to: nil, from: nil)
             return
         }
