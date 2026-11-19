@@ -1,6 +1,6 @@
 {
   "name": "nexusts-chromeos-pwa",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "private": true,
   "type": "module",
   "description": "NexusTS ChromeOS Start-Menu PWA (Firebase Hosting) & Isolated Web App (.swbn)",

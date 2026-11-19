@@ -1,0 +1,2 @@
+• NexusTS 0.9.1: Refined uniform full-pill button & chip hover highlights with zero inner text-box artifacts across Android, macOS, and ChromeOS.
+• 1-Click ChromeOS Start-Menu PWA support via Firebase Hosting with App Launcher shortcuts & live background auto-updater.

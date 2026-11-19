@@ -1,0 +1,2 @@
+• NexusTS 0.9.1: Verbesserte, vollflächige Button- & Chip-Hover-Highlights ohne innere Streifen auf allen Plattformen.
+• 1-Klick ChromeOS-Startmenü-PWA (Firebase Hosting + automatischer Hintergrund-Updater & Launcher-Shortcuts).

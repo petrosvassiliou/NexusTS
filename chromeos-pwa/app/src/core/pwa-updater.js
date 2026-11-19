@@ -188,7 +188,7 @@ export function initChromeOSPwaLifecycle({ onAutoReloadSafe } = {}) {
   }, 30 * 60 * 1000);
 }
 
-export async function checkForSwAndReleaseUpdates(currentVersion = '0.9.0') {
+export async function checkForSwAndReleaseUpdates(currentVersion = '0.9.1') {
   let swWaiting = swUpdateWaiting;
   let remoteBuildChanged = false;
   let hostedVersion = currentVersion;

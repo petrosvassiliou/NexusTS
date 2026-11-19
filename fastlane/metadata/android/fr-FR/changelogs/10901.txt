@@ -1,0 +1,2 @@
+• NexusTS 0.9.1 : Surbrillances au survol uniformes sur tous les boutons et puces, sans bande intérieure, sur Android, macOS et ChromeOS.
+• PWA ChromeOS installable en 1 clic dans le menu Démarrer avec mises à jour automatiques.

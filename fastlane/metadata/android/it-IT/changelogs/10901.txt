@@ -1,0 +1,2 @@
+• NexusTS 0.9.1: Effetti hover uniformi su pulsanti e chip senza strisce interne su Android, macOS e ChromeOS.
+• PWA ChromeOS installabile con 1 clic nel menu Avvio con aggiornamenti automatici.

@@ -1,0 +1,2 @@
+• NexusTS 0.9.1: Resaltado uniforme al pasar el ratón en botones y chips sin franjas interiores en Android, macOS y ChromeOS.
+• PWA de ChromeOS instalable con 1 clic en el menú Inicio con actualizaciones automáticas.

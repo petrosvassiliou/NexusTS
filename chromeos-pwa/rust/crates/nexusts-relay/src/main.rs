@@ -809,7 +809,7 @@ async fn handle_client(mut stream: TcpStream) -> std::io::Result<()> {
                 &json!({
                     "ok": true,
                     "service": "nexusts-local-relay",
-                    "version": "0.9.0",
+                    "version": env!("CARGO_PKG_VERSION"),
                     "capabilities": ["tcp", "ssh", "sftp", "ftp", "wol", "ping", "portscan", "local-shell"]
                 }),
             )
@@ -934,14 +934,14 @@ async fn handle_client(mut stream: TcpStream) -> std::io::Result<()> {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "--version" || a == "-V") {
-        println!("nexusts-local-relay 0.9.0");
+        println!("nexusts-local-relay {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
     if args.iter().any(|a| a == "--self-test") {
         // RFC 6455 §4.2.2 test vector check
         let accept = websocket_accept_key("dGhlIHNhbXBsZSBub25jZQ==");
         assert_eq!(accept, "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
-        println!("NEXUSTS_RELAY_SELF_TEST_OK version=0.9.0");
+        println!("NEXUSTS_RELAY_SELF_TEST_OK version={}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
     let bind_addr = args
@@ -951,7 +951,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or(DEFAULT_BIND);
 
     let listener = TcpListener::bind(bind_addr).await?;
-    println!("[NexusTS Local Relay v0.9.0] Listening offline on http://{bind_addr}");
+    println!(
+        "[NexusTS Local Relay v{}] Listening offline on http://{bind_addr}",
+        env!("CARGO_PKG_VERSION")
+    );
     loop {
         let (sock, _) = listener.accept().await?;
         let _ = sock.set_nodelay(true);
