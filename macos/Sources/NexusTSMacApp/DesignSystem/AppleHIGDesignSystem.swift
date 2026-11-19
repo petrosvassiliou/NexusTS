@@ -98,27 +98,27 @@ public enum LiquidGlassMetrics {
     public static let hoverAnimation: Animation = .spring(response: 0.22, dampingFraction: 0.84)
 
     public static func specularRimGradient(colorScheme: ColorScheme, intensity: Double = 1.0) -> LinearGradient {
-        let topStop = (colorScheme == .dark ? 0.36 : 0.72) * intensity
-        let midStop = (colorScheme == .dark ? 0.08 : 0.18) * intensity
-        let bottomStop = (colorScheme == .dark ? 0.18 : 0.32) * intensity
+        let edgeAlpha = (colorScheme == .dark ? 0.24 : 0.28) * intensity
+        let baseAlpha = (colorScheme == .dark ? 0.14 : 0.18) * intensity
         return LinearGradient(
-            stops: [
-                .init(color: Color.white.opacity(topStop), location: 0.0),
-                .init(color: Color.white.opacity(midStop), location: 0.48),
-                .init(color: Color.white.opacity(bottomStop), location: 1.0)
+            colors: [
+                Color.primary.opacity(edgeAlpha * 0.45),
+                Color.primary.opacity(baseAlpha * 0.35)
             ],
-            startPoint: .topLeading,
-            endPoint: .bottomTrailing
+            startPoint: .top,
+            endPoint: .bottom
         )
     }
 
     public static func topRefractionSheen(colorScheme: ColorScheme, isHovered: Bool = false) -> LinearGradient {
-        let boost = isHovered ? 1.35 : 1.0
-        let topAlpha = (colorScheme == .dark ? 0.10 : 0.34) * boost
+        // Uniform subtle full-height luminosity (never a bright white horizontal band across the middle)
+        let uniformAlpha = isHovered
+            ? (colorScheme == .dark ? 0.05 : 0.03)
+            : (colorScheme == .dark ? 0.025 : 0.015)
         return LinearGradient(
             colors: [
-                Color.white.opacity(topAlpha),
-                Color.white.opacity(0.0)
+                Color.white.opacity(uniformAlpha),
+                Color.white.opacity(uniformAlpha * 0.65)
             ],
             startPoint: .top,
             endPoint: .bottom
@@ -136,6 +136,7 @@ private struct LiquidGlassSurfaceModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        let activeTint = tint ?? Color.accentColor
         let baseMaterial: Material = {
             switch prominence {
             case .subtle: return .ultraThinMaterial
@@ -145,7 +146,7 @@ private struct LiquidGlassSurfaceModifier: ViewModifier {
         }()
         let tintOpacity: Double = {
             if isSelected { return isHovered ? 0.22 : 0.16 }
-            if isHovered { return 0.11 }
+            if isHovered { return colorScheme == .dark ? 0.13 : 0.09 }
             return tint == nil ? 0.0 : 0.07
         }()
         let shadowRadius: CGFloat = {
@@ -167,21 +168,18 @@ private struct LiquidGlassSurfaceModifier: ViewModifier {
             .background {
                 ZStack {
                     shape.fill(baseMaterial)
-                    if let tint {
-                        shape.fill(tint.opacity(tintOpacity))
-                    } else if isHovered {
-                        shape.fill(Color.primary.opacity(colorScheme == .dark ? 0.06 : 0.04))
+                    if tintOpacity > 0 {
+                        shape.fill(activeTint.opacity(tintOpacity))
                     }
                     shape.fill(LiquidGlassMetrics.topRefractionSheen(colorScheme: colorScheme, isHovered: isHovered))
                 }
             }
             .overlay {
                 shape.strokeBorder(
-                    LiquidGlassMetrics.specularRimGradient(
-                        colorScheme: colorScheme,
-                        intensity: isSelected || isHovered ? 1.25 : 0.9
-                    ),
-                    lineWidth: isSelected ? 1.0 : 0.8
+                    isSelected || isHovered
+                        ? AnyShapeStyle(activeTint.opacity(isSelected ? 0.50 : 0.42))
+                        : AnyShapeStyle(LiquidGlassMetrics.specularRimGradient(colorScheme: colorScheme, intensity: 0.9)),
+                    lineWidth: isSelected ? 1.0 : 0.85
                 )
             }
             .shadow(color: Color.black.opacity(shadowOpacity), radius: shadowRadius, y: shadowRadius * 0.38)
@@ -206,7 +204,7 @@ private struct LiquidGlassCapsuleModifier: ViewModifier {
                             .fill(activeTint.opacity(isHovered ? 0.24 : 0.17))
                     } else if isHovered {
                         Capsule(style: .continuous)
-                            .fill(Color.primary.opacity(colorScheme == .dark ? 0.10 : 0.06))
+                            .fill(activeTint.opacity(colorScheme == .dark ? 0.14 : 0.10))
                     }
                     Capsule(style: .continuous)
                         .fill(LiquidGlassMetrics.topRefractionSheen(colorScheme: colorScheme, isHovered: isHovered))
@@ -216,14 +214,16 @@ private struct LiquidGlassCapsuleModifier: ViewModifier {
                 Capsule(style: .continuous)
                     .strokeBorder(
                         isSelected
-                            ? AnyShapeStyle(activeTint.opacity(0.46))
-                            : AnyShapeStyle(
-                                LiquidGlassMetrics.specularRimGradient(
-                                    colorScheme: colorScheme,
-                                    intensity: isHovered ? 1.15 : 0.78
-                                )
-                            ),
-                        lineWidth: 0.8
+                            ? AnyShapeStyle(activeTint.opacity(isHovered ? 0.62 : 0.46))
+                            : isHovered
+                                ? AnyShapeStyle(activeTint.opacity(0.45))
+                                : AnyShapeStyle(
+                                    LiquidGlassMetrics.specularRimGradient(
+                                        colorScheme: colorScheme,
+                                        intensity: 0.85
+                                    )
+                                ),
+                        lineWidth: 0.9
                     )
             }
     }

@@ -457,17 +457,15 @@ function renderUnifiedSettings() {
     bodyHtml = `
       <div class="studio-card">
         <h3>${esc(s.settingsTabGeneral)}</h3>
-        <div class="form-grid">
-          <div class="field-group">
-            <label>Language / Sprache</label>
-            <select class="select-input" data-change="set-locale">
-              ${SUPPORTED_LOCALES.map((l) => `<option value="${l.code}" ${store.state.locale === l.code ? 'selected' : ''}>${esc(l.label)}</option>`).join('')}
-            </select>
+        <div class="field-group">
+          <label>Language / Sprache</label>
+          <div class="topbar-cluster" style="flex-wrap:wrap;gap:8px">
+            ${SUPPORTED_LOCALES.map((l) => `<button type="button" class="pill-btn ${store.state.locale === l.code ? 'active' : ''}" data-action="select-locale" data-locale="${esc(l.code)}">${esc(l.label)}</button>`).join('')}
           </div>
-          <div class="field-group">
-            <label>Vault Name</label>
-            <input class="text-input" id="input-vault-name" value="${esc(doc.name)}" />
-          </div>
+        </div>
+        <div class="field-group" style="max-width:420px">
+          <label>Vault Name</label>
+          <input class="text-input" id="input-vault-name" value="${esc(doc.name)}" />
         </div>
         <div>
           <button type="button" class="pill-btn" data-action="save-vault-name">Save Vault Name</button>
@@ -1364,6 +1362,9 @@ function installEventDelegation() {
         break;
       case 'select-settings-tab':
         store.openSettingsTab(actionEl.getAttribute('data-tab-id'));
+        break;
+      case 'select-locale':
+        await store.setLocale(actionEl.getAttribute('data-locale'));
         break;
       case 'set-quick-filter':
         store.setState({ sidebarQuickFilter: actionEl.getAttribute('data-qf') });

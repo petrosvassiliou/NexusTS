@@ -76,8 +76,8 @@ fun parseHexColorOrNull(hex: String?): Color? {
 
 /**
  * Desktop-grade single-surface Choice Chip (`NexusChoiceChip`) replacing Material 3 `FilterChip`.
- * Renders a crisp stadium pill with smooth tonal hover transitions and ZERO inner text-box gray bars
- * or muddy platform hover ripples in Light and Dark themes.
+ * Renders a crisp stadium pill with smooth uniform full-surface hover transitions and ZERO inner
+ * text-box white/gray bars or muddy platform hover ripples in Light and Dark themes.
  */
 @Composable
 fun NexusChoiceChip(
@@ -89,7 +89,7 @@ fun NexusChoiceChip(
     showCheckmarkWhenSelected: Boolean = false,
     enabled: Boolean = true,
     monospace: Boolean = false,
-    accentColor: Color = MaterialTheme.colorScheme.secondary,
+    accentColor: Color = MaterialTheme.colorScheme.primary,
     modifier: Modifier = Modifier
 ) {
     val hover = rememberDesktopHoverState()
@@ -99,24 +99,24 @@ fun NexusChoiceChip(
 
     val bgColor by animateColorAsState(
         targetValue = when {
-            selected && isHovered -> lerp(MaterialTheme.colorScheme.secondaryContainer, accentColor, 0.14f)
-            selected -> MaterialTheme.colorScheme.secondaryContainer
-            isHovered -> lerp(MaterialTheme.colorScheme.surfaceContainerLow, accentColor, 0.10f)
-            else -> MaterialTheme.colorScheme.surfaceContainerLow
+            selected && isHovered -> lerp(MaterialTheme.colorScheme.primaryContainer, accentColor, 0.15f)
+            selected -> MaterialTheme.colorScheme.primaryContainer
+            isHovered -> lerp(MaterialTheme.colorScheme.surfaceContainerLowest, accentColor, 0.11f)
+            else -> MaterialTheme.colorScheme.surfaceContainerLowest
         },
         label = "ChoiceChipBg"
     )
     val borderColor by animateColorAsState(
         targetValue = when {
-            selected -> accentColor.copy(alpha = if (isHovered) 0.72f else 0.48f)
-            isHovered -> accentColor.copy(alpha = 0.48f)
-            else -> MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.65f)
+            selected -> accentColor.copy(alpha = if (isHovered) 0.72f else 0.45f)
+            isHovered -> accentColor.copy(alpha = 0.55f)
+            else -> MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.75f)
         },
         label = "ChoiceChipBorder"
     )
     val fgColor by animateColorAsState(
         targetValue = when {
-            selected -> MaterialTheme.colorScheme.onSecondaryContainer
+            selected -> MaterialTheme.colorScheme.onPrimaryContainer
             isHovered -> MaterialTheme.colorScheme.onSurface
             else -> MaterialTheme.colorScheme.onSurfaceVariant
         },
@@ -148,7 +148,7 @@ fun NexusChoiceChip(
         Row(
             modifier = Modifier.padding(horizontal = 15.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(9.dp)
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             if (effectiveIcon != null) {
                 Icon(
@@ -160,7 +160,7 @@ fun NexusChoiceChip(
             }
             Text(
                 text = label,
-                style = if (monospace) NexusTheme.monospace.keycapShortcut else MaterialTheme.typography.labelMedium,
+                style = if (monospace) NexusTheme.monospace.keycapShortcut else MaterialTheme.typography.labelLarge,
                 color = fgColor,
                 maxLines = 1,
                 softWrap = false,
@@ -192,17 +192,17 @@ fun NexusActionChip(
 
     val bgColor by animateColorAsState(
         targetValue = if (isHovered) {
-            lerp(MaterialTheme.colorScheme.surfaceContainerLow, accentColor, 0.10f)
+            lerp(MaterialTheme.colorScheme.surfaceContainerLowest, accentColor, 0.11f)
         } else {
-            MaterialTheme.colorScheme.surfaceContainerLow
+            MaterialTheme.colorScheme.surfaceContainerLowest
         },
         label = "ActionChipBg"
     )
     val borderColor by animateColorAsState(
         targetValue = if (isHovered) {
-            accentColor.copy(alpha = 0.50f)
+            accentColor.copy(alpha = 0.55f)
         } else {
-            MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.65f)
+            MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.75f)
         },
         label = "ActionChipBorder"
     )
@@ -227,7 +227,7 @@ fun NexusActionChip(
         Row(
             modifier = Modifier.padding(horizontal = 15.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(9.dp)
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             if (leadingIcon != null) {
                 Icon(
@@ -239,11 +239,230 @@ fun NexusActionChip(
             }
             Text(
                 text = label,
-                style = if (monospace) NexusTheme.monospace.keycapShortcut else MaterialTheme.typography.labelMedium,
+                style = if (monospace) NexusTheme.monospace.keycapShortcut else MaterialTheme.typography.labelLarge,
                 color = MaterialTheme.colorScheme.onSurface,
                 maxLines = 1,
                 softWrap = false,
                 overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+/**
+ * Desktop-grade Primary Filled Pill Button with smooth uniform edge-to-edge hover luminescence
+ * and zero AndroidRippleNode inner text-box artifacts.
+ */
+@Composable
+fun NexusPrimaryButton(
+    onClick: () -> Unit,
+    label: String,
+    leadingIcon: ImageVector? = null,
+    enabled: Boolean = true,
+    destructive: Boolean = false,
+    modifier: Modifier = Modifier
+) {
+    val hover = rememberDesktopHoverState()
+    val interactionSource = remember { MutableInteractionSource() }
+    val isHovered = hover.value.isHovered && enabled
+    val pillShape = RoundedCornerShape(99.dp)
+    val baseContainer = if (destructive) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+    val baseContent = if (destructive) MaterialTheme.colorScheme.onError else MaterialTheme.colorScheme.onPrimary
+
+    val bgColor by animateColorAsState(
+        targetValue = if (isHovered) lerp(baseContainer, Color.White, 0.14f) else baseContainer,
+        label = "PrimaryBtnBg"
+    )
+
+    Surface(
+        modifier = modifier
+            .height(40.dp)
+            .alpha(if (enabled) 1f else 0.45f)
+            .semantics { this.role = Role.Button }
+            .nexusHoverTracker(hover, if (enabled) PointerIcon.Hand else PointerIcon.Default)
+            .clip(pillShape)
+            .clickable(
+                enabled = enabled,
+                interactionSource = interactionSource,
+                indication = null,
+                onClick = onClick
+            ),
+        shape = pillShape,
+        color = bgColor,
+        contentColor = baseContent
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 18.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(7.dp)
+        ) {
+            if (leadingIcon != null) {
+                Icon(
+                    imageVector = leadingIcon,
+                    contentDescription = null,
+                    tint = baseContent,
+                    modifier = Modifier.size(16.dp)
+                )
+            }
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelLarge,
+                color = baseContent,
+                maxLines = 1,
+                softWrap = false
+            )
+        }
+    }
+}
+
+/**
+ * Desktop-grade Tonal Pill Button replacing `FilledTonalButton` with uniform full-capsule hover highlight.
+ */
+@Composable
+fun NexusTonalButton(
+    onClick: () -> Unit,
+    label: String,
+    leadingIcon: ImageVector? = null,
+    enabled: Boolean = true,
+    modifier: Modifier = Modifier
+) {
+    val hover = rememberDesktopHoverState()
+    val interactionSource = remember { MutableInteractionSource() }
+    val isHovered = hover.value.isHovered && enabled
+    val pillShape = RoundedCornerShape(99.dp)
+    val accent = MaterialTheme.colorScheme.primary
+
+    val bgColor by animateColorAsState(
+        targetValue = if (isHovered) {
+            lerp(MaterialTheme.colorScheme.primaryContainer, accent, 0.13f)
+        } else {
+            MaterialTheme.colorScheme.primaryContainer
+        },
+        label = "TonalBtnBg"
+    )
+    val borderColor by animateColorAsState(
+        targetValue = if (isHovered) accent.copy(alpha = 0.45f) else Color.Transparent,
+        label = "TonalBtnBorder"
+    )
+
+    Surface(
+        modifier = modifier
+            .height(40.dp)
+            .alpha(if (enabled) 1f else 0.45f)
+            .semantics { this.role = Role.Button }
+            .nexusHoverTracker(hover, if (enabled) PointerIcon.Hand else PointerIcon.Default)
+            .clip(pillShape)
+            .clickable(
+                enabled = enabled,
+                interactionSource = interactionSource,
+                indication = null,
+                onClick = onClick
+            ),
+        shape = pillShape,
+        color = bgColor,
+        contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+        border = BorderStroke(1.dp, borderColor)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 18.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(7.dp)
+        ) {
+            if (leadingIcon != null) {
+                Icon(
+                    imageVector = leadingIcon,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                    modifier = Modifier.size(16.dp)
+                )
+            }
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                maxLines = 1,
+                softWrap = false
+            )
+        }
+    }
+}
+
+/**
+ * Desktop-grade Outlined Pill Button replacing `OutlinedButton` with an opaque resting container
+ * and smooth full-surface hover tint (eliminating transparent-RenderNode inner white bands).
+ */
+@Composable
+fun NexusOutlinedButton(
+    onClick: () -> Unit,
+    label: String,
+    leadingIcon: ImageVector? = null,
+    enabled: Boolean = true,
+    modifier: Modifier = Modifier
+) {
+    val hover = rememberDesktopHoverState()
+    val interactionSource = remember { MutableInteractionSource() }
+    val isHovered = hover.value.isHovered && enabled
+    val pillShape = RoundedCornerShape(99.dp)
+    val accent = MaterialTheme.colorScheme.primary
+
+    val bgColor by animateColorAsState(
+        targetValue = if (isHovered) {
+            lerp(MaterialTheme.colorScheme.surfaceContainerLowest, accent, 0.10f)
+        } else {
+            MaterialTheme.colorScheme.surfaceContainerLowest
+        },
+        label = "OutlinedBtnBg"
+    )
+    val borderColor by animateColorAsState(
+        targetValue = if (isHovered) {
+            accent.copy(alpha = 0.55f)
+        } else {
+            MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.80f)
+        },
+        label = "OutlinedBtnBorder"
+    )
+    val fgColor by animateColorAsState(
+        targetValue = if (isHovered) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+        label = "OutlinedBtnFg"
+    )
+
+    Surface(
+        modifier = modifier
+            .height(40.dp)
+            .alpha(if (enabled) 1f else 0.45f)
+            .semantics { this.role = Role.Button }
+            .nexusHoverTracker(hover, if (enabled) PointerIcon.Hand else PointerIcon.Default)
+            .clip(pillShape)
+            .clickable(
+                enabled = enabled,
+                interactionSource = interactionSource,
+                indication = null,
+                onClick = onClick
+            ),
+        shape = pillShape,
+        color = bgColor,
+        contentColor = fgColor,
+        border = BorderStroke(1.dp, borderColor)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 18.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(7.dp)
+        ) {
+            if (leadingIcon != null) {
+                Icon(
+                    imageVector = leadingIcon,
+                    contentDescription = null,
+                    tint = fgColor,
+                    modifier = Modifier.size(16.dp)
+                )
+            }
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelLarge,
+                color = fgColor,
+                maxLines = 1,
+                softWrap = false
             )
         }
     }

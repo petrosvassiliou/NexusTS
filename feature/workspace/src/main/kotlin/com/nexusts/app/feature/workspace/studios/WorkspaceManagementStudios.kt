@@ -82,6 +82,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.nexusts.app.core.ui.components.NexusActionChip
 import com.nexusts.app.core.ui.components.NexusChoiceChip
+import com.nexusts.app.core.ui.components.NexusOutlinedButton
+import com.nexusts.app.core.ui.components.NexusPrimaryButton
+import com.nexusts.app.core.ui.components.NexusTonalButton
 import com.nexusts.app.core.ui.input.nexusDesktopPointerButtons
 import com.nexusts.app.core.ui.input.nexusHoverTracker
 import com.nexusts.app.core.ui.input.rememberDesktopHoverState
@@ -3814,14 +3817,12 @@ fun DriveSyncAndConflictStudioView(
 
                     if (isLinked) {
                         Spacer(modifier = Modifier.width(12.dp))
-                        Button(
+                        NexusPrimaryButton(
                             enabled = !driveIsSyncing,
-                            onClick = onTriggerDeltaSync
-                        ) {
-                            Icon(Icons.Outlined.CloudSync, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(if (driveIsSyncing) "Syncing…" else strings.actionSyncNow)
-                        }
+                            onClick = onTriggerDeltaSync,
+                            label = if (driveIsSyncing) "Syncing…" else strings.actionSyncNow,
+                            leadingIcon = Icons.Outlined.CloudSync
+                        )
                     }
                 }
 
@@ -3845,24 +3846,22 @@ fun DriveSyncAndConflictStudioView(
                             modifier = Modifier.padding(top = 6.dp),
                             horizontalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
-                            FilledTonalButton(onClick = onLinkExistingSafDriveVault) {
-                                Icon(Icons.Outlined.Folder, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(strings.syncLinkDriveSafOpen)
-                            }
-                            OutlinedButton(
+                            NexusTonalButton(
+                                onClick = onLinkExistingSafDriveVault,
+                                label = strings.syncLinkDriveSafOpen,
+                                leadingIcon = Icons.Outlined.Folder
+                            )
+                            NexusOutlinedButton(
                                 onClick = {
                                     if (driveLinkedSafLabel.isNotBlank()) {
                                         onUnlinkSafDriveVault()
                                     } else {
                                         onSignOutOAuthDrive()
                                     }
-                                }
-                            ) {
-                                Icon(Icons.Outlined.Delete, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("Disconnect")
-                            }
+                                },
+                                label = "Disconnect",
+                                leadingIcon = Icons.Outlined.Delete
+                            )
                         }
                     }
                 } else {
@@ -3883,16 +3882,16 @@ fun DriveSyncAndConflictStudioView(
                             horizontalArrangement = Arrangement.spacedBy(10.dp),
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Button(onClick = onCreateLiveSafDriveVault) {
-                                Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(strings.syncLinkDriveSafCreate)
-                            }
-                            FilledTonalButton(onClick = onLinkExistingSafDriveVault) {
-                                Icon(Icons.Outlined.Folder, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(strings.syncLinkDriveSafOpen)
-                            }
+                            NexusPrimaryButton(
+                                onClick = onCreateLiveSafDriveVault,
+                                label = strings.syncLinkDriveSafCreate,
+                                leadingIcon = Icons.Outlined.Add
+                            )
+                            NexusTonalButton(
+                                onClick = onLinkExistingSafDriveVault,
+                                label = strings.syncLinkDriveSafOpen,
+                                leadingIcon = Icons.Outlined.Folder
+                            )
                         }
                     }
                 }

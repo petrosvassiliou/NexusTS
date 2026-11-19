@@ -1,5 +1,11 @@
 package com.nexusts.app.core.ui.theme
 
+import androidx.compose.foundation.IndicationNodeFactory
+import androidx.compose.foundation.LocalIndication
+import androidx.compose.foundation.interaction.FocusInteraction
+import androidx.compose.foundation.interaction.HoverInteraction
+import androidx.compose.foundation.interaction.InteractionSource
+import androidx.compose.foundation.interaction.PressInteraction
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material.ripple.RippleAlpha
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -10,12 +16,86 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.runtime.remember
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.ContentDrawScope
+import androidx.compose.ui.node.DelegatableNode
+import androidx.compose.ui.node.DrawModifierNode
+import androidx.compose.ui.node.invalidateDraw
 import androidx.compose.ui.platform.LocalContext
+import kotlinx.coroutines.launch
+
+/**
+ * Pure-Compose, single-pass full-surface desktop hover & press indication that avoids Android's
+ * `RippleHostView` / `StateLayer` transparent-`RenderNode` partial-clear bug on ChromeOS ARCVM
+ * (which otherwise leaves a white/light-gray rectangular strip behind button text on mouse hover).
+ */
+private class NexusUniformDesktopIndication(
+    private val tintColor: Color
+) : IndicationNodeFactory {
+    override fun create(interactionSource: InteractionSource): DelegatableNode =
+        NexusUniformIndicationNode(interactionSource, tintColor)
+
+    override fun hashCode(): Int = tintColor.hashCode()
+
+    override fun equals(other: Any?): Boolean =
+        other is NexusUniformDesktopIndication && other.tintColor == tintColor
+
+    private class NexusUniformIndicationNode(
+        private val interactionSource: InteractionSource,
+        private val tintColor: Color
+    ) : Modifier.Node(), DrawModifierNode {
+        private var isPressed = false
+        private var isHovered = false
+        private var isFocused = false
+
+        override fun onAttach() {
+            coroutineScope.launch {
+                val presses = mutableSetOf<PressInteraction.Press>()
+                val hovers = mutableSetOf<HoverInteraction.Enter>()
+                val focuses = mutableSetOf<FocusInteraction.Focus>()
+                interactionSource.interactions.collect { interaction ->
+                    when (interaction) {
+                        is PressInteraction.Press -> presses.add(interaction)
+                        is PressInteraction.Release -> presses.remove(interaction.press)
+                        is PressInteraction.Cancel -> presses.remove(interaction.press)
+                        is HoverInteraction.Enter -> hovers.add(interaction)
+                        is HoverInteraction.Exit -> hovers.remove(interaction.enter)
+                        is FocusInteraction.Focus -> focuses.add(interaction)
+                        is FocusInteraction.Unfocus -> focuses.remove(interaction.focus)
+                    }
+                    val newPressed = presses.isNotEmpty()
+                    val newHovered = hovers.isNotEmpty()
+                    val newFocused = focuses.isNotEmpty()
+                    if (isPressed != newPressed || isHovered != newHovered || isFocused != newFocused) {
+                        isPressed = newPressed
+                        isHovered = newHovered
+                        isFocused = newFocused
+                        invalidateDraw()
+                    }
+                }
+            }
+        }
+
+        override fun ContentDrawScope.draw() {
+            val overlayAlpha = when {
+                isPressed -> 0.11f
+                isHovered -> 0.07f
+                isFocused -> 0.05f
+                else -> 0f
+            }
+            if (overlayAlpha > 0f) {
+                drawRect(color = tintColor.copy(alpha = overlayAlpha), size = size)
+            }
+            drawContent()
+        }
+    }
+}
 
 /**
  * Root Material 3 Expressive Theme for NexusTS (`com.nexusts.app`).
  * Provides Expressive color schemes, typography, spatial/effects spring physics,
- * morphing container shapes, subtle desktop hover ripple tuning, and multi-protocol extended colors.
+ * morphing container shapes, artifact-free desktop hover highlights, and multi-protocol extended colors.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -45,16 +125,21 @@ fun NexusTSTheme(
             lineHeight = defaultMono.terminalBold.lineHeight * terminalFontScale
         )
     )
-    val subtleDesktopRipple = remember {
+    // Disable Material3's AndroidRippleNode hover/focus StateLayer (`hoveredAlpha = 0f`, `focusedAlpha = 0f`)
+    // so transparent-surface chips & outlined buttons never suffer RenderNode inner text-box stripe artifacts!
+    val cleanPressOnlyRipple = remember(colorScheme.primary) {
         RippleConfiguration(
-            color = androidx.compose.ui.graphics.Color.Unspecified,
+            color = colorScheme.primary,
             rippleAlpha = RippleAlpha(
-                pressedAlpha = 0.10f,
-                focusedAlpha = 0.06f,
-                hoveredAlpha = 0.06f,
-                draggedAlpha = 0.08f
+                pressedAlpha = 0.09f,
+                focusedAlpha = 0f,
+                hoveredAlpha = 0f,
+                draggedAlpha = 0.06f
             )
         )
+    }
+    val uniformIndication = remember(colorScheme.primary) {
+        NexusUniformDesktopIndication(tintColor = colorScheme.primary)
     }
 
     MaterialTheme(
@@ -66,7 +151,8 @@ fun NexusTSTheme(
             LocalNexusExtendedColors provides extendedColors,
             LocalNexusMonospaceTypography provides scaledMono,
             LocalNexusMotion provides NexusMotionScheme(),
-            LocalRippleConfiguration provides subtleDesktopRipple,
+            LocalRippleConfiguration provides cleanPressOnlyRipple,
+            LocalIndication provides uniformIndication,
             content = content
         )
     }

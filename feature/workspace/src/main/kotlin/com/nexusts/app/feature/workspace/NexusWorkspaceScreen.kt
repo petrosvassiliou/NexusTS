@@ -178,7 +178,11 @@ import com.nexusts.app.core.ui.components.ExpressiveMorphingIconButton
 import com.nexusts.app.core.ui.components.ExpressiveSplitActionButton
 import com.nexusts.app.core.ui.components.NexusActionChip
 import com.nexusts.app.core.ui.components.NexusBrandEmblem
+import com.nexusts.app.core.ui.components.NexusChoiceChip
 import com.nexusts.app.core.ui.components.NexusLanguageFlagBadge
+import com.nexusts.app.core.ui.components.NexusOutlinedButton
+import com.nexusts.app.core.ui.components.NexusPrimaryButton
+import com.nexusts.app.core.ui.components.NexusTonalButton
 import com.nexusts.app.core.ui.components.parseHexColorOrNull
 import com.nexusts.app.core.ui.input.LocalNexusShortcutEngine
 import com.nexusts.app.core.ui.input.NexusShortcutAction
@@ -6314,10 +6318,10 @@ private fun LockVaultPassphraseDialog(
                                 horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
                                 timeoutOptions.forEach { (mins, label) ->
-                                    FilterChip(
+                                    NexusChoiceChip(
                                         selected = idleAutoLockMinutes == mins,
                                         onClick = { onChangeIdleAutoLockMinutes(mins) },
-                                        label = { Text(label, style = MaterialTheme.typography.labelMedium) }
+                                        label = label
                                     )
                                 }
                             }
@@ -8236,17 +8240,11 @@ private fun UnifiedWorkspaceSettingsScreen(
                         )
                     }
 
-                    FilledTonalButton(
-                        onClick = { viewModel.selectRailDestination("connections") }
-                    ) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Outlined.ArrowBack,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(strings.navConnections)
-                    }
+                    NexusTonalButton(
+                        onClick = { viewModel.selectRailDestination("connections") },
+                        label = strings.navConnections,
+                        leadingIcon = Icons.AutoMirrored.Outlined.ArrowBack
+                    )
                 }
 
                 Row(
@@ -8257,17 +8255,11 @@ private fun UnifiedWorkspaceSettingsScreen(
                 ) {
                     tabs.forEach { tab ->
                         val isSelected = tab.id == effectiveTabId
-                        FilterChip(
+                        NexusChoiceChip(
                             selected = isSelected,
                             onClick = { viewModel.selectRailDestination(tab.id) },
-                            label = { Text(tab.label) },
-                            leadingIcon = {
-                                Icon(
-                                    imageVector = tab.icon,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                            }
+                            label = tab.label,
+                            leadingIcon = tab.icon
                         )
                     }
                 }
@@ -8347,37 +8339,35 @@ private fun UnifiedWorkspaceSettingsScreen(
                                 )
                             }
                             Row(
+                                modifier = Modifier.horizontalScroll(rememberScrollState()),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
-                                Button(
+                                NexusPrimaryButton(
                                     enabled = newPassInput.length >= 6,
                                     onClick = {
                                         onSaveVaultSyncPassphrase(newPassInput, rememberPassToggle)
                                         newPassInput = ""
                                         passSavedNotice = true
-                                    }
-                                ) {
-                                    Icon(Icons.Outlined.VpnKey, contentDescription = null, modifier = Modifier.size(16.dp))
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text("Apply Passphrase")
-                                }
+                                    },
+                                    label = "Apply Passphrase",
+                                    leadingIcon = Icons.Outlined.VpnKey
+                                )
                                 if (uiState.driveRememberVaultPassphrase) {
-                                    OutlinedButton(
+                                    NexusOutlinedButton(
                                         onClick = {
                                             onClearVaultSyncPassphrase()
                                             rememberPassToggle = false
                                             passSavedNotice = false
-                                        }
-                                    ) {
-                                        Text("Clear Saved Passphrase")
-                                    }
+                                        },
+                                        label = "Clear Saved Passphrase"
+                                    )
                                 }
-                                FilledTonalButton(onClick = onQuickLockVault) {
-                                    Icon(Icons.Outlined.Lock, contentDescription = null, modifier = Modifier.size(16.dp))
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text(strings.actionLockVault)
-                                }
+                                NexusTonalButton(
+                                    onClick = onQuickLockVault,
+                                    label = strings.actionLockVault,
+                                    leadingIcon = Icons.Outlined.Lock
+                                )
                             }
                             if (passSavedNotice) {
                                 Text(
@@ -8417,10 +8407,10 @@ private fun UnifiedWorkspaceSettingsScreen(
                                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
                                     listOf(0 to "Off", 5 to "5 min", 15 to "15 min", 30 to "30 min").forEach { (mins, title) ->
-                                        FilterChip(
+                                        NexusChoiceChip(
                                             selected = uiState.idleAutoLockMinutes == mins,
                                             onClick = { onChangeIdleAutoLockMinutes(mins) },
-                                            label = { Text(title) }
+                                            label = title
                                         )
                                     }
                                 }
@@ -8533,25 +8523,24 @@ private fun UnifiedWorkspaceSettingsScreen(
                                 modifier = Modifier.horizontalScroll(rememberScrollState()),
                                 horizontalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
-                                Button(
+                                NexusPrimaryButton(
                                     enabled = !uiState.isCheckingForUpdates,
-                                    onClick = onCheckGitHubReleases
-                                ) {
-                                    Icon(Icons.Outlined.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text(if (uiState.isCheckingForUpdates) "Checking…" else strings.syncCheckGitHubUpdates)
-                                }
+                                    onClick = onCheckGitHubReleases,
+                                    label = if (uiState.isCheckingForUpdates) "Checking…" else strings.syncCheckGitHubUpdates,
+                                    leadingIcon = Icons.Outlined.Refresh
+                                )
                                 if (uiState.updateAvailable) {
-                                    FilledTonalButton(onClick = onDownloadVerifiedUpdateToFiles) {
-                                        Icon(Icons.Outlined.Download, contentDescription = null, modifier = Modifier.size(16.dp))
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text("Download ${uiState.updateLatestTag}")
-                                    }
+                                    NexusTonalButton(
+                                        onClick = onDownloadVerifiedUpdateToFiles,
+                                        label = "Download ${uiState.updateLatestTag}",
+                                        leadingIcon = Icons.Outlined.Download
+                                    )
                                 }
                                 if (uiState.githubLatestReleaseUrl.isNotBlank()) {
-                                    OutlinedButton(onClick = { onOpenGitHubReleaseUrl(uiState.githubLatestReleaseUrl) }) {
-                                        Text("Release Notes")
-                                    }
+                                    NexusOutlinedButton(
+                                        onClick = { onOpenGitHubReleaseUrl(uiState.githubLatestReleaseUrl) },
+                                        label = "Release Notes"
+                                    )
                                 }
                             }
                         }
@@ -8578,17 +8567,12 @@ private fun UnifiedWorkspaceSettingsScreen(
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
-                                Button(
+                                NexusPrimaryButton(
                                     onClick = onRequestResetDatabase,
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = MaterialTheme.colorScheme.error,
-                                        contentColor = MaterialTheme.colorScheme.onError
-                                    )
-                                ) {
-                                    Icon(Icons.Outlined.Delete, contentDescription = null, modifier = Modifier.size(16.dp))
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text(strings.actionResetDatabase)
-                                }
+                                    label = strings.actionResetDatabase,
+                                    leadingIcon = Icons.Outlined.Delete,
+                                    destructive = true
+                                )
                             }
                         }
                     }
@@ -8622,10 +8606,10 @@ private fun UnifiedWorkspaceSettingsScreen(
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
                                 SupportedNexusLocale.entries.forEach { locale ->
-                                    FilterChip(
+                                    NexusChoiceChip(
                                         selected = locale == currentLocale,
                                         onClick = { onSelectLocale(locale) },
-                                        label = { Text(strings.languageLabels[locale] ?: locale.name) }
+                                        label = strings.languageLabels[locale] ?: locale.name
                                     )
                                 }
                             }
@@ -8658,20 +8642,23 @@ private fun UnifiedWorkspaceSettingsScreen(
                                 modifier = Modifier.horizontalScroll(rememberScrollState()),
                                 horizontalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
-                                Button(onClick = onRequestImportFilePicker) {
-                                    Icon(Icons.Outlined.UploadFile, contentDescription = null, modifier = Modifier.size(16.dp))
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text(strings.actionImportRtsz)
-                                }
-                                FilledTonalButton(onClick = { onRequestExportVault(VaultExportFormat.NXTS_VAULT) }) {
-                                    Text(strings.actionExportNxts)
-                                }
-                                OutlinedButton(onClick = { onRequestExportVault(VaultExportFormat.RTSZ_ROYAL_ARCHIVE) }) {
-                                    Text(strings.actionExportRtsz)
-                                }
-                                OutlinedButton(onClick = { onRequestExportVault(VaultExportFormat.ENTERPRISE_CSV) }) {
-                                    Text(strings.actionExportCsv)
-                                }
+                                NexusPrimaryButton(
+                                    onClick = onRequestImportFilePicker,
+                                    label = strings.actionImportRtsz,
+                                    leadingIcon = Icons.Outlined.UploadFile
+                                )
+                                NexusTonalButton(
+                                    onClick = { onRequestExportVault(VaultExportFormat.NXTS_VAULT) },
+                                    label = strings.actionExportNxts
+                                )
+                                NexusOutlinedButton(
+                                    onClick = { onRequestExportVault(VaultExportFormat.RTSZ_ROYAL_ARCHIVE) },
+                                    label = strings.actionExportRtsz
+                                )
+                                NexusOutlinedButton(
+                                    onClick = { onRequestExportVault(VaultExportFormat.ENTERPRISE_CSV) },
+                                    label = strings.actionExportCsv
+                                )
                             }
                         }
                     }
