@@ -1081,7 +1081,7 @@ private final class RdpAsyncMetalPresenter: @unchecked Sendable {
     }
 }
 
-private struct RdpSurfaceTelemetrySnapshot {
+struct RdpSurfaceTelemetrySnapshot {
     let isConnected: Bool
     let isConnecting: Bool
     let isReconnecting: Bool

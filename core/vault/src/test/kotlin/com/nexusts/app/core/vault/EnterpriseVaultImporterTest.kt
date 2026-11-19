@@ -1464,11 +1464,15 @@ class EnterpriseVaultImporterTest {
         assertEquals(2179, defaultHv.effectivePort())
         assertEquals("11111111-2222-3333-4444-555555555555;EnhancedMode=1", defaultHv.effectivePreconnectionBlob())
 
-        val fastSerializer = NxtsVaultSerializer(
-            NxtsVaultSerializer.Argon2idParameters(memoryKiB = 8_192, iterations = 1, parallelism = 1)
+        val fastSerializer = com.nexusts.app.core.vault.crypto.NxtsVaultSerializer(
+            com.nexusts.app.core.vault.crypto.KdfSecurityParameters(
+                memoryKiB = 8192,
+                iterations = 1,
+                parallelism = 1
+            )
         )
         val preV0812Doc = NxtsVaultDocument(
-            id = "doc-v0812-heal",
+            documentId = "doc-v0812-heal",
             name = "Pre-v0.8.12 Hyper-V Vault",
             connections = listOf(
                 VaultConnection(
