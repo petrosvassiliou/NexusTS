@@ -1165,7 +1165,7 @@ bool nexusts_rdp_self_test_cliprdr_binary_roundtrip(const char* work_dir_utf8) {
     // v0.8.13 Regression 7: End-to-end loopback TCP X.224 + MCS Connect Initial wire verification!
     // Proves RdpSessionContext::connect() registers instance->LoadChannels so FreeRDP 3.12's
     // utils_reload_channels() preserves and negotiates "cliprdr", "rdpdr", and "drdynvc" in CS_NET!
-    const int srv_fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    int srv_fd = ::socket(AF_INET, SOCK_STREAM, 0);
     if (srv_fd < 0) {
         std::fprintf(stderr, "[NexusTS Self-Test] socket() failed\n");
         return false;
@@ -1189,15 +1189,35 @@ bool nexusts_rdp_self_test_cliprdr_binary_roundtrip(const char* work_dir_utf8) {
     }
     const uint16_t loopback_port = ntohs(srv_addr.sin_port);
 
+    nexusts::rdp::RdpConnectParams wire_params{};
+    wire_params.host = "127.0.0.1";
+    wire_params.port = loopback_port;
+    wire_params.redirect_clipboard = true;
+    wire_params.redirect_drives = true;
+    wire_params.shared_drive_name = "MacShare";
+    wire_params.shared_drive_local_path = src_dir.string();
+    wire_params.enable_dynamic_resize = true;
+    wire_params.enable_gfx_pipeline = true;
+    wire_params.nla_security = false;
+    wire_params.tls_security = false;
+    wire_params.app_home_dir = app_home.string();
+    nexusts::rdp::RdpSessionContext wire_session(wire_params);
+
     std::vector<uint8_t> mcs_wire_bytes;
-    std::thread wire_srv([srv_fd, &mcs_wire_bytes]() {
+    std::thread wire_srv([&srv_fd, &mcs_wire_bytes, &wire_session]() {
         pollfd pfd{};
         pfd.fd = srv_fd;
         pfd.events = POLLIN;
         if (::poll(&pfd, 1, 5000) <= 0) {
+            (void)::close(srv_fd);
+            srv_fd = -1;
             return;
         }
         const int cfd = ::accept(srv_fd, nullptr, nullptr);
+        // Close listener immediately so FreeRDP's post-EOF reconnect check gets instant ECONNREFUSED
+        // instead of queuing a second unaccepted connection in the kernel TCP backlog!
+        (void)::close(srv_fd);
+        srv_fd = -1;
         if (cfd < 0) {
             return;
         }
@@ -1239,29 +1259,17 @@ bool nexusts_rdp_self_test_cliprdr_binary_roundtrip(const char* work_dir_utf8) {
                 }
             }
         }
+        wire_session.request_stop();
         (void)::shutdown(cfd, SHUT_RDWR);
         (void)::close(cfd);
     });
 
-    nexusts::rdp::RdpConnectParams wire_params{};
-    wire_params.host = "127.0.0.1";
-    wire_params.port = loopback_port;
-    wire_params.redirect_clipboard = true;
-    wire_params.redirect_drives = true;
-    wire_params.shared_drive_name = "MacShare";
-    wire_params.shared_drive_local_path = src_dir.string();
-    wire_params.enable_dynamic_resize = true;
-    wire_params.enable_gfx_pipeline = true;
-    wire_params.nla_security = false;
-    wire_params.tls_security = false;
-    wire_params.app_home_dir = app_home.string();
-    {
-        nexusts::rdp::RdpSessionContext wire_session(wire_params);
-        (void)wire_session.connect();
-        wire_session.disconnect();
-    }
+    (void)wire_session.connect();
+    wire_session.disconnect();
     wire_srv.join();
-    (void)::close(srv_fd);
+    if (srv_fd >= 0) {
+        (void)::close(srv_fd);
+    }
 
     auto wire_contains_channel = [&](const char (&name8)[8]) -> bool {
         const auto* begin = mcs_wire_bytes.data();
