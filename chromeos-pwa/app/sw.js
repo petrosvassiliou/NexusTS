@@ -1,6 +1,7 @@
-// NexusTS 100% Offline-First Service Worker (`v0.9.0`).
+// NexusTS 100% Offline-First & Auto-Updating Service Worker (`v0.9.0`).
 // Precaches every HTML, CSS, ES module, WebAssembly binary, manifest, and icon on install
-// so NexusTS boots and operates completely offline on ChromeOS with zero network connectivity.
+// so NexusTS boots and operates completely offline from the ChromeOS Startmenü (App Launcher)
+// while updating seamlessly whenever a new build is deployed to Firebase Hosting.
 
 const CACHE_NAME = 'nexusts-chromeos-offline-v0.9.0';
 
@@ -23,6 +24,7 @@ const PRECACHE_ASSETS = [
   './src/core/importers-exporters.js',
   './src/core/offline-drive-sync.js',
   './src/core/i18n.js',
+  './src/core/pwa-updater.js',
   './src/core/workspace-store.js',
   './src/protocols/socket-transport.js',
   './src/protocols/vt-terminal.js',
@@ -49,10 +51,12 @@ self.addEventListener('install', (event) => {
   event.waitUntil(
     (async () => {
       const cache = await caches.open(CACHE_NAME);
-      await cache.addAll(PRECACHE_ASSETS);
-      // Optionally precache Wasm accelerator if built & present
+      await cache.addAll(
+        PRECACHE_ASSETS.map((assetUrl) => new Request(assetUrl, { cache: 'reload' }))
+      );
+      // Precache Wasm accelerator if built & present
       try {
-        const wasmResp = await fetch('./wasm/nexusts_wasm.wasm');
+        const wasmResp = await fetch(new Request('./wasm/nexusts_wasm.wasm', { cache: 'reload' }));
         if (wasmResp.ok) await cache.put('./wasm/nexusts_wasm.wasm', wasmResp);
       } catch {}
       await self.skipWaiting();
@@ -70,13 +74,20 @@ self.addEventListener('activate', (event) => {
   );
 });
 
+self.addEventListener('message', (event) => {
+  if (event.data && event.data.type === 'SKIP_WAITING') {
+    self.skipWaiting();
+  }
+});
+
 self.addEventListener('fetch', (event) => {
   const req = event.request;
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
 
-  // Never intercept local relay or GitHub API checks
+  // Never intercept local relay, GitHub API checks, or live version.json probes
   if (url.origin !== self.location.origin) return;
+  if (url.pathname.endsWith('/version.json')) return;
 
   event.respondWith(
     (async () => {

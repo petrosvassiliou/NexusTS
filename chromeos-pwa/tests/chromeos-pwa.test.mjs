@@ -16,6 +16,7 @@ import {
   unsealVaultDocument
 } from '../app/src/core/nxts-crypto.js';
 import { ChromeOSDriveSyncBridge } from '../app/src/core/offline-drive-sync.js';
+import { canInstallPwa, compareSemver, isRunningStandalone } from '../app/src/core/pwa-updater.js';
 import {
   createStarterVault,
   defaultInheritableProperties,
@@ -39,7 +40,11 @@ import { BufferedByteStream } from '../app/src/protocols/socket-transport.js';
 import { parseOpenSshEd25519PrivateKeyPem } from '../app/src/protocols/ssh-sftp-client.js';
 import { computeVncDesResponse, NexusVncSession } from '../app/src/protocols/vnc-client.js';
 import { VtTerminalEmulator } from '../app/src/protocols/vt-terminal.js';
-import { buildAllChromeOSArtifacts, verifyStrictOfflineAndCsp } from '../scripts/build-chromeos-bundles.mjs';
+import {
+  buildAllChromeOSArtifacts,
+  buildFirebaseHostingSite,
+  verifyStrictOfflineAndCsp
+} from '../scripts/build-chromeos-bundles.mjs';
 
 test('1. RFC 9106 Argon2id exact vector & .nxts v2 zero-knowledge container roundtrip + tamper rejection', async () => {
   const rfcTag = argon2idRaw({
@@ -399,3 +404,46 @@ test('6. Workspace Store: v0.8.14 sidebar active-tab switching, 8-tab Settings, 
   // CBOR 4-item array (0x84) + 8-byte bstr (0x48) + 🖋📦 Integrity Block magic (f0 9f 96 8b f0 9f 93 a6)
   assert.equal(swbnHead.toString('hex'), '8448f09f968bf09f93a6');
 });
+
+test('7. Firebase Hosting ChromeOS Start-Menu PWA (nexusts-prod): manifest shortcuts, no-cache SW headers & stamped buildHash', () => {
+  const repoRoot = new URL('../..', import.meta.url);
+  const firebaserc = JSON.parse(fs.readFileSync(new URL('.firebaserc', repoRoot), 'utf8'));
+  assert.equal(firebaserc.projects.default, 'nexusts-prod');
+
+  const firebaseJson = JSON.parse(fs.readFileSync(new URL('firebase.json', repoRoot), 'utf8'));
+  assert.equal(firebaseJson.hosting.public, 'chromeos-pwa/hosting-dist');
+  const noCacheRule = firebaseJson.hosting.headers.find((h) => h.source.includes('sw.js'));
+  assert.ok(noCacheRule);
+  assert.equal(noCacheRule.headers[0].value, 'no-cache, no-store, must-revalidate');
+
+  const hostingInfo = buildFirebaseHostingSite({ version: '0.9.1', releaseTag: 'v0.9.1' });
+  assert.equal(hostingInfo.buildHash.length, 12);
+  assert.ok(fs.existsSync(hostingInfo.versionJsonPath));
+
+  const versionJson = JSON.parse(fs.readFileSync(hostingInfo.versionJsonPath, 'utf8'));
+  assert.equal(versionJson.version, '0.9.1');
+  assert.equal(versionJson.buildHash, hostingInfo.buildHash);
+
+  const hostedSw = fs.readFileSync(`${hostingInfo.hostingDistDir}/sw.js`, 'utf8');
+  assert.ok(hostedSw.includes(`nexusts-chromeos-offline-v0.9.1-${hostingInfo.buildHash}`));
+  assert.equal(hostedSw.includes('.well-known'), false);
+  assert.ok(hostedSw.includes("event.data.type === 'SKIP_WAITING'"));
+
+  const hostedManifest = JSON.parse(fs.readFileSync(`${hostingInfo.hostingDistDir}/manifest.webmanifest`, 'utf8'));
+  assert.equal(hostedManifest.display, 'standalone');
+  assert.equal(hostedManifest.start_url, './?source=pwa');
+  assert.equal(hostedManifest.shortcuts.length, 4);
+  assert.equal(hostedManifest.version, '0.9.1');
+
+  assert.equal(compareSemver('0.9.1', '0.9.0'), 1);
+  assert.equal(compareSemver('0.9.0', '0.9.0-beta.1'), 1);
+  assert.equal(canInstallPwa(), false);
+  assert.equal(isRunningStandalone(), false);
+
+  for (const loc of SUPPORTED_LOCALES) {
+    const dict = resolveStrings(loc.code);
+    assert.ok(dict.installAppCta.length > 0);
+    assert.ok(dict.applyUpdateCta.length > 0);
+  }
+});
+

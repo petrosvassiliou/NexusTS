@@ -4,6 +4,14 @@
 import { SUPPORTED_LOCALES } from '../core/i18n.js';
 import { computeTotpCode, generateEd25519OpenSshKeypair } from '../core/nxts-crypto.js';
 import {
+  applyPendingSwUpdate,
+  checkForSwAndReleaseUpdates,
+  getPwaLifecycleSnapshot,
+  initChromeOSPwaLifecycle,
+  promptPwaInstall,
+  subscribePwaLifecycle
+} from '../core/pwa-updater.js';
+import {
   defaultInheritableProperties,
   defaultSettingsForProtocol,
   effectiveConnectionPort,
@@ -680,12 +688,25 @@ function renderUnifiedSettings() {
   } else if (tab === 'updates') {
     bodyHtml = `
       <div class="studio-card">
-        <h3>NexusTS ChromeOS Edition v${esc(store.state.appVersion)}</h3>
-        <p>100% Offline Service Worker &amp; Signed Web Bundle (.swbn) Ready — works with zero internet connectivity.</p>
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+          <div>
+            <h3>NexusTS ChromeOS Edition v${esc(store.state.appVersion)}</h3>
+            <p>100% Offline Service Worker &amp; ChromeOS Startmenü-App — läuft nach dem ersten Öffnen komplett ohne Internetverbindung.</p>
+          </div>
+          ${store.state.pwaStandalone
+            ? `<span class="status-chip online"><span class="status-dot"></span>${esc(s.installedStandaloneBadge)}</span>`
+            : store.state.pwaInstallAvailable
+              ? `<button type="button" class="pill-btn primary" data-action="install-pwa" data-tooltip="${esc(s.installAppTooltip)}">⬇ ${esc(s.installAppCta)}</button>`
+              : ''}
+        </div>
         <div class="topbar-cluster">
-          <button type="button" class="pill-btn primary" data-action="check-github-updates">Check GitHub Releases</button>
+          ${store.state.swUpdateWaiting
+            ? `<button type="button" class="pill-btn primary" data-action="apply-sw-update">↻ ${esc(s.applyUpdateCta)}</button>`
+            : ''}
+          <button type="button" class="pill-btn primary" data-action="check-github-updates">Check Updates</button>
           <button type="button" class="pill-btn" data-action="refresh-offline-sw">Verify Offline Cache</button>
         </div>
+        ${store.state.localBuildHash ? `<p style="margin-top:4px;font-size:11px;color:var(--text-muted)">Build Hash: <code>${esc(store.state.localBuildHash)}</code></p>` : ''}
         ${store.state.updateCheckStatus ? `<p style="margin-top:6px">${esc(store.state.updateCheckStatus)}</p>` : ''}
       </div>
     `;
@@ -787,6 +808,7 @@ function renderActiveSessionsStage() {
         <div class="topbar-cluster">
           <button type="button" class="pill-btn primary" data-action="open-connection-modal">+ ${esc(s.newConnection)}</button>
           <button type="button" class="pill-btn" data-action="open-settings-sync">☁️ ${esc(s.driveTitle)}</button>
+          ${store.state.pwaInstallAvailable ? `<button type="button" class="pill-btn primary" data-action="install-pwa" data-tooltip="${esc(s.installAppTooltip)}">⬇ ${esc(s.installAppCta)}</button>` : ''}
         </div>
       </div>
     `;
@@ -1177,6 +1199,12 @@ function renderWorkspace() {
       </form>
 
       <div class="topbar-cluster">
+        ${st.swUpdateWaiting
+          ? `<button type="button" class="pill-btn primary" data-action="apply-sw-update" data-tooltip="${esc(s.updateReadyTooltip)}">↻ ${esc(s.applyUpdateCta)}</button>`
+          : ''}
+        ${st.pwaInstallAvailable
+          ? `<button type="button" class="pill-btn primary" data-action="install-pwa" data-tooltip="${esc(s.installAppTooltip)}">⬇ ${esc(s.installAppCta)}</button>`
+          : ''}
         <span class="status-chip ${st.directSocketsAvailable || st.localRelayReachable ? 'online' : ''}">
           <span class="status-dot"></span>${esc(transportLabel)}
         </span>
@@ -1721,19 +1749,30 @@ function installEventDelegation() {
         await refreshRelayStatus();
         break;
       }
-      case 'check-github-updates': {
-        store.setState({ updateCheckStatus: 'Checking GitHub Releases…' });
-        try {
-          const res = await fetch('https://api.github.com/repos/petrosvassiliou/NexusTS/releases/latest');
-          const data = await res.json();
-          store.setState({
-            latestReleaseTag: data.tag_name || '',
-            latestReleaseUrl: data.html_url || '',
-            updateCheckStatus: data.tag_name ? `Latest GitHub Release: ${data.tag_name}` : 'Up to date (offline bundle active).'
-          });
-        } catch {
-          store.setState({ updateCheckStatus: 'Offline mode active — local v0.9.0 bundle verified.' });
+      case 'install-pwa': {
+        const res = await promptPwaInstall();
+        if (res.outcome === 'accepted') {
+          store.showToast('NexusTS wurde ins ChromeOS-Startmenü installiert.');
         }
+        break;
+      }
+      case 'apply-sw-update': {
+        await applyPendingSwUpdate();
+        break;
+      }
+      case 'check-github-updates': {
+        store.setState({ updateCheckStatus: 'Checking Firebase Hosting & GitHub Releases…' });
+        const check = await checkForSwAndReleaseUpdates(store.state.appVersion);
+        store.setState({
+          latestReleaseTag: check.latestTag || '',
+          latestReleaseUrl: check.releaseUrl || '',
+          swUpdateWaiting: Boolean(check.swWaiting),
+          updateCheckStatus: check.swWaiting
+            ? `Neues ChromeOS-Web-App-Update bereit (${check.latestTag}) — klicke auf „${store.strings.applyUpdateCta}“.`
+            : check.hasUpdate
+              ? `Neues Release verfügbar: ${check.latestTag}`
+              : `Aktuell (v${store.state.appVersion} — 100 % Offline-Cache aktiv).`
+        });
         break;
       }
       case 'refresh-offline-sw': {
@@ -1986,20 +2025,48 @@ function installEventDelegation() {
 }
 
 async function bootstrap() {
-  if ('serviceWorker' in navigator && location.protocol !== 'isolated-app:') {
-    navigator.serviceWorker.register('./sw.js').catch(() => {});
-  }
+  subscribePwaLifecycle((snap) => {
+    store.setState({
+      pwaStandalone: snap.standalone,
+      pwaInstallAvailable: snap.installPromptAvailable,
+      swUpdateWaiting: snap.swUpdateWaiting,
+      localBuildHash: snap.localBuildHash || store.state.localBuildHash
+    });
+  });
+  initChromeOSPwaLifecycle({
+    // Auto-reload immediately on background SW update only when no live remote session would be interrupted
+    onAutoReloadSafe: () => store.state.tabs.length === 0
+  });
+  const initSnap = getPwaLifecycleSnapshot();
+  store.setState({
+    pwaStandalone: initSnap.standalone,
+    pwaInstallAvailable: initSnap.installPromptAvailable,
+    swUpdateWaiting: initSnap.swUpdateWaiting
+  });
+
   store.subscribe(() => renderWorkspace());
   installEventDelegation();
   installDiscreetTooltips();
   await store.initializeOffline();
   await refreshRelayStatus();
 
-  // Launch detached connection automatically if opened in a detached ChromeOS window
+  // Launch detached connection or ChromeOS Start-Menu App Shortcut (`?action=...`)
   const params = new URLSearchParams(location.search);
   const detachedConnId = params.get('detachedConn');
+  const launcherAction = params.get('action');
   if (detachedConnId && !store.state.isVaultLocked) {
     store.launchConnection(detachedConnId);
+  } else if (launcherAction && !store.state.isVaultLocked) {
+    if (launcherAction === 'new-connection') {
+      activeModal = { kind: 'connection', connId: '' };
+      renderModal();
+    } else if (launcherAction === 'quick-connect') {
+      setTimeout(() => document.getElementById('quick-connect-input')?.focus(), 60);
+    } else if (launcherAction === 'drive-sync') {
+      store.openSettingsTab('sync');
+    } else if (launcherAction === 'settings') {
+      store.openSettingsTab('general');
+    }
   }
 
   // Handle ChromeOS PWA File Handler launch (`.nxts` / `.rtsz` / `.rtsx` double-clicked in ChromeOS Files)

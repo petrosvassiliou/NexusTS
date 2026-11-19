@@ -15,6 +15,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(__dirname, '..');
 const APP_DIR = path.join(ROOT_DIR, 'app');
 const DIST_DIR = path.join(ROOT_DIR, 'dist');
+const HOSTING_DIST_DIR = path.join(ROOT_DIR, 'hosting-dist');
 
 const MIME_BY_EXT = {
   '.html': 'text/html;charset=utf-8',
@@ -269,8 +270,72 @@ export function verifyStrictOfflineAndCsp() {
   return { precachedCount: paths.length };
 }
 
-export function buildAllChromeOSArtifacts({ version = '0.9.0', releaseTag = 'v0.9.0' } = {}) {
+export function buildFirebaseHostingSite({ version = '0.9.0', releaseTag = 'v0.9.0' } = {}) {
   const audit = verifyStrictOfflineAndCsp();
+  fs.rmSync(HOSTING_DIST_DIR, { recursive: true, force: true });
+  fs.mkdirSync(HOSTING_DIST_DIR, { recursive: true });
+
+  const appFiles = walkFiles(APP_DIR).filter((f) => !f.rel.startsWith('.well-known/'));
+  const hasher = crypto.createHash('sha256');
+
+  for (const file of appFiles) {
+    const dest = path.join(HOSTING_DIST_DIR, file.rel);
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    const bytes = fs.readFileSync(file.full);
+    fs.writeFileSync(dest, bytes);
+    hasher.update(file.rel);
+    hasher.update(bytes);
+  }
+
+  const buildHash = hasher.digest('hex').slice(0, 12);
+  const hasWasm = fs.existsSync(path.join(HOSTING_DIST_DIR, 'wasm', 'nexusts_wasm.wasm'));
+
+  // Stamp deterministic content-addressed CACHE_NAME & Firebase-clean PRECACHE_ASSETS into hosting-dist/sw.js
+  const swDestPath = path.join(HOSTING_DIST_DIR, 'sw.js');
+  let swContent = fs.readFileSync(swDestPath, 'utf8');
+  swContent = swContent.replace(
+    /const CACHE_NAME\s*=\s*'[^']+';/,
+    `const CACHE_NAME = 'nexusts-chromeos-offline-v${version}-${buildHash}';`
+  );
+  swContent = swContent.replace(/\s*'\.\/\.well-known\/manifest\.webmanifest',?\n/, '\n');
+  if (hasWasm && !swContent.includes("'./wasm/nexusts_wasm.wasm',")) {
+    swContent = swContent.replace(
+      "'./src/ui/app.js'",
+      "'./src/ui/app.js',\n  './wasm/nexusts_wasm.wasm'"
+    );
+  }
+  fs.writeFileSync(swDestPath, swContent);
+
+  // Stamp version into hosting-dist/manifest.webmanifest
+  const manifestDestPath = path.join(HOSTING_DIST_DIR, 'manifest.webmanifest');
+  const manifestObj = JSON.parse(fs.readFileSync(manifestDestPath, 'utf8'));
+  manifestObj.version = version;
+  fs.writeFileSync(manifestDestPath, `${JSON.stringify(manifestObj, null, 2)}\n`);
+
+  // Emit live version.json (served with Cache-Control: no-cache, no-store, must-revalidate by firebase.json)
+  const versionMeta = {
+    name: 'NexusTS ChromeOS PWA',
+    version,
+    releaseTag,
+    buildHash,
+    wasmBundled: hasWasm,
+    builtAt: new Date().toISOString()
+  };
+  const versionJsonPath = path.join(HOSTING_DIST_DIR, 'version.json');
+  fs.writeFileSync(versionJsonPath, `${JSON.stringify(versionMeta, null, 2)}\n`);
+
+  return {
+    hostingDistDir: HOSTING_DIST_DIR,
+    hostingFileCount: appFiles.length + 1,
+    precachedCount: audit.precachedCount,
+    buildHash,
+    wasmBundled: hasWasm,
+    versionJsonPath
+  };
+}
+
+export function buildAllChromeOSArtifacts({ version = '0.9.0', releaseTag = 'v0.9.0' } = {}) {
+  const hosting = buildFirebaseHostingSite({ version, releaseTag });
   fs.mkdirSync(DIST_DIR, { recursive: true });
 
   const files = walkFiles(APP_DIR);
@@ -297,8 +362,11 @@ export function buildAllChromeOSArtifacts({ version = '0.9.0', releaseTag = 'v0.
   execFileSync('zip', ['-r', '-q', zipPath, '.'], { cwd: APP_DIR });
 
   return {
-    precachedCount: audit.precachedCount,
+    precachedCount: hosting.precachedCount,
     bundledFileCount: files.length,
+    hostingDistDir: hosting.hostingDistDir,
+    hostingBuildHash: hosting.buildHash,
+    wasmBundled: hosting.wasmBundled,
     webBundleId,
     origin,
     swbnPath,
@@ -312,6 +380,9 @@ export function buildAllChromeOSArtifacts({ version = '0.9.0', releaseTag = 'v0.
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const tag = process.env.NEXUSTS_RELEASE_TAG || 'v0.9.0';
   const ver = tag.replace(/^v/, '');
-  const info = buildAllChromeOSArtifacts({ version: ver, releaseTag: tag });
+  const hostingOnly = process.argv.includes('--hosting-only');
+  const info = hostingOnly
+    ? buildFirebaseHostingSite({ version: ver, releaseTag: tag })
+    : buildAllChromeOSArtifacts({ version: ver, releaseTag: tag });
   console.log(JSON.stringify(info, null, 2));
 }

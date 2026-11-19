@@ -1,13 +1,14 @@
 {
-  "id": "com.nexusts.app.chromeos",
+  "id": "./",
   "name": "NexusTS",
   "short_name": "NexusTS",
   "version": "0.9.0",
   "description": "Offline-capable Remote Desktop (RDP), SSH, SFTP, VNC & Zero-Knowledge .nxts Connection Manager for ChromeOS.",
-  "start_url": "./index.html",
+  "start_url": "./?source=pwa",
   "scope": "./",
   "display": "standalone",
-  "display_override": ["window-controls-overlay", "standalone"],
+  "display_override": ["window-controls-overlay", "standalone", "minimal-ui"],
+  "orientation": "any",
   "background_color": "#0c111b",
   "theme_color": "#0c111b",
   "categories": ["productivity", "utilities", "developer tools"],
@@ -31,9 +32,63 @@
       "purpose": "maskable"
     }
   ],
+  "shortcuts": [
+    {
+      "name": "Neue Verbindung",
+      "short_name": "Verbindung",
+      "description": "Neue RDP-, SSH-, SFTP- oder VNC-Verbindung anlegen",
+      "url": "./?action=new-connection",
+      "icons": [
+        {
+          "src": "./icons/icon-192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
+    },
+    {
+      "name": "Schnellverbindung",
+      "short_name": "Schnellstart",
+      "description": "Direkt per Ad-hoc-Adresse verbinden (ssh://, rdp://, vnc://)",
+      "url": "./?action=quick-connect",
+      "icons": [
+        {
+          "src": "./icons/icon-192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
+    },
+    {
+      "name": "Google Drive Sync",
+      "short_name": "Drive Sync",
+      "description": "Google Drive .nxts Tresor-Synchronisierung öffnen",
+      "url": "./?action=drive-sync",
+      "icons": [
+        {
+          "src": "./icons/icon-192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
+    },
+    {
+      "name": "Einstellungen",
+      "short_name": "Einstellungen",
+      "description": "NexusTS Einstellungen & Anmeldedaten öffnen",
+      "url": "./?action=settings",
+      "icons": [
+        {
+          "src": "./icons/icon-192.png",
+          "sizes": "192x192",
+          "type": "image/png"
+        }
+      ]
+    }
+  ],
   "file_handlers": [
     {
-      "action": "./index.html",
+      "action": "./?source=file-handler",
       "accept": {
         "application/octet-stream": [".nxts", ".rtsz", ".1pux"],
         "application/xml": [".rtsx", ".xml"]

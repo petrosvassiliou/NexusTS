@@ -411,6 +411,54 @@ const STRINGS = {
 // Fix Italian typo on settingsTabTasks cleanly
 STRINGS.it.settingsTabTasks = 'Attività';
 
+const PWA_INSTALL_STRINGS = {
+  en: {
+    installAppCta: 'Install App',
+    installAppTooltip: 'Install NexusTS directly into your ChromeOS Launcher & Shelf (100% offline)',
+    installedStandaloneBadge: 'Installed in ChromeOS Launcher (Standalone)',
+    applyUpdateCta: 'Apply Update',
+    updateReadyTooltip: 'A new NexusTS update is ready — click to reload seamlessly'
+  },
+  de: {
+    installAppCta: 'Ins Startmenü installieren',
+    installAppTooltip: 'NexusTS mit 1 Klick fest ins ChromeOS-Startmenü & in die Ablage installieren (100 % offlinefähig)',
+    installedStandaloneBadge: 'Im ChromeOS-Startmenü installiert (Standalone)',
+    applyUpdateCta: 'Update anwenden',
+    updateReadyTooltip: 'Neues NexusTS-Update im Hintergrund geladen — Klick zum sofortigen Aktivieren'
+  },
+  fr: {
+    installAppCta: 'Installer l’application',
+    installAppTooltip: 'Installer NexusTS dans le lanceur ChromeOS (100 % hors ligne)',
+    installedStandaloneBadge: 'Installé dans le lanceur ChromeOS',
+    applyUpdateCta: 'Appliquer la mise à jour',
+    updateReadyTooltip: 'Nouvelle version prête — cliquer pour recharger'
+  },
+  it: {
+    installAppCta: 'Installa app',
+    installAppTooltip: 'Installa NexusTS nel menu Avvio di ChromeOS (100% offline)',
+    installedStandaloneBadge: 'Installata nel launcher ChromeOS',
+    applyUpdateCta: 'Applica aggiornamento',
+    updateReadyTooltip: 'Nuovo aggiornamento pronto — clicca per ricaricare'
+  },
+  es: {
+    installAppCta: 'Instalar aplicación',
+    installAppTooltip: 'Instalar NexusTS en el menú de inicio de ChromeOS (100 % sin conexión)',
+    installedStandaloneBadge: 'Instalada en el lanzador de ChromeOS',
+    applyUpdateCta: 'Aplicar actualización',
+    updateReadyTooltip: 'Nueva actualización lista — haz clic para recargar'
+  },
+  el: {
+    installAppCta: 'Εγκατάσταση εφαρμογής',
+    installAppTooltip: 'Εγκατάσταση του NexusTS στη γραμμή εκκίνησης του ChromeOS (100% εκτός σύνδεσης)',
+    installedStandaloneBadge: 'Εγκατεστημένο στο ChromeOS Launcher',
+    applyUpdateCta: 'Εφαρμογή ενημέρωσης',
+    updateReadyTooltip: 'Νέα ενημέρωση έτοιμη — κάντε κλικ για επαναφόρτωση'
+  }
+};
+for (const [code, extra] of Object.entries(PWA_INSTALL_STRINGS)) {
+  Object.assign(STRINGS[code], extra);
+}
+
 export function resolveStrings(localeCode = 'de') {
   const short = String(localeCode || 'de').toLowerCase().slice(0, 2);
   return STRINGS[short] || STRINGS.en;
