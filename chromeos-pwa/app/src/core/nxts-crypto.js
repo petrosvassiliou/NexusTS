@@ -32,6 +32,10 @@ export const INTERACTIVE_FAST_KDF_PARAMS = Object.freeze({
   parallelism: 1
 });
 
+// Byte-for-byte identical transparent sync key used by macOS (`NxtsVaultSerializer.defaultTransparentPassphrase`)
+// and Android (`DEFAULT_LIVE_DRIVE_PASSPHRASE`) when the user has not configured a custom Master Passphrase.
+export const DEFAULT_TRANSPARENT_PASSPHRASE = 'NexusTS-LiveDriveSync-ZeroKnowledge-v1';
+
 const HKDF_INFO = new TextEncoder().encode('nexusts-vault-v2-aes256gcm');
 
 export class VaultAuthenticationError extends Error {
@@ -189,19 +193,46 @@ export async function openNxtsBytes(containerBytes, passphraseString) {
   }
 }
 
-export async function sealVaultDocument(document, passphraseString, kdfParams = DEFAULT_KDF_PARAMS) {
+export async function sealVaultDocument(
+  document,
+  passphraseString = DEFAULT_TRANSPARENT_PASSPHRASE,
+  kdfParams = DEFAULT_KDF_PARAMS
+) {
+  const effectivePass = passphraseString || DEFAULT_TRANSPARENT_PASSPHRASE;
   const sanitized = sanitizeVaultDocument(document);
   const jsonText = JSON.stringify(sanitized);
   const plainBytes = new TextEncoder().encode(jsonText);
   try {
-    return await sealNxtsBytes(plainBytes, passphraseString, sanitized.revision || 1, kdfParams);
+    return await sealNxtsBytes(plainBytes, effectivePass, sanitized.revision || 1, kdfParams);
   } finally {
     plainBytes.fill(0);
   }
 }
 
-export async function unsealVaultDocument(containerBytes, passphraseString) {
-  const { plaintext } = await openNxtsBytes(containerBytes, passphraseString);
+export async function unsealVaultDocument(containerBytes, passphraseString = '') {
+  // Support unencrypted UTF-8 JSON `.nxts` document fallback if encountered
+  if (
+    containerBytes instanceof Uint8Array &&
+    containerBytes.length > 2 &&
+    !hasNxtsMagic(containerBytes) &&
+    containerBytes[0] === 0x7b
+  ) {
+    const parsed = JSON.parse(new TextDecoder().decode(containerBytes));
+    return migrateLegacyDefaultRdpScale(sanitizeVaultDocument(parsed));
+  }
+
+  const effectivePass = passphraseString || DEFAULT_TRANSPARENT_PASSPHRASE;
+  let opened;
+  try {
+    opened = await openNxtsBytes(containerBytes, effectivePass);
+  } catch (err) {
+    if (effectivePass === DEFAULT_TRANSPARENT_PASSPHRASE && err?.name === 'VaultAuthenticationError') {
+      opened = await openNxtsBytes(containerBytes, '');
+    } else {
+      throw err;
+    }
+  }
+  const { plaintext } = opened;
   try {
     const jsonText = new TextDecoder().decode(plaintext);
     const parsed = JSON.parse(jsonText);

@@ -8,8 +8,8 @@
   "scope": "/",
   "display": "standalone",
   "display_override": ["window-controls-overlay", "standalone"],
-  "background_color": "#0c111b",
-  "theme_color": "#0c111b",
+  "background_color": "#f8fafc",
+  "theme_color": "#ffffff",
   "permissions_policy": {
     "cross-origin-isolated": ["self"],
     "direct-sockets": ["self"],

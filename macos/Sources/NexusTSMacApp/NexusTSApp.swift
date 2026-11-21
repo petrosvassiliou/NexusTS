@@ -6,6 +6,7 @@ import SwiftUI
 
 public final class NexusMacAppDelegate: NSObject, NSApplicationDelegate {
     public func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.appearance = NSAppearance(named: .aqua)
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         MainActor.assumeIsolated {
@@ -62,6 +63,7 @@ public struct NexusTSApp: App {
         WindowGroup(id: "main-workspace") {
             NexusMainWindowView()
                 .environmentObject(store)
+                .preferredColorScheme(.light)
                 .frame(minWidth: 980, minHeight: 620)
                 .onAppear {
                     let s = store
@@ -92,6 +94,7 @@ public struct NexusTSApp: App {
             if let id = tabId {
                 DetachedSessionWindowRootView(tabId: id)
                     .environmentObject(store)
+                    .preferredColorScheme(.light)
                     .frame(minWidth: 720, minHeight: 480)
             }
         }
@@ -100,11 +103,13 @@ public struct NexusTSApp: App {
         Settings {
             MacSettingsView()
                 .environmentObject(store)
+                .preferredColorScheme(.light)
         }
 
         MenuBarExtra("NexusTS", systemImage: "network.badge.shield.half.filled") {
             MenuBarQuickAgentView()
                 .environmentObject(store)
+                .preferredColorScheme(.light)
         }
         .menuBarExtraStyle(.window)
     }

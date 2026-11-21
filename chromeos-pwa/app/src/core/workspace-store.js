@@ -4,7 +4,12 @@
 
 import { detectInitialLocale, resolveStrings } from './i18n.js';
 import { applyVaultImportPlacement, exportVaultDocument, importEnterpriseVaultBytes } from './importers-exporters.js';
-import { DEFAULT_KDF_PARAMS, sealVaultDocument, unsealVaultDocument } from './nxts-crypto.js';
+import {
+  DEFAULT_KDF_PARAMS,
+  DEFAULT_TRANSPARENT_PASSPHRASE,
+  sealVaultDocument,
+  unsealVaultDocument
+} from './nxts-crypto.js';
 import {
   ChromeOSDriveSyncBridge,
   idbGet,
@@ -48,12 +53,14 @@ export class NexusChromeOSStore {
     this._remoteWatchTimer = null;
     this._syncLocked = false;
     this._pendingSyncAfterCurrent = false;
-    this._masterPassphrase = '';
+    this._masterPassphrase = DEFAULT_TRANSPARENT_PASSPHRASE;
 
     this.state = {
       initialized: false,
       locale: detectInitialLocale(),
+      themeMode: 'LIGHT',
       hasEncryptedLocalVault: false,
+      hasCustomPassphrase: false,
       isVaultLocked: false,
       isStarterUninitialized: true,
       vaultUnlockError: '',
@@ -89,6 +96,7 @@ export class NexusChromeOSStore {
       // Google Drive Sync state
       driveLinkedName: '',
       driveIsSyncing: false,
+      driveNeedsPermissionGrant: false,
       driveStatusMessage: '',
       driveLastSyncedEpochMs: 0,
 
@@ -139,6 +147,7 @@ export class NexusChromeOSStore {
     await requestPersistentOfflineStorage();
     const prefs = (await idbGet('workspace.prefs')) || {};
     if (prefs.locale) this.state.locale = prefs.locale;
+    if (prefs.themeMode) this.state.themeMode = prefs.themeMode;
     if (typeof prefs.idleAutoLockMinutes === 'number') this.state.idleAutoLockMinutes = prefs.idleAutoLockMinutes;
     if (prefs.localRelayUrl) {
       this.state.localRelayUrl = prefs.localRelayUrl;
@@ -149,15 +158,34 @@ export class NexusChromeOSStore {
     if (linkedMeta) {
       this.state.driveLinkedName = linkedMeta.displayName || 'NexusTS-Vault.nxts';
       this.state.driveLastSyncedEpochMs = linkedMeta.lastSyncedEpochMs || 0;
+      const permState = await this.driveBridge.transport?.queryPermissionState?.('readwrite');
+      if (permState && permState !== 'granted') {
+        this.state.driveNeedsPermissionGrant = true;
+        this.state.driveStatusMessage = 'Click "Sync Now" (or anywhere) to resume Google Drive sync.';
+      }
     }
 
     const sealed = await loadEncryptedVaultFromOfflineStore();
     if (sealed && sealed.length > 0) {
       this.state.hasEncryptedLocalVault = true;
-      this.state.isVaultLocked = true;
       this.state.isStarterUninitialized = false;
+      // Just like macOS WorkspaceStore.swift: try transparent sync key automatically first!
+      try {
+        const autoDoc = await unsealVaultDocument(sealed, DEFAULT_TRANSPARENT_PASSPHRASE);
+        this._masterPassphrase = DEFAULT_TRANSPARENT_PASSPHRASE;
+        this.state.hasCustomPassphrase = false;
+        this.state.isVaultLocked = false;
+        this.state.vaultDocument = autoDoc;
+        this.state.expandedFolderIds = new Set((autoDoc.folders || []).map((f) => f.id));
+        this.state.selectedConnectionId = autoDoc.connections[0]?.id || null;
+      } catch {
+        // User set a custom Master Passphrase -> show lock shield
+        this._masterPassphrase = '';
+        this.state.hasCustomPassphrase = true;
+        this.state.isVaultLocked = true;
+      }
     } else {
-      // Load unencrypted local draft if user hasn't set a master passphrase yet, or fresh starter vault
+      // Load unencrypted local draft if present, or fresh starter vault
       const draft = await idbGet('vault.unencryptedDraft');
       if (draft && draft.documentId) {
         const sanitized = sanitizeVaultDocument(draft);
@@ -171,11 +199,33 @@ export class NexusChromeOSStore {
     this.state.initialized = true;
     this._emit();
 
-    // Automatic startup sync if vault is unlocked and a passphrase/link exists
-    if (!this.state.isVaultLocked && this.driveBridge.isLinked() && this._masterPassphrase) {
+    // Automatic startup sync if vault is unlocked and permission is granted
+    if (
+      !this.state.isVaultLocked &&
+      this.driveBridge.isLinked() &&
+      !this.state.driveNeedsPermissionGrant &&
+      this._masterPassphrase
+    ) {
       await this.triggerGoogleDriveSync({ reason: 'startup', silent: true });
     }
     this._startBackgroundWatchers();
+  }
+
+  async tryRestoreDrivePermissionOnUserGesture() {
+    if (!this.state.driveNeedsPermissionGrant || !this.driveBridge.isLinked()) return false;
+    try {
+      const ok = await this.driveBridge.transport?.ensurePermission?.('readwrite', true);
+      if (ok) {
+        this.setState({ driveNeedsPermissionGrant: false });
+        if (!this.state.isVaultLocked && this._masterPassphrase) {
+          await this.triggerGoogleDriveSync({ reason: 'gesture-regrant', silent: true });
+        }
+        return true;
+      }
+    } catch {
+      // Ignore if browser disallowed prompt on this event
+    }
+    return false;
   }
 
   _startBackgroundWatchers() {
@@ -187,13 +237,19 @@ export class NexusChromeOSStore {
       if (
         this.state.idleAutoLockMinutes > 0 &&
         !this.state.isVaultLocked &&
-        this._masterPassphrase &&
+        this.state.hasCustomPassphrase &&
         Date.now() - this.state.lastActivityEpochMs >= this.state.idleAutoLockMinutes * 60000
       ) {
         this.lockVault();
         return;
       }
-      if (!this.state.isVaultLocked && this.driveBridge.isLinked() && this._masterPassphrase && !this._syncLocked) {
+      if (
+        !this.state.isVaultLocked &&
+        this.driveBridge.isLinked() &&
+        !this.state.driveNeedsPermissionGrant &&
+        this._masterPassphrase &&
+        !this._syncLocked
+      ) {
         const changed = await this.driveBridge.hasRemoteContentChanged();
         if (changed) {
           await this.triggerGoogleDriveSync({ reason: 'remote-change', silent: true });
@@ -202,7 +258,13 @@ export class NexusChromeOSStore {
     }, 6000);
 
     globalThis.window.addEventListener('focus', async () => {
-      if (!this.state.isVaultLocked && this.driveBridge.isLinked() && this._masterPassphrase && !this._syncLocked) {
+      if (
+        !this.state.isVaultLocked &&
+        this.driveBridge.isLinked() &&
+        !this.state.driveNeedsPermissionGrant &&
+        this._masterPassphrase &&
+        !this._syncLocked
+      ) {
         if (await this.driveBridge.hasRemoteContentChanged()) {
           await this.triggerGoogleDriveSync({ reason: 'window-focus', silent: true });
         }
@@ -213,6 +275,7 @@ export class NexusChromeOSStore {
   async savePreferences() {
     await idbSet('workspace.prefs', {
       locale: this.state.locale,
+      themeMode: this.state.themeMode,
       idleAutoLockMinutes: this.state.idleAutoLockMinutes,
       localRelayUrl: this.state.localRelayUrl
     });
@@ -392,9 +455,13 @@ export class NexusChromeOSStore {
 
   async setMasterPassphraseAndEncrypt(newPassphrase) {
     const clean = String(newPassphrase || '');
-    if (clean.length < 4) throw new Error('Passphrase must be at least 4 characters');
-    this._masterPassphrase = clean;
-    const sealed = await sealVaultDocument(this.state.vaultDocument, clean, this.kdfParams);
+    const isCustom = clean.length > 0;
+    if (isCustom && clean.length < 4) {
+      throw new Error('Passphrase must be at least 4 characters (or leave blank to reset to transparent sync key).');
+    }
+    const effective = isCustom ? clean : DEFAULT_TRANSPARENT_PASSPHRASE;
+    this._masterPassphrase = effective;
+    const sealed = await sealVaultDocument(this.state.vaultDocument, effective, this.kdfParams);
     await saveEncryptedVaultToOfflineStore(sealed, {
       documentId: this.state.vaultDocument.documentId,
       revision: this.state.vaultDocument.revision
@@ -402,6 +469,7 @@ export class NexusChromeOSStore {
     await idbSet('vault.unencryptedDraft', null);
     this.setState({
       hasEncryptedLocalVault: true,
+      hasCustomPassphrase: isCustom,
       isVaultLocked: false,
       isStarterUninitialized: false,
       vaultUnlockError: ''
@@ -413,16 +481,22 @@ export class NexusChromeOSStore {
 
   async unlockVault(passphrase) {
     try {
+      const effective = passphrase || DEFAULT_TRANSPARENT_PASSPHRASE;
       const sealed = await loadEncryptedVaultFromOfflineStore();
       if (!sealed) {
-        this._masterPassphrase = passphrase;
-        this.setState({ isVaultLocked: false, vaultUnlockError: '' });
+        this._masterPassphrase = effective;
+        this.setState({
+          hasCustomPassphrase: effective !== DEFAULT_TRANSPARENT_PASSPHRASE,
+          isVaultLocked: false,
+          vaultUnlockError: ''
+        });
         return true;
       }
-      const doc = await unsealVaultDocument(sealed, passphrase);
-      this._masterPassphrase = passphrase;
+      const doc = await unsealVaultDocument(sealed, effective);
+      this._masterPassphrase = effective;
       this.setState({
         vaultDocument: doc,
+        hasCustomPassphrase: effective !== DEFAULT_TRANSPARENT_PASSPHRASE,
         isVaultLocked: false,
         isStarterUninitialized: false,
         vaultUnlockError: '',
@@ -430,7 +504,7 @@ export class NexusChromeOSStore {
         selectedConnectionId: doc.connections[0]?.id || null
       });
       // Automatic Google Drive sync immediately upon unlock!
-      if (this.driveBridge.isLinked()) {
+      if (this.driveBridge.isLinked() && !this.state.driveNeedsPermissionGrant) {
         await this.triggerGoogleDriveSync({ reason: 'unlock', silent: true });
       }
       return true;
@@ -441,9 +515,9 @@ export class NexusChromeOSStore {
   }
 
   lockVault() {
-    if (!this.state.hasEncryptedLocalVault && !this._masterPassphrase) {
+    if (!this.state.hasCustomPassphrase) {
       this.openSettingsTab('security');
-      this.showToast('Set a Master Passphrase in Security settings first to lock your vault.');
+      this.showToast('Set a Master Passphrase in Security settings first if you want to password-lock your vault.');
       return;
     }
     this._masterPassphrase = '';
@@ -461,23 +535,20 @@ export class NexusChromeOSStore {
       isStarterUninitialized: false
     });
     await this._persistLocalVault(bumped);
-    if (triggerCloudSync && this.driveBridge.isLinked() && this._masterPassphrase) {
+    if (triggerCloudSync && this.driveBridge.isLinked()) {
       this._scheduleDebouncedDriveSync();
     }
     return bumped;
   }
 
   async _persistLocalVault(doc) {
-    if (this._masterPassphrase) {
-      const sealed = await sealVaultDocument(doc, this._masterPassphrase, this.kdfParams);
-      await saveEncryptedVaultToOfflineStore(sealed, {
-        documentId: doc.documentId,
-        revision: doc.revision
-      });
-      this.state.hasEncryptedLocalVault = true;
-    } else {
-      await idbSet('vault.unencryptedDraft', doc);
-    }
+    const effective = this._masterPassphrase || DEFAULT_TRANSPARENT_PASSPHRASE;
+    const sealed = await sealVaultDocument(doc, effective, this.kdfParams);
+    await saveEncryptedVaultToOfflineStore(sealed, {
+      documentId: doc.documentId,
+      revision: doc.revision
+    });
+    this.state.hasEncryptedLocalVault = true;
   }
 
   _scheduleDebouncedDriveSync() {
@@ -488,11 +559,11 @@ export class NexusChromeOSStore {
   }
 
   async linkGoogleDriveTransport(transportOrHandle, rawHandle = null, passphraseIfNeeded = '') {
-    if (passphraseIfNeeded && !this._masterPassphrase) {
+    if (passphraseIfNeeded) {
       this._masterPassphrase = passphraseIfNeeded;
-    }
-    if (!this._masterPassphrase) {
-      throw new Error('PassphraseRequired');
+      this.state.hasCustomPassphrase = passphraseIfNeeded !== DEFAULT_TRANSPARENT_PASSPHRASE;
+    } else if (!this._masterPassphrase) {
+      this._masterPassphrase = DEFAULT_TRANSPARENT_PASSPHRASE;
     }
     const meta = await this.driveBridge.linkTransport(
       transportOrHandle,
@@ -501,6 +572,7 @@ export class NexusChromeOSStore {
     );
     this.setState({
       driveLinkedName: meta.displayName,
+      driveNeedsPermissionGrant: false,
       driveStatusMessage: 'Linked — syncing…'
     });
     return await this.triggerGoogleDriveSync({ reason: 'initial-link', allowPermissionPrompt: true });
@@ -510,6 +582,7 @@ export class NexusChromeOSStore {
     await this.driveBridge.unlink();
     this.setState({
       driveLinkedName: '',
+      driveNeedsPermissionGrant: false,
       driveStatusMessage: '',
       driveLastSyncedEpochMs: 0,
       driveIsSyncing: false
@@ -518,8 +591,8 @@ export class NexusChromeOSStore {
 
   async triggerGoogleDriveSync({ reason = 'manual', silent = false, allowPermissionPrompt = false } = {}) {
     if (!this.driveBridge.isLinked()) return null;
-    if (!this._masterPassphrase) {
-      if (!silent) this.setState({ driveStatusMessage: 'Unlock or set a vault passphrase to sync encrypted .nxts.' });
+    if (this.state.isVaultLocked) {
+      if (!silent) this.setState({ driveStatusMessage: 'Unlock your vault to sync with Google Drive.' });
       return null;
     }
     if (this._syncLocked) {
@@ -527,12 +600,13 @@ export class NexusChromeOSStore {
       return null;
     }
 
+    const effectivePass = this._masterPassphrase || DEFAULT_TRANSPARENT_PASSPHRASE;
     this._syncLocked = true;
     this.setState({ driveIsSyncing: true });
     try {
       const outcome = await this.driveBridge.synchronizeLinkedVault(
         this.state.vaultDocument,
-        this._masterPassphrase,
+        effectivePass,
         {
           localIsUninitializedStarter: this.state.isStarterUninitialized,
           allowPermissionPrompt
@@ -545,10 +619,15 @@ export class NexusChromeOSStore {
         MERGED: `Merged changes across devices (rev ${outcome.document.revision})`,
         UP_TO_DATE: `Up to date (rev ${outcome.document.revision})`
       };
+      const nextExpanded = new Set(this.state.expandedFolderIds);
+      for (const f of outcome.document.folders || []) nextExpanded.add(f.id);
       this.setState({
         vaultDocument: outcome.document,
         isStarterUninitialized: false,
+        expandedFolderIds: nextExpanded,
+        selectedConnectionId: this.state.selectedConnectionId || outcome.document.connections?.[0]?.id || null,
         driveIsSyncing: false,
+        driveNeedsPermissionGrant: false,
         driveLinkedName: info?.displayName || this.state.driveLinkedName,
         driveLastSyncedEpochMs: info?.lastSyncedEpochMs || Date.now(),
         driveStatusMessage: statusMap[outcome.kind] || 'Synced'
@@ -556,8 +635,10 @@ export class NexusChromeOSStore {
       await this._persistLocalVault(outcome.document);
       return outcome;
     } catch (err) {
+      const isPermErr = err?.name === 'DrivePermissionError';
       this.setState({
         driveIsSyncing: false,
+        driveNeedsPermissionGrant: isPermErr ? true : this.state.driveNeedsPermissionGrant,
         driveStatusMessage: err.message || 'Google Drive sync error'
       });
       if (!silent) throw err;
@@ -701,10 +782,7 @@ export class NexusChromeOSStore {
   }
 
   async exportCurrentVault(format = 'NXTS', passphrase = '') {
-    const pw = passphrase || this._masterPassphrase;
-    if (format === 'NXTS' && !pw) {
-      throw new Error('Enter a passphrase to encrypt the exported .nxts vault.');
-    }
+    const pw = passphrase || this._masterPassphrase || DEFAULT_TRANSPARENT_PASSPHRASE;
     return await exportVaultDocument(this.state.vaultDocument, format, pw, this.kdfParams);
   }
 

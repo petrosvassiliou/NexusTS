@@ -463,6 +463,8 @@ class MainActivity : AppCompatActivity() {
 
             LaunchedEffect(uiState.isFullScreenSessionMode) {
                 val controller = WindowCompat.getInsetsController(window, window.decorView)
+                controller.isAppearanceLightStatusBars = true
+                controller.isAppearanceLightNavigationBars = true
                 if (uiState.isFullScreenSessionMode) {
                     controller.systemBarsBehavior =
                         WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE

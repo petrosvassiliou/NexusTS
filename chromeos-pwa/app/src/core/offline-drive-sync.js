@@ -133,18 +133,43 @@ export class FileHandleVaultTransport {
     return this.fileHandle?.name || 'NexusTS-Vault.nxts';
   }
 
+  async queryPermissionState(mode = 'readwrite') {
+    if (!this.fileHandle?.queryPermission) return 'granted';
+    try {
+      return await this.fileHandle.queryPermission({ mode });
+    } catch {
+      return 'prompt';
+    }
+  }
+
   async ensurePermission(mode = 'readwrite', allowPrompt = false) {
     if (!this.fileHandle?.queryPermission) return true;
-    const state = await this.fileHandle.queryPermission({ mode });
-    if (state === 'granted') return true;
-    if (!allowPrompt || !this.fileHandle.requestPermission) return false;
-    const requested = await this.fileHandle.requestPermission({ mode });
-    return requested === 'granted';
+    try {
+      const state = await this.fileHandle.queryPermission({ mode });
+      if (state === 'granted') return true;
+      if (!allowPrompt || !this.fileHandle.requestPermission) return false;
+      const requested = await this.fileHandle.requestPermission({ mode });
+      return requested === 'granted';
+    } catch {
+      return false;
+    }
   }
 
   async readBytes(allowPrompt = false) {
-    const ok = await this.ensurePermission('read', allowPrompt);
-    if (!ok) throw new Error('File permission needs one-click re-grant in ChromeOS Files.');
+    // When allowPrompt is true (user gesture), request full 'readwrite' up front so subsequent
+    // background auto-saves to Google Drive succeed without needing a second permission dialog!
+    let ok = false;
+    if (allowPrompt) {
+      ok = await this.ensurePermission('readwrite', true);
+      if (!ok) ok = await this.ensurePermission('read', true);
+    } else {
+      ok = await this.ensurePermission('read', false);
+    }
+    if (!ok) {
+      const err = new Error('Click "Sync Now" once to grant ChromeOS Google Drive file access.');
+      err.name = 'DrivePermissionError';
+      throw err;
+    }
     const file = await this.fileHandle.getFile();
     const buf = await file.arrayBuffer();
     return {
@@ -155,8 +180,12 @@ export class FileHandleVaultTransport {
 
   async writeBytes(bytes, allowPrompt = false) {
     const ok = await this.ensurePermission('readwrite', allowPrompt);
-    if (!ok) throw new Error('Write permission required for linked Google Drive .nxts file.');
-    const writable = await this.fileHandle.createWritable();
+    if (!ok) {
+      const err = new Error('Click "Sync Now" once to enable saving to Google Drive.');
+      err.name = 'DrivePermissionError';
+      throw err;
+    }
+    const writable = await this.fileHandle.createWritable({ keepExistingData: false });
     await writable.write(bytes);
     await writable.close();
   }

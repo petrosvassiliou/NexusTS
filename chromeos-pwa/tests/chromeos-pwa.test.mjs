@@ -9,9 +9,11 @@ import { resolveStrings, SUPPORTED_LOCALES } from '../app/src/core/i18n.js';
 import { importEnterpriseVaultBytes } from '../app/src/core/importers-exporters.js';
 import {
   computeTotpCode,
+  DEFAULT_TRANSPARENT_PASSPHRASE,
   generateEd25519OpenSshKeypair,
   inspectUnencryptedRevisionHeader,
   INTERACTIVE_FAST_KDF_PARAMS,
+  sealNxtsBytes,
   sealVaultDocument,
   unsealVaultDocument
 } from '../app/src/core/nxts-crypto.js';
@@ -434,6 +436,12 @@ test('7. Firebase Hosting ChromeOS Start-Menu PWA (nexusts-prod): manifest short
   assert.equal(hostedManifest.start_url, './?source=pwa');
   assert.equal(hostedManifest.shortcuts.length, 4);
   assert.equal(hostedManifest.version, '0.9.1');
+  assert.equal(hostedManifest.theme_color, '#ffffff');
+  assert.equal(hostedManifest.background_color, '#f8fafc');
+
+  const hostedTokensCss = fs.readFileSync(`${hostingInfo.hostingDistDir}/styles/tokens.css`, 'utf8');
+  assert.ok(hostedTokensCss.includes('color-scheme: light;'));
+  assert.ok(hostedTokensCss.includes('--bg-canvas: #f8fafc;'));
 
   assert.equal(compareSemver('0.9.1', '0.9.0'), 1);
   assert.equal(compareSemver('0.9.0', '0.9.0-beta.1'), 1);
@@ -446,4 +454,85 @@ test('7. Firebase Hosting ChromeOS Start-Menu PWA (nexusts-prod): manifest short
     assert.ok(dict.applyUpdateCta.length > 0);
   }
 });
+
+test('8. Zero-Prompt Passwordless Google Drive Sync (macOS/Android transparent key + empty-pw fallback) & Light Mode default', async () => {
+  // 1. Existing Google Drive .nxts created on macOS/Android WITHOUT a custom master password
+  const existingDriveDoc = createStarterVault('MacBook-Pro');
+  existingDriveDoc.name = 'Shared Passwordless Vault';
+  existingDriveDoc.revision = 4;
+  existingDriveDoc.folders.push({
+    id: 'fld-cloud',
+    parentFolderId: null,
+    name: 'Cloud Servers',
+    description: '',
+    tags: [],
+    inheritable: defaultInheritableProperties(),
+    sortOrder: 0,
+    updatedAtEpochMs: Date.now()
+  });
+  existingDriveDoc.connections.push({
+    id: 'conn-existing-1',
+    parentFolderId: 'fld-cloud',
+    name: 'Prod-Bastion-SSH',
+    host: '10.20.30.40',
+    protocol: 'SSH',
+    osFamily: 'Linux',
+    tags: [],
+    notes: '',
+    favorite: true,
+    sortOrder: 0,
+    inheritable: defaultInheritableProperties(),
+    settings: defaultSettingsForProtocol('SSH'),
+    updatedAtEpochMs: Date.now()
+  });
+
+  let driveBytes = await sealVaultDocument(existingDriveDoc, DEFAULT_TRANSPARENT_PASSPHRASE, INTERACTIVE_FAST_KDF_PARAMS);
+  const mockDrive = {
+    displayName: 'NexusTS-Vault.nxts',
+    async readBytes() {
+      return { bytes: driveBytes.slice(), lastModified: Date.now() };
+    },
+    async writeBytes(payload) {
+      driveBytes = payload.slice();
+    }
+  };
+
+  const store = new NexusChromeOSStore({ kdfParams: INTERACTIVE_FAST_KDF_PARAMS, deviceId: 'Chromebook-Light' });
+  assert.equal(store.state.themeMode, 'LIGHT');
+  await store.initializeOffline();
+
+  // Link & sync existing Google Drive .nxts with ZERO password prompt / argument!
+  const syncRes = await store.linkGoogleDriveTransport(mockDrive);
+  assert.equal(syncRes.kind, 'PULLED');
+  assert.equal(store.state.isVaultLocked, false);
+  assert.equal(store.state.hasCustomPassphrase, false);
+  assert.equal(store.state.vaultDocument.name, 'Shared Passwordless Vault');
+  assert.equal(store.state.vaultDocument.connections.length, 1);
+  assert.ok(store.state.expandedFolderIds.has('fld-cloud'));
+
+  // Local edit pushes back to Google Drive using transparent key without asking for any password
+  await store.saveConnection({ id: 'conn-cros-new', name: 'Chromebook-RDP', host: '10.20.30.99', protocol: 'RDP' });
+  const pushRes = await store.triggerGoogleDriveSync({ reason: 'test-push' });
+  assert.equal(pushRes.kind, 'PUSHED');
+  const macReloaded = await unsealVaultDocument(driveBytes, DEFAULT_TRANSPARENT_PASSPHRASE);
+  assert.equal(macReloaded.connections.length, 2);
+
+  // Cold restart auto-unlocks local vault without showing lock shield!
+  const coldStore = new NexusChromeOSStore({ kdfParams: INTERACTIVE_FAST_KDF_PARAMS, deviceId: 'Chromebook-Light' });
+  await coldStore.initializeOffline();
+  assert.equal(coldStore.state.isVaultLocked, false);
+  assert.equal(coldStore.state.hasCustomPassphrase, false);
+  assert.equal(coldStore.state.vaultDocument.connections.length, 2);
+
+  // Legacy empty-string ('') .nxts container also opens cleanly with zero password prompt
+  const emptyPwSealed = await sealNxtsBytes(
+    new TextEncoder().encode(JSON.stringify(existingDriveDoc)),
+    '',
+    2,
+    INTERACTIVE_FAST_KDF_PARAMS
+  );
+  const unsealedEmptyPw = await unsealVaultDocument(emptyPwSealed);
+  assert.equal(unsealedEmptyPw.name, 'Shared Passwordless Vault');
+});
+
 

@@ -2,7 +2,12 @@
 // Supports `.nxts` v2, Royal TS (`.rtsz` ZIP/GZIP, `.rtsx` XML, `.rjson`), KeePass 2.x XML,
 // Bitwarden JSON, 1Password (`.1pux` ZIP / JSON), and RFC 4180 CSV — 100% offline in Browser & Node 24.
 
-import { hasNxtsMagic, sealVaultDocument, unsealVaultDocument } from './nxts-crypto.js';
+import {
+  DEFAULT_TRANSPARENT_PASSPHRASE,
+  hasNxtsMagic,
+  sealVaultDocument,
+  unsealVaultDocument
+} from './nxts-crypto.js';
 import {
   createStarterVault,
   defaultInheritableProperties,
@@ -602,7 +607,7 @@ export async function importEnterpriseVaultBytes(bytes, fileName = 'import', pas
   const baseName = fileName.replace(/\.[^.]+$/, '') || 'Imported Vault';
 
   if (hasNxtsMagic(data) || ext === 'nxts') {
-    const doc = await unsealVaultDocument(data, passphrase);
+    const doc = await unsealVaultDocument(data, passphrase || DEFAULT_TRANSPARENT_PASSPHRASE);
     return {
       document: doc,
       detectedFormat: 'NexusTS v2 (.nxts)',

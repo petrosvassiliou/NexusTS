@@ -304,25 +304,54 @@ async function runNetUtilitySession(tabId) {
   }
 }
 
-// Google Drive File Picker Helpers (ChromeOS File System Access API)
+// Google Drive File Picker Helpers (ChromeOS File System Access API — Zero-Prompt Transparent Sync)
+async function linkExistingDriveHandleZeroPrompt(handle) {
+  if (!handle) return;
+  // Request full 'readwrite' immediately while transient user activation from the OS picker is active!
+  try {
+    await handle.requestPermission?.({ mode: 'readwrite' });
+  } catch {
+    // Fallback handled inside FileHandleVaultTransport
+  }
+  try {
+    await store.linkGoogleDriveTransport(handle, handle);
+    store.showToast(`Synced with ${handle.name || 'Google Drive'}!`);
+  } catch (err) {
+    if (err?.name === 'VaultAuthenticationError') {
+      // Only prompt if the user explicitly encrypted this .nxts file with a custom Master Passphrase
+      openPassphrasePromptModal(
+        async (pw) => {
+          await store.linkGoogleDriveTransport(handle, handle, pw);
+          store.showToast(`Synced with ${handle.name || 'Google Drive'}!`);
+        },
+        `Enter Master Passphrase for ${handle.name || '.nxts Vault'}`,
+        () => store.disconnectGoogleDriveSync()
+      );
+    } else if (err?.name !== 'AbortError') {
+      store.showToast(err.message);
+    }
+  }
+}
+
 async function handleCreateSyncedDriveVault() {
   if (!globalThis.showSaveFilePicker) {
-    store.showToast('File System Access API requires Chrome / ChromeOS.');
+    const out = await store.exportCurrentVault('NXTS');
+    downloadBlob(out.bytes, 'NexusTS-Vault.nxts', out.mimeType);
+    store.showToast('Downloaded NexusTS-Vault.nxts (live folder sync requires Chrome / ChromeOS).');
     return;
   }
   try {
     const handle = await globalThis.showSaveFilePicker({
       suggestedName: 'NexusTS-Vault.nxts',
-      types: [{ description: 'NexusTS Encrypted Vault', accept: { 'application/octet-stream': ['.nxts'] } }]
+      types: [{ description: 'NexusTS Encrypted Vault (.nxts)', accept: { 'application/octet-stream': ['.nxts'] } }]
     });
-    if (!store._masterPassphrase) {
-      openPassphrasePromptModal(async (pw) => {
-        await store.setMasterPassphraseAndEncrypt(pw);
-        await store.linkGoogleDriveTransport(handle, handle, pw);
-      });
-    } else {
-      await store.linkGoogleDriveTransport(handle, handle);
+    try {
+      await handle.requestPermission?.({ mode: 'readwrite' });
+    } catch {
+      // showSaveFilePicker grants readwrite by default
     }
+    await store.linkGoogleDriveTransport(handle, handle);
+    store.showToast(`Synced with ${handle.name || 'Google Drive'}!`);
   } catch (err) {
     if (err?.name !== 'AbortError') store.showToast(err.message);
   }
@@ -330,29 +359,48 @@ async function handleCreateSyncedDriveVault() {
 
 async function handleOpenExistingSyncedDriveVault() {
   if (!globalThis.showOpenFilePicker) {
-    store.showToast('File System Access API requires Chrome / ChromeOS.');
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.nxts';
+    input.onchange = async () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      try {
+        await store.importVaultFileBytes(bytes, file.name, '', 'REPLACE');
+        store.showToast(`Loaded ${file.name}.`);
+      } catch (err) {
+        if (err?.name === 'VaultAuthenticationError') {
+          openPassphrasePromptModal(async (pw) => {
+            await store.importVaultFileBytes(bytes, file.name, pw, 'REPLACE');
+            store.showToast(`Loaded ${file.name}.`);
+          }, `Enter Master Passphrase for ${file.name}`);
+        } else {
+          store.showToast(err.message);
+        }
+      }
+    };
+    input.click();
     return;
   }
   try {
     const [handle] = await globalThis.showOpenFilePicker({
       multiple: false,
-      types: [{ description: 'NexusTS Encrypted Vault', accept: { 'application/octet-stream': ['.nxts'] } }]
+      types: [{ description: 'NexusTS Encrypted Vault (.nxts)', accept: { 'application/octet-stream': ['.nxts'] } }]
     });
     if (!handle) return;
-    openPassphrasePromptModal(async (pw) => {
-      store._masterPassphrase = pw;
-      await store.linkGoogleDriveTransport(handle, handle, pw);
-    }, 'Enter Vault Passphrase for Google Drive .nxts');
+    await linkExistingDriveHandleZeroPrompt(handle);
   } catch (err) {
     if (err?.name !== 'AbortError') store.showToast(err.message);
   }
 }
 
-function openPassphrasePromptModal(onConfirm, title = 'Set Master Passphrase for Encrypted Sync') {
+function openPassphrasePromptModal(onConfirm, title = 'Enter Master Passphrase', onCancel = null) {
   activeModal = {
     kind: 'passphrase-prompt',
     title,
-    onConfirm
+    onConfirm,
+    onCancel
   };
   renderWorkspace();
 }
@@ -487,6 +535,7 @@ function renderUnifiedSettings() {
   } else if (tab === 'sync') {
     // Simplified v0.8.14 single-card Google Drive Sync UI (zero OAuth Client IDs, Folder IDs, or VectorClock noise!)
     const isLinked = Boolean(store.state.driveLinkedName);
+    const needsGrant = Boolean(store.state.driveNeedsPermissionGrant);
     bodyHtml = `
       <div class="studio-card">
         <div style="display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap">
@@ -495,19 +544,19 @@ function renderUnifiedSettings() {
             <div>
               <div style="display:flex;align-items:center;gap:8px">
                 <h3>${esc(s.driveTitle)}</h3>
-                ${isLinked ? `<span class="status-chip online"><span class="status-dot"></span>${esc(store.state.driveIsSyncing ? s.driveSyncingBadge : s.driveActiveBadge)}</span>` : ''}
+                ${isLinked ? `<span class="status-chip ${needsGrant ? '' : 'online'}"><span class="status-dot"></span>${esc(store.state.driveIsSyncing ? s.driveSyncingBadge : needsGrant ? 'Permission Needed' : s.driveActiveBadge)}</span>` : ''}
               </div>
               <p>${esc(s.driveSubtitle)}</p>
             </div>
           </div>
-          ${isLinked ? `<button type="button" class="pill-btn primary" data-action="drive-sync-now">${esc(s.driveSyncNow)}</button>` : ''}
+          ${isLinked ? `<button type="button" class="pill-btn primary" data-action="drive-sync-now">${esc(needsGrant ? 'Resume Sync' : s.driveSyncNow)}</button>` : ''}
         </div>
 
         ${isLinked ? `
           <div class="item-row">
             <div>
               <strong>${esc(store.state.driveLinkedName)}</strong>
-              <div style="color:var(--text-secondary);font-size:12px">${esc(store.state.driveStatusMessage || 'Ready for automatic sync')}</div>
+              <div style="color:var(--text-secondary);font-size:12px">${esc(store.state.driveStatusMessage || 'Ready for automatic passwordless sync')}</div>
             </div>
             <div class="topbar-cluster">
               <button type="button" class="pill-btn" data-action="drive-open-synced">Switch Vault File</button>
@@ -525,12 +574,15 @@ function renderUnifiedSettings() {
   } else if (tab === 'security') {
     bodyHtml = `
       <div class="studio-card">
-        <h3>Zero-Knowledge Argon2id + AES-256-GCM Security</h3>
-        <p>Encrypts your offline ChromeOS vault and Google Drive .nxts container using Argon2id (64 MiB, 3 iterations, 4 lanes) + AES-256-GCM.</p>
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+          <h3>Zero-Knowledge Argon2id + AES-256-GCM Security</h3>
+          <span class="status-chip online"><span class="status-dot"></span>${store.state.hasCustomPassphrase ? 'Custom Master Passphrase Active' : 'Automatic Passwordless Sync Active'}</span>
+        </div>
+        <p>By default, NexusTS encrypts your vault automatically without asking for a password (100% compatible with macOS &amp; Android Google Drive Sync). Optionally set a custom Master Passphrase below if you want a lock-screen password.</p>
         <div class="form-grid">
           <div class="field-group">
-            <label>Master Passphrase</label>
-            <input type="password" class="text-input" id="sec-new-passphrase" placeholder="Enter new or updated master passphrase…" />
+            <label>Optional Master Passphrase</label>
+            <input type="password" class="text-input" id="sec-new-passphrase" placeholder="Leave blank for automatic passwordless sync…" />
           </div>
           <div class="field-group">
             <label>Idle Auto-Lock</label>
@@ -540,8 +592,8 @@ function renderUnifiedSettings() {
           </div>
         </div>
         <div class="topbar-cluster">
-          <button type="button" class="pill-btn primary" data-action="apply-master-passphrase">Save &amp; Encrypt Vault</button>
-          <button type="button" class="pill-btn" data-action="lock-vault">${esc(s.lockVault)}</button>
+          <button type="button" class="pill-btn primary" data-action="apply-master-passphrase">Save Security Settings</button>
+          ${store.state.hasCustomPassphrase ? `<button type="button" class="pill-btn" data-action="lock-vault">${esc(s.lockVault)}</button>` : ''}
         </div>
       </div>
     `;
@@ -735,7 +787,7 @@ function renderUnifiedSettings() {
 function renderPaneBody(tab) {
   const entry = liveSessions.get(tab.tabId);
   if (!entry) {
-    return `<div style="color:var(--text-secondary)">Initializing session…</div>`;
+    return `<div style="color:#cbd5e1">Initializing session…</div>`;
   }
   if (entry.kind === 'rdp' || entry.kind === 'vnc' || entry.kind === 'terminal') {
     return `<canvas id="session-canvas-${esc(tab.tabId)}" class="session-canvas" tabindex="0" data-tab-id="${esc(tab.tabId)}"></canvas>`;
@@ -752,7 +804,7 @@ function renderPaneBody(tab) {
           <strong>${esc(entry.conn.name)} (${esc(entry.conn.host)})</strong>
           <button type="button" class="pill-btn" data-action="rerun-netutil" data-tab-id="${esc(tab.tabId)}">Run Again</button>
         </div>
-        <pre style="flex:1;margin:0;padding:12px;background:#070b12;border-radius:10px;overflow:auto;font-family:var(--font-mono);font-size:12px">${esc(entry.logs.join('\n'))}</pre>
+        <pre style="flex:1;margin:0;padding:12px;background:#0f172a;color:#f8fafc;border-radius:10px;overflow:auto;font-family:var(--font-mono);font-size:12px">${esc(entry.logs.join('\n'))}</pre>
       </div>
     `;
   }
@@ -1107,8 +1159,8 @@ function renderModal() {
             </select>
           </div>
           <div class="field-group">
-            <label>Passphrase (if encrypted .nxts)</label>
-            <input type="password" class="text-input" id="m-import-pass" />
+            <label>Passphrase (optional — only if custom password set)</label>
+            <input type="password" class="text-input" id="m-import-pass" placeholder="Leave blank by default" />
           </div>
         </div>
         <div class="topbar-cluster" style="justify-content:flex-end">
@@ -1333,6 +1385,9 @@ function installDiscreetTooltips() {
 function installEventDelegation() {
   document.addEventListener('click', async (ev) => {
     store.recordUserActivity();
+    if (store.state.driveNeedsPermissionGrant) {
+      store.tryRestoreDrivePermissionOnUserGesture();
+    }
     const actionEl = ev.target.closest('[data-action]');
     if (!actionEl) return;
     const action = actionEl.getAttribute('data-action');
@@ -1459,10 +1514,13 @@ function installEventDelegation() {
         activeModal = { kind: 'import' };
         renderModal();
         break;
-      case 'close-modal':
+      case 'close-modal': {
+        const cancelCb = activeModal?.onCancel;
         activeModal = null;
         renderModal();
+        await cancelCb?.();
         break;
+      }
       case 'save-connection-modal': {
         const existingId = actionEl.getAttribute('data-conn-id') || '';
         const proto = document.getElementById('m-conn-proto').value;
@@ -1680,7 +1738,11 @@ function installEventDelegation() {
         const pw = document.getElementById('sec-new-passphrase')?.value || '';
         try {
           await store.setMasterPassphraseAndEncrypt(pw);
-          store.showToast('Master passphrase applied — vault encrypted with Argon2id + AES-256-GCM.');
+          store.showToast(
+            pw
+              ? 'Custom Master Passphrase applied — vault encrypted with Argon2id + AES-256-GCM.'
+              : 'Automatic passwordless sync active (Argon2id + AES-256-GCM).'
+          );
         } catch (err) {
           store.showToast(err.message);
         }
@@ -1722,7 +1784,15 @@ function installEventDelegation() {
           const summary = await store.importVaultFileBytes(bytes, file.name, pass, mode);
           store.showToast(`Imported ${summary.importedConnections} connection(s) from ${summary.detectedFormat}.`);
         } catch (err) {
-          store.showToast(`Import failed: ${err.message}`);
+          if (err?.name === 'VaultAuthenticationError' && !pass) {
+            const bytes = new Uint8Array(await file.arrayBuffer());
+            openPassphrasePromptModal(async (pw) => {
+              const summary = await store.importVaultFileBytes(bytes, file.name, pw, mode);
+              store.showToast(`Imported ${summary.importedConnections} connection(s) from ${summary.detectedFormat}.`);
+            }, `Enter Master Passphrase for ${file.name}`);
+          } else {
+            store.showToast(`Import failed: ${err.message}`);
+          }
         }
         break;
       }
@@ -1732,15 +1802,8 @@ function installEventDelegation() {
         break;
       case 'export-vault': {
         const fmt = actionEl.getAttribute('data-format');
-        if (fmt === 'NXTS' && !store._masterPassphrase) {
-          openPassphrasePromptModal(async (pw) => {
-            const out = await store.exportCurrentVault('NXTS', pw);
-            downloadBlob(out.bytes, `${store.state.vaultDocument.name}.${out.extension}`, out.mimeType);
-          }, 'Enter Passphrase for Encrypted .nxts Export');
-        } else {
-          const out = await store.exportCurrentVault(fmt);
-          downloadBlob(out.bytes, `${store.state.vaultDocument.name}.${out.extension}`, out.mimeType);
-        }
+        const out = await store.exportCurrentVault(fmt);
+        downloadBlob(out.bytes, `${store.state.vaultDocument.name}.${out.extension}`, out.mimeType);
         break;
       }
       case 'save-relay-url': {
@@ -2076,10 +2139,7 @@ async function bootstrap() {
       if (!launchParams?.files?.length) return;
       const handle = launchParams.files[0];
       if (handle.name.toLowerCase().endsWith('.nxts')) {
-        openPassphrasePromptModal(async (pw) => {
-          store._masterPassphrase = pw;
-          await store.linkGoogleDriveTransport(handle, handle, pw);
-        }, `Open ${handle.name}`);
+        await linkExistingDriveHandleZeroPrompt(handle);
       } else {
         const file = await handle.getFile();
         const bytes = new Uint8Array(await file.arrayBuffer());

@@ -70,8 +70,8 @@
   gap: 7px;
   padding: 0 14px;
   border-radius: var(--radius-pill);
-  border: 1px solid var(--border-subtle);
-  background: var(--bg-surface-high);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-surface-lowest);
   background-clip: padding-box;
   color: var(--text-primary);
   font-size: 12.5px;
@@ -79,6 +79,7 @@
   cursor: pointer;
   outline: none;
   -webkit-tap-highlight-color: transparent;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
   transition: background-color 150ms cubic-bezier(0.2, 0, 0, 1),
     border-color 150ms cubic-bezier(0.2, 0, 0, 1),
     box-shadow 150ms cubic-bezier(0.2, 0, 0, 1),
@@ -89,14 +90,14 @@
   background: transparent;
 }
 .pill-btn:hover {
-  background: hsla(204, 88%, 58%, 0.14);
-  border-color: hsla(204, 92%, 62%, 0.48);
-  color: #ffffff;
-  box-shadow: 0 2px 10px rgba(14, 165, 233, 0.12);
+  background: #eff6ff;
+  border-color: rgba(29, 78, 216, 0.42);
+  color: #1e3a8a;
+  box-shadow: 0 2px 8px rgba(29, 78, 216, 0.10);
 }
 .pill-btn:focus-visible {
   border-color: var(--accent-primary);
-  box-shadow: 0 0 0 2px hsla(204, 92%, 60%, 0.28);
+  box-shadow: 0 0 0 3px rgba(29, 78, 216, 0.18);
 }
 .pill-btn:active {
   transform: scale(0.985);
@@ -104,34 +105,36 @@
 .pill-btn.active {
   background: var(--accent-container);
   color: var(--accent-on-container);
-  border-color: hsla(204, 90%, 60%, 0.42);
+  border-color: rgba(29, 78, 216, 0.34);
 }
 .pill-btn.active:hover {
-  background: hsla(204, 90%, 58%, 0.24);
-  border-color: hsla(204, 92%, 64%, 0.62);
+  background: #bfdbfe;
+  border-color: rgba(29, 78, 216, 0.52);
+  color: var(--accent-on-container);
 }
 .pill-btn.primary {
   background: var(--accent-primary);
-  color: #041320;
+  color: #ffffff;
   border-color: transparent;
-  font-weight: 620;
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgba(29, 78, 216, 0.22);
 }
 .pill-btn.primary:hover {
   background: var(--accent-primary-hover);
-  color: #020c16;
+  color: #ffffff;
   border-color: transparent;
-  box-shadow: 0 3px 14px hsla(204, 92%, 58%, 0.32);
+  box-shadow: 0 4px 12px rgba(29, 78, 216, 0.28);
 }
 .pill-btn.danger {
   background: var(--status-danger-bg);
-  color: var(--status-danger);
-  border-color: hsla(4, 82%, 62%, 0.3);
+  color: #b91c1c;
+  border-color: rgba(220, 38, 38, 0.25);
 }
 .pill-btn.danger:hover {
-  background: hsla(4, 82%, 62%, 0.24);
-  border-color: hsla(4, 82%, 66%, 0.55);
-  color: hsl(4, 90%, 74%);
-  box-shadow: 0 2px 10px hsla(4, 82%, 55%, 0.18);
+  background: rgba(220, 38, 38, 0.16);
+  border-color: rgba(220, 38, 38, 0.45);
+  color: #991b1b;
+  box-shadow: 0 2px 8px rgba(220, 38, 38, 0.12);
 }
 
 .icon-btn {
@@ -151,14 +154,14 @@
   transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease;
 }
 .icon-btn:hover {
-  background: hsla(204, 88%, 58%, 0.13);
-  border-color: hsla(204, 92%, 62%, 0.32);
-  color: var(--text-primary);
+  background: #eff6ff;
+  border-color: rgba(29, 78, 216, 0.25);
+  color: var(--accent-primary);
 }
 .icon-btn.active {
   background: var(--accent-container);
   color: var(--accent-on-container);
-  border-color: hsla(204, 90%, 60%, 0.32);
+  border-color: rgba(29, 78, 216, 0.30);
 }
 
 /* Quick-Connect Omnibox */
@@ -172,13 +175,14 @@
   gap: 9px;
   padding: 0 12px;
   border-radius: var(--radius-pill);
-  background: var(--bg-surface-high);
+  background: var(--bg-surface-low);
   border: 1px solid var(--border-subtle);
-  transition: border-color 150ms ease, background 150ms ease;
+  transition: border-color 150ms ease, background 150ms ease, box-shadow 150ms ease;
 }
 .omnibox-form:focus-within {
-  background: var(--bg-surface-highest);
-  border-color: hsla(204, 92%, 60%, 0.55);
+  background: var(--bg-surface-lowest);
+  border-color: var(--accent-primary);
+  box-shadow: 0 0 0 3px rgba(29, 78, 216, 0.12);
 }
 .omnibox-input {
   flex: 1;
@@ -195,6 +199,7 @@
   padding: 2px 7px;
   border-radius: var(--radius-pill);
   background: var(--bg-surface-lowest);
+  border: 1px solid var(--border-subtle);
   color: var(--text-muted);
   font-family: var(--font-mono);
   font-size: 10.5px;
@@ -210,14 +215,14 @@
   border-radius: var(--radius-pill);
   font-size: 11px;
   font-weight: 560;
-  background: var(--bg-surface);
+  background: var(--bg-surface-low);
   color: var(--text-secondary);
   border: 1px solid var(--border-subtle);
 }
 .status-chip.online {
   background: var(--status-connected-bg);
   color: var(--status-connected);
-  border-color: hsla(152, 68%, 48%, 0.25);
+  border-color: rgba(4, 120, 87, 0.25);
 }
 .status-dot {
   width: 7px;
@@ -571,7 +576,7 @@
   padding: 0 14px;
   border-radius: var(--radius-pill);
   border: 1px solid var(--border-subtle);
-  background: var(--bg-surface);
+  background: var(--bg-surface-low);
   background-clip: padding-box;
   color: var(--text-secondary);
   font-size: 12.5px;
@@ -586,19 +591,20 @@
     color 150ms cubic-bezier(0.2, 0, 0, 1);
 }
 .settings-tab-chip:hover {
-  background: hsla(204, 88%, 58%, 0.14);
-  border-color: hsla(204, 92%, 62%, 0.45);
-  color: var(--text-primary);
-  box-shadow: 0 2px 10px rgba(14, 165, 233, 0.10);
+  background: #eff6ff;
+  border-color: rgba(29, 78, 216, 0.38);
+  color: #1e3a8a;
+  box-shadow: 0 2px 8px rgba(29, 78, 216, 0.08);
 }
 .settings-tab-chip.active {
   background: var(--accent-container);
   color: var(--accent-on-container);
-  border-color: hsla(204, 92%, 60%, 0.45);
+  border-color: rgba(29, 78, 216, 0.36);
 }
 .settings-tab-chip.active:hover {
-  background: hsla(204, 90%, 58%, 0.24);
-  border-color: hsla(204, 92%, 64%, 0.62);
+  background: #bfdbfe;
+  border-color: rgba(29, 78, 216, 0.52);
+  color: var(--accent-on-container);
 }
 
 .settings-content {
@@ -614,9 +620,10 @@
 }
 
 .studio-card {
-  background: var(--bg-surface-low);
+  background: var(--bg-surface-lowest);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-lg);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.04);
   padding: 20px 22px;
   display: flex;
   flex-direction: column;
@@ -653,8 +660,8 @@
 .textarea-input {
   padding: 8px 11px;
   border-radius: var(--radius-sm);
-  border: 1px solid var(--border-subtle);
-  background: var(--bg-surface);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-surface-lowest);
   color: var(--text-primary);
   outline: none;
 }
@@ -662,6 +669,7 @@
 .select-input:focus,
 .textarea-input:focus {
   border-color: var(--accent-primary);
+  box-shadow: 0 0 0 3px rgba(29, 78, 216, 0.12);
 }
 
 .item-list {
@@ -676,7 +684,7 @@
   gap: 12px;
   padding: 11px 14px;
   border-radius: var(--radius-md);
-  background: var(--bg-surface);
+  background: var(--bg-surface-low);
   border: 1px solid var(--border-subtle);
 }
 
@@ -707,7 +715,7 @@
   border-bottom: 1px solid var(--border-subtle);
 }
 .commander-table tr:hover td {
-  background: var(--bg-surface);
+  background: var(--bg-surface-low);
 }
 
 /* Right Property Inheritance Inspector */
@@ -737,8 +745,8 @@
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(3, 7, 15, 0.68);
-  backdrop-filter: blur(5px);
+  background: rgba(15, 23, 42, 0.36);
+  backdrop-filter: blur(4px);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -751,7 +759,7 @@
   width: min(560px, 94vw);
   max-height: 88vh;
   overflow-y: auto;
-  background: var(--bg-surface-low);
+  background: var(--bg-surface-lowest);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-elevated);
@@ -765,7 +773,7 @@
 .lock-shield {
   position: fixed;
   inset: 0;
-  background: radial-gradient(circle at 50% 25%, hsl(214, 34%, 13%), hsl(218, 34%, 6%));
+  background: radial-gradient(circle at 50% 25%, #eff6ff, #e2e8f0);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -803,7 +811,7 @@
 .discreet-tooltip .shortcut-pill {
   padding: 1px 6px;
   border-radius: var(--radius-pill);
-  background: hsla(214, 30%, 85%, 0.12);
+  background: var(--accent-container);
   color: var(--accent-on-container);
   font-family: var(--font-mono);
   font-size: 10px;
@@ -817,10 +825,12 @@
   z-index: 150;
   padding: 10px 16px;
   border-radius: var(--radius-pill);
-  background: var(--bg-surface-highest);
+  background: var(--bg-surface-lowest);
+  color: var(--text-primary);
   border: 1px solid var(--border-strong);
   box-shadow: var(--shadow-elevated);
   font-size: 12.5px;
+  font-weight: 530;
 }
 .toast-banner.hidden {
   display: none;
