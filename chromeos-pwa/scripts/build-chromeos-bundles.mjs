@@ -312,7 +312,7 @@ export function buildFirebaseHostingSite({ version = '0.9.1', releaseTag = 'v0.9
   manifestObj.version = version;
   fs.writeFileSync(manifestDestPath, `${JSON.stringify(manifestObj, null, 2)}\n`);
 
-  // Emit live version.json (served with Cache-Control: no-cache, no-store, must-revalidate by firebase.json)
+  // Emit live version.json & GitHub Pages SPA 404.html + .nojekyll
   const versionMeta = {
     name: 'NexusTS ChromeOS PWA',
     version,
@@ -323,10 +323,12 @@ export function buildFirebaseHostingSite({ version = '0.9.1', releaseTag = 'v0.9
   };
   const versionJsonPath = path.join(HOSTING_DIST_DIR, 'version.json');
   fs.writeFileSync(versionJsonPath, `${JSON.stringify(versionMeta, null, 2)}\n`);
+  fs.copyFileSync(path.join(HOSTING_DIST_DIR, 'index.html'), path.join(HOSTING_DIST_DIR, '404.html'));
+  fs.writeFileSync(path.join(HOSTING_DIST_DIR, '.nojekyll'), '');
 
   return {
     hostingDistDir: HOSTING_DIST_DIR,
-    hostingFileCount: appFiles.length + 1,
+    hostingFileCount: appFiles.length + 2,
     precachedCount: audit.precachedCount,
     buildHash,
     wasmBundled: hasWasm,
