@@ -1,4 +1,4 @@
-name: Deploy ChromeOS PWA (GitHub Pages & Firebase Hosting)
+name: Deploy ChromeOS PWA to Firebase Hosting
 
 on:
   push:
@@ -15,18 +15,18 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: nexusts-chromeos-hosting-${{ github.ref }}
+  group: nexusts-firebase-hosting-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  build_pwa:
-    name: Build ChromeOS Start-Menu PWA + Rust Wasm
+  build_and_deploy:
+    name: Build & Deploy ChromeOS Start-Menu PWA (Firebase Hosting)
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pages: write
       id-token: write
     env:
+      FIREBASE_PROJECT_ID: ${{ vars.FIREBASE_PROJECT_ID || 'nexusts-prod' }}
       NEXUSTS_RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'v0.9.1' }}
     steps:
       - name: Checkout repository
@@ -58,89 +58,50 @@ jobs:
         with:
           node-version: 24
 
-      - name: Run ChromeOS PWA QA Suite & Build Hosting Bundle
+      - name: Run ChromeOS PWA QA Suite & Build Firebase Hosting Bundle
         working-directory: chromeos-pwa
         run: |
           npm test
           npm run build:hosting
 
-      - name: Upload ChromeOS PWA Build Artifact
+      - name: Upload ChromeOS PWA Hosting Build Artifact
         uses: actions/upload-artifact@v4
         with:
           name: nexusts-chromeos-pwa-dist
           path: chromeos-pwa/hosting-dist
           if-no-files-found: error
 
-      - name: Configure GitHub Pages
-        if: >-
-          github.ref == 'refs/heads/main' ||
-          (startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-'))
-        uses: actions/configure-pages@v5
+      - name: Check Firebase GCP OIDC Configuration
+        id: check_auth
+        env:
+          WIF_PROVIDER: ${{ vars.FIREBASE_WORKLOAD_IDENTITY_PROVIDER }}
+          WIF_SA: ${{ vars.FIREBASE_SERVICE_ACCOUNT }}
+        run: |
+          if [[ -n "${WIF_PROVIDER}" && -n "${WIF_SA}" ]]; then
+            echo "ready=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "ready=false" >> "${GITHUB_OUTPUT}"
+          fi
 
-      - name: Upload GitHub Pages Artifact
-        if: >-
-          github.ref == 'refs/heads/main' ||
-          (startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-'))
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: chromeos-pwa/hosting-dist
-
-  deploy_github_pages:
-    name: Deploy Live ChromeOS PWA to GitHub Pages
-    needs: [ build_pwa ]
-    if: >-
-      github.ref == 'refs/heads/main' ||
-      (startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-'))
-    runs-on: ubuntu-latest
-    permissions:
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
-
-  deploy_firebase_optional:
-    name: Deploy to Firebase Hosting (Optional if OIDC Configured)
-    needs: [ build_pwa ]
-    if: ${{ vars.FIREBASE_WORKLOAD_IDENTITY_PROVIDER != '' }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
-    env:
-      FIREBASE_PROJECT_ID: ${{ vars.FIREBASE_PROJECT_ID || 'nexusts-prod' }}
-    steps:
-      - name: Checkout firebase.json & .firebaserc
-        uses: actions/checkout@v4
-        with:
-          sparse-checkout: |
-            firebase.json
-            .firebaserc
-
-      - name: Download Built ChromeOS PWA Bundle
-        uses: actions/download-artifact@v4
-        with:
-          name: nexusts-chromeos-pwa-dist
-          path: chromeos-pwa/hosting-dist
-
-      - name: Authenticate to Google Cloud via Keyless OIDC
+      - name: Authenticate to Google Cloud via Keyless Workload Identity Federation (OIDC)
+        if: steps.check_auth.outputs.ready == 'true'
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ vars.FIREBASE_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ vars.FIREBASE_SERVICE_ACCOUNT }}
 
-      - name: Deploy Stable to Firebase Hosting Live Channel
+      - name: Deploy Stable to Firebase Hosting Live Channel (${{ env.FIREBASE_PROJECT_ID }})
         if: >-
-          github.ref == 'refs/heads/main' ||
-          (startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-'))
-        run: npx --yes firebase-tools deploy --only hosting --project "${FIREBASE_PROJECT_ID}"
+          steps.check_auth.outputs.ready == 'true' &&
+          (github.ref == 'refs/heads/main' ||
+          (startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-')))
+        run: |
+          npx --yes firebase-tools deploy --only hosting --project "${FIREBASE_PROJECT_ID}"
 
-      - name: Deploy Beta to Isolated Firebase Preview Channel
+      - name: Deploy Beta to Isolated Firebase Preview Channel (beta)
         if: >-
+          steps.check_auth.outputs.ready == 'true' &&
           github.ref != 'refs/heads/main' &&
           (!startsWith(github.ref, 'refs/tags/v') || contains(github.ref, '-'))
-        run: npx --yes firebase-tools hosting:channel:deploy beta --expires 30d --project "${FIREBASE_PROJECT_ID}"
+        run: |
+          npx --yes firebase-tools hosting:channel:deploy beta --expires 30d --project "${FIREBASE_PROJECT_ID}"

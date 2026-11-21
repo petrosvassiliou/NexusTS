@@ -1,22 +1,13 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# NexusTS — 1-Command Firebase Hosting + Keyless GitHub OIDC Provisioner
+# NexusTS — Zero-Prompt Firebase Hosting + Keyless GitHub OIDC Provisioner
 # ==============================================================================
-# Modeled 1:1 on `thingsbook-prod` (`https://thingsbook-prod.web.app/`):
+# Works directly in Google Cloud Shell (https://shell.cloud.google.com) on
+# ChromeOS with ZERO local installs and ZERO extra `firebase login` prompts,
+# as well as on macOS / Linux!
 #
 # Usage:
-#   ./scripts/setup-firebase-hosting.sh [firebase-project-id=nexusts-prod] [github-repo=petrosvassiliou/NexusTS]
-#
-# What this script automates in one run:
-#   1. Creates (or attaches) GCP / Firebase project `nexusts-prod` & writes `.firebaserc`.
-#   2. Enables Firebase Hosting + IAM Workload Identity Federation APIs.
-#   3. Creates Service Account `github-action-nexusts@<project>.iam.gserviceaccount.com`
-#      with `roles/firebasehosting.admin` & `roles/firebase.viewer`.
-#   4. Creates Keyless GitHub OIDC Pool (`github-actions-pool`) & Provider (`github-oidc`)
-#      locked strictly to `petrosvassiliou/NexusTS` (zero static JSON keys!).
-#   5. Sets `FIREBASE_PROJECT_ID`, `FIREBASE_WORKLOAD_IDENTITY_PROVIDER`, and
-#      `FIREBASE_SERVICE_ACCOUNT` on GitHub Actions via `gh variable set`.
-#   6. Builds `chromeos-pwa/hosting-dist` and deploys live to `https://<project>.web.app/`!
+#   ./scripts/setup-firebase-hosting.sh [firebase-project-id=nexusts-prod]
 # ==============================================================================
 set -euo pipefail
 
@@ -26,36 +17,28 @@ POOL_ID="github-actions-pool"
 PROVIDER_ID="github-oidc"
 SA_NAME="github-action-nexusts"
 SA_EMAIL="${SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [[ -n "${BASH_SOURCE[0]:-}" ]]; then
+  REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+else
+  REPO_ROOT="${PWD}"
+fi
 
-for cmd in gcloud npx gh node; do
-  if ! command -v "${cmd}" >/dev/null 2>&1; then
-    echo "Fehler: '${cmd}' wird benötigt, wurde aber nicht im PATH gefunden."
-    exit 1
-  fi
-done
+if ! command -v gcloud >/dev/null 2>&1; then
+  echo "Error: 'gcloud' not found. Tip: Run this directly in Google Cloud Shell (https://shell.cloud.google.com)!"
+  exit 1
+fi
 
-echo "==> [1/6] Prüfe / erstelle Google Cloud & Firebase Projekt '${PROJECT_ID}'..."
+echo "==> [1/5] Creating or attaching Google Cloud project '${PROJECT_ID}'..."
 if ! gcloud projects describe "${PROJECT_ID}" >/dev/null 2>&1; then
   gcloud projects create "${PROJECT_ID}" --name="NexusTS ChromeOS PWA"
 fi
 gcloud config set project "${PROJECT_ID}" >/dev/null
 
-npx --yes firebase-tools projects:list >/dev/null 2>&1 || npx --yes firebase-tools login
-npx --yes firebase-tools projects:addfirebase "${PROJECT_ID}" 2>/dev/null || true
-
-cat > "${REPO_ROOT}/.firebaserc" <<EOF
-{
-  "projects": {
-    "default": "${PROJECT_ID}"
-  }
-}
-EOF
-
 PROJECT_NUMBER="$(gcloud projects describe "${PROJECT_ID}" --format='value(projectNumber)')"
-echo "    Projekt-Nummer: ${PROJECT_NUMBER}"
+echo "    Project ID:     ${PROJECT_ID}"
+echo "    Project Number: ${PROJECT_NUMBER}"
 
-echo "==> [2/6] Aktiviere benötigte Google Cloud & Firebase Hosting APIs..."
+echo "==> [2/5] Enabling Firebase Hosting & Keyless OIDC IAM APIs..."
 gcloud services enable \
   iam.googleapis.com \
   iamcredentials.googleapis.com \
@@ -66,14 +49,41 @@ gcloud services enable \
   firebasehosting.googleapis.com \
   --project="${PROJECT_ID}"
 
-npx --yes firebase-tools hosting:sites:create "${PROJECT_ID}" --project "${PROJECT_ID}" 2>/dev/null || true
+ACCESS_TOKEN="$(gcloud auth print-access-token)"
 
-echo "==> [3/6] Richte Deployment Service Account (${SA_EMAIL}) ein..."
+echo "==> [3/5] Provisioning Firebase & Hosting site (https://${PROJECT_ID}.web.app/)..."
+curl -sS -X POST \
+  "https://firebase.googleapis.com/v1beta1/projects/${PROJECT_ID}:addFirebase" \
+  -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+  -H "x-goog-user-project: ${PROJECT_ID}" \
+  -H "Content-Type: application/json" \
+  -d '{}' >/dev/null || true
+
+# Poll briefly if addFirebase LRO is still completing
+sleep 6
+
+curl -sS -X POST \
+  "https://firebasehosting.googleapis.com/v1beta1/projects/${PROJECT_ID}/sites?siteId=${PROJECT_ID}" \
+  -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+  -H "x-goog-user-project: ${PROJECT_ID}" \
+  -H "Content-Type: application/json" \
+  -d '{}' >/dev/null || true
+
+if [[ -f "${REPO_ROOT}/firebase.json" ]]; then
+  cat > "${REPO_ROOT}/.firebaserc" <<EOF
+{
+  "projects": {
+    "default": "${PROJECT_ID}"
+  }
+}
+EOF
+fi
+
+echo "==> [4/5] Configuring Keyless GitHub Actions OIDC (${SA_EMAIL})..."
 if ! gcloud iam service-accounts describe "${SA_EMAIL}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
   gcloud iam service-accounts create "${SA_NAME}" \
     --display-name="GitHub Actions Firebase Hosting Deployer (NexusTS)" \
     --project="${PROJECT_ID}"
-  # Wait briefly for IAM propagation on brand-new service accounts
   sleep 5
 fi
 
@@ -85,7 +95,6 @@ for role in roles/firebasehosting.admin roles/firebase.viewer roles/serviceusage
     --quiet >/dev/null
 done
 
-echo "==> [4/6] Konfiguriere Keyless Workload Identity Federation (OIDC) für ${GITHUB_REPO}..."
 if ! gcloud iam workload-identity-pools describe "${POOL_ID}" --location="global" --project="${PROJECT_ID}" >/dev/null 2>&1; then
   gcloud iam workload-identity-pools create "${POOL_ID}" \
     --location="global" \
@@ -114,33 +123,21 @@ gcloud iam service-accounts add-iam-policy-binding "${SA_EMAIL}" \
 
 WIF_PROVIDER="projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/${POOL_ID}/providers/${PROVIDER_ID}"
 
-echo "==> [5/6] Speichere OIDC-Variablen im GitHub-Repository (${GITHUB_REPO})..."
-gh variable set FIREBASE_PROJECT_ID --body "${PROJECT_ID}" -R "${GITHUB_REPO}"
-gh variable set FIREBASE_WORKLOAD_IDENTITY_PROVIDER --body "${WIF_PROVIDER}" -R "${GITHUB_REPO}"
-gh variable set FIREBASE_SERVICE_ACCOUNT --body "${SA_EMAIL}" -R "${GITHUB_REPO}"
-
-echo "==> [6/6] Baue NexusTS ChromeOS PWA & führe erstes Live-Deployment aus..."
-if command -v cargo >/dev/null 2>&1 && rustup target list --installed 2>/dev/null | grep -q "wasm32-unknown-unknown"; then
-  (
-    cd "${REPO_ROOT}/chromeos-pwa/rust"
-    cargo build -p nexusts-wasm --target wasm32-unknown-unknown --release
-    mkdir -p ../app/wasm
-    cp target/wasm32-unknown-unknown/release/nexusts_wasm.wasm ../app/wasm/nexusts_wasm.wasm
-  )
+echo "==> [5/5] Linking GitHub Actions..."
+if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+  gh variable set FIREBASE_PROJECT_ID --body "${PROJECT_ID}" -R "${GITHUB_REPO}"
+  gh variable set FIREBASE_WORKLOAD_IDENTITY_PROVIDER --body "${WIF_PROVIDER}" -R "${GITHUB_REPO}"
+  gh variable set FIREBASE_SERVICE_ACCOUNT --body "${SA_EMAIL}" -R "${GITHUB_REPO}"
+  gh workflow run deploy-chromeos-pwa.yml -R "${GITHUB_REPO}" --ref main
+  echo "    GitHub variables set & Firebase Hosting deployment triggered!"
+else
+  echo ""
+  echo "=============================================================================="
+  echo " Google Cloud + Firebase Hosting + Keyless OIDC is READY!"
+  echo " Copy and paste these 2 lines into the Antigravity chat so I can trigger"
+  echo " your live deployment to https://${PROJECT_ID}.web.app/ immediately:"
+  echo ""
+  echo "   FIREBASE_PROJECT_ID=${PROJECT_ID}"
+  echo "   FIREBASE_PROJECT_NUMBER=${PROJECT_NUMBER}"
+  echo "=============================================================================="
 fi
-
-npm --prefix "${REPO_ROOT}/chromeos-pwa" run build:hosting
-(
-  cd "${REPO_ROOT}"
-  npx --yes firebase-tools deploy --only hosting --project "${PROJECT_ID}"
-)
-
-echo ""
-echo "=============================================================================="
-echo " Fertig! NexusTS ChromeOS PWA ist live unter:"
-echo "   https://${PROJECT_ID}.web.app/"
-echo ""
-echo " Auf ChromeOS einfach einmal im Browser öffnen -> 1 Klick auf"
-echo " 'Ins Startmenü installieren' -> NexusTS liegt fest im ChromeOS-Startmenü"
-echo " & aktualisiert sich bei jedem Push auf 'main' vollautomatisch!"
-echo "=============================================================================="
