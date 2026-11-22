@@ -1,119 +1,146 @@
-# NexusTS (`com.nexusts.app`)
+<div align="center">
 
-**NexusTS** is an enterprise-grade Remote Management, Terminal, File Transfer, and Connection Vault application modeled after **Royal TS for macOS**, architected natively for **Googlebook OS** (Android Desktop Windowing, Freeform Multi-Window, Multi-Monitor) and **Android Tablets & Foldables**.
+<img src="chromeos-pwa/app/icons/icon-192.png" alt="NexusTS Logo" width="96" height="96" />
+
+# NexusTS `v1.0.0`
+
+**Desktop-Class Remote Management, FreeRDP 3.12, SSHv2, SFTP & Zero-Knowledge `.nxts` Connection Workspace**  
+*Native for **Googlebook OS & Android**, **macOS Universal2 (Apple Silicon + Intel)**, and **ChromeOS (Signed IWA `.swbn` & Offline PWA)***
+
+[![Release v1.0.0](https://img.shields.io/badge/release-v1.0.0-1d4ed8?style=flat-square)](https://github.com/petrosvassiliou/NexusTS/releases/tag/v1.0.0)
+[![Platforms](https://img.shields.io/badge/platforms-Googlebook%20%7C%20Android%20%7C%20macOS%20%7C%20ChromeOS-059669?style=flat-square)](https://github.com/petrosvassiliou/NexusTS/releases/tag/v1.0.0)
+[![Vault Crypto](https://img.shields.io/badge/vault-Argon2id%20%2B%20AES--256--GCM-7c3aed?style=flat-square)](#zero-knowledge-nxts-v2-vault--live-cloud-sync)
+[![ChromeOS Web App](https://img.shields.io/badge/ChromeOS%20PWA-nexusts--prod.web.app-0284c7?style=flat-square)](https://nexusts-prod.web.app/)
+
+[**Download Latest Release (`v1.0.0`)**](https://github.com/petrosvassiliou/NexusTS/releases/tag/v1.0.0) · [**Launch ChromeOS Web App**](https://nexusts-prod.web.app/) · [**Production Deployment Guide**](docs/PRODUCTION_DEPLOYMENT.md)
+
+</div>
 
 ---
 
-## Architecture Overview
+## Why NexusTS Exists
+
+Existing Android-based RDP and remote desktop managers were designed around phone touchscreens—not real desktop keyboards, multi-monitor docking stations, or large enterprise server fleets. On **Googlebooks**, **Android desktop windowing**, and **tablets with trackpads**, traditional Android RDP clients fall short:
+
+- Fixed resolutions instead of live **`DISP_DVC` dynamic window-drag resizing** and **HiDPI scaling**.
+- Broken or non-existent **bidirectional file & folder copy/paste** with the system `Files` app (*"File operation is not supported"*).
+- Swallowed hardware keyboard shortcuts (`Win`, `Alt+Tab`, `F1–F12`, `Ctrl+V`) and laggy right-click context menus.
+- Isolated single-connection screens with **no split-pane tiling**, **no cascading folder credential inheritance**, **no Royal TS `.rtsz` compatibility**, and **no zero-knowledge cross-platform vault sync**.
+
+**NexusTS `1.0.0`** solves this from the ground up: a unified, light-first desktop remote management workspace inspired by **Royal TS**, powered by **C++20 FreeRDP 3.12** and **Rust (`russh`, `argon2`, `aes-gcm`)**, sharing a single byte-identical encrypted `.nxts` v2 vault across **Googlebook OS / Android**, **macOS**, and **ChromeOS**.
+
+---
+
+## High-Resolution Platform Screenshots (`3200×2000` Retina)
+
+### 1. Googlebook OS & Android Edition (`com.nexusts.app` — Native FreeRDP 3.12 + `russh` Split Workspace)
+*Freeform desktop windowing, side-by-side FreeRDP 3.12 (`AVC444`, `/admin`, `Auto-Fit DISP`, `HiDPI 200%`), bidirectional `DocumentsProvider` file & recursive folder copy/paste with Googlebook `Files`, `russh` SSHv2 + Dual-Pane SFTP v3 Commander, and multi-monitor tab tear-off.*
+
+![NexusTS on Googlebook OS & Android](docs/screenshots/nexusts-googlebook-android-rdp-split.png)
+
+### 2. macOS Universal2 Edition (`com.nexusts.app.macos` — Apple Silicon & Intel, macOS 14+)
+*Unified workspace UI with native macOS Sonoma/Sequoia window chrome, automatic Touch ID hardware sensor detection, Vault Overview Dashboard, `⌘K` Quick Connect, and `⌥⌘I` Cascading Folder Inheritance Inspector.*
+
+![NexusTS on macOS Universal2](docs/screenshots/nexusts-macos-universal-workspace.png)
+
+### 3. ChromeOS Isolated Web App (`.swbn`) & Offline Start-Menu PWA (`com.nexusts.app.chromeos`)
+*100% offline standalone ChromeOS workspace using native `Direct Sockets` (`TCPSocket` / `UDPSocket`), `Controlled Frame`, `Web Serial` UART, Rust WebAssembly cryptography, and persistent Google Drive `FileSystemFileHandle` sync.*
+
+![NexusTS on ChromeOS IWA & Offline PWA](docs/screenshots/nexusts-chromeos-iwa-pwa-overview.png)
+
+### 4. Unified 8-Tab Settings, Zero-Knowledge Google Drive Sync & 1-Click Migration Studio
+*Zero-prompt passwordless or Master-Passphrase Argon2id + AES-256-GCM live Google Drive sync, 1-click non-destructive import from Royal TS (`.rtsz`/`.rtsx`), KeePass XML, Bitwarden, 1Password (`.1pux`), and CSV, localized across 6 languages (`EN`, `DE`, `IT`, `ES`, `EL`, `FR`).*
+
+![NexusTS Unified Settings, Cloud Sync & Importers](docs/screenshots/nexusts-settings-sync-importers.png)
+
+---
+
+## Feature Matrix (`v1.0.0`)
+
+| Capability | Googlebook OS & Android (`APK` / `AAB`) | macOS Universal2 (`DMG` / `ZIP`) | ChromeOS (`IWA .swbn` & `PWA`) |
+| :--- | :---: | :---: | :---: |
+| **Unified Light-First Workspace & Vault Overview** | Yes (Jetpack Compose M3 Expressive) | Yes (SwiftUI + AppKit) | Yes (Strict-CSP Offline ES Modules) |
+| **Recursive Split-Pane Tiling & Tab Tear-Off** | Left/Right, Top/Bottom, External Display Tear-Off | `HSplitView`/`VSplitView` + Detached Windows | Single, Split H/V, Quad + Multi-Window |
+| **RDP Engine** | FreeRDP 3.12 C++20 NDK (`AVC444`, `DISP_DVC`) | FreeRDP 3.12 Universal2 (`AVC444`, `DISP_DVC`) | X.224 / Hyper-V PCB / RLE + Direct Sockets |
+| **Bidirectional RDP File & Folder Copy/Paste** | Native `DocumentsProvider` (`Files` app + Drag & Drop) | Native `NSPasteboard` (`Finder` + `⌘C`/`⌘V`) | Clipboard Sync + Shared Staging |
+| **Hyper-V Enhanced Session (`VMConnect` 2179)** | Yes (Preconnection Blob PCB + Auto-Heal) | Yes (Preconnection Blob PCB + Auto-Heal) | Yes (PCB Negotiation) |
+| **SSHv2, Bastion ProxyJump & Port Forwarding** | Rust `russh` (`-L`, `-R`, `-D` SOCKS5, `.cast`) | Rust `russh` + Local `/bin/zsh` PTY | Direct SSHv2 + SFTP v3 + Terminal |
+| **Dual-Pane SFTP v3 & FTP File Commander** | Streaming SFTP v3 + SAF Integration | Dual-Pane Finder + SFTP v3 | SFTP v3 + FTP Browser |
+| **VNC / Apple Remote Desktop & Web Sessions** | RFB / ZRLE + Isolated Web Sessions | RFB + 1-Click `Screen Sharing.app` + `WKWebView` | RFB / DES + `<controlledframe>` |
+| **Hardware USB-C Serial UART & YubiKey PIV** | `UsbManager` UART (`9600–921600`) + CCID APDU | IOKit `/dev/cu.*` + Smartcard Redirection | `Web Serial API` (`navigator.serial`) |
+| **Kubernetes, Docker & Network Diagnostics** | K8s/Docker Exec & Logs + Ping/Scan/WoL | K8s/Docker Socket + 6-Tool Net Studio | TCP Ping, Concurrent Port Scan & WoL |
+| **Zero-Knowledge `.nxts` v2 Live Cloud Sync** | Google Drive SAF + Drive REST API v3 | Google Drive + iCloud Drive | ChromeOS `FileSystemFileHandle` Drive Sync |
+| **Automatic Biometric Unlock** | Biometric / Googlebook Fingerprint Auto-Prompt | Automatic Touch ID & Apple Watch Detection | WebAuthn / Passkey PRF Unlock |
+| **Royal TS, KeePass, Bitwarden & 1Password Import** | `.rtsz`, `.rtsx`, `.xml`, `.json`, `.1pux`, `.csv` | `.rtsz`, `.rtsx`, `.xml`, `.json`, `.1pux`, `.csv` | `.rtsz`, `.rtsx`, `.xml`, `.json`, `.csv` |
+
+---
+
+## Downloads & Installation (`v1.0.0`)
+
+All signed release artifacts and `SHA256SUMS` manifests are published on [**GitHub Releases (`v1.0.0`)**](https://github.com/petrosvassiliou/NexusTS/releases/tag/v1.0.0):
+
+- **Googlebook OS & Android (`arm64-v8a` + `x86_64`, 16 KB ELF Page-Aligned)**:
+  - Download `NexusTS-v1.0.0-googlebook-android-release.apk` (signed with APK Signature Scheme v2/v3/v4, RSA-4096, Play-Protect compliant with built-in GitHub & Play updater).
+- **macOS 14 Sonoma / macOS 15 Sequoia (`arm64` + `x86_64` Universal2)**:
+  - Download `NexusTS-v1.0.0-macOS-Universal.dmg` (or `.zip`) and drag **NexusTS.app** to `/Applications`.
+- **ChromeOS**:
+  - **1-Click Start-Menu PWA:** Open [**https://nexusts-prod.web.app/**](https://nexusts-prod.web.app/) in Chrome on ChromeOS and click **Install App** to pin NexusTS to your Launcher & Shelf with 100% offline Service Worker caching.
+  - **Standalone Direct-Sockets IWA (`.swbn`):** Install `NexusTS-v1.0.0-ChromeOS-IWA.swbn` via `chrome://web-app-internals` (*Install IWA from Signed Web Bundle*) or Enterprise Policy (`IsolatedWebAppInstallForceList`) for raw TCP/UDP sockets with zero companion relay.
+
+---
+
+## Zero-Knowledge `.nxts` v2 Vault & Live Cloud Sync
+
+Every platform reads and writes the exact same binary **`.nxts` v2 (`NXTS\x00\x02`)** container:
+
+- **Authenticated Cryptography:** Key derivation via **RFC 9106 Argon2id** (`64 MiB, t=3, p=4`), subkey expansion via **HKDF-SHA256**, and payload encryption via **AES-256-GCM** with header Additional Authenticated Data (AAD).
+- **Frictionless or Master-Passphrase Modes:** Sync across Google Drive out of the box with **zero master-password prompts** using NexusTS's transparent authenticated envelope, or lock your vault behind a custom Master Passphrase with **automatic Touch ID / Fingerprint hardware detection**.
+- **Conflict-Free Multi-Device Sync:** Concurrent edits on a Mac, a Googlebook, and a Chromebook are merged deterministically at the object level using **3-way vector-clock delta resolution** (`VaultDeltaConflictResolver`).
+
+---
+
+## Repository Architecture
 
 ```text
 NexusTS/
-├── build-logic/                     # Custom Gradle Convention Plugins (Compose, Android Lib, Cargo-NDK 16KB Page Align)
-├── gradle/libs.versions.toml        # Centralized Version Catalog
-├── native/
-│   ├── CMakeLists.txt               # C++20 FreeRDP 3.x + AMediaCodec H.264/AVC444 + AAudio + 16KB ELF Page Alignment
-│   ├── cpp/                         # FreeRDP 3.x Session, DISP_DVC Dynamic Resize, GDI Surface, Virtual Channels, JNI
-│   └── rust/                        # Cargo Workspace (nexusts-crypto, nexusts-terminal, nexusts-transfer, nexusts-vnc, nexusts-netutils, nexusts-jni)
+├── app/                             # Android & Googlebook OS MainActivity, DetachedSessionActivity, E2E Robolectric Suite
 ├── core/
-│   ├── ui/                          # Material 3 Expressive Theme, Spring Physics, Morphing Shapes, BSP Tiling, Shortcut Engine
-│   ├── vault/                       # Zero-Knowledge .nxts (Argon2id + AES-256-GCM), .rtsz/KeePass/Bitwarden/1Password/CSV Importers
-│   └── gdrive-sync/                 # Dual-Engine Live Google Drive Sync (Persistent SAF + Drive API v3 OAuth 2.0), 3-Way Delta Merge
+│   ├── ui/                          # Material 3 Expressive Light-First Theme, BSP Split Tiling, Desktop Shortcut Engine
+│   ├── vault/                       # .nxts v2 Crypto, Cascading Folder Inheritance, .rtsz/KeePass/Bitwarden/1Password Importers
+│   └── gdrive-sync/                 # Persistent SAF & Google Drive REST v3 Live Sync + 3-Way Vector-Clock Merge
 ├── protocols/
-│   ├── rdp/                         # FreeRDP 3.x Compose SurfaceView, DISP_DVC Window Drag Resize, USB CCID YubiKey APDU Bridge
-│   ├── ssh/                         # xterm-256color/TrueColor Terminal, Port Forwards, SFTP Commander, USB-C Hardware Serial UART
-│   └── vnc/                         # UltraVNC/ARD ZRLE, Kubernetes Pod & Docker Container Exec/Log Terminals, WebView, NetUtils
-├── feature/
-│   └── workspace/                   # Adaptive Desktop Workspace, Tree Sidebar, Property Inspector, Broadcast Drawer, Per-App i18n
-└── app/                             # com.nexusts.app MainActivity, DetachedSessionActivity, GitHub/Play Updater, Compose E2E Suite
-```
-
-## Key Technical Highlights (`v1.1.0`)
-
-1. **Googlebook OS Native Desktop Windowing**:
-   - Full `PROPERTY_SUPPORTS_MULTI_INSTANCE_SYSTEM_UI`, freeform `<layout>` geometry, external monitor discovery via `DisplayManager`, and tab tear-off (`DetachedSessionActivity` with `ActivityOptions.setLaunchDisplayId()`).
-   - Zero legacy ChromeOS ARC++ or Crostini container assumptions.
-2. **Material Design 3 Expressive**:
-   - Quantum Cobalt & Cyber Mint brand palette + Dynamic Color + High-Contrast mode.
-   - Distinct Spatial vs Effects spring physics (`NexusMotionScheme`) and morphing container/tab geometry (`rememberMorphingContainerShape`).
-3. **Dual-Engine Live Google Drive Sync & Zero-Knowledge `.nxts` Vaults**:
-   - Binary `.nxts` v2 envelope (`NXTS\x00\x02`) sealed with **Argon2id** (`64 MiB, t=3, p=4`), **HKDF-SHA256**, and **AES-256-GCM** with authenticated header AAD.
-   - **Zero-Setup Persistent SAF Engine (`SafLiveGoogleDriveBridge`)**: Links directly to Google Drive (`NexusTS Vaults`) via `Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION` with automatic on-save encryption & 3-way `VaultDeltaConflictResolver` vector-clock merge — zero Cloud Console setup needed for direct-installed APKs.
-   - **Google Drive REST API v3 Engine (`GoogleDriveVaultSyncEngine`)**: Play Services `AuthorizationClient` OAuth 2.0 consent (`drive.appdata` + `drive.file`), Shared Team Drive advisory locks, SQLCipher offline cache, and `WorkManager` periodic delta sync (`./scripts/setup-gdrive-oauth.sh`).
-4. **Multi-Format Enterprise Importer & Cascading Inheritance**:
-   - Bidirectional Royal TS `.rtsz` / `.rtsx` import & export, plus native import of **KeePass 2.x XML**, **Bitwarden JSON**, **1Password `.1pux` / JSON**, and **RFC 4180 CSV** inventories (`EnterpriseVaultFormatImporter`).
-   - Folder-level credential inheritance, Connection Templates, Smart Folders, Dynamic Folders, RFC 6238 TOTP (`$EffectiveTOTP$`), and Custom Properties (`$CustomProperty.*$`).
-5. **Enterprise Protocols (RDP, SSH, USB-C Serial UART, Kubernetes & Docker)**:
-   - **RDP (`FreeRDP 3.x` NDK)**: `/admin` Console session, HiDPI scaling (`100%–200%`), `DISP_DVC` dynamic resize, H.264/AVC444 `AMediaCodec`, bidirectional clipboard, 3-mode audio, drives, printers, serial ports, and USB CCID YubiKey PIV redirection.
-   - **SSH & Out-of-Band Serial (`russh` / `UsbManager`)**: Visual `-L`/`-R`/`-D` SOCKS5 port-forwarding studio, ProxyJump Bastion chaining, asciicast v2 (`.cast`) recording, and **USB-C Hardware Serial / UART Console** (`FTDI`, `CP210x`, `PL2303`, `CH340`, `CDC-ACM`; `9600–921600 8N1`, `DTR`/`RTS`, `Send BREAK`).
-   - **Cloud-Native Workloads**: Interactive **Kubernetes Pod** & **Docker Container** Exec Shell, Live Log Streamer, and Workload Discovery (`k8s://`, `kubectl://`, `docker://`, `serial://` Quick Connect URIs).
-6. **Play-Protect-Compliant Distribution & Automated Compose UI E2E Suite**:
-   - Direct-install **GitHub Releases Update Checker** (`GitHubReleaseUpdateChecker`) + Google Play `AppUpdateManager` / Managed Play `PackageInstaller` with **zero** `REQUEST_INSTALL_PACKAGES` permissions and **zero** untrusted dynamic code loading.
-   - Headless Robolectric Compose UI E2E tests (`NexusWorkspaceComposeE2ETest`, `SafLiveDriveSyncTest`, `EnterpriseVaultImporterTest`) + Android Instrumentation (`NexusWorkspaceInstrumentedTest`), plus 100% parity across 6 languages (**EN, DE, IT, ES, EL, FR**).
-
-## Build, NDK Cross-Compilation & Release Quickstart
-
-See [`docs/PRODUCTION_DEPLOYMENT.md`](docs/PRODUCTION_DEPLOYMENT.md) for the full runbook:
-
-```bash
-# 1. Generate 4096-bit PKCS#12 release keystore + Google Cloud OAuth 2.0 & MDM config
-./scripts/provision-signing-and-oauth.sh .signing/nexusts-release.p12 nexusts-upload
-./scripts/setup-gdrive-oauth.sh .signing/nexusts-release.p12 nexusts-upload
-
-# 2. (Optional) Cross-compile OpenSSL 3.4 + libusb 1.0 + FreeRDP 3.12 for NDK r28 (16 KB page aligned)
-./scripts/build-freerdp3-ndk.sh --abis arm64-v8a,x86_64
-
-# 3. Run Rust Cargo tests, Headless Compose/Robolectric E2E tests, & build signed Release .apk/.aab
-cargo test --manifest-path native/rust/Cargo.toml
-./gradlew testDebugUnitTest assembleDebugAndroidTest assembleRelease bundleRelease
+│   ├── rdp/                         # FreeRDP 3.12 TextureView, DISP_DVC Resize, NexusRdpClipboardDocumentsProvider, CCID Bridge
+│   ├── ssh/                         # xterm-256color Terminal, Port-Forwarding Studio, Dual-Pane SFTP v3, USB-C Serial UART
+│   └── vnc/                         # RFB/ZRLE VNC, Kubernetes Pod & Docker Exec/Logs, Isolated Web Sessions, NetUtils
+├── feature/workspace/               # Unified Desktop Workspace, Overview Dashboard, Sidebar Tree, 8-Tab Settings, 6-Locale i18n
+├── native/
+│   ├── cpp/                         # C++20 FreeRDP 3.12 Session, RDPGFX/AVC444, CLIPRDR File Streams, DISP_DVC, AAudio/CoreAudio
+│   └── rust/                        # Rust Workspace (nexusts-crypto, nexusts-terminal, nexusts-transfer, nexusts-vnc, nexusts-netutils)
+├── macos/                           # Native Swift + SwiftUI/AppKit macOS 14+ App (Universal2 arm64 + x86_64)
+├── chromeos-pwa/                    # ChromeOS Signed Isolated Web App (.swbn), Offline Service Worker PWA & Linux Relay
+└── docs/screenshots/                # High-Resolution 3200x2000 Retina Platform Screenshots
 ```
 
 ---
 
-## Native macOS Edition (`macos/` — SwiftUI & AppKit, macOS 14 Sonoma+)
+## Build & Test Quickstart
 
-On the `macos` branch, **NexusTS for Mac** (`com.nexusts.app.macos`) delivers a 100% native Swift + SwiftUI / AppKit desktop experience built strictly to modern **Apple Human Interface Guidelines (HIG)** while sharing the exact same Rust & C++20 engines and binary-compatible `.nxts` v2 vaults:
-
-- **Modern Apple HIG Workspace**:
-  - Three-column `NavigationSplitView` with vibrancy sidebar (`.listStyle(.sidebar)`), recursive BSP split-pane workspace (`HSplitView` / `VSplitView`), Safari/Xcode-style tab strips with lossless multi-window tear-off & re-dock (`WindowGroup("Detached Session")`), and trailing property inspector (`.inspector` `⌥⌘I`).
-  - Unified macOS window toolbar (`.windowToolbarStyle(.unified)`), Spotlight-style `⌘K` Quick Connect overlay, native `Settings` window (`⌘,`), `MenuBarExtra` status bar quick-connect agent, full macOS menu bar `Commands`, and `CoreSpotlight` system-wide connection indexing.
-- **Native Apple Security & Cloud Sync**:
-  - **Touch ID & Apple Watch** (`LocalAuthentication`) + macOS Keychain integration for zero-knowledge Argon2id + AES-256-GCM `.nxts` v2 vault unlock.
-  - Live 3-way vector-clock delta sync (`VaultDeltaConflictResolver`) across **iCloud Drive**, **Google Drive for Desktop** (security-scoped bookmarks), and **Google Drive REST API v3** — 100% interoperable with NexusTS on Android & Googlebook OS.
-- **Full Protocol & Studio Parity**:
-  - Local macOS `/bin/zsh` login shells (`forkpty`), `russh` SSHv2 + Bastion ProxyJump + `-L`/`-D` SOCKS5 tunnels + Asciicast `.cast` recorder, Dual-Pane Finder/SFTP v3 Commander, FreeRDP 3.x (`DISP_DVC` Retina dynamic resize), VNC & 1-click native macOS `Screen Sharing.app` (`ARD`) handoff, IOKit `/dev/cu.*` hardware USB-Serial UART (`IOSSIOSPEED`), isolated `WKWebView` (`WKWebsiteDataStore(forIdentifier:)`), Kubernetes/Docker (`/var/run/docker.sock`), Cloud Hypervisors (Proxmox, vSphere, AWS EC2 SigV4, Azure), and 6-tool Network Diagnostics.
-
-### macOS Build, Test & Universal2 DMG Packaging
-
+### Android & Googlebook OS
 ```bash
-# 1. Build Universal2 (arm64 + x86_64) Rust FFI + C++20 FreeRDP static libraries & run XCTests
+# Run Rust unit tests, headless Compose/Robolectric E2E suite, and assemble signed Release APK & AAB
+cargo test --manifest-path native/rust/Cargo.toml
+./gradlew testDebugUnitTest assembleRelease bundleRelease
+```
+
+### macOS Universal2 (`arm64` + `x86_64`)
+```bash
 ./scripts/build-macos-native.sh --universal
 swift test --package-path macos
-
-# 2. Package Universal2 NexusTS.app + NexusTS-macOS-Universal.dmg
 ./scripts/package-macos-app.sh --universal
 ```
 
----
-
-## ChromeOS Offline PWA & Isolated Web App Edition (`chromeos-pwa/` — `.swbn` & Offline Service Worker)
-
-**NexusTS for ChromeOS** (`com.nexusts.app.chromeos`) delivers 1:1 feature parity and 100% offline operation from a single Dual-Build codebase:
-
-- **Signed Isolated Web App (`NexusTS-v*-ChromeOS-IWA.swbn`)**:
-  - Uses native ChromeOS **`Direct Sockets API` (`TCPSocket` / `UDPSocket`)**, **`Controlled Frame` (`<controlledframe>`)**, and **`Web Serial` (`navigator.serial`)** for 100% standalone offline raw TCP/UDP connections (RDP, SSHv2, SFTP v3, VNC, FTP, Telnet, Wake-on-LAN, TCP Ping & Port Scanner) with **zero companion binary**.
-  - Installable via Chrome Enterprise Policy (`IsolatedWebAppInstallForceList` with `NexusTS-v*-ChromeOS-IWA-update-manifest.json`) or on ChromeOS via `chrome://web-app-internals` (*Install IWA from Signed Web Bundle* with `#enable-isolated-web-apps-in-renderer` & `#enable-isolated-web-app-dev-mode`).
-- **Standard Offline PWA (`NexusTS-v*-ChromeOS-Offline-PWA.zip` + `nexusts-local-relay`)**:
-  - Precaches every HTML, CSS, ES module, icon, and the `nexusts_wasm.wasm` Rust Argon2id + AES-256-GCM & RFB/RDP accelerator via `sw.js` for 100% offline startup on any unmanaged Chromebook, with optional single-binary `nexusts-local-relay` (`x86_64` / `arm64`) inside ChromeOS Linux (Crostini).
-- **100% `.nxts` v2 & Google Drive Offline Sync Interoperability**:
-  - Shares the exact `NXTS\x00\x02` Argon2id + HKDF-SHA256 + AES-256-GCM wire format and 3-way `VaultDeltaConflictResolver` with macOS and Android, syncing automatically on startup, local edits, and remote changes via persistent ChromeOS `FileSystemFileHandle` in Google Drive ("Meine Ablage" / "My Drive" & Shared Drives, including offline-pinned files).
-
-### ChromeOS Build & Test
-
+### ChromeOS Isolated Web App (`.swbn`) & Offline PWA
 ```bash
-cd chromeos-pwa
-npm test
-npm run build
+npm --prefix chromeos-pwa test
+npm --prefix chromeos-pwa run build
 ```
-
-
-

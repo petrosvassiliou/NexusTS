@@ -181,12 +181,11 @@ class GitHubReleaseUpdateChecker(
         )
 
         /**
-         * Historical tags published prior to rebasing NexusTS to the honest `0.3.x` beta series.
-         * Rebased `0.x` (and future post-rebase) builds ignore these historical tags so the
-         * in-app updater never falsely flags old pre-rebase `1.0.0`–`1.2.1` tags as updates.
+         * Historical tags published prior to rebasing NexusTS (`1.1.0`–`1.2.1-beta.2`).
+         * Ignored until post-1.0 releases reach `1.1.0` so historical pre-rebase tags are never
+         * falsely flagged over `1.0.x`.
          */
         private val LEGACY_PRE_REBASE_VERSIONS = setOf(
-            "1.0.0",
             "1.1.0", "1.1.1", "1.1.2", "1.1.3", "1.1.4",
             "1.1.5", "1.1.6", "1.1.7", "1.1.8", "1.1.9",
             "1.2.0", "1.2.1-beta.1", "1.2.1-beta.2"

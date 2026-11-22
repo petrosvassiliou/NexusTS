@@ -470,10 +470,11 @@ class NexusWorkspaceComposeE2ETest {
         assertTrue(GitHubReleaseUpdateChecker.isNewerSemanticVersion("1.3.0", "0.3.0"))
         assertFalse(GitHubReleaseUpdateChecker.isNewerSemanticVersion("0.3.0-beta.1", "0.3.0"))
         assertFalse(GitHubReleaseUpdateChecker.isNewerSemanticVersion("0.3.0-beta.1", "0.3.0-beta.1"))
-        // Historical pre-rebase tags (1.0.0–1.2.1-beta.2) must never be flagged as updates over 0.3.x
+        assertTrue(GitHubReleaseUpdateChecker.isNewerSemanticVersion("v1.0.0", "0.9.9"))
+        // Historical pre-rebase tags (1.1.0–1.2.1-beta.2) must never be flagged as updates
         assertFalse(GitHubReleaseUpdateChecker.isNewerSemanticVersion("v1.2.0", "0.3.0-beta.1"))
-        assertFalse(GitHubReleaseUpdateChecker.isNewerSemanticVersion("v1.2.1-beta.2", "0.3.0-beta.1"))
-        assertFalse(GitHubReleaseUpdateChecker.isNewerSemanticVersion("1.1.9", "0.3.0"))
+        assertFalse(GitHubReleaseUpdateChecker.isNewerSemanticVersion("v1.2.1-beta.2", "1.0.0"))
+        assertFalse(GitHubReleaseUpdateChecker.isNewerSemanticVersion("1.1.9", "1.0.0"))
     }
 
     @Test
@@ -1518,10 +1519,10 @@ class NexusWorkspaceComposeE2ETest {
 
     @Test
     fun compactFlushLeftSidebarFolderContextMenusStartAllRdpRenameDeleteAndV117UpgradeParity() {
-        assertEquals(10909, BuildConfig.VERSION_CODE)
+        assertEquals(11000, BuildConfig.VERSION_CODE)
         assertTrue(
-            "Expected BuildConfig.VERSION_NAME (${BuildConfig.VERSION_NAME}) to start with 0.9.9",
-            BuildConfig.VERSION_NAME.startsWith("0.9.9")
+            "Expected BuildConfig.VERSION_NAME (${BuildConfig.VERSION_NAME}) to start with 1.0.0",
+            BuildConfig.VERSION_NAME.startsWith("1.0.0")
         )
         assertEquals("Manage", WorkspaceLocalizedStrings.defaultEnglish().navStudiosMenu)
 

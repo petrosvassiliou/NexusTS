@@ -1,0 +1,1 @@
+• NexusTS 1.0.0 Offizielles Release! Von Grund auf für echtes Desktop-Remote-Management (RDP, SSH, SFTP, VNC & Zero-Knowledge-.nxts-Vaults) auf Googlebooks, Android, macOS und ChromeOS entwickelt — mit FreeRDP 3.12 (DISP_DVC, AVC444, bidirektionalem Datei-Copy/Paste, /admin, YubiKey), russh SSHv2/SFTP, Royal TS/KeePass/Bitwarden/1Password-Import und Google Drive Live-Sync.

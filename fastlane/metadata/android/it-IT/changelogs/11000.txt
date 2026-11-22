@@ -1,0 +1,1 @@
+• NexusTS 1.0.0 Release Ufficiale! Progettato da zero per offrire una vera postazione desktop RDP, SSH, SFTP, VNC e Vault Zero-Knowledge .nxts su Googlebook, Android, macOS e ChromeOS — con FreeRDP 3.12 (DISP_DVC, AVC444, copia/incolla bidirezionale file/cartelle, /admin, YubiKey), russh SSHv2/SFTP, importatori Royal TS/KeePass/Bitwarden/1Password e sincronizzazione Google Drive.

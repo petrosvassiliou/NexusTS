@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Deterministic ChromeOS Dual-Packager (`v0.9.9`):
+// Deterministic ChromeOS Dual-Packager (`v1.0.0`):
 // 1. Audits strict Isolated Web App (IWA) Content-Security-Policy & 100% offline Service Worker asset precache.
 // 2. Packages `NexusTS-ChromeOS-Offline-PWA.zip` (Standard Offline PWA).
 // 3. Packages `NexusTS-ChromeOS-IWA.swbn` (Signed Web Bundle v2 `b2` + Ed25519 Integrity Block v2 `2b`
@@ -270,7 +270,7 @@ export function verifyStrictOfflineAndCsp() {
   return { precachedCount: paths.length };
 }
 
-export function buildFirebaseHostingSite({ version = '0.9.9', releaseTag = 'v0.9.9' } = {}) {
+export function buildFirebaseHostingSite({ version = '1.0.0', releaseTag = 'v1.0.0' } = {}) {
   const audit = verifyStrictOfflineAndCsp();
   fs.rmSync(HOSTING_DIST_DIR, { recursive: true, force: true });
   fs.mkdirSync(HOSTING_DIST_DIR, { recursive: true });
@@ -336,7 +336,7 @@ export function buildFirebaseHostingSite({ version = '0.9.9', releaseTag = 'v0.9
   };
 }
 
-export function buildAllChromeOSArtifacts({ version = '0.9.9', releaseTag = 'v0.9.9' } = {}) {
+export function buildAllChromeOSArtifacts({ version = '1.0.0', releaseTag = 'v1.0.0' } = {}) {
   const hosting = buildFirebaseHostingSite({ version, releaseTag });
   fs.rmSync(DIST_DIR, { recursive: true, force: true });
   fs.mkdirSync(DIST_DIR, { recursive: true });
@@ -381,7 +381,7 @@ export function buildAllChromeOSArtifacts({ version = '0.9.9', releaseTag = 'v0.
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const tag = process.env.NEXUSTS_RELEASE_TAG || 'v0.9.9';
+  const tag = process.env.NEXUSTS_RELEASE_TAG || 'v1.0.0';
   const ver = tag.replace(/^v/, '');
   const hostingOnly = process.argv.includes('--hosting-only');
   const info = hostingOnly
