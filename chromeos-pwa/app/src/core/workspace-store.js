@@ -105,7 +105,7 @@ export class NexusChromeOSStore {
       localRelayReachable: false,
       localRelayUrl: 'ws://127.0.0.1:44890',
       localRelayHttpUrl: 'http://127.0.0.1:44890',
-      appVersion: '0.9.1',
+      appVersion: '0.9.2',
       pwaStandalone: false,
       pwaInstallAvailable: false,
       swUpdateWaiting: false,

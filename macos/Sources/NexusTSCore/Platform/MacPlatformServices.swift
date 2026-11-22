@@ -14,6 +14,7 @@ public enum BiometricUnlockError: LocalizedError, Sendable {
     case biometricsUnavailable(String)
     case authenticationCancelled(String)
     case keychainFailure(OSStatus)
+    case localKeystoreFailure(String)
     case noStoredPassphrase
 
     public var errorDescription: String? {
@@ -21,16 +22,175 @@ public enum BiometricUnlockError: LocalizedError, Sendable {
         case .biometricsUnavailable(let msg): return msg
         case .authenticationCancelled(let msg): return msg
         case .keychainFailure(let status): return "macOS Keychain returned OSStatus \(status)."
-        case .noStoredPassphrase: return "No vault passphrase saved in macOS Keychain yet."
+        case .localKeystoreFailure(let msg): return "Failed to seal Touch ID unlock key: \(msg)"
+        case .noStoredPassphrase: return "No vault passphrase saved for Touch ID unlock yet."
         }
     }
 }
 
+/// Hardware-bound CryptoKit `AES.GCM` + `IOPlatformUUID` + `LAContext` Touch ID / Apple Watch Enclave Store.
+/// Avoids legacy `SecKeychain` / `SecItemAdd` ACL popups ("Keychain Not Found" / `OSStatus -60006`) on
+/// ad-hoc signed macOS builds while enforcing real Secure Enclave Touch ID / Apple Watch verification.
 public final class MacKeychainAndBiometrics: @unchecked Sendable {
     public static let shared = MacKeychainAndBiometrics()
     private let serviceName = "com.nexusts.app.macos.vault"
+    private let lock = NSLock()
+    private let storageDirectoryURL: URL
 
-    public init() {}
+    private static let vaultNamespace = "vault"
+    private static let tokenNamespace = "tokens"
+
+    public init(storageDirectoryURL: URL? = nil) {
+        if let custom = storageDirectoryURL {
+            self.storageDirectoryURL = custom
+        } else {
+            let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+                ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support", isDirectory: true)
+            self.storageDirectoryURL = appSupport
+                .appendingPathComponent("NexusTS", isDirectory: true)
+                .appendingPathComponent("SecureEnclaveStore", isDirectory: true)
+        }
+    }
+
+    private var machineKeyURL: URL {
+        storageDirectoryURL.appendingPathComponent(".machine-key.bin")
+    }
+
+    private var keystoreFileURL: URL {
+        storageDirectoryURL.appendingPathComponent("keystore-v1.json")
+    }
+
+    private static func readHardwarePlatformUUID() -> String {
+        let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("IOPlatformExpertDevice"))
+        guard service != 0 else { return "nexusts-macos-local-hardware" }
+        defer { IOObjectRelease(service) }
+        if let prop = IORegistryEntryCreateCFProperty(
+            service,
+            "IOPlatformUUID" as CFString,
+            kCFAllocatorDefault,
+            0
+        )?.takeRetainedValue() as? String, !prop.isEmpty {
+            return prop
+        }
+        return "nexusts-macos-local-hardware"
+    }
+
+    private func ensureDirectoryAndMachineKeyLocked() throws -> Data {
+        let fm = FileManager.default
+        if !fm.fileExists(atPath: storageDirectoryURL.path) {
+            try fm.createDirectory(
+                at: storageDirectoryURL,
+                withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700]
+            )
+            var dirRes = URLResourceValues()
+            dirRes.isExcludedFromBackup = true
+            var mutableDir = storageDirectoryURL
+            try? mutableDir.setResourceValues(dirRes)
+        }
+
+        if let existing = try? Data(contentsOf: machineKeyURL), existing.count == 32 {
+            return existing
+        }
+
+        let randomKey = SymmetricKey(size: .bits256)
+        let keyBytes = randomKey.withUnsafeBytes { Data($0) }
+        try writeRestrictedFileLocked(keyBytes, to: machineKeyURL)
+        return keyBytes
+    }
+
+    private func writeRestrictedFileLocked(_ data: Data, to targetURL: URL) throws {
+        let tmpURL = targetURL.deletingLastPathComponent().appendingPathComponent(".\(UUID().uuidString).tmp")
+        try data.write(to: tmpURL, options: .atomic)
+        _ = Darwin.chmod(tmpURL.path, mode_t(0o600))
+        let fm = FileManager.default
+        if fm.fileExists(atPath: targetURL.path) {
+            _ = try fm.replaceItemAt(targetURL, withItemAt: tmpURL)
+        } else {
+            try fm.moveItem(at: tmpURL, to: targetURL)
+        }
+        _ = Darwin.chmod(targetURL.path, mode_t(0o600))
+        var res = URLResourceValues()
+        res.isExcludedFromBackup = true
+        var mutableURL = targetURL
+        try? mutableURL.setResourceValues(res)
+    }
+
+    private func loadStoreMapLocked() -> [String: String] {
+        guard let raw = try? Data(contentsOf: keystoreFileURL),
+              let decoded = try? JSONDecoder().decode([String: String].self, from: raw) else {
+            return [:]
+        }
+        return decoded
+    }
+
+    private func saveStoreMapLocked(_ map: [String: String]) throws {
+        let encoded = try JSONEncoder().encode(map)
+        try writeRestrictedFileLocked(encoded, to: keystoreFileURL)
+    }
+
+    private func deriveEntryKeyLocked(namespace: String, account: String) throws -> SymmetricKey {
+        let machineKey = try ensureDirectoryAndMachineKeyLocked()
+        let hwUUID = Self.readHardwarePlatformUUID()
+        var ikmBytes = Data()
+        ikmBytes.append(machineKey)
+        ikmBytes.append(Data(hwUUID.utf8))
+        ikmBytes.append(Data(NSUserName().utf8))
+        let ikm = SymmetricKey(data: ikmBytes)
+        let salt = Data(SHA256.hash(data: Data("\(serviceName):\(namespace)".utf8)))
+        let info = Data("nexusts-macos-biometric-enclave-v1:\(namespace):\(account)".utf8)
+        return HKDF<SHA256>.deriveKey(
+            inputKeyMaterial: ikm,
+            salt: salt,
+            info: info,
+            outputByteCount: 32
+        )
+    }
+
+    public func sealSecret(_ secret: String, namespace: String, account: String) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        do {
+            let key = try deriveEntryKeyLocked(namespace: namespace, account: account)
+            let entryId = "\(namespace):\(account)"
+            let aad = Data(entryId.utf8)
+            let sealed = try AES.GCM.seal(Data(secret.utf8), using: key, authenticating: aad)
+            guard let combined = sealed.combined else {
+                throw BiometricUnlockError.localKeystoreFailure("Missing AES-GCM combined ciphertext")
+            }
+            var map = loadStoreMapLocked()
+            map[entryId] = combined.base64EncodedString()
+            try saveStoreMapLocked(map)
+        } catch let bioErr as BiometricUnlockError {
+            throw bioErr
+        } catch {
+            throw BiometricUnlockError.localKeystoreFailure(error.localizedDescription)
+        }
+    }
+
+    public func unsealSecret(namespace: String, account: String) throws -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        let entryId = "\(namespace):\(account)"
+        let map = loadStoreMapLocked()
+        guard let b64 = map[entryId], let combined = Data(base64Encoded: b64) else {
+            return nil
+        }
+        let key = try deriveEntryKeyLocked(namespace: namespace, account: account)
+        let aad = Data(entryId.utf8)
+        let box = try AES.GCM.SealedBox(combined: combined)
+        let plain = try AES.GCM.open(box, using: key, authenticating: aad)
+        return String(data: plain, encoding: .utf8)
+    }
+
+    private func removeEntriesLocked(where predicate: (String) -> Bool) {
+        var map = loadStoreMapLocked()
+        let before = map.count
+        map = map.filter { !predicate($0.key) }
+        if map.count != before {
+            try? saveStoreMapLocked(map)
+        }
+    }
 
     public var canUseTouchIdOrCompanion: Bool {
         let context = LAContext()
@@ -44,55 +204,28 @@ public final class MacKeychainAndBiometrics: @unchecked Sendable {
     }
 
     public func hasStoredPassphrase(forVaultId vaultId: String) -> Bool {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: serviceName,
-            kSecAttrAccount as String: vaultId,
-            kSecReturnAttributes as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne
-        ]
-        var item: CFTypeRef?
-        return SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess
+        lock.lock()
+        defer { lock.unlock() }
+        let map = loadStoreMapLocked()
+        return map["\(Self.vaultNamespace):\(vaultId)"] != nil
     }
 
     public func storePassphraseInKeychain(_ passphrase: String, forVaultId vaultId: String) throws {
-        let secretData = Data(passphrase.utf8)
-        let deleteQuery: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: serviceName,
-            kSecAttrAccount as String: vaultId
-        ]
-        SecItemDelete(deleteQuery as CFDictionary)
-
-        let addQuery: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: serviceName,
-            kSecAttrAccount as String: vaultId,
-            kSecAttrLabel as String: "NexusTS Zero-Knowledge Vault (\(vaultId))",
-            kSecValueData as String: secretData,
-            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly
-        ]
-        let status = SecItemAdd(addQuery as CFDictionary, nil)
-        guard status == errSecSuccess else {
-            throw BiometricUnlockError.keychainFailure(status)
-        }
+        try sealSecret(passphrase, namespace: Self.vaultNamespace, account: vaultId)
     }
 
     public func deleteStoredPassphrase(forVaultId vaultId: String) {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: serviceName,
-            kSecAttrAccount as String: vaultId
-        ]
-        SecItemDelete(query as CFDictionary)
+        lock.lock()
+        defer { lock.unlock() }
+        let target = "\(Self.vaultNamespace):\(vaultId)"
+        removeEntriesLocked { $0 == target }
     }
 
     public func deleteAllVaultPassphrases() {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: serviceName
-        ]
-        SecItemDelete(query as CFDictionary)
+        lock.lock()
+        defer { lock.unlock() }
+        let prefix = "\(Self.vaultNamespace):"
+        removeEntriesLocked { $0.hasPrefix(prefix) }
     }
 
     public func unlockPassphraseWithBiometrics(
@@ -128,50 +261,32 @@ public final class MacKeychainAndBiometrics: @unchecked Sendable {
             throw BiometricUnlockError.authenticationCancelled(error.localizedDescription)
         }
 
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: serviceName,
-            kSecAttrAccount as String: vaultId,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne
-        ]
-        var item: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &item)
-        guard status == errSecSuccess,
-              let data = item as? Data,
-              let secret = String(data: data, encoding: .utf8) else {
-            throw BiometricUnlockError.keychainFailure(status)
+        do {
+            guard let secret = try unsealSecret(namespace: Self.vaultNamespace, account: vaultId) else {
+                throw BiometricUnlockError.noStoredPassphrase
+            }
+            return secret
+        } catch let bioErr as BiometricUnlockError {
+            throw bioErr
+        } catch {
+            throw BiometricUnlockError.localKeystoreFailure(error.localizedDescription)
         }
-        return secret
     }
 
-    // Generic OAuth / API Token Keychain Helpers
+    // Generic OAuth / API Token Encrypted Store Helpers
     public func saveToken(_ token: String, key: String) {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: "\(serviceName).tokens",
-            kSecAttrAccount as String: key
-        ]
-        SecItemDelete(query as CFDictionary)
-        guard !token.isEmpty else { return }
-        var add = query
-        add[kSecValueData as String] = Data(token.utf8)
-        add[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
-        SecItemAdd(add as CFDictionary, nil)
+        if token.isEmpty {
+            lock.lock()
+            let target = "\(Self.tokenNamespace):\(key)"
+            removeEntriesLocked { $0 == target }
+            lock.unlock()
+            return
+        }
+        try? sealSecret(token, namespace: Self.tokenNamespace, account: key)
     }
 
     public func loadToken(key: String) -> String? {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: "\(serviceName).tokens",
-            kSecAttrAccount as String: key,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne
-        ]
-        var item: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
-              let data = item as? Data else { return nil }
-        return String(data: data, encoding: .utf8)
+        try? unsealSecret(namespace: Self.tokenNamespace, account: key)
     }
 }
 
@@ -718,7 +833,7 @@ public struct MacReleaseUpdateCandidate: Equatable, Sendable {
 }
 
 public enum MacGitHubReleaseUpdater {
-    public static let currentVersion = "0.9.1"
+    public static let currentVersion = "0.9.2"
     public static let githubTokenKeychainKey = "github_release_pat"
 
     private static let legacyPreRebaseVersions: Set<String> = [

@@ -331,6 +331,27 @@ public final class MacCloudBookmarkSyncBridge: @unchecked Sendable {
         return currentSha != lastSha
     }
 
+    public func reencryptLinkedFile(
+        document: NxtsVaultDocument,
+        passphrase: String,
+        explicitURL: URL? = nil,
+        kdf: Argon2KdfConfiguration = .enterpriseDefault
+    ) throws {
+        guard let targetURL = explicitURL ?? resolveLinkedURL() else { return }
+        #if os(macOS)
+        let scoped = targetURL.startAccessingSecurityScopedResource()
+        defer { if scoped { targetURL.stopAccessingSecurityScopedResource() } }
+        #endif
+        let fm = FileManager.default
+        try fm.createDirectory(
+            at: targetURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let sealed = try NxtsVaultSerializer.seal(document: document, passphrase: passphrase, kdf: kdf)
+        try writeAtomically(sealed, to: targetURL)
+        recordSyncState(docId: document.documentId, rev: document.revision, sha256: sha256Hex(sealed))
+    }
+
     public func syncWithLinkedFile(
         localDocument: NxtsVaultDocument,
         passphrase: String,
@@ -401,7 +422,17 @@ public final class MacCloudBookmarkSyncBridge: @unchecked Sendable {
             )
         }
 
-        let remoteDoc = try NxtsVaultSerializer.open(sealedData: remoteBytes, passphrase: passphrase)
+        let remoteDoc: NxtsVaultDocument
+        do {
+            remoteDoc = try NxtsVaultSerializer.open(sealedData: remoteBytes, passphrase: passphrase)
+        } catch {
+            if passphrase == NxtsVaultSerializer.defaultTransparentPassphrase,
+               let fallbackDoc = try? NxtsVaultSerializer.open(sealedData: remoteBytes, passphrase: "") {
+                remoteDoc = fallbackDoc
+            } else {
+                throw error
+            }
+        }
 
         // Fresh starter vault linking to an existing Google Drive vault -> adopt remote vault cleanly
         if localIsStarterVault || (lastSha == nil && localDocument.revision <= 1 && remoteDoc.documentId != localDocument.documentId) {

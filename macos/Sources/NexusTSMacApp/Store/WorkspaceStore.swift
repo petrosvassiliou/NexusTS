@@ -1421,15 +1421,29 @@ public final class WorkspaceStore: ObservableObject {
             : newPassphrase
         self.activePassphrase = effective
         self.hasCustomPassphrase = !newPassphrase.isEmpty
-        persistLocalVault()
+        self.document.bumpRevision(actor: "macos")
+        persistLocalVault(triggerCloudSync: false)
+
+        if let cloudURL = linkedCloudFileURL ?? cloudBookmarkBridge.resolveLinkedURL() {
+            try? cloudBookmarkBridge.reencryptLinkedFile(
+                document: document,
+                passphrase: effective,
+                explicitURL: cloudURL,
+                kdf: .interactiveFast
+            )
+        }
+
         if saveForTouchId && !newPassphrase.isEmpty {
             try MacKeychainAndBiometrics.shared.storePassphraseInKeychain(
                 newPassphrase,
                 forVaultId: document.documentId
             )
-            appendAudit("Security", "Master passphrase sealed in macOS Keychain for Touch ID / Apple Watch unlock.")
-        } else if newPassphrase.isEmpty {
+            appendAudit("Security", "Master passphrase sealed for Touch ID / Apple Watch unlock.")
+        } else {
             MacKeychainAndBiometrics.shared.deleteStoredPassphrase(forVaultId: document.documentId)
+            if newPassphrase.isEmpty {
+                appendAudit("Security", "Vault reset to automatic passwordless sync key.")
+            }
         }
     }
 

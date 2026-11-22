@@ -352,11 +352,11 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
     }
 
     func testV118LocalizationUpgradeVersionAndVaultReplacementCompatibility() throws {
-        XCTAssertEqual(MacGitHubReleaseUpdater.currentVersion, "0.9.1")
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.9.1", isNewerThan: "0.9.0"))
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.9.1", isNewerThan: "0.8.14"))
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.9.1", isNewerThan: "0.8.13"))
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.9.1", isNewerThan: "0.3.0-beta.6"))
+        XCTAssertEqual(MacGitHubReleaseUpdater.currentVersion, "0.9.2")
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.9.2", isNewerThan: "0.9.1"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.9.2", isNewerThan: "0.9.0"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.9.2", isNewerThan: "0.8.14"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.9.2", isNewerThan: "0.3.0-beta.6"))
         XCTAssertEqual(LocalizedWorkspaceStrings.catalog(for: .en).studios, "Manage")
         XCTAssertEqual(LocalizedWorkspaceStrings.catalog(for: .en).logOffSession, "Log Off Session")
 
@@ -1548,6 +1548,66 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
         XCTAssertEqual(livePullRes.action, .pulledRemote)
         XCTAssertEqual(livePullRes.document.connections.count, 3)
         XCTAssertFalse(bridge.hasExternalChangeOnDisk(explicitURL: driveVaultURL))
+    }
+
+    func testKeychainFreeBiometricEnclaveStoreAndCloudReencrypt() throws {
+        let workDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("nexusts-enclave-test-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: workDir) }
+
+        let store = MacKeychainAndBiometrics(storageDirectoryURL: workDir)
+        XCTAssertFalse(store.hasStoredPassphrase(forVaultId: "nxts-default-vault"))
+
+        // Sealing passphrase for nxts-default-vault succeeds without invoking legacy SecKeychain or OSStatus -60006
+        try store.storePassphraseInKeychain("My-Custom-Master-Key-2026!", forVaultId: "nxts-default-vault")
+        XCTAssertTrue(store.hasStoredPassphrase(forVaultId: "nxts-default-vault"))
+        let unsealed = try store.unsealSecret(namespace: "vault", account: "nxts-default-vault")
+        XCTAssertEqual(unsealed, "My-Custom-Master-Key-2026!")
+
+        // Token round-trip & clear
+        store.saveToken("ghp_test_token_123", key: "github_release_pat")
+        XCTAssertEqual(store.loadToken(key: "github_release_pat"), "ghp_test_token_123")
+        store.saveToken("", key: "github_release_pat")
+        XCTAssertNil(store.loadToken(key: "github_release_pat"))
+
+        store.deleteStoredPassphrase(forVaultId: "nxts-default-vault")
+        XCTAssertFalse(store.hasStoredPassphrase(forVaultId: "nxts-default-vault"))
+
+        // Verify reencryptLinkedFile re-seals linked Google Drive .nxts when switching or resetting passphrase
+        let suiteName = "com.nexusts.tests.reencrypt.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let bridge = MacCloudBookmarkSyncBridge(defaults: defaults)
+        let driveURL = workDir.appendingPathComponent("NexusTS-Vault.nxts")
+
+        var doc = NxtsVaultDocument(documentId: "nxts-default-vault", name: "Reencrypt Test Vault", revision: 2)
+        try bridge.reencryptLinkedFile(
+            document: doc,
+            passphrase: "Custom-Vault-Passphrase",
+            explicitURL: driveURL,
+            kdf: .interactiveFast
+        )
+        let upToDateCustom = try bridge.syncWithLinkedFile(
+            localDocument: doc,
+            passphrase: "Custom-Vault-Passphrase",
+            explicitURL: driveURL,
+            kdf: .interactiveFast
+        )
+        XCTAssertEqual(upToDateCustom.action, .alreadyUpToDate)
+
+        // Reset back to transparent passwordless sync key
+        doc.bumpRevision(actor: "macos")
+        try bridge.reencryptLinkedFile(
+            document: doc,
+            passphrase: NxtsVaultSerializer.defaultTransparentPassphrase,
+            explicitURL: driveURL,
+            kdf: .interactiveFast
+        )
+        let openedTransparent = try NxtsVaultSerializer.open(
+            sealedData: Data(contentsOf: driveURL),
+            passphrase: NxtsVaultSerializer.defaultTransparentPassphrase
+        )
+        XCTAssertEqual(openedTransparent.revision, doc.revision)
     }
 }
 

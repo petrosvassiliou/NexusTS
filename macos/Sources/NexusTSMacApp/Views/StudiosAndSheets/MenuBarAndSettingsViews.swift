@@ -276,7 +276,7 @@ public struct UnifiedWorkspaceSettingsView: View {
                 SecureField("New Master Passphrase (blank resets to transparent key)", text: $newMasterPassphrase)
                 SecureField("Confirm Master Passphrase", text: $confirmMasterPassphrase)
 
-                Toggle("Enable Touch ID / Apple Watch Unlock via macOS Keychain", isOn: $saveToTouchIdKeychain)
+                Toggle("Enable Touch ID / Apple Watch Unlock", isOn: $saveToTouchIdKeychain)
                     .disabled(!MacKeychainAndBiometrics.shared.canUseTouchIdOrCompanion)
 
                 HStack {
@@ -288,8 +288,10 @@ public struct UnifiedWorkspaceSettingsView: View {
                         do {
                             try store.configureMasterPassphrase(newMasterPassphrase, saveForTouchId: saveToTouchIdKeychain)
                             securityStatusBanner = newMasterPassphrase.isEmpty
-                                ? "Reset to transparent sync key."
-                                : "Master passphrase sealed in macOS Keychain."
+                                ? "Reset to automatic passwordless sync key."
+                                : (saveToTouchIdKeychain
+                                    ? "Master passphrase applied (Touch ID / Apple Watch unlock enabled)."
+                                    : "Master passphrase applied.")
                             newMasterPassphrase = ""
                             confirmMasterPassphrase = ""
                         } catch {
