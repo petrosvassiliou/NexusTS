@@ -1519,10 +1519,13 @@ class NexusWorkspaceComposeE2ETest {
 
     @Test
     fun compactFlushLeftSidebarFolderContextMenusStartAllRdpRenameDeleteAndV117UpgradeParity() {
-        assertEquals(11000, BuildConfig.VERSION_CODE)
         assertTrue(
-            "Expected BuildConfig.VERSION_NAME (${BuildConfig.VERSION_NAME}) to start with 1.0.0",
-            BuildConfig.VERSION_NAME.startsWith("1.0.0")
+            "Expected BuildConfig.VERSION_CODE (${BuildConfig.VERSION_CODE}) >= 11000",
+            BuildConfig.VERSION_CODE >= 11000
+        )
+        assertTrue(
+            "Expected BuildConfig.VERSION_NAME (${BuildConfig.VERSION_NAME}) to match semver X.Y.Z",
+            Regex("""^\d+\.\d+\.\d+(?:[-+].*)?$""").matches(BuildConfig.VERSION_NAME)
         )
         assertEquals("Manage", WorkspaceLocalizedStrings.defaultEnglish().navStudiosMenu)
 

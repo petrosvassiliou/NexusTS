@@ -15,11 +15,38 @@ android {
     ndkVersion = libs.versions.ndk.get()
 
     defaultConfig {
-        applicationId = "com.nexusts.app"
+        val configuredAppId = (
+            System.getenv("NEXUSTS_APPLICATION_ID")?.takeIf { it.isNotBlank() }
+                ?: providers.gradleProperty("nexusts.applicationId").orNull?.takeIf { it.isNotBlank() }
+                ?: "com.nexusts.app"
+            ).trim()
+        val rawReleaseTag = (
+            System.getenv("NEXUSTS_RELEASE_TAG")?.takeIf { it.startsWith("v") }
+                ?: System.getenv("GITHUB_REF_NAME")?.takeIf { it.startsWith("v") }
+            )?.trim()
+        val semverMatch = rawReleaseTag?.let {
+            Regex("""^v(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$""").matchEntire(it)
+        }
+        val resolvedVersionName = rawReleaseTag?.removePrefix("v") ?: "1.0.0"
+        val resolvedVersionCode = if (semverMatch != null) {
+            val major = semverMatch.groupValues[1].toInt()
+            val minor = semverMatch.groupValues[2].toInt()
+            val patch = semverMatch.groupValues[3].toInt()
+            val computed = if (major <= 1 && minor <= 9 && patch <= 99) {
+                10000 + major * 1000 + minor * 100 + patch
+            } else {
+                major * 1_000_000 + minor * 1_000 + patch
+            }
+            maxOf(11000, computed)
+        } else {
+            11000
+        }
+
+        applicationId = configuredAppId
         minSdk = providers.gradleProperty("nexusts.minSdk").get().toInt()
         targetSdk = providers.gradleProperty("nexusts.targetSdk").get().toInt()
-        versionCode = 11000
-        versionName = "1.0.0"
+        versionCode = resolvedVersionCode
+        versionName = resolvedVersionName
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {

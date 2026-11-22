@@ -114,6 +114,7 @@ jobs:
           bash -n scripts/provision-signing-and-oauth.sh
           bash -n scripts/setup-gdrive-oauth.sh
           ./scripts/build-freerdp3-ndk.sh --dry-run
+          python3 scripts/publish-managed-play.py --self-test
 
       - name: Cache Prebuilt OpenSSL 3.4 + libusb + FreeRDP 3.12 NDK SDK
         if: ${{ inputs.compile_full_freerdp3 == true || startsWith(github.ref, 'refs/tags/v') }}
@@ -204,11 +205,15 @@ jobs:
       - name: Execute JVM Unit & Headless Robolectric Compose UI E2E Tests
         env:
           NEXUSTS_PREBUILT_RUST_JNILIBS: "true"
+          NEXUSTS_RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+          NEXUSTS_APPLICATION_ID: ${{ vars.GOOGLE_PLAY_PACKAGE_NAME || 'com.nexusts.app' }}
         run: gradle testDebugUnitTest --continue --stacktrace
 
       - name: Build Debug APK, Lint, Instrumentation APK & Signed Release Bundle (.aab) + APK
         env:
           NEXUSTS_PREBUILT_RUST_JNILIBS: "true"
+          NEXUSTS_RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+          NEXUSTS_APPLICATION_ID: ${{ vars.GOOGLE_PLAY_PACKAGE_NAME || 'com.nexusts.app' }}
           NEXUSTS_KEYSTORE_PASSWORD: ${{ secrets.NEXUSTS_KEYSTORE_PASSWORD }}
           NEXUSTS_KEY_ALIAS: ${{ secrets.NEXUSTS_KEY_ALIAS }}
           NEXUSTS_KEY_PASSWORD: ${{ secrets.NEXUSTS_KEY_PASSWORD }}
@@ -219,6 +224,8 @@ jobs:
           gradle assembleRelease --max-workers=2 --stacktrace
 
       - name: Automated Play Protect, v2/v3 Signing & 16 KB ELF Page Alignment QA
+        env:
+          EXPECTED_APP_ID: ${{ vars.GOOGLE_PLAY_PACKAGE_NAME || 'com.nexusts.app' }}
         run: |
           set -euo pipefail
           APKSIGNER="${ANDROID_HOME}/build-tools/35.0.0/apksigner"
@@ -251,11 +258,11 @@ jobs:
 
           echo "==> [3/4] Verifying Package Identity & 6 Bundled Enterprise Locales"
           BADGING_OUT="$("${AAPT2}" dump badging "${RELEASE_APK}")"
-          echo "${BADGING_OUT}" | grep -q "name='com.nexusts.app'"
+          echo "${BADGING_OUT}" | grep -q "name='${EXPECTED_APP_ID}'"
           for loc in de el es fr it; do
             echo "${BADGING_OUT}" | grep -q "'${loc}'"
           done
-          echo "[OK] Verified com.nexusts.app & 6 bundled locales (en, de, it, es, el, fr)."
+          echo "[OK] Verified ${EXPECTED_APP_ID} & 6 bundled locales (en, de, it, es, el, fr)."
 
           echo "==> [4/4] Verifying 16 KB (0x4000) ELF LOAD Segment Alignment on All Native .so Libraries"
           UNZIP_DIR="${RUNNER_TEMP}/apk_native_qa"
@@ -367,7 +374,7 @@ jobs:
               - Byte-for-byte compatible `.nxts` v2 (`NXTS\x00\x02`) Argon2id + HKDF-SHA256 + AES-256-GCM vaults, OpenSSH Ed25519 key generator, live RFC 6238 TOTP codes, Royal TS (`.rtsz`/`.rtsx`), KeePass XML, Bitwarden, 1Password & CSV import/export, cascading folder inheritance, Smart Folders, multi-pane split tiling, Unified 8-Tab Settings, and automatic Google Drive sync.
           files: release-assets/*
 
-      - name: Check Optional Google Play Service Account Secret
+      - name: Check Optional Google Play / Workspace Managed Play Service Account Secret
         id: play-check
         env:
           PLAY_SA_JSON: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
@@ -378,12 +385,23 @@ jobs:
             echo "enabled=false" >> "${GITHUB_OUTPUT}"
           fi
 
-      - name: Upload Signed AAB & 6-Locale Metadata to Google Play Internal Track
+      - name: Auto-Publish Signed APK/AAB to Google Workspace Managed Play (`production`)
         if: ${{ steps.play-check.outputs.enabled == 'true' && !contains(steps.stage.outputs.tag_name, '-') }}
-        uses: r0adkll/upload-google-play@v1
-        with:
-          serviceAccountJsonPlainText: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
-          packageName: com.nexusts.app
-          releaseFiles: release-assets/NexusTS-${{ steps.stage.outputs.tag_name }}-playstore-release.aab
-          track: internal
-          whatsNewDirectory: fastlane/metadata/android
+        env:
+          GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_PLAY_PACKAGE_NAME: ${{ vars.GOOGLE_PLAY_PACKAGE_NAME || 'com.nexusts.app' }}
+          GOOGLE_PLAY_TRACK: ${{ vars.GOOGLE_PLAY_TRACK || 'production' }}
+          GOOGLE_PLAY_UPLOAD_FORMAT: ${{ vars.GOOGLE_PLAY_UPLOAD_FORMAT || 'apk' }}
+          GOOGLE_PLAY_RELEASE_TAG: ${{ steps.stage.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          python3 -m venv "${RUNNER_TEMP}/play-publish-venv"
+          "${RUNNER_TEMP}/play-publish-venv/bin/pip" install --quiet google-api-python-client google-auth
+
+          if [[ "${GOOGLE_PLAY_UPLOAD_FORMAT}" == "aab" ]]; then
+            export GOOGLE_PLAY_ARTIFACT_PATH="release-assets/NexusTS-${GOOGLE_PLAY_RELEASE_TAG}-playstore-release.aab"
+          else
+            export GOOGLE_PLAY_ARTIFACT_PATH="release-assets/NexusTS-${GOOGLE_PLAY_RELEASE_TAG}-googlebook-android-release.apk"
+          fi
+
+          "${RUNNER_TEMP}/play-publish-venv/bin/python" scripts/publish-managed-play.py
