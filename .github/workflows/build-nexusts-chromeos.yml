@@ -79,9 +79,11 @@ jobs:
         with:
           node-version: "24"
 
-      - name: Run ChromeOS Offline PWA & IWA Unit/E2E Suite (.nxts v2, Drive Sync, Protocols, CSP)
+      - name: Install Official WebBundle Tooling & Run ChromeOS QA Suite
         working-directory: chromeos-pwa
-        run: npm test
+        run: |
+          npm ci
+          npm test
 
       - name: Build Signed Isolated Web App (.swbn) & Offline PWA (.zip)
         working-directory: chromeos-pwa

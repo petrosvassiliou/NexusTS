@@ -55,6 +55,7 @@ jobs:
       - name: Run ChromeOS PWA QA Suite & Build Firebase Hosting Bundle
         working-directory: chromeos-pwa
         run: |
+          npm ci
           npm test
           npm run build:hosting
 

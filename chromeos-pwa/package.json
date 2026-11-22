@@ -9,5 +9,9 @@
     "build": "node scripts/build-chromeos-bundles.mjs",
     "build:hosting": "node scripts/build-chromeos-bundles.mjs --hosting-only",
     "test": "node --test tests/chromeos-pwa.test.mjs"
+  },
+  "devDependencies": {
+    "wbn": "^0.0.10",
+    "wbn-sign": "^0.3.3"
   }
 }

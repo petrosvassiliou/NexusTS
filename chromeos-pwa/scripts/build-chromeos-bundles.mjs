@@ -1,15 +1,18 @@
 #!/usr/bin/env node
-// Deterministic ChromeOS Dual-Packager (`v1.0.0`):
+// Official Google `wbn` + `wbn-sign` ChromeOS Isolated Web App (`.swbn`) & Installer Packager (`v1.0.0`):
 // 1. Audits strict Isolated Web App (IWA) Content-Security-Policy & 100% offline Service Worker asset precache.
-// 2. Packages `NexusTS-ChromeOS-Offline-PWA.zip` (Standard Offline PWA).
-// 3. Packages `NexusTS-ChromeOS-IWA.swbn` (Signed Web Bundle v2 `b2` + Ed25519 Integrity Block v2 `2b`
-//    with RFC 4648 Base32 `isolated-app://<web-bundle-id>` origin) & `update-manifest.json`!
+// 2. Builds Web Bundle v2 (`b2`) using Google's official `wbn` `BundleBuilder('b2')` (5-element top-level CBOR structure).
+// 3. Signs & cryptographically verifies `NexusTS-v1.0.0-ChromeOS-IWA.swbn` (Integrity Block v2 `2b\0\0`)
+//    against BOTH Google's official `wbn` `Bundle` decoder and `wbn-sign` `SignedWebBundle.fromBytes(...).validateSignatures()`.
+// 4. Stages `/downloads/NexusTS-v1.0.0-ChromeOS-IWA.swbn` & `/downloads/iwa-update-manifest.json` into Firebase Hosting.
 
 import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { Bundle, BundleBuilder } from 'wbn';
+import { SignedWebBundle, WebBundleId } from 'wbn-sign';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT_DIR = path.resolve(__dirname, '..');
@@ -29,6 +32,15 @@ const MIME_BY_EXT = {
   '.wasm': 'application/wasm'
 };
 
+// Canonical Google IWA response headers (matching `@google/rollup-plugin-webbundle` `iwaHeaderDefaults` + `trusted-types default`)
+const IWA_RESPONSE_HEADERS = Object.freeze({
+  'content-security-policy':
+    "base-uri 'none'; default-src 'self'; object-src 'none'; frame-src 'self' https: blob: data:; connect-src 'self' https: wss: ws: http://127.0.0.1:*; script-src 'self' 'wasm-unsafe-eval'; img-src 'self' https: blob: data:; media-src 'self' https: blob: data:; font-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; require-trusted-types-for 'script'; trusted-types default; frame-ancestors 'self';",
+  'cross-origin-embedder-policy': 'require-corp',
+  'cross-origin-opener-policy': 'same-origin',
+  'cross-origin-resource-policy': 'same-origin'
+});
+
 function walkFiles(dir, relPrefix = '') {
   const out = [];
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -40,7 +52,6 @@ function walkFiles(dir, relPrefix = '') {
   return out.sort((a, b) => a.rel.localeCompare(b.rel));
 }
 
-// Minimal Deterministic RFC 8949 CBOR Encoder for Web Bundle v2 (`b2`) & Integrity Block v2 (`2b`)
 function cborUint(major, n) {
   const big = BigInt(n);
   const prefix = major << 5;
@@ -79,7 +90,6 @@ function cborArray(encodedItems) {
 }
 
 function cborMap(entries) {
-  // RFC 8949 §4.2.1 Deterministic CBOR canonical key ordering: sort by encoded key bytewise lexicographic order!
   const encodedPairs = entries
     .map(([k, v]) => ({ k, v }))
     .sort((a, b) => Buffer.compare(a.k, b.k));
@@ -88,105 +98,61 @@ function cborMap(entries) {
   return Buffer.concat([cborUint(5, encodedPairs.length), ...flat]);
 }
 
-function base32LowerNoPad(bytes) {
-  const alphabet = 'abcdefghijklmnopqrstuvwxyz234567';
-  let bits = 0;
-  let value = 0;
-  let out = '';
-  for (const b of bytes) {
-    value = (value << 8) | b;
-    bits += 8;
-    while (bits >= 5) {
-      out += alphabet[(value >>> (bits - 5)) & 31];
-      bits -= 5;
-    }
-  }
-  if (bits > 0) {
-    out += alphabet[(value << (5 - bits)) & 31];
-  }
-  return out;
-}
-
 export function computeIwaWebBundleIdFromEd25519Pub(rawPub32) {
-  // ChromeOS IWA Web Bundle ID: 32-byte Ed25519 public key + suffix [0x00, 0x01, 0x02] encoded in lowercase Base32
-  const full = Buffer.concat([rawPub32, Buffer.from([0x00, 0x01, 0x02])]);
-  return base32LowerNoPad(full);
+  const spkiPrefix = Buffer.from('302a300506032b6570032100', 'hex');
+  const pubKey = crypto.createPublicKey({
+    key: Buffer.concat([spkiPrefix, Buffer.from(rawPub32)]),
+    format: 'der',
+    type: 'spki'
+  });
+  return new WebBundleId(pubKey).serialize();
 }
 
-export function buildUnsignedWebBundleB2(files) {
-  // Web Bundle v2 (`b2`): [ b"🌐📦", b"b2\0\0", primaryUrl, sectionLengthsBytes, sectionsArray, length8Bytes ]
-  const responseItems = [];
-  const indexEntries = [];
+/**
+ * Builds a standards-compliant Web Bundle v2 (`b2` — 5-element top-level CBOR structure)
+ * using Google's official `wbn` `BundleBuilder('b2')` and verifies it with `new Bundle(...)`.
+ */
+export function buildUnsignedWebBundleB2(files, { version = '1.0.0' } = {}) {
+  const builder = new BundleBuilder('b2');
 
   for (const file of files) {
-    const body = fs.readFileSync(file.full);
+    let body = fs.readFileSync(file.full);
+    if (file.rel === '.well-known/manifest.webmanifest' || file.rel === 'manifest.webmanifest') {
+      const parsed = JSON.parse(body.toString('utf8'));
+      parsed.version = version;
+      body = Buffer.from(`${JSON.stringify(parsed, null, 2)}\n`, 'utf8');
+    }
     const ext = path.extname(file.rel).toLowerCase();
     const contentType = MIME_BY_EXT[ext] || 'application/octet-stream';
-    const iwaPermissionsPolicy =
-      'cross-origin-isolated=(self), direct-sockets=(self), direct-sockets-private=(self), controlled-frame=(self), serial=(self), usb=(self), clipboard-read=(self), clipboard-write=(self), fullscreen=(self), window-management=(self)';
-    const iwaCsp =
-      "base-uri 'none'; default-src 'self'; object-src 'none'; frame-src 'self' https: http: blob: data:; connect-src 'self' https: http: wss: ws: blob: data:; script-src 'self' 'wasm-unsafe-eval'; img-src 'self' https: blob: data:; media-src 'self' https: blob: data:; font-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; require-trusted-types-for 'script'; trusted-types default; frame-ancestors 'self';";
-    const headersCbor = cborMap([
-      [cborBytes(Buffer.from(':status')), cborBytes(Buffer.from('200'))],
-      [cborBytes(Buffer.from('content-security-policy')), cborBytes(Buffer.from(iwaCsp))],
-      [cborBytes(Buffer.from('content-type')), cborBytes(Buffer.from(contentType))],
-      [cborBytes(Buffer.from('cross-origin-embedder-policy')), cborBytes(Buffer.from('require-corp'))],
-      [cborBytes(Buffer.from('cross-origin-opener-policy')), cborBytes(Buffer.from('same-origin'))],
-      [cborBytes(Buffer.from('cross-origin-resource-policy')), cborBytes(Buffer.from('same-origin'))],
-      [cborBytes(Buffer.from('permissions-policy')), cborBytes(Buffer.from(iwaPermissionsPolicy))]
-    ]);
-    const respCbor = cborArray([cborBytes(headersCbor), cborBytes(body)]);
-    responseItems.push({ relPath: `/${file.rel}`, respCbor });
+    const headers = {
+      ...IWA_RESPONSE_HEADERS,
+      'content-type': contentType
+    };
+
+    builder.addExchange(`/${file.rel}`, 200, headers, body);
     if (file.rel === 'index.html') {
-      responseItems.push({ relPath: '/', respCbor });
+      builder.addExchange('/', 200, headers, body);
     }
   }
 
-  // Compute exact byte offsets inside the `responses` CBOR array
-  const responsesHeader = cborUint(4, responseItems.length);
-  let currentOffset = responsesHeader.length;
-  const encodedResponses = [];
-  for (const item of responseItems) {
-    indexEntries.push([
-      cborText(item.relPath),
-      cborArray([cborUint(0, currentOffset), cborUint(0, item.respCbor.length)])
-    ]);
-    encodedResponses.push(item.respCbor);
-    currentOffset += item.respCbor.length;
+  const wbnUint8 = builder.createBundle();
+  const wbnBuf = Buffer.from(wbnUint8.buffer, wbnUint8.byteOffset, wbnUint8.byteLength);
+
+  // Verify immediately with Google's official `wbn` `Bundle` parser!
+  const decoded = new Bundle(wbnBuf);
+  if (decoded.version !== 'b2') {
+    throw new Error(`Expected Web Bundle format b2, got ${decoded.version}`);
   }
-
-  const indexSection = cborMap(indexEntries);
-  const responsesSection = Buffer.concat([responsesHeader, ...encodedResponses]);
-
-  const sectionLengthsCbor = cborArray([
-    cborText('index'),
-    cborUint(0, indexSection.length),
-    cborText('responses'),
-    cborUint(0, responsesSection.length)
-  ]);
-
-  const magic = Buffer.from([0xf0, 0x9f, 0x8c, 0x90, 0xf0, 0x9f, 0x93, 0xa6]); // 🌐📦
-  const version = Buffer.from([0x62, 0x32, 0x00, 0x00]); // "b2\0\0"
-  const primaryUrl = cborText(''); // IWA relative URLs require empty primaryUrl in b2
-  const sections = cborArray([indexSection, responsesSection]);
-  const placeholderLen = Buffer.concat([Buffer.from([0x48]), Buffer.alloc(8)]);
-
-  const prefix = Buffer.concat([
-    cborUint(4, 6),
-    cborBytes(magic),
-    cborBytes(version),
-    primaryUrl,
-    cborBytes(sectionLengthsCbor),
-    sections
-  ]);
-  const totalLen = BigInt(prefix.length + placeholderLen.length);
-  const lenField = Buffer.alloc(9);
-  lenField[0] = 0x48; // 8-byte bstr
-  lenField.writeBigUInt64BE(totalLen, 1);
-
-  return Buffer.concat([prefix, lenField]);
+  if (!decoded.urls.includes('/') || !decoded.urls.includes('/.well-known/manifest.webmanifest')) {
+    throw new Error('Web Bundle missing required / or /.well-known/manifest.webmanifest exchange');
+  }
+  return wbnBuf;
 }
 
+/**
+ * Signs an unsigned Web Bundle v2 (`b2`) with Integrity Block v2 (`2b\0\0`) Ed25519 and
+ * verifies the output `.swbn` using Google's official `wbn-sign` `SignedWebBundle.fromBytes(...)`!
+ */
 export function signWebBundleIntegrityBlockV2(unsignedWbnBytes, privateKeyPem = null) {
   let keyPair;
   if (privateKeyPem) {
@@ -194,7 +160,6 @@ export function signWebBundleIntegrityBlockV2(unsignedWbnBytes, privateKeyPem = 
     const pub = crypto.createPublicKey(priv);
     keyPair = { privateKey: priv, publicKey: pub };
   } else {
-    // Deterministic NexusTS IWA development/release Ed25519 signing seed (overridable via NEXUSTS_IWA_ED25519_PEM secret)
     const detSeed = crypto.createHash('sha256').update('nexusts-chromeos-iwa-signing-key-v1').digest();
     const pkcs8Prefix = Buffer.from('302e020100300506032b657004220420', 'hex');
     const priv = crypto.createPrivateKey({
@@ -208,7 +173,7 @@ export function signWebBundleIntegrityBlockV2(unsignedWbnBytes, privateKeyPem = 
 
   const spkiDer = keyPair.publicKey.export({ format: 'der', type: 'spki' });
   const rawPub32 = spkiDer.subarray(spkiDer.length - 32);
-  const webBundleId = computeIwaWebBundleIdFromEd25519Pub(rawPub32);
+  const webBundleId = new WebBundleId(keyPair.publicKey).serialize();
 
   const ibMagic = Buffer.from([0xf0, 0x9f, 0x96, 0x8b, 0xf0, 0x9f, 0x93, 0xa6]); // 🖋📦
   const ibVersion = Buffer.from([0x32, 0x62, 0x00, 0x00]); // "2b\0\0"
@@ -242,8 +207,22 @@ export function signWebBundleIntegrityBlockV2(unsignedWbnBytes, privateKeyPem = 
     cborArray([cborArray([sigAttributes, cborBytes(edSig)])])
   ]);
 
+  const swbnBytes = Buffer.concat([signedIntegrityBlock, unsignedWbnBytes]);
+
+  // Verify `.swbn` end-to-end with Google's official `wbn-sign` `SignedWebBundle` & `wbn` `Bundle`!
+  const verifiedSwbn = SignedWebBundle.fromBytes(swbnBytes);
+  const sigResults = verifiedSwbn.validateSignatures();
+  if (!sigResults.length || !sigResults.every((r) => r.status === 'success' && r.isValid && r.derivedBundleId === webBundleId)) {
+    throw new Error(`Official wbn-sign validation failed: ${JSON.stringify(sigResults)}`);
+  }
+  const innerBundle = new Bundle(verifiedSwbn.pureWebBundle);
+  const manifestResp = innerBundle.getResponse('/.well-known/manifest.webmanifest');
+  if (manifestResp.status !== 200) {
+    throw new Error('Invalid /.well-known/manifest.webmanifest status in verified .swbn');
+  }
+
   return {
-    swbnBytes: Buffer.concat([signedIntegrityBlock, unsignedWbnBytes]),
+    swbnBytes,
     webBundleId,
     origin: `isolated-app://${webBundleId}/`
   };
@@ -261,7 +240,6 @@ export function verifyStrictOfflineAndCsp() {
     throw new Error('Offline violation: external network asset URL detected in index.html');
   }
 
-  // Verify every precached asset in sw.js exists on disk
   const swText = fs.readFileSync(path.join(APP_DIR, 'sw.js'), 'utf8');
   const match = swText.match(/const PRECACHE_ASSETS\s*=\s*\[([\s\S]*?)\];/);
   if (!match) throw new Error('PRECACHE_ASSETS array missing in sw.js');
@@ -318,16 +296,16 @@ export function buildFirebaseHostingSite({ version = '1.0.0', releaseTag = 'v1.0
   manifestObj.version = version;
   fs.writeFileSync(manifestDestPath, `${JSON.stringify(manifestObj, null, 2)}\n`);
 
-  // Strip browser PWA <link rel="manifest"> from hosted https:// landing HTML so ChromeOS users install the .swbn IWA, not a socket-less web tab
+  // Strip <link rel="manifest"> from hosted https:// landing HTML so ChromeOS users install the .swbn IWA, not a socket-less web tab
   const hostedIndexPath = path.join(HOSTING_DIST_DIR, 'index.html');
   const hostedIndexHtml = fs
     .readFileSync(hostedIndexPath, 'utf8')
     .replace(/\s*<link\s+rel="manifest"\s+href="[^"]+"\s*\/?>/i, '');
   fs.writeFileSync(hostedIndexPath, hostedIndexHtml);
 
-  // Build and stage Signed Web Bundle (.swbn) & IWA Update Manifest directly inside hosting-dist/downloads/
+  // Build and stage verified Signed Web Bundle (.swbn) & IWA Update Manifest directly inside hosting-dist/downloads/
   const allAppFiles = walkFiles(APP_DIR);
-  const unsignedForHosting = buildUnsignedWebBundleB2(allAppFiles);
+  const unsignedForHosting = buildUnsignedWebBundleB2(allAppFiles, { version });
   const signingPem = process.env.NEXUSTS_IWA_ED25519_PEM || null;
   const signedForHosting = signWebBundleIntegrityBlockV2(unsignedForHosting, signingPem);
   const downloadsDir = path.join(HOSTING_DIST_DIR, 'downloads');
@@ -359,6 +337,7 @@ export function buildFirebaseHostingSite({ version = '1.0.0', releaseTag = 'v1.0
     webBundleId: signedForHosting.webBundleId,
     iwaOrigin: signedForHosting.origin,
     swbnUrl: `/downloads/NexusTS-${releaseTag}-ChromeOS-IWA.swbn`,
+    updateManifestUrl: 'https://nexusts-prod.web.app/downloads/iwa-update-manifest.json',
     wasmBundled: hasWasm,
     builtAt: new Date().toISOString()
   };
@@ -384,7 +363,7 @@ export function buildAllChromeOSArtifacts({ version = '1.0.0', releaseTag = 'v1.
   fs.mkdirSync(DIST_DIR, { recursive: true });
 
   const files = walkFiles(APP_DIR);
-  const unsignedWbn = buildUnsignedWebBundleB2(files);
+  const unsignedWbn = buildUnsignedWebBundleB2(files, { version });
   const signingPem = process.env.NEXUSTS_IWA_ED25519_PEM || null;
   const { swbnBytes, webBundleId, origin } = signWebBundleIntegrityBlockV2(unsignedWbn, signingPem);
 
