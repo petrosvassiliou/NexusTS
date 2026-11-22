@@ -1,0 +1,1 @@
+• NexusTS 0.9.7: Unified Vault Overview Dashboard (4 pastel metric cards for Connections, Live Sessions, Credentials & TOTP, and Cloud Sync, Favorites grid, and interactive Keyboard Shortcuts cheat sheet) across macOS, ChromeOS, Googlebooks, and Android.

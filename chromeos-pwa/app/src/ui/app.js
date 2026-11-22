@@ -1461,174 +1461,168 @@ function renderGooglebookTopBar() {
   `;
 }
 
-// 1:1 Port of Googlebook `ExpressiveVaultOverviewDashboard` (Welcome Card when empty; Hero Command Launchpad + Favorites + Checklist when populated)
+// 1:1 Port of macOS `VaultOverviewDashboardView` (Hero Header + 4 Pastel Summary Metric Cards + Favorites Grid + Interactive Shortcut Cheat Sheet)
+function renderOverviewStatIcon(kind) {
+  switch (kind) {
+    case 'connections':
+      return `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3" y="4" width="18" height="6.5" rx="2" stroke="#007aff" stroke-width="1.9"/><rect x="3" y="13.5" width="18" height="6.5" rx="2" stroke="#007aff" stroke-width="1.9"/><circle cx="7" cy="7.25" r="1.15" fill="#007aff"/><circle cx="7" cy="16.75" r="1.15" fill="#007aff"/></svg>`;
+    case 'sessions':
+      return `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3" y="4.5" width="18" height="15" rx="2.4" stroke="#34c759" stroke-width="1.9"/><path d="M12 4.8V19.2" stroke="#34c759" stroke-width="1.8"/></svg>`;
+    case 'credentials':
+      return `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="7.5" cy="12" r="3.8" stroke="#ff9500" stroke-width="2"/><path d="M11.3 12H21M17.2 12V15.4M20.2 12V15" stroke="#ff9500" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+    case 'sync':
+    default:
+      return `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6.5 18.2h11a4.3 4.3 0 0 0 .85-8.52A5.8 5.8 0 0 0 6.8 8.1 3.9 3.9 0 0 0 6.5 18.2z" fill="#00a8c6" fill-opacity="0.22" stroke="#00a8c6" stroke-width="1.85" stroke-linejoin="round"/></svg>`;
+  }
+}
+
 function renderGooglebookOverviewDashboard() {
   const s = store.strings;
   const st = store.state;
   const doc = st.vaultDocument;
-  const conns = doc.connections || [];
-  const todos = doc.todoItems || [];
-  const templates = doc.templates || [];
+  const conns = (doc.connections || []).filter((c) => c.parentFolderId !== SYSTEM_CREDENTIALS_FOLDER_ID);
+  const folders = (doc.folders || []).filter((f) => f.id !== SYSTEM_CREDENTIALS_FOLDER_ID);
+  const creds = doc.credentials || [];
   const favorites = conns.filter((c) => c.favorite);
-  const activeConnIds = new Set(st.tabs.map((t) => t.connectionId));
+  const detachedCount = st.tabs.filter((t) => t.detachedWindow && !t.detachedWindow.closed).length;
+  const isLinked = Boolean(st.driveLinkedName);
+  const syncSubtitle = isLinked
+    ? (st.driveStatusMessage || `Up to date with ${st.driveLinkedName}`)
+    : 'Local encrypted vault';
 
-  if (conns.length === 0 && todos.length === 0 && !showAddTodoComposer) {
-    const protocols = ['RDP', 'SSH', 'SFTP', 'VNC', 'HTTPS', 'K8s', 'Serial'];
-    return `
-      <div class="gb-welcome-stage">
-        <div class="gb-welcome-card">
-          <img src="./icons/favicon.svg" alt="" class="gb-welcome-emblem" />
-          <div class="gb-welcome-copy">
-            <h2 class="gb-welcome-title">${esc(s.emptyWorkspaceTitle)}</h2>
-            <p class="gb-welcome-subtitle">${esc(s.emptyWorkspaceHint)}</p>
+  const shortcuts = [
+    { label: s.quickConnectButton, keys: 'Ctrl+K', action: 'open-quick-connect-modal', extra: '', active: false },
+    { label: s.localTerminalCta, keys: 'Ctrl+Alt+T', action: 'launch-local-shell', extra: '', active: false },
+    { label: s.newConnection, keys: 'Ctrl+N', action: 'open-connection-modal', extra: '', active: false },
+    { label: s.tilingSplitH, keys: 'Ctrl+D', action: 'set-tiling', extra: 'data-layout="SPLIT_H"', active: st.tilingLayout === 'SPLIT_H' },
+    { label: s.tilingSplitV, keys: 'Ctrl+Shift+D', action: 'set-tiling', extra: 'data-layout="SPLIT_V"', active: st.tilingLayout === 'SPLIT_V' },
+    { label: s.broadcastInput, keys: 'Ctrl+Shift+B', action: 'toggle-broadcast', extra: '', active: Boolean(st.broadcastInputEnabled) },
+    { label: s.toggleInspector, keys: 'Ctrl+I', action: 'toggle-inspector', extra: '', active: Boolean(st.isInspectorVisible) },
+    { label: s.toggleSidebar, keys: 'Ctrl+B', action: 'toggle-sidebar', extra: '', active: Boolean(st.isSidebarVisible) }
+  ];
+
+  return `
+    <div class="ov-dashboard-scroll">
+      <div class="ov-dashboard-wrap">
+        <header class="ov-hero-header">
+          <div class="ov-hero-identity">
+            <img src="./icons/favicon.svg" alt="" class="ov-hero-icon" />
+            <div class="ov-hero-titles">
+              <h1 class="ov-hero-title">${esc(doc.name)}</h1>
+              <p class="ov-hero-subtitle">Zero-Knowledge Argon2id + AES-256-GCM Vault • Revision ${doc.revision}</p>
+            </div>
           </div>
-          <div class="gb-welcome-actions">
-            <button type="button" class="pill-btn primary gb-cta-btn" data-action="open-connection-modal">
-              ${renderMaterialIcon('add', 18)}
-              <span>${esc(s.newConnection)}</span>
-            </button>
-            <button type="button" class="gb-tonal-pill gb-cta-btn" data-action="open-quick-connect-modal">
-              ${renderMaterialIcon('search', 17)}
-              <span>${esc(s.quickConnectButton)}</span>
-            </button>
-            <button type="button" class="pill-btn gb-cta-btn" data-action="launch-local-shell">
-              ${renderMaterialIcon('terminal', 17)}
-              <span>${esc(s.localTerminalCta)}</span>
-            </button>
-            <button type="button" class="pill-btn gb-cta-btn" data-action="open-import-modal">
-              ${renderMaterialIcon('upload', 17)}
-              <span>${esc(s.importShortCta)}</span>
-            </button>
+          <div class="ov-hero-actions">
             ${st.pwaInstallAvailable ? `
-              <button type="button" class="gb-tonal-pill gb-cta-btn" data-action="install-pwa" data-tooltip="${esc(s.installAppTooltip)}">
-                ${renderMaterialIcon('download', 17)}
+              <button type="button" class="ov-btn-secondary" data-action="install-pwa" data-tooltip="${esc(s.installAppTooltip)}">
+                ${renderMaterialIcon('download', 15)}
                 <span>${esc(s.installAppCta)}</span>
               </button>
             ` : ''}
+            <button type="button" class="ov-btn-secondary" data-action="launch-local-shell">
+              ${renderMaterialIcon('terminal', 15)}
+              <span>${esc(s.localTerminalCta)}</span>
+            </button>
+            <button type="button" class="ov-btn-primary" data-action="open-connection-modal">
+              ${renderMaterialIcon('add', 16)}
+              <span>${esc(s.newConnection)}</span>
+            </button>
           </div>
-          <div class="gb-welcome-divider"></div>
-          <div class="gb-proto-chips">
-            ${protocols.map((p) => `<span class="gb-proto-chip">${esc(p)}</span>`).join('')}
-          </div>
-        </div>
-      </div>
-    `;
-  }
+        </header>
 
-  return `
-    <div class="gb-launchpad-scroll">
-      <div class="gb-launchpad-wrap">
-        <section class="gb-hero-card">
-          <div class="gb-hero-top">
-            <div class="gb-hero-identity">
-              <img src="./icons/favicon.svg" alt="" class="gb-hero-emblem" />
-              <div>
-                <h2 class="gb-hero-title">${esc(doc.name)}</h2>
-                <div class="gb-hero-stats">${conns.length} ${esc(s.navConnections.toLowerCase())} • ${st.tabs.length} ${esc(s.activeSessionsLower)}</div>
-              </div>
+        <section class="ov-stat-grid" aria-label="Vault Summary">
+          <button type="button" class="ov-stat-card blue" data-action="open-quick-connect-modal">
+            <div class="ov-stat-top">
+              ${renderOverviewStatIcon('connections')}
+              <span class="ov-stat-value">${conns.length}</span>
             </div>
-            <div class="gb-hero-actions">
-              <button type="button" class="pill-btn" data-action="launch-local-shell">
-                ${renderMaterialIcon('terminal', 16)}
-                <span>${esc(s.localTerminalCta)}</span>
-              </button>
-              <button type="button" class="pill-btn primary" data-action="open-connection-modal">
-                ${renderMaterialIcon('add', 17)}
-                <span>${esc(s.newConnection)}</span>
-              </button>
+            <div class="ov-stat-meta">
+              <strong>Connections</strong>
+              <span>${folders.length} folders</span>
             </div>
-          </div>
-
-          <button type="button" class="gb-quick-search-bar" data-action="open-quick-connect-modal">
-            <span class="gb-quick-search-icon">${renderMaterialIcon('search', 18)}</span>
-            <span class="gb-quick-search-text">${esc(s.quickConnectLaunchpadHint)}</span>
-            <span class="kbd-badge">Ctrl+K</span>
           </button>
 
-          <div class="gb-hero-pills">
-            ${templates.length > 0 ? `
-              <button type="button" class="gb-tonal-pill small" data-action="open-settings-templates">
-                ${renderMaterialIcon('bookmark', 15)}
-                <span>${esc(s.settingsTabTemplates)} (${templates.length})</span>
-              </button>
-            ` : ''}
-            <button type="button" class="pill-btn small" data-action="open-import-modal">
-              ${renderMaterialIcon('upload', 15)}
-              <span>${esc(s.importShortCta)}</span>
-            </button>
-            ${todos.length === 0 && !showAddTodoComposer ? `
-              <button type="button" class="gb-ghost-pill" data-action="open-todo-composer">
-                ${renderMaterialIcon('add', 15)}
-                <span>${esc(s.addTodoCta)}</span>
-              </button>
-            ` : ''}
-          </div>
+          <button type="button" class="ov-stat-card green" data-action="return-connections">
+            <div class="ov-stat-top">
+              ${renderOverviewStatIcon('sessions')}
+              <span class="ov-stat-value">${st.tabs.length}</span>
+            </div>
+            <div class="ov-stat-meta">
+              <strong>Live Sessions</strong>
+              <span>${detachedCount} detached windows</span>
+            </div>
+          </button>
+
+          <button type="button" class="ov-stat-card orange" data-action="open-settings-credentials">
+            <div class="ov-stat-top">
+              ${renderOverviewStatIcon('credentials')}
+              <span class="ov-stat-value">${creds.length}</span>
+            </div>
+            <div class="ov-stat-meta">
+              <strong>Credentials &amp; TOTP</strong>
+              <span>SSH Keys &amp; Passwords</span>
+            </div>
+          </button>
+
+          <button type="button" class="ov-stat-card teal" data-action="open-settings-sync">
+            <div class="ov-stat-top">
+              ${renderOverviewStatIcon('sync')}
+              <span class="ov-stat-value">${isLinked ? 'Linked' : 'Local'}</span>
+            </div>
+            <div class="ov-stat-meta">
+              <strong>Cloud Sync</strong>
+              <span>${esc(syncSubtitle)}</span>
+            </div>
+          </button>
         </section>
 
         ${favorites.length > 0 ? `
-          <section class="gb-section">
-            <div class="gb-section-header">
-              ${renderMaterialIcon('star', 18)}
-              <h3>${esc(s.filterFavorites)}</h3>
+          <section class="ov-favorites-section">
+            <div class="ov-section-heading">
+              ${renderMaterialIcon('star', 17)}
+              <h2>${esc(s.filterFavorites)}</h2>
             </div>
-            <div class="gb-fav-grid">
+            <div class="ov-fav-grid">
               ${favorites.map((fav) => {
                 const tint = protocolAppleTint(fav.protocol, fav.inheritable?.displayColorAccentHex);
-                const badge = PROTOCOL_CATALOG[fav.protocol]?.badge || fav.protocol;
-                const isLive = activeConnIds.has(fav.id);
+                const protoTitle = PROTOCOL_CATALOG[fav.protocol]?.title || fav.protocol;
                 const isSelected = st.selectedConnectionId === fav.id;
                 return `
-                  <div class="gb-fav-card ${isSelected ? 'selected' : ''}"
+                  <div class="ov-fav-card ${isSelected ? 'selected' : ''}"
                        style="--fav-tint:${esc(tint)}"
                        data-action="select-connection"
                        data-dblaction="launch-connection"
-                       data-conn-id="${esc(fav.id)}">
-                    <div class="gb-fav-card-top">
-                      <span class="gb-fav-proto">
-                        ${renderSidebarConnectionTypeIcon(fav.protocol, fav.inheritable?.displayColorAccentHex, 15)}
-                        <span>${esc(badge)}</span>
-                        ${isLive ? '<span class="active-dot"></span>' : ''}
-                      </span>
-                      <span class="gb-fav-actions">
-                        <button type="button" class="mini-action-btn" data-action="launch-connection" data-conn-id="${esc(fav.id)}" data-tooltip="${esc(s.connectNow)}">⚡</button>
-                        <button type="button" class="mini-action-btn" data-action="edit-connection" data-conn-id="${esc(fav.id)}" data-tooltip="${esc(s.edit)}">${renderMaterialIcon('edit', 13)}</button>
-                      </span>
+                       data-conn-id="${esc(fav.id)}"
+                       data-tooltip="Double-click to connect to ${esc(fav.name)}">
+                    <div class="ov-fav-squircle" style="background:${esc(tint)}1a;border-color:${esc(tint)}38">
+                      ${renderSidebarConnectionTypeIcon(fav.protocol, fav.inheritable?.displayColorAccentHex, 18)}
                     </div>
-                    <div class="gb-fav-name">${esc(fav.name)}</div>
+                    <div class="ov-fav-copy">
+                      <strong>${esc(fav.name)}</strong>
+                      <span>${esc(protoTitle)}</span>
+                    </div>
+                    <button type="button" class="ov-fav-launch" data-action="launch-connection" data-conn-id="${esc(fav.id)}" aria-label="${esc(s.connectNow)}">↗</button>
                   </div>
                 `;
               }).join('')}
             </div>
           </section>
-        ` : `
-          <div class="gb-hint-card">
-            ${renderMaterialIcon('star', 18)}
-            <span>${esc(s.favoritesEmptyHint)}</span>
-          </div>
-        `}
-
-        ${todos.length > 0 || showAddTodoComposer ? `
-          <section class="gb-todo-card">
-            <div class="gb-todo-header">
-              <h3>${esc(s.todoTitle)}</h3>
-              <form id="gb-todo-form" class="gb-todo-form">
-                <input class="text-input" id="gb-todo-input" placeholder="${esc(s.addTodoCta)}…" autocomplete="off" />
-                <button type="submit" class="pill-btn primary small">${renderMaterialIcon('add', 15)}<span>${esc(s.addTodoCta)}</span></button>
-              </form>
-            </div>
-            <div class="gb-todo-list">
-              ${todos.map((td) => `
-                <div class="gb-todo-row ${td.completed ? 'done' : ''}">
-                  <button type="button" class="gb-todo-check ${td.completed ? 'checked' : ''}" data-action="toggle-todo" data-todo-id="${esc(td.id)}">
-                    ${td.completed ? renderMaterialIcon('check', 13) : ''}
-                  </button>
-                  <span class="gb-todo-text" data-action="toggle-todo" data-todo-id="${esc(td.id)}">${esc(td.title)}</span>
-                  <button type="button" class="mini-action-btn" data-action="delete-object" data-object-id="${esc(td.id)}" data-tooltip="${esc(s.delete)}">✕</button>
-                </div>
-              `).join('')}
-            </div>
-          </section>
         ` : ''}
+
+        <section class="ov-shortcuts-section">
+          <h2 class="ov-shortcuts-heading">${esc(s.workspaceShortcutsTitle || 'Keyboard Shortcuts')}</h2>
+          <div class="ov-shortcuts-container">
+            ${shortcuts.map((sc) => `
+              <button type="button"
+                      class="ov-shortcut-item ${sc.active ? 'active' : ''}"
+                      data-action="${sc.action}"
+                      ${sc.extra}>
+                <span class="ov-shortcut-label">${esc(sc.label)}</span>
+                <span class="ov-shortcut-kbd">${esc(sc.keys)}</span>
+              </button>
+            `).join('')}
+          </div>
+        </section>
       </div>
     </div>
   `;
@@ -2379,6 +2373,9 @@ function installEventDelegation() {
       case 'open-settings-sync':
         store.openSettingsTab('sync');
         break;
+      case 'open-settings-credentials':
+        store.openSettingsTab('credentials');
+        break;
       case 'open-settings-updates':
         store.openSettingsTab('updates');
         break;
@@ -3109,6 +3106,28 @@ function installEventDelegation() {
       if (!ev.target.closest?.('.session-canvas')) {
         ev.preventDefault();
         store.setState({ isSidebarVisible: !store.state.isSidebarVisible });
+        return;
+      }
+    }
+    if ((ev.ctrlKey || ev.metaKey) && ev.shiftKey && ev.key.toLowerCase() === 'b') {
+      if (!ev.target.closest?.('.session-canvas')) {
+        ev.preventDefault();
+        store.setState({ broadcastInputEnabled: !store.state.broadcastInputEnabled });
+        return;
+      }
+    }
+    if ((ev.ctrlKey || ev.metaKey) && !ev.shiftKey && ev.key.toLowerCase() === 'i') {
+      if (!ev.target.closest?.('.session-canvas')) {
+        ev.preventDefault();
+        store.setState({ isInspectorVisible: !store.state.isInspectorVisible });
+        return;
+      }
+    }
+    if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 'd') {
+      if (!ev.target.closest?.('.session-canvas')) {
+        ev.preventDefault();
+        const target = ev.shiftKey ? 'SPLIT_V' : 'SPLIT_H';
+        store.setState({ tilingLayout: store.state.tilingLayout === target ? 'SINGLE' : target });
         return;
       }
     }

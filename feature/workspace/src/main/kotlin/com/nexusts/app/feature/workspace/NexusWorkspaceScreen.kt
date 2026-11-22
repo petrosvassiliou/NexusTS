@@ -753,7 +753,24 @@ fun NexusWorkspaceScreen(
                                 },
                                 onMoveConnectionToFolder = viewModel::openMoveConnectionDialog,
                                 onLaunchLocalShell = viewModel::launchLocalShellTab,
-                                activeConnectionIds = activeConnectionIds
+                                activeConnectionIds = activeConnectionIds,
+                                detachedWindowCount = (activeSessionCount - activeDockedTabs.size).coerceAtLeast(0),
+                                isDriveLinked = isDriveLinked,
+                                syncStatusSummary = if (isDriveLinked) {
+                                    "Up to date with ${uiState.driveLinkedSafLabel.ifBlank { uiState.driveSignedInEmail }}"
+                                } else {
+                                    "Local encrypted vault"
+                                },
+                                isSidebarVisible = uiState.isSidebarVisible,
+                                isInspectorVisible = uiState.isInspectorVisible,
+                                broadcastEnabled = uiState.broadcastModeEnabled,
+                                onOpenCredentials = { viewModel.selectRailDestination("credentials") },
+                                onOpenCloudSync = { viewModel.selectRailDestination("sync") },
+                                onToggleSidebar = { onShortcutAction(NexusShortcutAction.TOGGLE_SIDEBAR_TREE) },
+                                onToggleInspector = { onShortcutAction(NexusShortcutAction.TOGGLE_PROPERTY_INSPECTOR) },
+                                onToggleBroadcast = { onShortcutAction(NexusShortcutAction.TOGGLE_BROADCAST_INPUT) },
+                                onSplitRight = { onShortcutAction(NexusShortcutAction.SPLIT_PANE_VERTICAL) },
+                                onSplitDown = { onShortcutAction(NexusShortcutAction.SPLIT_PANE_HORIZONTAL) }
                             )
                         },
                         sessionRenderer = { tab, isFocused ->

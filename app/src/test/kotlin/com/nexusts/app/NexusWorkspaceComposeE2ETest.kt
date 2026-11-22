@@ -205,11 +205,12 @@ class NexusWorkspaceComposeE2ETest {
         }
         composeRule.waitForIdle()
 
-        // Clean empty default vault: zero fake connections, Inspector hidden by default, spacious Welcome Card rendered
+        // Clean empty default vault: zero fake connections, Inspector hidden by default, 4-card Vault Overview Dashboard rendered
         assertTrue(vm.uiState.value.vaultDocument.connections.isEmpty())
         assertTrue(vm.uiState.value.vaultDocument.folders.isEmpty())
         assertFalse(vm.uiState.value.isInspectorVisible)
-        assertTextRendered(strings.emptyWorkspaceTitle)
+        assertTextRendered(vm.uiState.value.vaultDocument.name)
+        assertTextRendered("Credentials & TOTP")
 
         // Create a new DMZ folder with an inline folder-level credential and a child RDP connection inheriting from it
         val dmzFolder = VaultFolder(
@@ -1517,10 +1518,10 @@ class NexusWorkspaceComposeE2ETest {
 
     @Test
     fun compactFlushLeftSidebarFolderContextMenusStartAllRdpRenameDeleteAndV117UpgradeParity() {
-        assertEquals(10906, BuildConfig.VERSION_CODE)
+        assertEquals(10907, BuildConfig.VERSION_CODE)
         assertTrue(
-            "Expected BuildConfig.VERSION_NAME (${BuildConfig.VERSION_NAME}) to start with 0.9.6",
-            BuildConfig.VERSION_NAME.startsWith("0.9.6")
+            "Expected BuildConfig.VERSION_NAME (${BuildConfig.VERSION_NAME}) to start with 0.9.7",
+            BuildConfig.VERSION_NAME.startsWith("0.9.7")
         )
         assertEquals("Manage", WorkspaceLocalizedStrings.defaultEnglish().navStudiosMenu)
 

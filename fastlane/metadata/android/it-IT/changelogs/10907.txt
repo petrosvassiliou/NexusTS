@@ -1,0 +1,1 @@
+• NexusTS 0.9.7: Panoramica unificata della cassaforte (4 schede riepilogative, griglia Preferiti e scorciatoie da tastiera interattive) su macOS, ChromeOS, Googlebook e Android.

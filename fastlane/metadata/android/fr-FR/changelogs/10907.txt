@@ -1,0 +1,1 @@
+• NexusTS 0.9.7 : Vue d’ensemble unifiée du coffre (4 cartes de synthèse, grille de favoris et raccourcis clavier interactifs) sur macOS, ChromeOS, Googlebooks et Android.

@@ -3,529 +3,296 @@ import NexusTSCore
 import SwiftUI
 import UniformTypeIdentifiers
 
-// MARK: - 1. Vault Overview Dashboard (1:1 Googlebook `ExpressiveVaultOverviewDashboard`)
+// MARK: - 1. Vault Overview Dashboard (Apple HIG Hero Cards, Favorites Grid & Interactive Shortcut Cheat Sheet)
 
 public struct VaultOverviewDashboardView: View {
     @EnvironmentObject private var store: WorkspaceStore
-    @State private var showAddTodoComposer: Bool = false
-    @State private var newTodoTitle: String = ""
-
-    private static let royalSapphire = Color(red: 0.114, green: 0.306, blue: 0.847)
-    private static let surfaceLow = Color(red: 0.945, green: 0.961, blue: 0.976)
-    private static let subtleBorder = Color.black.opacity(0.08)
 
     public init() {}
 
     public var body: some View {
-        let conns = store.activeConnections
-        let todos = store.document.todoItems.filter { !store.document.tombstonedObjectIds.contains($0.id) }
-        let templates = store.document.templates.filter { !store.document.tombstonedObjectIds.contains($0.id) }
-        let favorites = conns.filter(\.favorite)
-        let activeTabsCount = store.paneTree.allTabs.count + store.detachedWindowTabs.count
-        let liveConnIds = Set(
-            store.paneTree.allTabs.map(\.connection.id) + store.detachedWindowTabs.values.map(\.connection.id)
-        )
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                HStack(alignment: .center, spacing: 14) {
+                    Image(nsImage: NSApp.applicationIconImage)
+                        .resizable()
+                        .interpolation(.high)
+                        .frame(width: 48, height: 48)
+                        .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
 
-        if conns.isEmpty && todos.isEmpty && !showAddTodoComposer {
-            // Centered M3 Welcome Card (`ExpressiveVaultOverviewDashboard` empty state)
-            GeometryReader { geo in
-                ScrollView {
-                    VStack {
-                        VStack(spacing: 20) {
-                            Image(nsImage: NSApp.applicationIconImage)
-                                .resizable()
-                                .interpolation(.high)
-                                .frame(width: 72, height: 72)
-                                .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-
-                            VStack(spacing: 8) {
-                                Text(store.strings.emptyWorkspaceTitle)
-                                    .font(.system(size: 24, weight: .bold))
-                                    .foregroundStyle(Color(red: 0.059, green: 0.090, blue: 0.165))
-                                    .multilineTextAlignment(.center)
-
-                                Text(store.strings.emptyWorkspaceHint)
-                                    .font(.system(size: 13.5))
-                                    .foregroundStyle(.secondary)
-                                    .multilineTextAlignment(.center)
-                                    .frame(maxWidth: 470)
-                            }
-
-                            HStack(spacing: 10) {
-                                GooglebookActionPill(
-                                    title: store.strings.newConnection,
-                                    symbol: "plus",
-                                    style: .primary
-                                ) {
-                                    store.presentNewConnectionSheet()
-                                }
-
-                                GooglebookActionPill(
-                                    title: store.strings.quickConnectTitle,
-                                    symbol: "magnifyingglass",
-                                    style: .tonal
-                                ) {
-                                    store.toggleQuickConnect()
-                                }
-
-                                GooglebookActionPill(
-                                    title: store.strings.localTerminal,
-                                    symbol: "terminal",
-                                    style: .outlined
-                                ) {
-                                    store.openLocalTerminal()
-                                }
-
-                                GooglebookActionPill(
-                                    title: store.strings.importShortCta,
-                                    symbol: "square.and.arrow.up",
-                                    style: .outlined
-                                ) {
-                                    store.isPresentingImportFilePicker = true
-                                }
-                            }
-
-                            Divider()
-
-                            HStack(spacing: 8) {
-                                ForEach(["RDP", "SSH", "SFTP", "VNC", "HTTPS", "K8s", "Serial"], id: \.self) { proto in
-                                    Text(proto)
-                                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                                        .foregroundStyle(.secondary)
-                                        .padding(.horizontal, 10)
-                                        .padding(.vertical, 4)
-                                        .background(
-                                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                                .fill(Self.surfaceLow)
-                                        )
-                                        .overlay(
-                                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                                .strokeBorder(Self.subtleBorder, lineWidth: 1)
-                                        )
-                                }
-                            }
-                        }
-                        .padding(.horizontal, 40)
-                        .padding(.vertical, 36)
-                        .frame(maxWidth: 600)
-                        .background(
-                            RoundedRectangle(cornerRadius: 28, style: .continuous)
-                                .fill(Color.white)
-                                .shadow(color: Color.black.opacity(0.05), radius: 16, x: 0, y: 4)
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 28, style: .continuous)
-                                .strokeBorder(Self.subtleBorder, lineWidth: 1)
-                        )
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(store.document.name)
+                            .font(.largeTitle.weight(.bold))
+                        Text("Zero-Knowledge Argon2id + AES-256-GCM Vault • Revision \(store.document.revision)")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
                     }
-                    .frame(minWidth: geo.size.width, minHeight: max(420, geo.size.height - 56))
-                    .padding(28)
+                    Spacer()
+
+                    Button {
+                        store.openLocalTerminal()
+                    } label: {
+                        Label(store.strings.localTerminal, systemImage: "apple.terminal")
+                    }
+                    .controlSize(.large)
+
+                    Button {
+                        store.presentNewConnectionSheet()
+                    } label: {
+                        Label(store.strings.newConnection, systemImage: "plus")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
                 }
-            }
-        } else {
-            // Populated Launchpad (`ExpressiveVaultOverviewDashboard` populated state)
-            ScrollView {
-                VStack(alignment: .leading, spacing: 22) {
-                    // 1. Hero Command Launchpad Card
-                    VStack(alignment: .leading, spacing: 16) {
-                        HStack(alignment: .center, spacing: 14) {
-                            Image(nsImage: NSApp.applicationIconImage)
-                                .resizable()
-                                .interpolation(.high)
-                                .frame(width: 46, height: 46)
-                                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
 
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(store.document.name)
-                                    .font(.system(size: 21, weight: .bold))
-                                    .foregroundStyle(Color(red: 0.059, green: 0.090, blue: 0.165))
-                                Text("\(conns.count) \(store.strings.connections.lowercased()) • \(activeTabsCount) \(store.strings.activeSessionsLower)")
-                                    .font(.system(size: 12, design: .monospaced))
-                                    .foregroundStyle(.secondary)
-                            }
-
-                            Spacer(minLength: 12)
-
-                            HStack(spacing: 10) {
-                                GooglebookActionPill(
-                                    title: store.strings.localTerminal,
-                                    symbol: "terminal",
-                                    style: .outlined
-                                ) {
-                                    store.openLocalTerminal()
-                                }
-
-                                GooglebookActionPill(
-                                    title: store.strings.newConnection,
-                                    symbol: "plus",
-                                    style: .primary
-                                ) {
-                                    store.presentNewConnectionSheet()
-                                }
-                            }
-                        }
-
-                        // Full-width Quick-Connect Search Trigger Bar (`⌘K`)
-                        Button {
-                            store.toggleQuickConnect()
-                        } label: {
-                            HStack(spacing: 12) {
-                                Image(systemName: "magnifyingglass")
-                                    .font(.system(size: 15, weight: .medium))
-                                    .foregroundStyle(Self.royalSapphire)
-                                Text(store.strings.quickConnectLaunchpadHint)
-                                    .font(.system(size: 13.5))
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                                Spacer(minLength: 8)
-                                KeycapBadge("⌘K")
-                            }
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 12)
-                            .background(
-                                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                    .fill(Self.surfaceLow)
-                            )
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                    .strokeBorder(Self.subtleBorder, lineWidth: 1)
-                            )
-                            .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                        }
-                        .buttonStyle(.plain)
-
-                        // Secondary Pills Row
-                        HStack(spacing: 8) {
-                            if !templates.isEmpty {
-                                GooglebookActionPill(
-                                    title: "\(store.strings.templates) (\(templates.count))",
-                                    symbol: "bookmark",
-                                    style: .tonal,
-                                    compact: true
-                                ) {
-                                    store.openUnifiedSettings(tab: .templates)
-                                }
-                            }
-
-                            GooglebookActionPill(
-                                title: store.strings.importShortCta,
-                                symbol: "square.and.arrow.up",
-                                style: .outlined,
-                                compact: true
-                            ) {
-                                store.isPresentingImportFilePicker = true
-                            }
-
-                            if todos.isEmpty && !showAddTodoComposer {
-                                Button {
-                                    showAddTodoComposer = true
-                                } label: {
-                                    HStack(spacing: 5) {
-                                        Image(systemName: "plus")
-                                            .font(.system(size: 11.5, weight: .semibold))
-                                        Text(store.strings.addTodoCta)
-                                            .font(.system(size: 12, weight: .semibold))
-                                    }
-                                    .foregroundStyle(Self.royalSapphire)
-                                    .padding(.horizontal, 10)
-                                    .frame(height: 32)
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        }
+                // Summary Metric Cards
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 185), spacing: 14)], spacing: 14) {
+                    OverviewStatCard(
+                        title: "Connections",
+                        value: "\(store.activeConnections.count)",
+                        subtitle: "\(store.activeFolders.count) folders",
+                        symbol: "server.rack",
+                        tint: Color(nsColor: .systemBlue)
+                    ) {
+                        store.isQuickConnectPresented = true
                     }
-                    .padding(.horizontal, 24)
-                    .padding(.vertical, 22)
-                    .background(
-                        RoundedRectangle(cornerRadius: 24, style: .continuous)
-                            .fill(Color.white)
-                            .shadow(color: Color.black.opacity(0.04), radius: 10, x: 0, y: 2)
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 24, style: .continuous)
-                            .strokeBorder(Self.subtleBorder, lineWidth: 1)
-                    )
 
-                    // 2. Pinned Favorites Quick-Launch Grid (`★ Favorites`)
-                    if !favorites.isEmpty {
-                        VStack(alignment: .leading, spacing: 10) {
-                            HStack(spacing: 7) {
-                                Image(systemName: "star.fill")
-                                    .foregroundStyle(Color(red: 0.96, green: 0.62, blue: 0.04))
-                                Text(store.strings.favorites)
-                                    .font(.system(size: 15, weight: .semibold))
-                            }
+                    OverviewStatCard(
+                        title: "Live Sessions",
+                        value: "\(store.paneTree.allTabs.count + store.detachedWindowTabs.count)",
+                        subtitle: "\(store.detachedWindowTabs.count) detached windows",
+                        symbol: "macwindow.split.2x1",
+                        tint: Color(nsColor: .systemGreen)
+                    ) {
+                        store.selectSection(.sessions)
+                    }
 
-                            LazyVGrid(columns: [GridItem(.adaptive(minimum: 252), spacing: 12)], spacing: 12) {
-                                ForEach(favorites) { conn in
-                                    GooglebookFavoriteCard(
-                                        conn: conn,
-                                        isSelected: store.selectedConnectionId == conn.id,
-                                        isLive: liveConnIds.contains(conn.id),
-                                        onSelect: { store.selectedConnectionId = conn.id },
-                                        onConnect: { store.openConnection(conn) },
-                                        onEdit: { store.editingConnection = conn },
-                                        onConnectOptions: { store.connectWithOptionsTarget = conn }
+                    OverviewStatCard(
+                        title: "Credentials & TOTP",
+                        value: "\(store.activeCredentials.count)",
+                        subtitle: "SSH Keys & Passwords",
+                        symbol: "key.horizontal.fill",
+                        tint: Color(nsColor: .systemOrange)
+                    ) {
+                        store.selectSection(.credentials)
+                    }
+
+                    OverviewStatCard(
+                        title: "Cloud Sync",
+                        value: store.linkedCloudFileURL != nil ? "Linked" : "Local",
+                        subtitle: store.syncStatusSummary,
+                        symbol: "icloud.fill",
+                        tint: Color(nsColor: .systemTeal)
+                    ) {
+                        store.selectSection(.cloudSync)
+                    }
+                }
+
+                // Favorites Quick Launch Grid
+                let favorites = store.activeConnections.filter(\.favorite)
+                if !favorites.isEmpty {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Label(store.strings.favorites, systemImage: "star.fill")
+                            .font(.headline)
+
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 250), spacing: 12)], spacing: 12) {
+                            ForEach(favorites) { conn in
+                                let isSelected = store.selectedConnectionId == conn.id
+                                let cardTint = HIGColorUtilities.color(fromHex: conn.inheritable.displayColorAccentHex) ?? conn.protocolType.appleSystemTint
+                                HStack(spacing: 12) {
+                                    ProtocolSquircleIcon(
+                                        protocolType: conn.protocolType,
+                                        customHex: conn.inheritable.displayColorAccentHex,
+                                        size: 34
                                     )
-                                }
-                            }
-                        }
-                    } else {
-                        HStack(spacing: 12) {
-                            Image(systemName: "star.fill")
-                                .foregroundStyle(Color(red: 0.96, green: 0.62, blue: 0.04))
-                            Text(store.strings.favoritesEmptyHint)
-                                .font(.system(size: 13))
-                                .foregroundStyle(.secondary)
-                            Spacer()
-                        }
-                        .padding(.horizontal, 18)
-                        .padding(.vertical, 14)
-                        .background(
-                            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                .fill(Color.white)
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                .strokeBorder(Self.subtleBorder, lineWidth: 1)
-                        )
-                    }
-
-                    // 3. Workspace Checklist Card
-                    if !todos.isEmpty || showAddTodoComposer {
-                        VStack(alignment: .leading, spacing: 12) {
-                            HStack(spacing: 12) {
-                                Text(store.strings.todoTitle)
-                                    .font(.system(size: 15, weight: .semibold))
-                                Spacer()
-                                HStack(spacing: 8) {
-                                    TextField("\(store.strings.addTodoCta)…", text: $newTodoTitle)
-                                        .textFieldStyle(.roundedBorder)
-                                        .frame(maxWidth: 280)
-                                        .onSubmit {
-                                            submitNewTodo()
-                                        }
-                                    GooglebookActionPill(
-                                        title: store.strings.addTodoCta,
-                                        symbol: "plus",
-                                        style: .primary,
-                                        compact: true
-                                    ) {
-                                        submitNewTodo()
-                                    }
-                                }
-                            }
-
-                            ForEach(todos) { item in
-                                HStack(spacing: 10) {
-                                    Button {
-                                        store.commitMutation("Toggled checklist item") { doc in
-                                            if let idx = doc.todoItems.firstIndex(where: { $0.id == item.id }) {
-                                                doc.todoItems[idx].completed.toggle()
-                                                doc.todoItems[idx].updatedAtEpochMs = VaultClock.nowMs()
-                                            }
-                                        }
-                                    } label: {
-                                        Image(systemName: item.completed ? "checkmark.square.fill" : "square")
-                                            .font(.system(size: 15))
-                                            .foregroundStyle(item.completed ? Self.royalSapphire : .secondary)
-                                    }
-                                    .buttonStyle(.plain)
-
-                                    Text(item.title)
-                                        .font(.system(size: 13))
-                                        .strikethrough(item.completed)
-                                        .foregroundStyle(item.completed ? .secondary : .primary)
-
-                                    Spacer()
-
-                                    Button {
-                                        store.commitMutation("Removed checklist item") { doc in
-                                            doc.todoItems.removeAll { $0.id == item.id }
-                                        }
-                                    } label: {
-                                        Image(systemName: "xmark")
-                                            .font(.system(size: 11, weight: .semibold))
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(conn.name)
+                                            .font(.body.weight(.semibold))
+                                            .foregroundStyle(.primary)
+                                            .lineLimit(1)
+                                        Text(conn.protocolType.displayName)
+                                            .font(.caption)
                                             .foregroundStyle(.secondary)
+                                            .lineLimit(1)
                                     }
-                                    .buttonStyle(.plain)
+                                    Spacer()
+                                    Image(systemName: "arrow.up.right.circle.fill")
+                                        .foregroundStyle(Color.accentColor)
                                 }
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 8)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                        .fill(Self.surfaceLow)
+                                .padding(12)
+                                .liquidGlassSurface(
+                                    cornerRadius: LiquidGlassMetrics.cardCornerRadius,
+                                    tint: cardTint,
+                                    prominence: isSelected ? .regular : .subtle
                                 )
+                                .contentShape(RoundedRectangle(cornerRadius: LiquidGlassMetrics.cardCornerRadius, style: .continuous))
+                                .onTapGesture(count: 2) {
+                                    store.openConnection(conn)
+                                }
+                                .simultaneousGesture(
+                                    TapGesture(count: 1).onEnded {
+                                        store.selectedConnectionId = conn.id
+                                    }
+                                )
+                                .contextMenu {
+                                    Button("Connect") {
+                                        store.openConnection(conn)
+                                    }
+                                    Button("Connect with Options…") {
+                                        store.connectWithOptionsTarget = conn
+                                    }
+                                    Button("Edit Connection…") {
+                                        store.editingConnection = conn
+                                    }
+                                }
+                                .discreetTooltip("Double-click to connect to \(conn.name)")
                             }
                         }
-                        .padding(20)
-                        .background(
-                            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                                .fill(Color.white)
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                                .strokeBorder(Self.subtleBorder, lineWidth: 1)
-                        )
                     }
                 }
-                .frame(maxWidth: 1040)
-                .padding(.horizontal, 32)
-                .padding(.vertical, 28)
-                .frame(maxWidth: .infinity)
+
+                // Keyboard Shortcut Cheat Sheet (localized + interactive buttons matching menu bar 1:1)
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(store.strings.workspaceShortcutsTitle)
+                        .font(.headline)
+
+                    LazyVGrid(
+                        columns: [GridItem(.adaptive(minimum: 185), spacing: 10)],
+                        alignment: .leading,
+                        spacing: 10
+                    ) {
+                        ForEach(MacWorkspaceShortcut.overviewCheatSheetItems) { item in
+                            ShortcutLegendItem(
+                                item.title(in: store.strings),
+                                keys: item.keycap,
+                                isActive: isShortcutActive(item)
+                            ) {
+                                store.executeShortcut(item)
+                            }
+                        }
+                    }
+                    .padding(12)
+                    .liquidGlassSurface(cornerRadius: 12, prominence: .subtle)
+                }
             }
-            .scrollContentBackground(.hidden)
+            .padding(28)
         }
+        .scrollContentBackground(.hidden)
     }
 
-    private func submitNewTodo() {
-        let trimmed = newTodoTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        store.commitMutation("Added checklist item") { doc in
-            doc.todoItems.append(VaultTodoItem(title: trimmed))
+    private func isShortcutActive(_ item: MacWorkspaceShortcut) -> Bool {
+        switch item {
+        case .broadcastInput:
+            return store.broadcastInputEnabled
+        case .toggleInspector:
+            return store.isInspectorPresented
+        case .toggleSidebar:
+            return store.columnVisibility != .detailOnly
+        case .quickConnect:
+            return store.isQuickConnectPresented
+        default:
+            return false
         }
-        newTodoTitle = ""
-        showAddTodoComposer = false
     }
 }
 
-private struct GooglebookActionPill: View {
-    enum Style {
-        case primary
-        case tonal
-        case outlined
-    }
-
+private struct OverviewStatCard: View {
     let title: String
+    let value: String
+    let subtitle: String
     let symbol: String
-    let style: Style
-    var compact: Bool = false
+    let tint: Color
     let action: () -> Void
-
-    @State private var isHovered = false
+    @State private var isHovered: Bool = false
 
     var body: some View {
-        let sapphire = Color(red: 0.114, green: 0.306, blue: 0.847)
-        let sapphireHover = Color(red: 0.094, green: 0.255, blue: 0.725)
-        let bg: Color = {
-            switch style {
-            case .primary:
-                return isHovered ? sapphireHover : sapphire
-            case .tonal:
-                return isHovered
-                    ? Color(red: 0.859, green: 0.918, blue: 0.996)
-                    : Color(red: 0.945, green: 0.961, blue: 0.976)
-            case .outlined:
-                return isHovered ? Color(red: 0.937, green: 0.965, blue: 1.0) : Color.white
-            }
-        }()
-        let fg: Color = style == .primary ? .white : .primary
-        let border: Color = {
-            switch style {
-            case .primary:
-                return .clear
-            case .tonal:
-                return Color.black.opacity(0.08)
-            case .outlined:
-                return isHovered ? sapphire.opacity(0.38) : Color.black.opacity(0.14)
-            }
-        }()
-
         Button(action: action) {
-            HStack(spacing: 7) {
-                Image(systemName: symbol)
-                    .font(.system(size: compact ? 12 : 13, weight: .semibold))
-                Text(title)
-                    .font(.system(size: compact ? 12 : 12.5, weight: style == .primary ? .semibold : .medium))
-                    .lineLimit(1)
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Image(systemName: symbol)
+                        .font(.title3.weight(.semibold))
+                        .symbolRenderingMode(.hierarchical)
+                        .foregroundStyle(tint)
+                    Spacer()
+                    Text(value)
+                        .font(.title2.weight(.bold).monospacedDigit())
+                        .foregroundStyle(.primary)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.callout.weight(.semibold))
+                        .foregroundStyle(.primary)
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
             }
-            .foregroundStyle(fg)
-            .padding(.horizontal, compact ? 12 : 15)
-            .frame(height: compact ? 32 : 38)
-            .background(Capsule(style: .continuous).fill(bg))
-            .overlay(Capsule(style: .continuous).strokeBorder(border, lineWidth: 1))
+            .padding(14)
+            .liquidGlassSurface(
+                cornerRadius: LiquidGlassMetrics.cardCornerRadius,
+                tint: tint,
+                prominence: .regular,
+                isHovered: isHovered
+            )
         }
         .buttonStyle(.plain)
-        .onHover { isHovered = $0 }
+        .onHover { hovering in
+            withAnimation(LiquidGlassMetrics.hoverAnimation) {
+                isHovered = hovering
+            }
+        }
     }
 }
 
-private struct GooglebookFavoriteCard: View {
-    let conn: VaultConnection
-    let isSelected: Bool
-    let isLive: Bool
-    let onSelect: () -> Void
-    let onConnect: () -> Void
-    let onEdit: () -> Void
-    let onConnectOptions: () -> Void
+private struct ShortcutLegendItem: View {
+    let label: String
+    let keys: String
+    let isActive: Bool
+    let action: () -> Void
+    @State private var isHovered: Bool = false
 
-    @State private var isHovered = false
+    init(_ label: String, keys: String, isActive: Bool = false, action: @escaping () -> Void) {
+        self.label = label
+        self.keys = keys
+        self.isActive = isActive
+        self.action = action
+    }
 
     var body: some View {
-        let tint = HIGColorUtilities.color(fromHex: conn.inheritable.displayColorAccentHex) ?? conn.protocolType.appleSystemTint
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 6) {
-                SidebarConnectionTypeIcon(
-                    protocolType: conn.protocolType,
-                    customHex: conn.inheritable.displayColorAccentHex,
-                    size: 15
-                )
-                Text(conn.protocolType.shortBadge)
-                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(tint)
-                if isLive {
-                    Circle()
-                        .fill(Color(nsColor: .systemGreen))
-                        .frame(width: 6, height: 6)
-                }
-                Spacer()
-                HStack(spacing: 4) {
-                    Button(action: onConnectOptions) {
-                        Image(systemName: "slider.horizontal.3")
-                            .font(.system(size: 11.5))
-                            .foregroundStyle(.secondary)
-                            .frame(width: 22, height: 22)
-                    }
-                    .buttonStyle(.plain)
-                    Button(action: onEdit) {
-                        Image(systemName: "pencil")
-                            .font(.system(size: 11.5))
-                            .foregroundStyle(.secondary)
-                            .frame(width: 22, height: 22)
-                    }
-                    .buttonStyle(.plain)
-                }
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Text(label)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(isActive ? Color.accentColor : .primary)
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+                KeycapBadge(keys)
             }
-
-            Text(conn.name)
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(.primary)
-                .lineLimit(1)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(
+                        isActive
+                            ? Color.accentColor.opacity(0.14)
+                            : Color.primary.opacity(isHovered ? 0.08 : 0.03)
+                    )
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(
+                        isActive ? Color.accentColor.opacity(0.35) : Color.primary.opacity(0.08),
+                        lineWidth: 0.75
+                    )
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
-        .padding(.horizontal, 15)
-        .padding(.vertical, 13)
-        .background(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(isSelected ? tint.opacity(0.09) : Color.white)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .strokeBorder(
-                    isSelected ? tint : tint.opacity(isHovered ? 0.55 : 0.28),
-                    lineWidth: 1
-                )
-        )
-        .shadow(color: Color.black.opacity(isHovered ? 0.06 : 0.03), radius: isHovered ? 8 : 3, x: 0, y: 2)
-        .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .onTapGesture(count: 2, perform: onConnect)
-        .simultaneousGesture(TapGesture(count: 1).onEnded(onSelect))
-        .onHover { isHovered = $0 }
-        .contextMenu {
-            Button("Connect", action: onConnect)
-            Button("Connect with Options…", action: onConnectOptions)
-            Button("Edit Connection…", action: onEdit)
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            isHovered = hovering
         }
-        .discreetTooltip("Double-click to connect to \(conn.name)")
+        .discreetTooltip(label, shortcut: keys)
     }
 }
 

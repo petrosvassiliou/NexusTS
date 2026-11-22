@@ -474,7 +474,8 @@ const GOOGLEBOOK_UI_STRINGS = {
     syncedRevFormat: 'Synced (rev {rev})',
     systemCredentialsFolder: 'Credentials',
     copyUsername: 'Copy Username',
-    copyPassword: 'Copy Password'
+    copyPassword: 'Copy Password',
+    workspaceShortcutsTitle: 'Keyboard Shortcuts'
   },
   de: {
     quickConnectButton: 'Schnellverbindung',
@@ -490,7 +491,8 @@ const GOOGLEBOOK_UI_STRINGS = {
     syncedRevFormat: 'Synchron (Rev {rev})',
     systemCredentialsFolder: 'Credentials',
     copyUsername: 'Benutzername kopieren',
-    copyPassword: 'Passwort kopieren'
+    copyPassword: 'Passwort kopieren',
+    workspaceShortcutsTitle: 'Tastaturkurzbefehle'
   },
   fr: {
     quickConnectButton: 'Connexion rapide',
@@ -506,7 +508,8 @@ const GOOGLEBOOK_UI_STRINGS = {
     syncedRevFormat: 'Synchronisé (rév {rev})',
     systemCredentialsFolder: 'Credentials',
     copyUsername: 'Copier l’identifiant',
-    copyPassword: 'Copier le mot de passe'
+    copyPassword: 'Copier le mot de passe',
+    workspaceShortcutsTitle: 'Raccourcis clavier'
   },
   it: {
     quickConnectButton: 'Connessione rapida',
@@ -522,7 +525,8 @@ const GOOGLEBOOK_UI_STRINGS = {
     syncedRevFormat: 'Sincronizzato (rev {rev})',
     systemCredentialsFolder: 'Credentials',
     copyUsername: 'Copia nome utente',
-    copyPassword: 'Copia password'
+    copyPassword: 'Copia password',
+    workspaceShortcutsTitle: 'Scorciatoie da tastiera'
   },
   es: {
     quickConnectButton: 'Conexión rápida',
@@ -538,7 +542,8 @@ const GOOGLEBOOK_UI_STRINGS = {
     syncedRevFormat: 'Sincronizado (rev {rev})',
     systemCredentialsFolder: 'Credentials',
     copyUsername: 'Copiar usuario',
-    copyPassword: 'Copiar contraseña'
+    copyPassword: 'Copiar contraseña',
+    workspaceShortcutsTitle: 'Atajos de teclado'
   },
   el: {
     quickConnectButton: 'Γρήγορη σύνδεση',
@@ -554,7 +559,8 @@ const GOOGLEBOOK_UI_STRINGS = {
     syncedRevFormat: 'Συγχρονισμένο (έκδ. {rev})',
     systemCredentialsFolder: 'Credentials',
     copyUsername: 'Αντιγραφή χρήστη',
-    copyPassword: 'Αντιγραφή κωδικού'
+    copyPassword: 'Αντιγραφή κωδικού',
+    workspaceShortcutsTitle: 'Συντομεύσεις πληκτρολογίου'
   }
 };
 for (const [code, extra] of Object.entries(GOOGLEBOOK_UI_STRINGS)) {

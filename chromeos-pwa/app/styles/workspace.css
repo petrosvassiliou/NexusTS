@@ -1773,3 +1773,324 @@
   color: var(--text-muted);
 }
 
+
+/* 1:1 macOS VaultOverviewDashboardView (Hero Header + 4 Pastel Summary Cards + Favorites + Shortcut Cheat Sheet) */
+.ov-dashboard-scroll {
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  overflow-y: auto;
+  background: var(--bg-canvas);
+}
+
+.ov-dashboard-wrap {
+  padding: 28px 32px 36px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.ov-hero-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.ov-hero-identity {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.ov-hero-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 11px;
+  flex-shrink: 0;
+  box-shadow: 0 3px 10px rgba(15, 23, 42, 0.12);
+}
+
+.ov-hero-titles {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.ov-hero-title {
+  margin: 0;
+  font-size: 26px;
+  font-weight: 750;
+  letter-spacing: -0.02em;
+  color: #0f172a;
+  line-height: 1.15;
+}
+
+.ov-hero-subtitle {
+  margin: 0;
+  font-size: 13px;
+  color: #64748b;
+}
+
+.ov-hero-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.ov-btn-secondary,
+.ov-btn-primary {
+  height: 36px;
+  padding: 0 15px;
+  border-radius: 9px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.ov-btn-secondary {
+  background: #ffffff;
+  color: #0f172a;
+  border: 1px solid rgba(15, 23, 42, 0.14);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
+}
+.ov-btn-secondary:hover {
+  background: #f8fafc;
+  border-color: rgba(15, 23, 42, 0.24);
+}
+
+.ov-btn-primary {
+  background: #007aff;
+  color: #ffffff;
+  border: 1px solid #006be0;
+  box-shadow: 0 1px 3px rgba(0, 122, 255, 0.28);
+}
+.ov-btn-primary:hover {
+  background: #0066d6;
+}
+
+.ov-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(195px, 235px));
+  gap: 14px;
+}
+
+.ov-stat-card {
+  text-align: left;
+  padding: 15px 16px;
+  border-radius: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  cursor: pointer;
+  transition: transform 130ms ease, box-shadow 130ms ease, border-color 130ms ease;
+  box-shadow: 0 3px 10px rgba(15, 23, 42, 0.05);
+}
+.ov-stat-card:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.08);
+}
+
+.ov-stat-card.blue {
+  background: linear-gradient(155deg, rgba(0, 122, 255, 0.10), rgba(255, 255, 255, 0.88));
+  border: 1px solid rgba(0, 122, 255, 0.20);
+}
+.ov-stat-card.green {
+  background: linear-gradient(155deg, rgba(52, 199, 89, 0.11), rgba(255, 255, 255, 0.88));
+  border: 1px solid rgba(52, 199, 89, 0.22);
+}
+.ov-stat-card.orange {
+  background: linear-gradient(155deg, rgba(255, 149, 0, 0.12), rgba(255, 255, 255, 0.88));
+  border: 1px solid rgba(255, 149, 0, 0.23);
+}
+.ov-stat-card.teal {
+  background: linear-gradient(155deg, rgba(0, 168, 198, 0.11), rgba(255, 255, 255, 0.88));
+  border: 1px solid rgba(0, 168, 198, 0.22);
+}
+
+.ov-stat-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ov-stat-value {
+  font-size: 22px;
+  font-weight: 750;
+  font-variant-numeric: tabular-nums;
+  color: #0f172a;
+  line-height: 1;
+}
+
+.ov-stat-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.ov-stat-meta strong {
+  font-size: 13px;
+  font-weight: 650;
+  color: #0f172a;
+}
+.ov-stat-meta span {
+  font-size: 11.5px;
+  color: #64748b;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ov-favorites-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.ov-section-heading {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.ov-section-heading h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 650;
+  color: #0f172a;
+}
+.ov-fav-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 12px;
+}
+.ov-fav-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 13px;
+  background: rgba(255, 255, 255, 0.9);
+  border: 1px solid rgba(15, 23, 42, 0.09);
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.04);
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
+}
+.ov-fav-card:hover,
+.ov-fav-card.selected {
+  border-color: var(--fav-tint, #007aff);
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.07);
+}
+.ov-fav-squircle {
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  border: 1px solid transparent;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.ov-fav-copy {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ov-fav-copy strong {
+  font-size: 13.5px;
+  font-weight: 650;
+  color: #0f172a;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ov-fav-copy span {
+  font-size: 11.5px;
+  color: #64748b;
+}
+.ov-fav-launch {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: none;
+  background: #007aff;
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.ov-shortcuts-section {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+.ov-shortcuts-heading {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 650;
+  color: #0f172a;
+}
+.ov-shortcuts-container {
+  padding: 12px;
+  border-radius: 13px;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(185px, 1fr));
+  gap: 10px;
+}
+.ov-shortcut-item {
+  height: 34px;
+  padding: 0 11px;
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.03);
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  cursor: pointer;
+  color: #0f172a;
+  transition: background-color 110ms ease, border-color 110ms ease, color 110ms ease;
+}
+.ov-shortcut-item:hover {
+  background: rgba(15, 23, 42, 0.07);
+}
+.ov-shortcut-item.active {
+  background: rgba(0, 122, 255, 0.13);
+  border-color: rgba(0, 122, 255, 0.34);
+  color: #0066d6;
+}
+.ov-shortcut-label {
+  font-size: 12px;
+  font-weight: 550;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ov-shortcut-kbd {
+  padding: 2px 6px;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.85);
+  border: 1px solid rgba(15, 23, 42, 0.10);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: #64748b;
+  flex-shrink: 0;
+}
+.ov-shortcut-item.active .ov-shortcut-kbd {
+  color: #0066d6;
+  border-color: rgba(0, 122, 255, 0.25);
+}

@@ -112,12 +112,19 @@ import com.nexusts.app.core.vault.model.NxtsVaultDocument
 import com.nexusts.app.core.vault.model.ProtocolSpecificSettings
 import com.nexusts.app.core.vault.model.SmartFolder
 import com.nexusts.app.core.vault.model.SmartFolderFilter
+import androidx.compose.material.icons.outlined.CloudSync
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.font.FontWeight
+import com.nexusts.app.core.vault.error.VaultHierarchySanitizer
 import com.nexusts.app.core.vault.model.VaultConnection
 import com.nexusts.app.core.vault.model.VaultCredential
 import com.nexusts.app.core.vault.model.VaultFolder
 import com.nexusts.app.core.vault.model.VaultProtocolType
 import com.nexusts.app.core.vault.model.VaultTodoItem
 import com.nexusts.app.feature.workspace.AdHocLaunchOverride
+import com.nexusts.app.feature.workspace.i18n.NexusLocaleController
 import com.nexusts.app.feature.workspace.i18n.WorkspaceLocalizedStrings
 import kotlinx.coroutines.delay
 
@@ -350,11 +357,27 @@ fun ExpressiveVaultOverviewDashboard(
     onMoveConnectionToFolder: (VaultConnection) -> Unit = {},
     onLaunchLocalShell: () -> Unit = {},
     activeConnectionIds: Set<String> = emptySet(),
+    detachedWindowCount: Int = 0,
+    isDriveLinked: Boolean = false,
+    syncStatusSummary: String = "Local encrypted vault",
+    isSidebarVisible: Boolean = true,
+    isInspectorVisible: Boolean = false,
+    broadcastEnabled: Boolean = false,
+    onOpenCredentials: () -> Unit = {},
+    onOpenCloudSync: () -> Unit = {},
+    onToggleSidebar: () -> Unit = {},
+    onToggleInspector: () -> Unit = {},
+    onToggleBroadcast: () -> Unit = {},
+    onSplitRight: () -> Unit = {},
+    onSplitDown: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     @Suppress("UNUSED_PARAMETER")
-    val ignoredFolderCallbacks = listOf<Any>(
+    val ignoredUnusedCallbacks = listOf<Any>(
         onConnectAllInFolder,
+        onAddTodo,
+        onToggleTodo,
+        onDeleteTodo,
         onNewRdpInFolder,
         onNewSshInFolder,
         onNewSubfolder,
@@ -363,225 +386,97 @@ fun ExpressiveVaultOverviewDashboard(
         onDeleteFolder,
         onDisconnectAllInFolder
     )
+
     val clipboard = LocalClipboardManager.current
-    var newTodoTitle by remember { mutableStateOf("") }
-    var showAddTodoComposer by remember { mutableStateOf(false) }
     var overviewBgMenuOpen by remember { mutableStateOf(false) }
 
     val activeConnections = remember(vaultDocument.connections, vaultDocument.tombstonedObjectIds) {
-        vaultDocument.connections.filterNot { it.id in vaultDocument.tombstonedObjectIds }
+        vaultDocument.connections.filter {
+            it.id !in vaultDocument.tombstonedObjectIds &&
+                it.parentFolderId != VaultHierarchySanitizer.SYSTEM_CREDENTIALS_FOLDER_ID
+        }
     }
-    val activeTodos = remember(vaultDocument.todoItems, vaultDocument.tombstonedObjectIds) {
-        vaultDocument.todoItems.filterNot { it.id in vaultDocument.tombstonedObjectIds }
+    val activeFolders = remember(vaultDocument.folders, vaultDocument.tombstonedObjectIds) {
+        vaultDocument.folders.filter {
+            it.id !in vaultDocument.tombstonedObjectIds &&
+                it.id != VaultHierarchySanitizer.SYSTEM_CREDENTIALS_FOLDER_ID
+        }
+    }
+    val activeCredentials = remember(vaultDocument.credentials, vaultDocument.tombstonedObjectIds) {
+        vaultDocument.credentials.filter { it.id !in vaultDocument.tombstonedObjectIds }
     }
     val favorites = remember(activeConnections) {
         activeConnections.filter { it.favorite }
     }
-    val pendingTodos = remember(activeTodos) {
-        activeTodos.count { !it.completed }
+
+    val langCode = remember(strings.appName, strings.actionNewConnection) {
+        NexusLocaleController.currentLanguageTag().take(2).lowercase()
     }
-
-    val isVaultCleanEmpty = activeConnections.isEmpty() && activeTodos.isEmpty()
-
-    if (isVaultCleanEmpty) {
-        // Serene, spacious Google Material 3 Welcome State for an empty workspace
-        Box(
-            modifier = modifier
-                .fillMaxSize()
-                .nexusDesktopPointerButtons(onSecondaryClick = { overviewBgMenuOpen = true })
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 32.dp, vertical = 28.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            val welcomeShape = rememberMorphingContainerShape(
-                MorphContainerState.Resting,
-                restingRadius = 28.dp,
-                hoveredRadius = 32.dp
-            )
-            Surface(
-                shape = welcomeShape,
-                color = MaterialTheme.colorScheme.surfaceContainerLow,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)),
-                modifier = Modifier
-                    .widthIn(max = 600.dp)
-                    .fillMaxWidth()
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 36.dp, vertical = 40.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(18.dp)
-                ) {
-                    NexusBrandEmblem(size = 72.dp, cornerRadius = 20.dp)
-
-                    Spacer(modifier = Modifier.height(2.dp))
-
-                    Text(
-                        text = strings.emptyWorkspaceTitle,
-                        style = MaterialTheme.typography.headlineMedium,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-
-                    Text(
-                        text = strings.emptyWorkspaceSubtitle,
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier
-                            .widthIn(max = 480.dp)
-                            .fillMaxWidth()
-                    )
-
-                    Spacer(modifier = Modifier.height(6.dp))
-
-                    FlowRow(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally),
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        Button(onClick = onNewConnection) {
-                            Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(19.dp))
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(strings.actionNewConnection)
-                        }
-                        FilledTonalButton(onClick = onOpenQuickConnect) {
-                            Icon(Icons.Outlined.Search, contentDescription = null, modifier = Modifier.size(19.dp))
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(strings.quickConnectButton)
-                        }
-                        OutlinedButton(onClick = onLaunchLocalShell) {
-                            Icon(Icons.Outlined.Terminal, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Local Terminal")
-                        }
-                        if (onImportVault != null) {
-                            OutlinedButton(onClick = onImportVault) {
-                                Icon(Icons.Outlined.UploadFile, contentDescription = null, modifier = Modifier.size(18.dp))
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(strings.actionImportRtsz)
-                            }
-                        }
-                    }
-
-                    HorizontalDivider(
-                        modifier = Modifier.padding(top = 8.dp),
-                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.28f)
-                    )
-
-                    FlowRow(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterHorizontally),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        listOf("RDP", "SSH", "SFTP", "VNC", "HTTPS", "K8s", "Serial").forEach { proto ->
-                            Surface(
-                                shape = RoundedCornerShape(99.dp),
-                                color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.72f)
-                            ) {
-                                Text(
-                                    text = proto,
-                                    style = NexusTheme.monospace.keycapShortcut,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp)
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-
-            DropdownMenu(
-                expanded = overviewBgMenuOpen,
-                onDismissRequest = { overviewBgMenuOpen = false }
-            ) {
-                DropdownMenuItem(
-                    text = { Text(strings.actionNewConnection) },
-                    leadingIcon = { Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(18.dp)) },
-                    onClick = {
-                        overviewBgMenuOpen = false
-                        onNewConnection()
-                    }
-                )
-                DropdownMenuItem(
-                    text = { Text(strings.actionNewFolder) },
-                    leadingIcon = { Icon(Icons.Outlined.CreateNewFolder, contentDescription = null, modifier = Modifier.size(18.dp)) },
-                    onClick = {
-                        overviewBgMenuOpen = false
-                        onNewFolder()
-                    }
-                )
-                DropdownMenuItem(
-                    text = { Text("${strings.quickConnectButton} (Ctrl+K)") },
-                    leadingIcon = { Icon(Icons.Outlined.Search, contentDescription = null, modifier = Modifier.size(18.dp)) },
-                    onClick = {
-                        overviewBgMenuOpen = false
-                        onOpenQuickConnect()
-                    }
-                )
-                DropdownMenuItem(
-                    text = { Text("Local Terminal") },
-                    leadingIcon = { Icon(Icons.Outlined.Terminal, contentDescription = null, modifier = Modifier.size(18.dp)) },
-                    onClick = {
-                        overviewBgMenuOpen = false
-                        onLaunchLocalShell()
-                    }
-                )
-                if (onImportVault != null) {
-                    HorizontalDivider()
-                    DropdownMenuItem(
-                        text = { Text(strings.actionImportRtsz) },
-                        leadingIcon = { Icon(Icons.Outlined.UploadFile, contentDescription = null, modifier = Modifier.size(18.dp)) },
-                        onClick = {
-                            overviewBgMenuOpen = false
-                            onImportVault()
-                        }
-                    )
-                }
-            }
+    val localTerminalLabel = remember(langCode) {
+        when (langCode) {
+            "de" -> "Lokales Terminal"
+            "fr" -> "Terminal local"
+            "it" -> "Terminale locale"
+            "es" -> "Terminal local"
+            "el" -> "Τοπικό τερματικό"
+            else -> "Local Terminal"
         }
-        return
+    }
+    val shortcutsHeading = remember(langCode) {
+        when (langCode) {
+            "de" -> "Tastaturkurzbefehle"
+            "fr" -> "Raccourcis clavier"
+            "it" -> "Scorciatoie da tastiera"
+            "es" -> "Atajos de teclado"
+            "el" -> "Συντομεύσεις πληκτρολογίου"
+            else -> "Keyboard Shortcuts"
+        }
+    }
+    val sidebarShortcutLabel = remember(langCode) {
+        when (langCode) {
+            "de" -> "Seitenleiste"
+            "fr" -> "Barre latérale"
+            "it" -> "Barra laterale"
+            "es" -> "Barra lateral"
+            "el" -> "Πλαϊνή μπάρα"
+            else -> "Sidebar"
+        }
     }
 
-    // Populated Workspace Launchpad — clean, focused, zero duplicate folder clutter in the center canvas
-    BoxWithConstraints(
+    data class OverviewShortcutSpec(
+        val label: String,
+        val keys: String,
+        val isActive: Boolean,
+        val onClick: () -> Unit
+    )
+
+    val shortcutItems = listOf(
+        OverviewShortcutSpec(strings.quickConnectButton, "Ctrl+K", false, onOpenQuickConnect),
+        OverviewShortcutSpec(localTerminalLabel, "Ctrl+Alt+T", false, onLaunchLocalShell),
+        OverviewShortcutSpec(strings.actionNewConnection, "Ctrl+N", false, onNewConnection),
+        OverviewShortcutSpec(strings.splitRight, "Ctrl+D", false, onSplitRight),
+        OverviewShortcutSpec(strings.splitDown, "Ctrl+Shift+D", false, onSplitDown),
+        OverviewShortcutSpec(strings.actionBroadcastInput, "Ctrl+Shift+B", broadcastEnabled, onToggleBroadcast),
+        OverviewShortcutSpec(strings.inspectorTitle, "Ctrl+I", isInspectorVisible, onToggleInspector),
+        OverviewShortcutSpec(sidebarShortcutLabel, "Ctrl+B", isSidebarVisible, onToggleSidebar)
+    )
+
+    Box(
         modifier = modifier
             .fillMaxSize()
-            .nexusDesktopPointerButtons(onSecondaryClick = { overviewBgMenuOpen = true }),
-        contentAlignment = Alignment.TopCenter
+            .nexusDesktopPointerButtons(onSecondaryClick = { overviewBgMenuOpen = true })
     ) {
-        val isWide = maxWidth >= 680.dp
-        val quickSearchHover = rememberDesktopHoverState()
-        val quickSearchShape = RoundedCornerShape(16.dp)
-
         Column(
             modifier = Modifier
-                .widthIn(max = 1040.dp)
-                .fillMaxWidth()
+                .fillMaxSize()
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = if (isWide) 32.dp else 20.dp, vertical = 28.dp),
-            verticalArrangement = Arrangement.spacedBy(22.dp)
+                .padding(horizontal = 28.dp, vertical = 26.dp),
+            verticalArrangement = Arrangement.spacedBy(24.dp)
         ) {
-            // 1. Sleek Workspace Command Launchpad Card
-            val heroShape = rememberMorphingContainerShape(
-                MorphContainerState.Resting,
-                restingRadius = 24.dp,
-                hoveredRadius = 28.dp
-            )
-            Surface(
-                shape = heroShape,
-                color = MaterialTheme.colorScheme.surfaceContainerLow,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.36f)),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 24.dp, vertical = 22.dp),
-                    verticalArrangement = Arrangement.spacedBy(18.dp)
-                ) {
+            // 1. Apple HIG Hero Header Row
+            BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+                val isWide = maxWidth >= 560.dp
+                if (isWide) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
@@ -592,197 +487,196 @@ fun ExpressiveVaultOverviewDashboard(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(14.dp)
                         ) {
-                            NexusBrandEmblem(size = 46.dp, cornerRadius = 14.dp)
-                            Column(
-                                modifier = Modifier.weight(1f),
-                                verticalArrangement = Arrangement.spacedBy(3.dp)
-                            ) {
+                            NexusBrandEmblem(size = 48.dp, cornerRadius = 11.dp)
+                            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
                                 Text(
                                     text = vaultDocument.name,
-                                    style = MaterialTheme.typography.headlineSmall,
+                                    style = MaterialTheme.typography.headlineMedium.copy(fontWeight = FontWeight.Bold),
                                     color = MaterialTheme.colorScheme.onSurface,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
                                 Text(
-                                    text = "${activeConnections.size} ${strings.navConnections.lowercase()} • ${activeSessionCount} ${strings.overviewActiveSessions.lowercase()}",
-                                    style = NexusTheme.monospace.keycapShortcut,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    text = "Zero-Knowledge Argon2id + AES-256-GCM Vault • Revision ${vaultDocument.revision}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
                                 )
                             }
                         }
 
-                        if (isWide) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                OutlinedButton(onClick = onLaunchLocalShell) {
-                                    Icon(Icons.Outlined.Terminal, contentDescription = null, modifier = Modifier.size(17.dp))
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text("Local Terminal")
-                                }
-                                Button(onClick = onNewConnection) {
-                                    Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(18.dp))
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text(strings.actionNewConnection)
-                                }
-                            }
-                        }
-                    }
-
-                    // Interactive Spotlight / Quick Connect Trigger Bar
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .nexusHoverTracker(quickSearchHover, PointerIcon.Hand)
-                            .clip(quickSearchShape)
-                            .background(
-                                if (quickSearchHover.value.isHovered) {
-                                    MaterialTheme.colorScheme.surfaceContainerHighest
-                                } else {
-                                    MaterialTheme.colorScheme.surfaceContainer
-                                },
-                                quickSearchShape
-                            )
-                            .border(
-                                1.dp,
-                                if (quickSearchHover.value.isHovered) {
-                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.55f)
-                                } else {
-                                    MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.42f)
-                                },
-                                quickSearchShape
-                            )
-                            .clickable(onClick = onOpenQuickConnect)
-                            .padding(horizontal = 16.dp, vertical = 13.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(12.dp),
-                            modifier = Modifier.weight(1f)
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
-                            Icon(
-                                imageVector = Icons.Outlined.Search,
-                                contentDescription = strings.quickConnectButton,
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(20.dp)
-                            )
-                            Text(
-                                text = "${strings.quickConnectButton} — search servers, hosts, or protocols…",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                        Box(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(MaterialTheme.colorScheme.surfaceContainerHigh)
-                                .border(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
-                                .padding(horizontal = 8.dp, vertical = 4.dp)
-                        ) {
-                            Text(
-                                text = "Ctrl+K",
-                                style = NexusTheme.monospace.keycapShortcut,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-
-                    // Compact Secondary Action Row
-                    FlowRow(
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        if (!isWide) {
-                            Button(onClick = onNewConnection) {
-                                Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                            OutlinedButton(
+                                onClick = onLaunchLocalShell,
+                                shape = RoundedCornerShape(9.dp),
+                                colors = ButtonDefaults.outlinedButtonColors(
+                                    containerColor = Color.White,
+                                    contentColor = Color(0xFF0F172A)
+                                ),
+                                border = BorderStroke(1.dp, Color(0xFF0F172A).copy(alpha = 0.14f))
+                            ) {
+                                Icon(Icons.Outlined.Terminal, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(localTerminalLabel)
+                            }
+                            Button(
+                                onClick = onNewConnection,
+                                shape = RoundedCornerShape(9.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color(0xFF007AFF),
+                                    contentColor = Color.White
+                                )
+                            ) {
+                                Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(17.dp))
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text(strings.actionNewConnection)
                             }
-                            FilledTonalButton(onClick = onLaunchLocalShell) {
-                                Icon(Icons.Outlined.Terminal, contentDescription = null, modifier = Modifier.size(17.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("Local Terminal")
+                        }
+                    }
+                } else {
+                    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            NexusBrandEmblem(size = 44.dp, cornerRadius = 11.dp)
+                            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Text(
+                                    text = vaultDocument.name,
+                                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    text = "Zero-Knowledge Argon2id + AES-256-GCM Vault • Revision ${vaultDocument.revision}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
                             }
                         }
-                        if (vaultDocument.templates.isNotEmpty()) {
-                            FilledTonalButton(onClick = onOpenTemplates) {
-                                Icon(Icons.Outlined.Bookmarks, contentDescription = null, modifier = Modifier.size(17.dp))
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = onLaunchLocalShell,
+                                shape = RoundedCornerShape(9.dp)
+                            ) {
+                                Icon(Icons.Outlined.Terminal, contentDescription = null, modifier = Modifier.size(16.dp))
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Text("${strings.navTemplates} (${vaultDocument.templates.size})")
+                                Text(localTerminalLabel)
                             }
-                        }
-                        if (onImportVault != null) {
-                            OutlinedButton(onClick = onImportVault) {
-                                Icon(Icons.Outlined.UploadFile, contentDescription = null, modifier = Modifier.size(17.dp))
+                            Button(
+                                onClick = onNewConnection,
+                                shape = RoundedCornerShape(9.dp),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color(0xFF007AFF),
+                                    contentColor = Color.White
+                                )
+                            ) {
+                                Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(17.dp))
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Text(strings.actionImportRtsz)
-                            }
-                        }
-                        if (activeTodos.isEmpty() && !showAddTodoComposer) {
-                            TextButton(onClick = { showAddTodoComposer = true }) {
-                                Icon(Icons.Outlined.CheckCircle, contentDescription = null, modifier = Modifier.size(17.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(strings.actionAddTodo)
+                                Text(strings.actionNewConnection)
                             }
                         }
                     }
                 }
             }
 
-            // 2. Pinned Favorites Quick-Launch Grid (Double-Click to Connect)
+            // 2. 4 Pastel Summary Metric Cards (1:1 with macOS OverviewStatCard)
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                MacStyleOverviewStatCard(
+                    title = "Connections",
+                    value = activeConnections.size.toString(),
+                    subtitle = "${activeFolders.size} folders",
+                    icon = Icons.Outlined.DesktopWindows,
+                    tint = Color(0xFF007AFF),
+                    onClick = onOpenQuickConnect
+                )
+                MacStyleOverviewStatCard(
+                    title = "Live Sessions",
+                    value = activeSessionCount.toString(),
+                    subtitle = "$detachedWindowCount detached windows",
+                    icon = Icons.Outlined.Splitscreen,
+                    tint = Color(0xFF34C759),
+                    onClick = {}
+                )
+                MacStyleOverviewStatCard(
+                    title = "Credentials & TOTP",
+                    value = activeCredentials.size.toString(),
+                    subtitle = "SSH Keys & Passwords",
+                    icon = Icons.Outlined.Key,
+                    tint = Color(0xFFFF9500),
+                    onClick = onOpenCredentials
+                )
+                MacStyleOverviewStatCard(
+                    title = "Cloud Sync",
+                    value = if (isDriveLinked) "Linked" else "Local",
+                    subtitle = syncStatusSummary,
+                    icon = Icons.Outlined.CloudSync,
+                    tint = Color(0xFF00A8C6),
+                    onClick = onOpenCloudSync
+                )
+            }
+
+            // 3. Favorites Quick Launch Grid (when favorites exist)
             if (favorites.isNotEmpty()) {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        horizontalArrangement = Arrangement.spacedBy(7.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Outlined.Star,
                             contentDescription = null,
-                            tint = MaterialTheme.colorScheme.tertiary,
-                            modifier = Modifier.size(20.dp)
+                            tint = Color(0xFFF59E0B),
+                            modifier = Modifier.size(18.dp)
                         )
                         Text(
                             text = strings.vaultSectionFavorites,
-                            style = MaterialTheme.typography.titleMedium
+                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                            color = MaterialTheme.colorScheme.onSurface
                         )
                     }
+
                     FlowRow(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(14.dp),
-                        verticalArrangement = Arrangement.spacedBy(14.dp)
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
                         favorites.forEach { fav ->
                             val accent = parseHexColorOrNull(fav.inheritable.displayColorAccentHex)
-                                ?: MaterialTheme.colorScheme.primary
+                                ?: Color(0xFF007AFF)
                             val isFavActive = fav.id in activeConnectionIds
                             val favHover = rememberDesktopHoverState()
                             var favMenuOpen by remember(fav.id) { mutableStateOf(false) }
 
                             Box {
-                                val favShape = RoundedCornerShape(18.dp)
-                                Box(
+                                val favShape = RoundedCornerShape(14.dp)
+                                Row(
                                     modifier = Modifier
                                         .width(268.dp)
                                         .nexusHoverTracker(favHover, PointerIcon.Hand)
                                         .clip(favShape)
                                         .background(
-                                            if (favHover.value.isHovered) {
-                                                MaterialTheme.colorScheme.surfaceContainerHigh
-                                            } else {
-                                                MaterialTheme.colorScheme.surfaceContainer
-                                            },
+                                            Brush.linearGradient(
+                                                colors = listOf(
+                                                    accent.copy(alpha = if (favHover.value.isHovered) 0.13f else 0.07f),
+                                                    Color.White
+                                                )
+                                            ),
                                             favShape
                                         )
                                         .border(
                                             1.dp,
-                                            accent.copy(alpha = if (favHover.value.isHovered) 0.65f else 0.35f),
+                                            accent.copy(alpha = if (favHover.value.isHovered) 0.50f else 0.22f),
                                             favShape
                                         )
                                         .nexusInteractiveRow(
@@ -791,48 +685,67 @@ fun ExpressiveVaultOverviewDashboard(
                                             onDoubleClick = { onLaunchConnection(fav) },
                                             onSecondaryClick = { favMenuOpen = true }
                                         )
+                                        .padding(12.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp)
                                 ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(34.dp)
+                                            .clip(RoundedCornerShape(9.dp))
+                                            .background(accent.copy(alpha = 0.14f))
+                                            .border(1.dp, accent.copy(alpha = 0.28f), RoundedCornerShape(9.dp)),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text(
+                                            text = fav.protocol.shortBadge,
+                                            style = NexusTheme.monospace.keycapShortcut,
+                                            color = accent
+                                        )
+                                    }
+
                                     Column(
-                                        modifier = Modifier.padding(16.dp),
-                                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                                        modifier = Modifier.weight(1f),
+                                        verticalArrangement = Arrangement.spacedBy(2.dp)
                                     ) {
                                         Row(
-                                            modifier = Modifier.fillMaxWidth(),
                                             verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.SpaceBetween
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
                                         ) {
-                                            Row(
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                            ) {
-                                                if (isFavActive) {
-                                                    Box(
-                                                        modifier = Modifier
-                                                            .size(8.dp)
-                                                            .clip(CircleShape)
-                                                            .background(Color(0xFF38BDF8))
-                                                    )
-                                                }
-                                                Text(
-                                                    text = fav.protocol.name,
-                                                    style = NexusTheme.monospace.keycapShortcut,
-                                                    color = accent
-                                                )
-                                            }
-                                            TextButton(onClick = { onConnectWithOptions(fav) }) {
-                                                Text(
-                                                    text = strings.actionConnectWithOptions,
-                                                    style = MaterialTheme.typography.labelSmall,
-                                                    maxLines = 1,
-                                                    overflow = TextOverflow.Ellipsis
+                                            Text(
+                                                text = fav.name,
+                                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                                                color = MaterialTheme.colorScheme.onSurface,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            if (isFavActive) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(7.dp)
+                                                        .clip(CircleShape)
+                                                        .background(Color(0xFF34C759))
                                                 )
                                             }
                                         }
                                         Text(
-                                            text = fav.name,
-                                            style = MaterialTheme.typography.titleMedium,
+                                            text = fav.protocol.displayName,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+
+                                    IconButton(
+                                        onClick = { onLaunchConnection(fav) },
+                                        modifier = Modifier.size(26.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Outlined.OpenInNew,
+                                            contentDescription = "Connect",
+                                            tint = Color(0xFF007AFF),
+                                            modifier = Modifier.size(16.dp)
                                         )
                                     }
                                 }
@@ -979,189 +892,77 @@ fun ExpressiveVaultOverviewDashboard(
                         }
                     }
                 }
-            } else {
-                // Subtle single-line hint when no favorites are starred yet
-                Surface(
-                    shape = RoundedCornerShape(16.dp),
-                    color = MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.72f),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.25f)),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 18.dp, vertical = 14.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Outlined.Star,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.tertiary,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Text(
-                            text = "Double-click any server in the sidebar to launch a session, or right-click a connection to pin it to Favorites.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.weight(1f)
-                        )
-                    }
-                }
             }
 
-            // 3. Optional Workspace Checklist Card (only shown when tasks exist or user opened task composer)
-            if (activeTodos.isNotEmpty() || showAddTodoComposer) {
+            // 4. Interactive Keyboard Shortcut Cheat Sheet (1:1 with macOS ShortcutLegendItem)
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    text = shortcutsHeading,
+                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+
                 Surface(
-                    shape = RoundedCornerShape(22.dp),
-                    color = MaterialTheme.colorScheme.surfaceContainerLow,
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)),
+                    shape = RoundedCornerShape(13.dp),
+                    color = Color.White.copy(alpha = 0.76f),
+                    border = BorderStroke(1.dp, Color(0xFF0F172A).copy(alpha = 0.08f)),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Column(
-                        modifier = Modifier.padding(18.dp),
+                    FlowRow(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(12.dp),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
                         verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text(strings.inspectorTodoItems, style = MaterialTheme.typography.titleMedium)
-                            if (pendingTodos > 0) {
-                                Text(
-                                    text = "$pendingTodos open",
-                                    style = NexusTheme.monospace.keycapShortcut,
-                                    color = MaterialTheme.colorScheme.primary
-                                )
-                            }
-                        }
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            OutlinedTextField(
-                                value = newTodoTitle,
-                                onValueChange = { newTodoTitle = it },
-                                placeholder = { Text(strings.actionAddTodo, style = MaterialTheme.typography.bodySmall) },
-                                singleLine = true,
-                                modifier = Modifier.weight(1f)
-                            )
-                            FilledTonalButton(
-                                enabled = newTodoTitle.isNotBlank(),
-                                onClick = {
-                                    onAddTodo(newTodoTitle)
-                                    newTodoTitle = ""
-                                }
-                            ) {
-                                Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                            }
-                        }
-                        activeTodos.forEach { todo ->
-                            val todoHover = rememberDesktopHoverState()
-                            val todoInteraction = remember { MutableInteractionSource() }
-                            var todoMenuOpen by remember(todo.id) { mutableStateOf(false) }
-
-                            Box(modifier = Modifier.fillMaxWidth()) {
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .nexusHoverTracker(todoHover, PointerIcon.Hand)
-                                        .nexusDesktopPointerButtons(onSecondaryClick = { todoMenuOpen = true })
-                                        .clip(RoundedCornerShape(10.dp))
-                                        .background(
-                                            if (todoHover.value.isHovered) {
-                                                MaterialTheme.colorScheme.surfaceContainerHigh
-                                            } else {
-                                                Color.Transparent
-                                            }
-                                        )
-                                        .clickable(
-                                            interactionSource = todoInteraction,
-                                            indication = null,
-                                            onClick = { onToggleTodo(todo.id) }
-                                        )
-                                        .padding(horizontal = 6.dp, vertical = 4.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.SpaceBetween
-                                ) {
-                                    Row(
-                                        modifier = Modifier.weight(1f),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                    ) {
-                                        Icon(
-                                            imageVector = if (todo.completed) Icons.Outlined.CheckCircle else Icons.Outlined.RadioButtonUnchecked,
-                                            contentDescription = null,
-                                            tint = if (todo.completed) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.onSurfaceVariant,
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                        Text(
-                                            text = todo.title,
-                                            style = MaterialTheme.typography.bodyMedium,
-                                            textDecoration = if (todo.completed) TextDecoration.LineThrough else TextDecoration.None,
-                                            color = if (todo.completed) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis,
-                                            modifier = Modifier.weight(1f)
-                                        )
-                                    }
-                                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                        Text(
-                                            text = todo.priority,
-                                            style = NexusTheme.monospace.keycapShortcut,
-                                            color = if (todo.priority == "HIGH") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
-                                        )
-                                        IconButton(
-                                            onClick = { onDeleteTodo(todo.id) },
-                                            modifier = Modifier.size(24.dp)
-                                        ) {
-                                            Icon(
-                                                Icons.Outlined.Delete,
-                                                contentDescription = "Delete To-Do",
-                                                tint = MaterialTheme.colorScheme.error,
-                                                modifier = Modifier.size(14.dp)
-                                            )
-                                        }
-                                    }
-                                }
-
-                                DropdownMenu(
-                                    expanded = todoMenuOpen,
-                                    onDismissRequest = { todoMenuOpen = false }
-                                ) {
-                                    DropdownMenuItem(
-                                        text = { Text(if (todo.completed) "Mark Incomplete" else "Mark Complete") },
-                                        leadingIcon = { Icon(Icons.Outlined.CheckCircle, contentDescription = null, modifier = Modifier.size(18.dp)) },
-                                        onClick = {
-                                            todoMenuOpen = false
-                                            onToggleTodo(todo.id)
-                                        }
-                                    )
-                                    DropdownMenuItem(
-                                        text = { Text("Copy Task Title") },
-                                        leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp)) },
-                                        onClick = {
-                                            todoMenuOpen = false
-                                            clipboard.setText(AnnotatedString(todo.title))
-                                        }
-                                    )
-                                    HorizontalDivider()
-                                    DropdownMenuItem(
-                                        text = { Text("Delete", color = MaterialTheme.colorScheme.error) },
-                                        leadingIcon = {
-                                            Icon(
-                                                Icons.Outlined.Delete,
-                                                contentDescription = null,
-                                                tint = MaterialTheme.colorScheme.error,
-                                                modifier = Modifier.size(18.dp)
-                                            )
+                        shortcutItems.forEach { item ->
+                            val scHover = rememberDesktopHoverState()
+                            val activeBlue = Color(0xFF007AFF)
+                            val shape = RoundedCornerShape(8.dp)
+                            Row(
+                                modifier = Modifier
+                                    .widthIn(min = 185.dp)
+                                    .nexusHoverTracker(scHover, PointerIcon.Hand)
+                                    .clip(shape)
+                                    .background(
+                                        when {
+                                            item.isActive -> activeBlue.copy(alpha = 0.13f)
+                                            scHover.value.isHovered -> Color(0xFF0F172A).copy(alpha = 0.07f)
+                                            else -> Color(0xFF0F172A).copy(alpha = 0.03f)
                                         },
-                                        onClick = {
-                                            todoMenuOpen = false
-                                            onDeleteTodo(todo.id)
-                                        }
+                                        shape
+                                    )
+                                    .border(
+                                        0.8.dp,
+                                        if (item.isActive) activeBlue.copy(alpha = 0.35f) else Color(0xFF0F172A).copy(alpha = 0.08f),
+                                        shape
+                                    )
+                                    .clickable(onClick = item.onClick)
+                                    .padding(horizontal = 11.dp, vertical = 7.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = item.label,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = if (item.isActive) Color(0xFF0066D6) else MaterialTheme.colorScheme.onSurface,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Surface(
+                                    shape = RoundedCornerShape(5.dp),
+                                    color = Color.White.copy(alpha = 0.88f),
+                                    border = BorderStroke(
+                                        0.8.dp,
+                                        if (item.isActive) activeBlue.copy(alpha = 0.25f) else Color(0xFF0F172A).copy(alpha = 0.10f)
+                                    )
+                                ) {
+                                    Text(
+                                        text = item.keys,
+                                        style = NexusTheme.monospace.keycapShortcut,
+                                        color = if (item.isActive) Color(0xFF0066D6) else MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                                     )
                                 }
                             }
@@ -1200,7 +1001,7 @@ fun ExpressiveVaultOverviewDashboard(
                 }
             )
             DropdownMenuItem(
-                text = { Text("Local Terminal") },
+                text = { Text(localTerminalLabel) },
                 leadingIcon = { Icon(Icons.Outlined.Terminal, contentDescription = null, modifier = Modifier.size(18.dp)) },
                 onClick = {
                     overviewBgMenuOpen = false
@@ -1229,6 +1030,80 @@ fun ExpressiveVaultOverviewDashboard(
         }
     }
 }
+
+@Composable
+private fun MacStyleOverviewStatCard(
+    title: String,
+    value: String,
+    subtitle: String,
+    icon: ImageVector,
+    tint: Color,
+    onClick: () -> Unit
+) {
+    val hover = rememberDesktopHoverState()
+    val isHovered = hover.value.isHovered
+    val shape = RoundedCornerShape(14.dp)
+    Box(
+        modifier = Modifier
+            .width(205.dp)
+            .nexusHoverTracker(hover, PointerIcon.Hand)
+            .clip(shape)
+            .background(
+                Brush.linearGradient(
+                    colors = listOf(
+                        tint.copy(alpha = if (isHovered) 0.16f else 0.11f),
+                        Color.White.copy(alpha = 0.92f)
+                    )
+                ),
+                shape
+            )
+            .border(
+                1.dp,
+                tint.copy(alpha = if (isHovered) 0.36f else 0.22f),
+                shape
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 15.dp, vertical = 14.dp)
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = tint,
+                    modifier = Modifier.size(20.dp)
+                )
+                Text(
+                    text = value,
+                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                    color = Color(0xFF0F172A),
+                    maxLines = 1
+                )
+            }
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
+                    color = Color(0xFF0F172A),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFF64748B),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+    }
+}
+
 
 /**
  * Royal TS Connection Templates Studio (`"templates"` rail destination).

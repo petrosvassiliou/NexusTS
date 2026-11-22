@@ -230,7 +230,7 @@ async function signSshEd25519(seed32, pub32, messageBytes) {
 export class DirectSsh2Connection {
   constructor(stream) {
     this.stream = stream;
-    this.clientVersion = 'SSH-2.0-NexusTS_0.9.6_ChromeOS';
+    this.clientVersion = 'SSH-2.0-NexusTS_0.9.7_ChromeOS';
     this.serverVersion = '';
     this.seqOut = 0;
     this.seqIn = 0;

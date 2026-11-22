@@ -1,0 +1,1 @@
+• NexusTS 0.9.7: Einheitliche Tresor-Übersicht (4 Status-Karten für Connections, Live Sessions, Credentials & TOTP und Cloud Sync, Favoriten-Schnellstart & interaktive Tastaturkurzbefehle) jetzt auf macOS, ChromeOS, Googlebooks und Android.

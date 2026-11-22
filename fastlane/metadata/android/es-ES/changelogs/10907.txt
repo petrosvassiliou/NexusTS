@@ -1,0 +1,1 @@
+• NexusTS 0.9.7: Vista general unificada de la bóveda (4 tarjetas de resumen, cuadrícula de favoritos y atajos de teclado interactivos) en macOS, ChromeOS, Googlebooks y Android.
