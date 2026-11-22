@@ -137,7 +137,13 @@ export class NexusChromeOSStore {
   }
 
   _emit() {
-    for (const fn of this._listeners) fn(this.state);
+    for (const fn of this._listeners) {
+      try {
+        fn(this.state);
+      } catch (err) {
+        console.error('[NexusTS Store Listener Error]', err);
+      }
+    }
   }
 
   setState(patch) {
@@ -802,8 +808,8 @@ export class NexusChromeOSStore {
 
     const effectivePass = this._masterPassphrase || DEFAULT_TRANSPARENT_PASSPHRASE;
     this._syncLocked = true;
-    this.setState({ driveIsSyncing: true });
     try {
+      this.setState({ driveIsSyncing: true });
       const outcome = await this.driveBridge.synchronizeLinkedVault(
         this.state.vaultDocument,
         effectivePass,

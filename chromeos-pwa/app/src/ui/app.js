@@ -57,6 +57,8 @@ let showAddTodoComposer = false;
 let quickConnectQuery = '';
 let dragPayload = null;
 let totpRefreshInterval = null;
+let lastScheduledToastMessage = '';
+let toastDismissTimer = null;
 const windowChannel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('nexusts-chromeos-tabs') : null;
 
 function esc(str) {

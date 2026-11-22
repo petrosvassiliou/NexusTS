@@ -112,12 +112,21 @@ export function computeIwaWebBundleIdFromEd25519Pub(rawPub32) {
  * Builds a standards-compliant Web Bundle v2 (`b2` — 5-element top-level CBOR structure)
  * using Google's official `wbn` `BundleBuilder('b2')` and verifies it with `new Bundle(...)`.
  */
+export function toIwaManifestVersion(version = '1.0.0') {
+  return /^\d+\.\d+\.\d+$/.test(version) ? `${version}.1` : version;
+}
+
 export function buildUnsignedWebBundleB2(files, { version = '1.0.0' } = {}) {
   const builder = new BundleBuilder('b2');
+  const iwaVersion = toIwaManifestVersion(version);
 
   for (const file of files) {
     let body = fs.readFileSync(file.full);
-    if (file.rel === '.well-known/manifest.webmanifest' || file.rel === 'manifest.webmanifest') {
+    if (file.rel === '.well-known/manifest.webmanifest') {
+      const parsed = JSON.parse(body.toString('utf8'));
+      parsed.version = iwaVersion;
+      body = Buffer.from(`${JSON.stringify(parsed, null, 2)}\n`, 'utf8');
+    } else if (file.rel === 'manifest.webmanifest') {
       const parsed = JSON.parse(body.toString('utf8'));
       parsed.version = version;
       body = Buffer.from(`${JSON.stringify(parsed, null, 2)}\n`, 'utf8');
@@ -312,13 +321,14 @@ export function buildFirebaseHostingSite({ version = '1.0.0', releaseTag = 'v1.0
   fs.mkdirSync(downloadsDir, { recursive: true });
   fs.writeFileSync(path.join(downloadsDir, `NexusTS-${releaseTag}-ChromeOS-IWA.swbn`), signedForHosting.swbnBytes);
   fs.writeFileSync(path.join(downloadsDir, 'NexusTS-ChromeOS-IWA.swbn'), signedForHosting.swbnBytes);
+  const iwaManifestVersion = toIwaManifestVersion(version);
   fs.writeFileSync(
     path.join(downloadsDir, 'iwa-update-manifest.json'),
     `${JSON.stringify(
       {
         versions: [
           {
-            version,
+            version: iwaManifestVersion,
             src: `https://nexusts-prod.web.app/downloads/NexusTS-${releaseTag}-ChromeOS-IWA.swbn`
           }
         ]
@@ -332,6 +342,7 @@ export function buildFirebaseHostingSite({ version = '1.0.0', releaseTag = 'v1.0
   const versionMeta = {
     name: 'NexusTS ChromeOS Isolated Web App Installer',
     version,
+    iwaVersion: iwaManifestVersion,
     releaseTag,
     buildHash,
     webBundleId: signedForHosting.webBundleId,
@@ -373,7 +384,7 @@ export function buildAllChromeOSArtifacts({ version = '1.0.0', releaseTag = 'v1.
   const updateManifest = {
     versions: [
       {
-        version,
+        version: toIwaManifestVersion(version),
         src: `https://github.com/petrosvassiliou/NexusTS/releases/download/${releaseTag}/NexusTS-${releaseTag}-ChromeOS-IWA.swbn`
       }
     ]

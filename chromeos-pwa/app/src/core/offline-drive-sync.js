@@ -241,7 +241,11 @@ export class ChromeOSDriveSyncBridge {
       lastSyncedEpochMs: 0,
       linkedDocumentId: documentId || ''
     };
-    await idbSet('drive.fileHandle', rawHandleForPersistence || transportOrHandle, STORE_HANDLES);
+    try {
+      await idbSet('drive.fileHandle', rawHandleForPersistence || transportOrHandle, STORE_HANDLES);
+    } catch {
+      // Keep live in-memory FileHandleVaultTransport active even if handle is non-cloneable
+    }
     await idbSet('drive.syncMeta', this.syncMeta, STORE_KV);
     return this.syncMeta;
   }
