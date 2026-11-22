@@ -4455,7 +4455,7 @@ private fun SystemCredentialsFolderBadgeIcon(
     val surfaceBg = MaterialTheme.colorScheme.surfaceContainerLow
     Box(modifier = modifier, contentAlignment = Alignment.Center) {
         Icon(
-            imageVector = FilledFolderIcon,
+            imageVector = Icons.Filled.FilledFolderIcon,
             contentDescription = null,
             tint = tint,
             modifier = Modifier.fillMaxSize()
