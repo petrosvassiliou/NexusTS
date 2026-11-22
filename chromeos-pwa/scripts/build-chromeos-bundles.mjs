@@ -338,6 +338,7 @@ export function buildFirebaseHostingSite({ version = '0.9.8', releaseTag = 'v0.9
 
 export function buildAllChromeOSArtifacts({ version = '0.9.8', releaseTag = 'v0.9.8' } = {}) {
   const hosting = buildFirebaseHostingSite({ version, releaseTag });
+  fs.rmSync(DIST_DIR, { recursive: true, force: true });
   fs.mkdirSync(DIST_DIR, { recursive: true });
 
   const files = walkFiles(APP_DIR);

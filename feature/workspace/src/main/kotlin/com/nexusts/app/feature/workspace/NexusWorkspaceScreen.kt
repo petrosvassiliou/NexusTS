@@ -877,7 +877,9 @@ fun NexusWorkspaceScreen(
                     onSaveFolderAndCredential = viewModel::saveFolderAndCredentialToVault,
                     onDeleteFolder = { folderId ->
                         viewModel.dismissFolderDialog()
-                        viewModel.requestDeleteFolderConfirmation(folderId)
+                        uiState.vaultDocument.folders
+                            .firstOrNull { it.id == folderId }
+                            ?.let(viewModel::requestDeleteFolderConfirmation)
                     },
                     defaultParentFolderId = uiState.newFolderDefaultParentId
                 )
@@ -3561,7 +3563,7 @@ private fun VaultHierarchySidebarTree(
                 color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
             )
 
-            val smartFolderMatchesById = remember(activeSmartFolders, doc, uiState.filterQuery) {
+            val smartFolderMatchesById = remember(activeSmartFolders, doc, uiState.sidebarFilterQuery) {
                 activeSmartFolders.associate { smart ->
                     smart.id to smartFolderConnectionsProvider(smart).filter(::matchesFilter)
                 }
