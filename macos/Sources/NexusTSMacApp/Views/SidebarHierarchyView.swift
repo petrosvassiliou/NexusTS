@@ -352,11 +352,12 @@ public struct SidebarHierarchyView: View {
         let allCollapsed = !store.activeFolders.isEmpty
             && store.collapsedFolderIds.isSuperset(of: store.activeFolders.map(\.id))
 
-        HStack(spacing: 6) {
+        HStack(spacing: 4) {
             sidebarFilterPill(
                 mode: .all,
-                label: store.strings.connections,
-                systemImage: "folder"
+                label: nil,
+                systemImage: "folder",
+                helpText: store.strings.connections
             )
             sidebarFilterPill(
                 mode: .favorites,
@@ -371,7 +372,7 @@ public struct SidebarHierarchyView: View {
                 helpText: store.strings.recentSessions
             )
 
-            Spacer(minLength: 6)
+            Spacer(minLength: 4)
 
             SidebarGlassIconButton(
                 systemImage: "folder.badge.plus",
@@ -416,8 +417,9 @@ public struct SidebarHierarchyView: View {
                 }
             }
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 6)
+        .padding(.horizontal, 7)
+        .padding(.vertical, 5)
+        .frame(maxWidth: .infinity)
         .liquidGlassSurface(cornerRadius: 12, prominence: .subtle)
     }
 
@@ -585,7 +587,7 @@ private struct SidebarFilterPillButton: View {
                 }
             }
             .foregroundStyle(selected || isHovered ? Color.primary : Color.secondary)
-            .padding(.horizontal, 10)
+            .padding(.horizontal, label == nil ? 8.5 : 10)
             .padding(.vertical, 4.5)
             .liquidGlassCapsule(
                 tint: Color.accentColor,

@@ -1,9 +1,9 @@
-// NexusTS 100% Offline-First & Auto-Updating Service Worker (`v0.9.5`).
+// NexusTS 100% Offline-First & Auto-Updating Service Worker (`v0.9.6`).
 // Precaches every HTML, CSS, ES module, WebAssembly binary, manifest, and icon on install
 // so NexusTS boots and operates completely offline from the ChromeOS Startmenü (App Launcher)
 // while updating seamlessly whenever a new build is deployed to Firebase Hosting.
 
-const CACHE_NAME = 'nexusts-chromeos-offline-v0.9.5';
+const CACHE_NAME = 'nexusts-chromeos-offline-v0.9.6';
 
 const PRECACHE_ASSETS = [
   './',

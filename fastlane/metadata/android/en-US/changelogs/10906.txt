@@ -1,0 +1,1 @@
+• NexusTS 0.9.6: Fixed macOS sidebar header bar icon alignment so icons never overlap the vertical divider line, plus smooth drag-to-resize sidebar width.

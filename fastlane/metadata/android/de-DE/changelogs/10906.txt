@@ -1,0 +1,1 @@
+• NexusTS 0.9.6: Seitenleisten-Kopfzeile auf macOS perfekt eingepasst (kein Überlappen mit der vertikalen Trennlinie) inklusive stufenlos ziehbarer Seitenleistenbreite.

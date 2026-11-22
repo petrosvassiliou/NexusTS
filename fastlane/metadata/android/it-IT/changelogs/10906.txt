@@ -1,0 +1,1 @@
+• NexusTS 0.9.6: Allineamento perfetto delle icone nella barra superiore della barra laterale macOS senza sovrapposizioni sulla linea verticale e larghezza ridimensionabile.

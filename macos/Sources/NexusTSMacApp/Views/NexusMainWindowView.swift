@@ -7,6 +7,8 @@ public struct NexusMainWindowView: View {
     @EnvironmentObject private var store: WorkspaceStore
     @Environment(\.openWindow) private var openWindow
 
+    @AppStorage("nexusts.macos.sidebarWidth") private var sidebarWidth: Double = 268
+    @State private var sidebarDragStartWidth: Double? = nil
     @State private var pendingEncryptedImportURL: URL? = nil
     @State private var importArchivePassword: String = ""
     @State private var exportPayload: ExportedFileDocument? = nil
@@ -53,10 +55,39 @@ public struct NexusMainWindowView: View {
 
                     HStack(spacing: 0) {
                         if store.columnVisibility != .detailOnly {
+                            let clampedSidebarWidth = min(max(sidebarWidth, 248), 440)
                             SidebarHierarchyView()
-                                .frame(width: 242)
+                                .frame(width: clampedSidebarWidth)
+                                .clipped()
                                 .background(Color.white)
+
                             Divider()
+                                .overlay {
+                                    Color.clear
+                                        .frame(width: 8)
+                                        .contentShape(Rectangle())
+                                        .onHover { hovering in
+                                            if hovering {
+                                                NSCursor.resizeLeftRight.push()
+                                            } else {
+                                                NSCursor.pop()
+                                            }
+                                        }
+                                        .gesture(
+                                            DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                                                .onChanged { value in
+                                                    let base = sidebarDragStartWidth ?? clampedSidebarWidth
+                                                    if sidebarDragStartWidth == nil {
+                                                        sidebarDragStartWidth = base
+                                                    }
+                                                    sidebarWidth = min(max(base + value.translation.width, 248), 440)
+                                                }
+                                                .onEnded { _ in
+                                                    sidebarDragStartWidth = nil
+                                                }
+                                        )
+                                }
+                                .zIndex(3)
                         }
 
                         workspaceDetailCanvas
@@ -66,6 +97,7 @@ public struct NexusMainWindowView: View {
                             Divider()
                             InspectorColumnView()
                                 .frame(width: 295)
+                                .clipped()
                                 .background(Color.white)
                         }
                     }
