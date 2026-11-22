@@ -32,6 +32,8 @@ import {
   sanitizeVaultDocument
 } from './vault-models.js';
 
+export const SYSTEM_CREDENTIALS_FOLDER_ID = '__NEXUSTS_SYSTEM_CREDENTIALS__';
+
 export const SETTINGS_TABS = Object.freeze([
   'general',
   'sync',
@@ -89,9 +91,12 @@ export class NexusChromeOSStore {
       sidebarFilterQuery: '',
       sidebarQuickFilter: 'ALL', // 'ALL' | 'FAVORITES' | 'RECENTS'
       expandedFolderIds: new Set(),
+      expandedSmartFolderIds: new Set(),
+      isSystemCredentialsExpanded: true,
       selectedConnectionId: null,
       selectedFolderId: null,
       selectedSmartFolderId: null,
+      selectedCredentialId: null,
 
       // Tiling & active tabs
       tilingLayout: 'SINGLE', // 'SINGLE' | 'SPLIT_H' | 'SPLIT_V' | 'QUAD'
@@ -110,7 +115,7 @@ export class NexusChromeOSStore {
       localRelayReachable: false,
       localRelayUrl: 'ws://127.0.0.1:44890',
       localRelayHttpUrl: 'http://127.0.0.1:44890',
-      appVersion: '0.9.4',
+      appVersion: '0.9.5',
       pwaStandalone: false,
       pwaInstallAvailable: false,
       swUpdateWaiting: false,
@@ -343,6 +348,7 @@ export class NexusChromeOSStore {
         selectedConnectionId: connectionId,
         selectedFolderId: null,
         selectedSmartFolderId: null,
+        selectedCredentialId: null,
         focusedTabId: existingTab.tabId,
         activeDestination: 'connections'
       });
@@ -352,7 +358,8 @@ export class NexusChromeOSStore {
     this.setState({
       selectedConnectionId: connectionId,
       selectedFolderId: null,
-      selectedSmartFolderId: null
+      selectedSmartFolderId: null,
+      selectedCredentialId: null
     });
     return false;
   }
@@ -361,7 +368,44 @@ export class NexusChromeOSStore {
     const next = new Set(this.state.expandedFolderIds);
     if (next.has(folderId)) next.delete(folderId);
     else next.add(folderId);
-    this.setState({ expandedFolderIds: next, selectedFolderId: folderId, selectedSmartFolderId: null });
+    this.setState({
+      expandedFolderIds: next,
+      selectedFolderId: folderId,
+      selectedSmartFolderId: null,
+      selectedCredentialId: null
+    });
+  }
+
+  toggleSmartFolderExpanded(smartFolderId) {
+    const next = new Set(this.state.expandedSmartFolderIds);
+    if (next.has(smartFolderId)) next.delete(smartFolderId);
+    else next.add(smartFolderId);
+    this.setState({
+      expandedSmartFolderIds: next,
+      selectedSmartFolderId: smartFolderId,
+      selectedFolderId: null,
+      selectedConnectionId: null,
+      selectedCredentialId: null
+    });
+  }
+
+  toggleSystemCredentialsExpanded() {
+    this.setState({
+      isSystemCredentialsExpanded: !this.state.isSystemCredentialsExpanded,
+      selectedFolderId: SYSTEM_CREDENTIALS_FOLDER_ID,
+      selectedSmartFolderId: null,
+      selectedConnectionId: null,
+      selectedCredentialId: null
+    });
+  }
+
+  selectCredentialInSidebar(credentialId) {
+    this.setState({
+      selectedCredentialId: credentialId,
+      selectedFolderId: SYSTEM_CREDENTIALS_FOLDER_ID,
+      selectedSmartFolderId: null,
+      selectedConnectionId: null
+    });
   }
 
   launchConnection(connectionOrId, { forceNewTab = false } = {}) {
@@ -826,13 +870,23 @@ export class NexusChromeOSStore {
   }
 
   async saveFolder(folderData) {
+    const cleanName = String(folderData.name || 'New Folder').trim() || 'New Folder';
+    const parentFolderId = folderData.parentFolderId || null;
+    if (
+      folderData.id === SYSTEM_CREDENTIALS_FOLDER_ID ||
+      parentFolderId === SYSTEM_CREDENTIALS_FOLDER_ID ||
+      (!parentFolderId && cleanName.toLowerCase() === 'credentials')
+    ) {
+      this.showToast('"Credentials" is reserved for the system credentials folder at the bottom of the sidebar.');
+      return null;
+    }
     const id = folderData.id || randomUuid();
     const res = await this.commitVaultMutation((doc) => {
       const idx = doc.folders.findIndex((f) => f.id === id);
       const folder = {
         id,
-        parentFolderId: folderData.parentFolderId || null,
-        name: String(folderData.name || 'New Folder'),
+        parentFolderId,
+        name: cleanName,
         description: String(folderData.description || ''),
         tags: Array.isArray(folderData.tags) ? folderData.tags : [],
         inheritable: defaultInheritableProperties(folderData.inheritable || {}),
@@ -849,7 +903,44 @@ export class NexusChromeOSStore {
     return res;
   }
 
+  async saveCredential(credData) {
+    const id = credData.id || randomUuid();
+    const res = await this.commitVaultMutation((doc) => {
+      doc.credentials = doc.credentials || [];
+      const idx = doc.credentials.findIndex((c) => c.id === id);
+      const prev = idx >= 0 ? doc.credentials[idx] : null;
+      const privateKeyPem = String(credData.privateKeyPem ?? prev?.privateKeyPem ?? '').trim();
+      const credential = {
+        id,
+        parentFolderId: null,
+        name: String(credData.name || prev?.name || 'Credential').trim() || 'Credential',
+        sourceKind: privateKeyPem ? 'SSH_KEY_PAIR' : (credData.sourceKind || prev?.sourceKind || 'VAULT_INTERNAL'),
+        username: String(credData.username ?? prev?.username ?? '').trim(),
+        domain: String(credData.domain ?? prev?.domain ?? '').trim(),
+        secretPassword: credData.secretPassword !== undefined ? String(credData.secretPassword) : (prev?.secretPassword || ''),
+        privateKeyPem,
+        publicKeyOpenSsh: String(credData.publicKeyOpenSsh ?? prev?.publicKeyOpenSsh ?? ''),
+        keyFingerprintSha256: String(credData.keyFingerprintSha256 ?? prev?.keyFingerprintSha256 ?? ''),
+        keyPassphrase: String(credData.keyPassphrase ?? prev?.keyPassphrase ?? ''),
+        externalReferenceUri: String(credData.externalReferenceUri ?? prev?.externalReferenceUri ?? ''),
+        fido2CredentialIdBase64: String(credData.fido2CredentialIdBase64 ?? prev?.fido2CredentialIdBase64 ?? ''),
+        totpSecretBase32: String(credData.totpSecretBase32 ?? prev?.totpSecretBase32 ?? '').trim(),
+        sortOrder: typeof credData.sortOrder === 'number' ? credData.sortOrder : (prev?.sortOrder ?? doc.credentials.length),
+        updatedAtEpochMs: Date.now()
+      };
+      if (idx >= 0) doc.credentials[idx] = credential;
+      else doc.credentials.push(credential);
+      return doc;
+    });
+    this.setState({ isSystemCredentialsExpanded: true, selectedCredentialId: id });
+    return res;
+  }
+
   async moveConnectionToFolder(connectionId, targetFolderId) {
+    if (targetFolderId === SYSTEM_CREDENTIALS_FOLDER_ID) {
+      this.showToast('The Credentials system folder only holds credentials.');
+      return null;
+    }
     return await this.commitVaultMutation((doc) => {
       const conn = doc.connections.find((c) => c.id === connectionId);
       if (conn) {
@@ -862,6 +953,10 @@ export class NexusChromeOSStore {
 
   async moveFolderToParent(folderId, newParentFolderId) {
     if (folderId === newParentFolderId) return;
+    if (folderId === SYSTEM_CREDENTIALS_FOLDER_ID || newParentFolderId === SYSTEM_CREDENTIALS_FOLDER_ID) {
+      this.showToast('The Credentials system folder only holds credentials.');
+      return null;
+    }
     return await this.commitVaultMutation((doc) => {
       const subtree = resolveSubtreeFolderIds(folderId, doc);
       if (newParentFolderId && subtree.has(newParentFolderId)) return doc;
@@ -972,18 +1067,24 @@ export class NexusChromeOSStore {
     const id = sfData.id || randomUuid();
     await this.commitVaultMutation((doc) => {
       doc.smartFolders = doc.smartFolders || [];
-      doc.smartFolders.push({
+      const idx = doc.smartFolders.findIndex((s) => s.id === id);
+      const entry = {
         id,
-        name: String(sfData.name || 'Smart Folder'),
+        name: String(sfData.name || 'Smart Folder').trim() || 'Smart Folder',
         filter: sfData.filter || {
           includeProtocols: [],
           requiredTags: [],
           hostPatternRegex: ''
         },
         updatedAtEpochMs: Date.now()
-      });
+      };
+      if (idx >= 0) doc.smartFolders[idx] = entry;
+      else doc.smartFolders.push(entry);
       return doc;
     });
+    const exp = new Set(this.state.expandedSmartFolderIds);
+    exp.add(id);
+    this.setState({ expandedSmartFolderIds: exp, selectedSmartFolderId: id });
   }
 
   async resetVaultDatabase() {
@@ -1006,7 +1107,11 @@ export class NexusChromeOSStore {
       focusedTabId: null,
       selectedConnectionId: null,
       selectedFolderId: null,
+      selectedSmartFolderId: null,
+      selectedCredentialId: null,
       expandedFolderIds: new Set(),
+      expandedSmartFolderIds: new Set(),
+      isSystemCredentialsExpanded: true,
       toastMessage: 'NexusTS database has been reset to a clean empty vault.'
     });
   }

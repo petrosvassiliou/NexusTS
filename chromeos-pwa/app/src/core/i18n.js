@@ -471,7 +471,10 @@ const GOOGLEBOOK_UI_STRINGS = {
     favoritesEmptyHint: 'Double-click any server in the sidebar to launch a session, or star a connection to pin it to Favorites.',
     drawerAuditLogs: 'Audit Logs',
     resetDatabaseCta: 'Reset NexusTS Database…',
-    syncedRevFormat: 'Synced (rev {rev})'
+    syncedRevFormat: 'Synced (rev {rev})',
+    systemCredentialsFolder: 'Credentials',
+    copyUsername: 'Copy Username',
+    copyPassword: 'Copy Password'
   },
   de: {
     quickConnectButton: 'Schnellverbindung',
@@ -484,7 +487,10 @@ const GOOGLEBOOK_UI_STRINGS = {
     favoritesEmptyHint: 'Doppelklicke links auf einen Server zum Verbinden oder markiere eine Verbindung als Favorit.',
     drawerAuditLogs: 'Audit-Protokoll',
     resetDatabaseCta: 'NexusTS-Datenbank zurücksetzen…',
-    syncedRevFormat: 'Synchron (Rev {rev})'
+    syncedRevFormat: 'Synchron (Rev {rev})',
+    systemCredentialsFolder: 'Credentials',
+    copyUsername: 'Benutzername kopieren',
+    copyPassword: 'Passwort kopieren'
   },
   fr: {
     quickConnectButton: 'Connexion rapide',
@@ -497,7 +503,10 @@ const GOOGLEBOOK_UI_STRINGS = {
     favoritesEmptyHint: 'Double-cliquez sur un serveur dans la barre latérale ou épinglez une connexion en favori.',
     drawerAuditLogs: 'Journaux d’audit',
     resetDatabaseCta: 'Réinitialiser la base NexusTS…',
-    syncedRevFormat: 'Synchronisé (rév {rev})'
+    syncedRevFormat: 'Synchronisé (rév {rev})',
+    systemCredentialsFolder: 'Credentials',
+    copyUsername: 'Copier l’identifiant',
+    copyPassword: 'Copier le mot de passe'
   },
   it: {
     quickConnectButton: 'Connessione rapida',
@@ -510,7 +519,10 @@ const GOOGLEBOOK_UI_STRINGS = {
     favoritesEmptyHint: 'Fai doppio clic su un server nella barra laterale o aggiungi una connessione ai Preferiti.',
     drawerAuditLogs: 'Log di controllo',
     resetDatabaseCta: 'Reimposta database NexusTS…',
-    syncedRevFormat: 'Sincronizzato (rev {rev})'
+    syncedRevFormat: 'Sincronizzato (rev {rev})',
+    systemCredentialsFolder: 'Credentials',
+    copyUsername: 'Copia nome utente',
+    copyPassword: 'Copia password'
   },
   es: {
     quickConnectButton: 'Conexión rápida',
@@ -523,7 +535,10 @@ const GOOGLEBOOK_UI_STRINGS = {
     favoritesEmptyHint: 'Haz doble clic en un servidor de la barra lateral o marca una conexión como favorita.',
     drawerAuditLogs: 'Registros de auditoría',
     resetDatabaseCta: 'Restablecer base de datos NexusTS…',
-    syncedRevFormat: 'Sincronizado (rev {rev})'
+    syncedRevFormat: 'Sincronizado (rev {rev})',
+    systemCredentialsFolder: 'Credentials',
+    copyUsername: 'Copiar usuario',
+    copyPassword: 'Copiar contraseña'
   },
   el: {
     quickConnectButton: 'Γρήγορη σύνδεση',
@@ -536,7 +551,10 @@ const GOOGLEBOOK_UI_STRINGS = {
     favoritesEmptyHint: 'Κάντε διπλό κλικ σε διακομιστή στην πλαϊνή μπάρα ή προσθέστε σύνδεση στα Αγαπημένα.',
     drawerAuditLogs: 'Αρχεία καταγραφής',
     resetDatabaseCta: 'Επαναφορά βάσης NexusTS…',
-    syncedRevFormat: 'Συγχρονισμένο (έκδ. {rev})'
+    syncedRevFormat: 'Συγχρονισμένο (έκδ. {rev})',
+    systemCredentialsFolder: 'Credentials',
+    copyUsername: 'Αντιγραφή χρήστη',
+    copyPassword: 'Αντιγραφή κωδικού'
   }
 };
 for (const [code, extra] of Object.entries(GOOGLEBOOK_UI_STRINGS)) {

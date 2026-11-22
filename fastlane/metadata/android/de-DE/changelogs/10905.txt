@@ -1,0 +1,1 @@
+• NexusTS 0.9.5: Intelligente Ordner („Neuer intelligenter Ordner…“) und angehefteter Systemordner „Credentials 🔒“ mit Schnellaktionen jetzt 1:1 wie auf macOS in der Seitenleiste auf ChromeOS, Googlebooks und Android.

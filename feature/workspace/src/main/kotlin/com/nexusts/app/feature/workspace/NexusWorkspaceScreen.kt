@@ -3889,107 +3889,137 @@ private fun VaultHierarchySidebarTree(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(5.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Outlined.AutoAwesome,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(13.dp),
-                                        tint = MaterialTheme.colorScheme.tertiary
-                                    )
-                                    Text(
-                                        text = strings.vaultSectionSmartFolders,
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.secondary
-                                    )
-                                }
+                                Text(
+                                    text = strings.vaultSectionSmartFolders,
+                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
                                 IconButton(onClick = onNewSmartFolder, modifier = Modifier.size(22.dp)) {
                                     Icon(
                                         imageVector = Icons.Outlined.Add,
                                         contentDescription = strings.actionNewSmartFolder,
                                         modifier = Modifier.size(14.dp),
-                                        tint = MaterialTheme.colorScheme.secondary
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                 }
                             }
                         }
-                        activeSmartFolders.forEach { smart ->
-                            val matchedConnections = smartFolderConnectionsProvider(smart).filter(::matchesFilter)
-                            val isExpanded = uiState.selectedSmartFolderId == smart.id
-                            item(key = "smart-${smart.id}") {
-                                SmartFolderTreeRow(
-                                    smartFolder = smart,
-                                    matchedCount = matchedConnections.size,
-                                    isExpanded = isExpanded,
-                                    strings = strings,
-                                    onToggle = { onToggleSmartFolder(smart.id) },
-                                    onEdit = { onEditSmartFolder(smart) },
-                                    onDuplicate = { onDuplicateSmartFolder(smart) },
-                                    onConnectAll = {
-                                        matchedConnections.forEach { conn ->
-                                            onLaunchConnection(conn, QuickLaunchPlacement.ACTIVE_PANE_TAB)
-                                        }
-                                    },
-                                    onNewSmartFolder = onNewSmartFolder,
-                                    onDelete = { onDeleteSmartFolder(smart.id) }
-                                )
+                        if (activeSmartFolders.isEmpty()) {
+                            item(key = "empty-smart-folders-cta") {
+                                val emptySmartHover = rememberDesktopHoverState()
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .defaultMinSize(minHeight = 28.dp)
+                                        .nexusHoverTracker(emptySmartHover, PointerIcon.Hand)
+                                        .clip(RoundedCornerShape(7.dp))
+                                        .background(
+                                            if (emptySmartHover.value.isHovered) {
+                                                MaterialTheme.colorScheme.surfaceContainerHigh
+                                            } else {
+                                                Color.Transparent
+                                            }
+                                        )
+                                        .clickable(onClick = onNewSmartFolder)
+                                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(7.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Outlined.AutoAwesome,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(14.dp),
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    Text(
+                                        text = "${strings.actionNewSmartFolder}…",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
                             }
-                            if (isExpanded) {
-                                groupConnectionsIntelligently(matchedConnections).forEach { group ->
-                                    if (group.showsHeader) {
-                                        item(key = "smart-hdr-${smart.id}-${group.badge}") {
-                                            SidebarProtocolGroupHeaderRow(
-                                                badge = group.badge,
-                                                count = group.connections.size,
-                                                indentLevel = 1
+                        } else {
+                            activeSmartFolders.forEach { smart ->
+                                val matchedConnections = smartFolderConnectionsProvider(smart).filter(::matchesFilter)
+                                val isExpanded = uiState.selectedSmartFolderId == smart.id
+                                item(key = "smart-${smart.id}") {
+                                    SmartFolderTreeRow(
+                                        smartFolder = smart,
+                                        matchedCount = matchedConnections.size,
+                                        isExpanded = isExpanded,
+                                        strings = strings,
+                                        onToggle = { onToggleSmartFolder(smart.id) },
+                                        onEdit = { onEditSmartFolder(smart) },
+                                        onDuplicate = { onDuplicateSmartFolder(smart) },
+                                        onConnectAll = {
+                                            matchedConnections.forEach { conn ->
+                                                onLaunchConnection(conn, QuickLaunchPlacement.ACTIVE_PANE_TAB)
+                                            }
+                                        },
+                                        onNewSmartFolder = onNewSmartFolder,
+                                        onDelete = { onDeleteSmartFolder(smart.id) }
+                                    )
+                                }
+                                if (isExpanded) {
+                                    groupConnectionsIntelligently(matchedConnections).forEach { group ->
+                                        if (group.showsHeader) {
+                                            item(key = "smart-hdr-${smart.id}-${group.badge}") {
+                                                SidebarProtocolGroupHeaderRow(
+                                                    badge = group.badge,
+                                                    count = group.connections.size,
+                                                    indentLevel = 1
+                                                )
+                                            }
+                                        }
+                                        items(group.connections, key = { "smart-${smart.id}-${it.id}" }) { conn ->
+                                            ConnectionTreeRow(
+                                                connection = conn,
+                                                indentLevel = 1,
+                                                isSelected = conn.id == uiState.selectedConnectionId,
+                                                strings = strings,
+                                                activeSessionCount = activeSessionCountByConnectionId[conn.id] ?: 0,
+                                                onSelect = { onSelectConnection(conn.id) },
+                                                onEdit = { onEditConnection(conn) },
+                                                onConnectWithOptions = { onConnectWithOptions(conn) },
+                                                onToggleFavorite = { onToggleFavorite(conn.id) },
+                                                onDuplicate = { onDuplicateConnection(conn) },
+                                                onDelete = { onDeleteConnection(conn.id) },
+                                                onDisconnect = { onDisconnectConnection(conn.id) },
+                                                onLogOff = { onLogOffConnection(conn.id) },
+                                                onOpenMoveDialog = { onOpenMoveConnectionDialog(conn) },
+                                                onLaunch = { placement -> onLaunchConnection(conn, placement) },
+                                                onLaunchSplitDown = { onLaunchConnectionInSplitDown(conn) }
                                             )
                                         }
-                                    }
-                                    items(group.connections, key = { "smart-${smart.id}-${it.id}" }) { conn ->
-                                        ConnectionTreeRow(
-                                            connection = conn,
-                                            indentLevel = 1,
-                                            isSelected = conn.id == uiState.selectedConnectionId,
-                                            strings = strings,
-                                            activeSessionCount = activeSessionCountByConnectionId[conn.id] ?: 0,
-                                            onSelect = { onSelectConnection(conn.id) },
-                                            onEdit = { onEditConnection(conn) },
-                                            onConnectWithOptions = { onConnectWithOptions(conn) },
-                                            onToggleFavorite = { onToggleFavorite(conn.id) },
-                                            onDuplicate = { onDuplicateConnection(conn) },
-                                            onDelete = { onDeleteConnection(conn.id) },
-                                            onDisconnect = { onDisconnectConnection(conn.id) },
-                                        onLogOff = { onLogOffConnection(conn.id) },
-                                            onOpenMoveDialog = { onOpenMoveConnectionDialog(conn) },
-                                            onLaunch = { placement -> onLaunchConnection(conn, placement) },
-                                            onLaunchSplitDown = { onLaunchConnectionInSplitDown(conn) }
-                                        )
                                     }
                                 }
                             }
                         }
                     }
                 }
-            }
 
-            // Pinned System Folder "Credentials" — ALWAYS at the bottom of the left sidebar hierarchy,
-            // strictly holding VaultCredential items only (never connections or subfolders).
-            SystemCredentialsSidebarFooter(
-                credentials = activeCredentials,
-                totalCredentialCount = totalActiveCredentialCount,
-                isExpanded = isSystemCredentialsExpanded,
-                dragDropState = dragDropState,
-                strings = strings,
-                onToggleExpand = { isSystemCredentialsExpanded = !isSystemCredentialsExpanded },
-                onNewCredential = onNewCredential,
-                onEditCredential = onEditCredential,
-                onDuplicateCredential = onDuplicateCredential,
-                onDeleteCredential = onDeleteCredential,
-                onGenerateSshKeyPair = onGenerateSshKeyPair,
-                onReorderCredentialRelativeTo = onReorderCredentialRelativeTo
-            )
+                // Pinned System Folder "Credentials" — directly below Smart Folders (1:1 with macOS SidebarHierarchyView),
+                // strictly holding VaultCredential items only (never connections or subfolders).
+                item(key = "system-credentials-section") {
+                    Spacer(modifier = Modifier.height(6.dp))
+                    SystemCredentialsSidebarFooter(
+                        credentials = activeCredentials,
+                        totalCredentialCount = totalActiveCredentialCount,
+                        isExpanded = isSystemCredentialsExpanded,
+                        dragDropState = dragDropState,
+                        strings = strings,
+                        onToggleExpand = { isSystemCredentialsExpanded = !isSystemCredentialsExpanded },
+                        onNewCredential = onNewCredential,
+                        onEditCredential = onEditCredential,
+                        onDuplicateCredential = onDuplicateCredential,
+                        onDeleteCredential = onDeleteCredential,
+                        onGenerateSshKeyPair = onGenerateSshKeyPair,
+                        onReorderCredentialRelativeTo = onReorderCredentialRelativeTo
+                    )
+                }
+            }
         }
 
         // Floating Drag Ghost Preview Card while dragging a connection, folder, or credential
@@ -4205,6 +4235,8 @@ private fun SystemCredentialsSidebarFooter(
         }
     }
 
+    val appleAmber = Color(0xFFFF9500)
+
     Surface(
         modifier = Modifier
             .fillMaxWidth()
@@ -4217,7 +4249,7 @@ private fun SystemCredentialsSidebarFooter(
         color = if (isRejectedHover) {
             MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.55f)
         } else {
-            MaterialTheme.colorScheme.surfaceContainerLow
+            Color.Transparent
         }
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
@@ -4226,16 +4258,16 @@ private fun SystemCredentialsSidebarFooter(
                 color = if (isRejectedHover) {
                     MaterialTheme.colorScheme.error
                 } else {
-                    MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
+                    MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
                 }
             )
-            Box(modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp)) {
+            Box(modifier = Modifier.padding(top = 4.dp, bottom = 2.dp)) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .defaultMinSize(minHeight = 32.dp)
+                        .defaultMinSize(minHeight = 30.dp)
                         .nexusHoverTracker(hover, PointerIcon.Hand)
-                        .clip(RoundedCornerShape(8.dp))
+                        .clip(RoundedCornerShape(7.dp))
                         .background(
                             when {
                                 isRejectedHover -> MaterialTheme.colorScheme.errorContainer
@@ -4251,38 +4283,32 @@ private fun SystemCredentialsSidebarFooter(
                                 headerMenuOpen = true
                             }
                         )
-                        .padding(horizontal = 6.dp, vertical = 4.dp),
+                        .padding(horizontal = 5.dp, vertical = 3.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Row(
                         modifier = Modifier.weight(1f),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(7.dp)
+                        horizontalArrangement = Arrangement.spacedBy(5.dp)
                     ) {
                         Icon(
-                            imageVector = if (isExpanded && credentials.isNotEmpty()) {
+                            imageVector = if (isExpanded) {
                                 Icons.Outlined.KeyboardArrowDown
                             } else {
                                 Icons.Outlined.ChevronRight
                             },
                             contentDescription = null,
-                            modifier = Modifier.size(16.dp),
+                            modifier = Modifier.size(14.dp),
                             tint = MaterialTheme.colorScheme.onSurfaceVariant
                         )
-                        Icon(
-                            imageVector = Icons.Outlined.Key,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp),
-                            tint = if (isRejectedHover) {
-                                MaterialTheme.colorScheme.error
-                            } else {
-                                MaterialTheme.colorScheme.tertiary
-                            }
+                        SystemCredentialsFolderBadgeIcon(
+                            tint = if (isRejectedHover) MaterialTheme.colorScheme.error else appleAmber,
+                            modifier = Modifier.size(16.dp)
                         )
                         Text(
                             text = strings.systemCredentialsFolderTitle,
-                            style = MaterialTheme.typography.labelLarge,
+                            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
                             color = if (isRejectedHover) {
                                 MaterialTheme.colorScheme.onErrorContainer
                             } else {
@@ -4291,31 +4317,32 @@ private fun SystemCredentialsSidebarFooter(
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
+                        Icon(
+                            imageVector = Icons.Outlined.Lock,
+                            contentDescription = null,
+                            modifier = Modifier.size(10.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.78f)
+                        )
                     }
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        horizontalArrangement = Arrangement.spacedBy(3.dp)
                     ) {
-                        Surface(
-                            shape = RoundedCornerShape(99.dp),
-                            color = MaterialTheme.colorScheme.surfaceContainerHighest
-                        ) {
-                            Text(
-                                text = totalCredentialCount.toString(),
-                                style = NexusTheme.monospace.keycapShortcut,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp)
-                            )
-                        }
+                        Text(
+                            text = totalCredentialCount.toString(),
+                            style = NexusTheme.monospace.keycapShortcut,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = 2.dp)
+                        )
                         IconButton(
                             onClick = onNewCredential,
-                            modifier = Modifier.size(22.dp)
+                            modifier = Modifier.size(20.dp)
                         ) {
                             Icon(
                                 imageVector = Icons.Outlined.Add,
                                 contentDescription = strings.studioActionAddCredential,
-                                modifier = Modifier.size(15.dp),
-                                tint = MaterialTheme.colorScheme.tertiary
+                                modifier = Modifier.size(14.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                     }
@@ -4344,47 +4371,173 @@ private fun SystemCredentialsSidebarFooter(
                             onGenerateSshKeyPair()
                         }
                     )
-                    if (credentials.isNotEmpty()) {
-                        NexusMenuDivider()
-                        NexusSpacedDropdownMenuItem(
-                            text = { Text(if (isExpanded) "Collapse" else "Expand") },
-                            leadingIcon = {
-                                Icon(
-                                    if (isExpanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
-                                    contentDescription = null
-                                )
-                            },
-                            onClick = {
-                                headerMenuOpen = false
-                                onToggleExpand()
-                            }
-                        )
-                    }
+                    NexusMenuDivider()
+                    NexusSpacedDropdownMenuItem(
+                        text = { Text(if (isExpanded) "Collapse" else "Expand") },
+                        leadingIcon = {
+                            Icon(
+                                if (isExpanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                                contentDescription = null
+                            )
+                        },
+                        onClick = {
+                            headerMenuOpen = false
+                            onToggleExpand()
+                        }
+                    )
                 }
             }
 
-            if (isExpanded && credentials.isNotEmpty()) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 176.dp)
-                        .verticalScroll(rememberScrollState())
-                        .padding(start = 14.dp, end = 6.dp, bottom = 6.dp),
-                    verticalArrangement = Arrangement.spacedBy(2.dp)
-                ) {
-                    credentials.forEach { cred ->
-                        CredentialTreeRow(
-                            credential = cred,
-                            dragDropState = dragDropState,
-                            strings = strings,
-                            onEdit = { onEditCredential(cred) },
-                            onDuplicate = { onDuplicateCredential(cred) },
-                            onDelete = { onDeleteCredential(cred.id) },
-                            onReorderRelativeTo = onReorderCredentialRelativeTo
+            if (isExpanded) {
+                if (credentials.isEmpty()) {
+                    val emptyCredHover = rememberDesktopHoverState()
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .defaultMinSize(minHeight = 26.dp)
+                            .nexusHoverTracker(emptyCredHover, PointerIcon.Hand)
+                            .clip(RoundedCornerShape(7.dp))
+                            .background(
+                                if (emptyCredHover.value.isHovered) {
+                                    MaterialTheme.colorScheme.surfaceContainerHigh
+                                } else {
+                                    Color.Transparent
+                                }
+                            )
+                            .clickable(onClick = onNewCredential)
+                            .padding(start = 22.dp, end = 6.dp, top = 3.dp, bottom = 3.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        MacStyleCredentialKeyIcon(
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            hasSshKey = false,
+                            modifier = Modifier.size(12.dp)
                         )
+                        Text(
+                            text = "${strings.studioActionAddCredential}…",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                } else {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 12.dp, end = 2.dp, bottom = 4.dp),
+                        verticalArrangement = Arrangement.spacedBy(1.dp)
+                    ) {
+                        credentials.forEach { cred ->
+                            CredentialTreeRow(
+                                credential = cred,
+                                dragDropState = dragDropState,
+                                strings = strings,
+                                onEdit = { onEditCredential(cred) },
+                                onDuplicate = { onDuplicateCredential(cred) },
+                                onDelete = { onDeleteCredential(cred.id) },
+                                onReorderRelativeTo = onReorderCredentialRelativeTo
+                            )
+                        }
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun SystemCredentialsFolderBadgeIcon(
+    tint: Color,
+    modifier: Modifier = Modifier
+) {
+    val surfaceBg = MaterialTheme.colorScheme.surfaceContainerLow
+    Box(modifier = modifier, contentAlignment = Alignment.Center) {
+        Icon(
+            imageVector = FilledFolderIcon,
+            contentDescription = null,
+            tint = tint,
+            modifier = Modifier.fillMaxSize()
+        )
+        Canvas(
+            modifier = Modifier
+                .size(8.5.dp)
+                .align(Alignment.BottomEnd)
+        ) {
+            val r = size.minDimension / 2f
+            val c = Offset(r, r)
+            drawCircle(color = surfaceBg, radius = r)
+            drawCircle(color = tint, radius = r, style = Stroke(width = size.minDimension * 0.14f))
+            drawCircle(
+                color = Color(0xFFD97706),
+                radius = r * 0.30f,
+                center = Offset(c.x, c.y - r * 0.22f)
+            )
+            val shoulders = Path().apply {
+                moveTo(c.x - r * 0.52f, c.y + r * 0.52f)
+                quadraticBezierTo(c.x, c.y + r * 0.08f, c.x + r * 0.52f, c.y + r * 0.52f)
+            }
+            drawPath(
+                path = shoulders,
+                color = Color(0xFFD97706),
+                style = Stroke(width = size.minDimension * 0.15f, cap = StrokeCap.Round)
+            )
+        }
+    }
+}
+
+@Composable
+private fun MacStyleCredentialKeyIcon(
+    tint: Color,
+    hasSshKey: Boolean,
+    modifier: Modifier = Modifier
+) {
+    Canvas(modifier = modifier) {
+        val w = size.width
+        val h = size.height
+        val strokeW = (size.minDimension * 0.145f).coerceAtLeast(1.4f)
+        val bowRadius = w * 0.24f
+        val bowCenter = Offset(w * 0.50f, h * 0.29f)
+        drawCircle(
+            color = tint,
+            radius = bowRadius,
+            center = bowCenter,
+            style = Stroke(width = strokeW)
+        )
+        val stemTopY = bowCenter.y + bowRadius
+        val stemBottomY = h * 0.89f
+        drawLine(
+            color = tint,
+            start = Offset(bowCenter.x, stemTopY),
+            end = Offset(bowCenter.x, stemBottomY),
+            strokeWidth = strokeW,
+            cap = StrokeCap.Round
+        )
+        drawLine(
+            color = tint,
+            start = Offset(bowCenter.x, h * 0.69f),
+            end = Offset(bowCenter.x + w * 0.23f, h * 0.69f),
+            strokeWidth = strokeW,
+            cap = StrokeCap.Round
+        )
+        drawLine(
+            color = tint,
+            start = Offset(bowCenter.x, h * 0.84f),
+            end = Offset(bowCenter.x + w * 0.18f, h * 0.84f),
+            strokeWidth = strokeW,
+            cap = StrokeCap.Round
+        )
+        if (hasSshKey) {
+            val wavePath = Path().apply {
+                moveTo(w * 0.80f, h * 0.18f)
+                quadraticBezierTo(w * 0.92f, h * 0.29f, w * 0.80f, h * 0.40f)
+            }
+            drawPath(
+                path = wavePath,
+                color = tint,
+                style = Stroke(width = strokeW * 0.8f, cap = StrokeCap.Round)
+            )
         }
     }
 }
@@ -4399,6 +4552,7 @@ private fun CredentialTreeRow(
     onDelete: () -> Unit,
     onReorderRelativeTo: (String, String, Boolean) -> Unit
 ) {
+    val appleAmber = Color(0xFFFF9500)
     val clipboard = LocalClipboardManager.current
     var menuOpen by remember { mutableStateOf(false) }
     var menuOffsetPx by remember { mutableStateOf(Offset.Zero) }
@@ -4426,12 +4580,12 @@ private fun CredentialTreeRow(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .defaultMinSize(minHeight = 28.dp)
+                .defaultMinSize(minHeight = 27.dp)
                 .nexusHoverTracker(hover, PointerIcon.Hand)
                 .clip(RoundedCornerShape(7.dp))
                 .background(
                     when {
-                        isBeingDragged -> MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.38f)
+                        isBeingDragged -> appleAmber.copy(alpha = 0.18f)
                         isHovered || menuOpen -> MaterialTheme.colorScheme.surfaceContainerHigh
                         else -> Color.Transparent
                     }
@@ -4444,18 +4598,18 @@ private fun CredentialTreeRow(
                         menuOpen = true
                     }
                 )
-                .padding(horizontal = 6.dp, vertical = 3.dp),
+                .padding(horizontal = 6.dp, vertical = 2.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Row(
                 modifier = Modifier.weight(1f),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(5.dp)
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 Box(
                     modifier = Modifier
-                        .size(width = 13.dp, height = 20.dp)
+                        .size(width = 10.dp, height = 18.dp)
                         .onGloballyPositioned { coords ->
                             handleOriginInRoot = coords.positionInRoot()
                         }
@@ -4479,20 +4633,19 @@ private fun CredentialTreeRow(
                         },
                     contentAlignment = Alignment.Center
                 ) {
-                    Icon(
-                        imageVector = Icons.Outlined.DragIndicator,
-                        contentDescription = "Drag ${credential.name}",
-                        modifier = Modifier.size(12.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(
-                            alpha = if (isHovered || handleHover.value.isHovered) 0.72f else 0.22f
+                    if (isHovered || handleHover.value.isHovered) {
+                        Icon(
+                            imageVector = Icons.Outlined.DragIndicator,
+                            contentDescription = "Drag ${credential.name}",
+                            modifier = Modifier.size(11.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f)
                         )
-                    )
+                    }
                 }
-                Icon(
-                    imageVector = Icons.Outlined.VpnKey,
-                    contentDescription = null,
-                    modifier = Modifier.size(14.dp),
-                    tint = MaterialTheme.colorScheme.tertiary
+                MacStyleCredentialKeyIcon(
+                    tint = appleAmber,
+                    hasSshKey = credential.privateKeyPem.isNotBlank(),
+                    modifier = Modifier.size(13.dp)
                 )
                 Text(
                     text = credential.name,
@@ -4503,17 +4656,30 @@ private fun CredentialTreeRow(
                     modifier = Modifier.weight(1f, fill = false)
                 )
             }
-            if (isHovered || menuOpen) {
-                IconButton(
-                    onClick = { menuOpen = true },
-                    modifier = Modifier.size(20.dp)
-                ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                if (credential.totpSecretBase32.isNotBlank()) {
                     Icon(
-                        imageVector = Icons.Outlined.MoreVert,
-                        contentDescription = strings.actionEditCredential,
-                        modifier = Modifier.size(13.dp),
+                        imageVector = Icons.Outlined.Timer,
+                        contentDescription = null,
+                        modifier = Modifier.size(11.dp),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                }
+                if (isHovered || menuOpen) {
+                    IconButton(
+                        onClick = { menuOpen = true },
+                        modifier = Modifier.size(20.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.MoreVert,
+                            contentDescription = strings.actionEditCredential,
+                            modifier = Modifier.size(13.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
             }
         }
@@ -4526,7 +4692,7 @@ private fun CredentialTreeRow(
                     .padding(horizontal = 6.dp)
                     .height(2.dp)
                     .clip(RoundedCornerShape(99.dp))
-                    .background(MaterialTheme.colorScheme.tertiary)
+                    .background(appleAmber)
             )
         }
 

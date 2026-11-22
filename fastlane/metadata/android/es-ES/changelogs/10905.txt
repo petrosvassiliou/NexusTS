@@ -1,0 +1,1 @@
+• NexusTS 0.9.5: Carpetas inteligentes y carpeta del sistema fijada «Credentials 🔒» idénticas a macOS en la barra lateral en ChromeOS, Googlebooks y Android.

@@ -1,0 +1,1 @@
+• NexusTS 0.9.5: Cartelle smart («Nuova cartella smart…») e cartella di sistema fissata «Credentials 🔒» 1:1 come su macOS nella barra laterale su ChromeOS, Googlebook e Android.

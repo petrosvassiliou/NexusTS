@@ -28,7 +28,7 @@ import {
   parseQuickConnectInput,
   resolveEffectiveConnectionProfile
 } from '../app/src/core/vault-models.js';
-import { NexusChromeOSStore, SETTINGS_TABS } from '../app/src/core/workspace-store.js';
+import { NexusChromeOSStore, SETTINGS_TABS, SYSTEM_CREDENTIALS_FOLDER_ID } from '../app/src/core/workspace-store.js';
 import { buildWolMagicPacket, NexusFtpBrowserClient } from '../app/src/protocols/ftp-telnet-serial-netutils.js';
 import {
   buildFastPathKeyboardPdu,
@@ -418,16 +418,16 @@ test('7. Firebase Hosting ChromeOS Start-Menu PWA (nexusts-prod): manifest short
   assert.ok(noCacheRule);
   assert.equal(noCacheRule.headers[0].value, 'no-cache, no-store, must-revalidate');
 
-  const hostingInfo = buildFirebaseHostingSite({ version: '0.9.4', releaseTag: 'v0.9.4' });
+  const hostingInfo = buildFirebaseHostingSite({ version: '0.9.5', releaseTag: 'v0.9.5' });
   assert.equal(hostingInfo.buildHash.length, 12);
   assert.ok(fs.existsSync(hostingInfo.versionJsonPath));
 
   const versionJson = JSON.parse(fs.readFileSync(hostingInfo.versionJsonPath, 'utf8'));
-  assert.equal(versionJson.version, '0.9.4');
+  assert.equal(versionJson.version, '0.9.5');
   assert.equal(versionJson.buildHash, hostingInfo.buildHash);
 
   const hostedSw = fs.readFileSync(`${hostingInfo.hostingDistDir}/sw.js`, 'utf8');
-  assert.ok(hostedSw.includes(`nexusts-chromeos-offline-v0.9.4-${hostingInfo.buildHash}`));
+  assert.ok(hostedSw.includes(`nexusts-chromeos-offline-v0.9.5-${hostingInfo.buildHash}`));
   assert.equal(hostedSw.includes('.well-known'), false);
   assert.ok(hostedSw.includes("event.data.type === 'SKIP_WAITING'"));
 
@@ -435,7 +435,7 @@ test('7. Firebase Hosting ChromeOS Start-Menu PWA (nexusts-prod): manifest short
   assert.equal(hostedManifest.display, 'standalone');
   assert.equal(hostedManifest.start_url, './?source=pwa');
   assert.equal(hostedManifest.shortcuts.length, 4);
-  assert.equal(hostedManifest.version, '0.9.4');
+  assert.equal(hostedManifest.version, '0.9.5');
   assert.equal(hostedManifest.theme_color, '#ffffff');
   assert.equal(hostedManifest.background_color, '#f8fafc');
 
@@ -449,11 +449,14 @@ test('7. Firebase Hosting ChromeOS Start-Menu PWA (nexusts-prod): manifest short
   assert.equal(hostedAppJs.includes('<span class="proto-badge">${esc(badge)}</span>'), false);
   assert.ok(hostedAppJs.includes('function renderGooglebookTopBar'));
   assert.ok(hostedAppJs.includes('function renderGooglebookOverviewDashboard'));
+  assert.ok(hostedAppJs.includes('function renderSmartFoldersAndCredentialsSections'));
+  assert.ok(hostedAppJs.includes('sys-credentials-folder-row'));
+  assert.ok(hostedAppJs.includes('sidebar-empty-action-row'));
   assert.ok(hostedAppJs.includes('function renderFlagSvg'));
   assert.ok(hostedAppJs.includes('split-action-group'));
   assert.ok(hostedAppJs.includes('qc-palette-card'));
 
-  assert.equal(compareSemver('0.9.4', '0.9.2'), 1);
+  assert.equal(compareSemver('0.9.5', '0.9.4'), 1);
   assert.equal(compareSemver('0.9.0', '0.9.0-beta.1'), 1);
   assert.equal(canInstallPwa(), false);
   assert.equal(isRunningStandalone(), false);
@@ -464,6 +467,7 @@ test('7. Firebase Hosting ChromeOS Start-Menu PWA (nexusts-prod): manifest short
     assert.ok(dict.applyUpdateCta.length > 0);
     assert.ok(dict.quickConnectButton.length > 0);
     assert.ok(dict.quickConnectLaunchpadHint.length > 0);
+    assert.equal(dict.systemCredentialsFolder, 'Credentials');
   }
 });
 
@@ -483,7 +487,7 @@ test('8. Zero-Prompt Passwordless Google Drive Sync (macOS/Android transparent k
     updatedAtEpochMs: Date.now()
   });
   existingDriveDoc.connections.push({
-    id: 'conn-existing-1',
+    id: 'conn-cros-1',
     parentFolderId: 'fld-cloud',
     name: 'Prod-Bastion-SSH',
     host: '10.20.30.40',
@@ -546,5 +550,60 @@ test('8. Zero-Prompt Passwordless Google Drive Sync (macOS/Android transparent k
   const unsealedEmptyPw = await unsealVaultDocument(emptyPwSealed);
   assert.equal(unsealedEmptyPw.name, 'Shared Passwordless Vault');
 });
+
+test('9. Sidebar Smart Folders & Pinned System Credentials Folder 1:1 macOS Parity', async () => {
+  const store = new NexusChromeOSStore({ kdfParams: INTERACTIVE_FAST_KDF_PARAMS, deviceId: 'Chromebook-Sidebar' });
+  await store.initializeOffline();
+  await store.resetVaultDatabase();
+
+  assert.equal(store.state.isSystemCredentialsExpanded, true);
+  assert.equal(SYSTEM_CREDENTIALS_FOLDER_ID, '__NEXUSTS_SYSTEM_CREDENTIALS__');
+
+  // Reserved "Credentials" root folder name and drops into system Credentials folder are blocked
+  const blockedFolder = await store.saveFolder({ name: 'Credentials', parentFolderId: null });
+  assert.equal(blockedFolder, null);
+  assert.equal(store.state.vaultDocument.folders.length, 0);
+
+  await store.saveConnection({ id: 'c-rdp-1', name: 'LSG-RDS-01', host: '10.10.5.20', protocol: 'RDP' });
+  await store.saveConnection({ id: 'c-ssh-1', name: 'Core-Jump', host: '10.10.5.21', protocol: 'SSH' });
+  const blockedMove = await store.moveConnectionToFolder('c-rdp-1', SYSTEM_CREDENTIALS_FOLDER_ID);
+  assert.equal(blockedMove, null);
+
+  // Create & update credentials in place
+  await store.saveCredential({ id: 'cred-1', name: 'Vassiliou-ADM', username: 'vassiliou-adm', domain: 'LSG', secretPassword: 'pw1' });
+  await store.saveCredential({ id: 'cred-2', name: 'LSG - lokal', username: 'admin', secretPassword: 'pw2' });
+  assert.equal(store.state.vaultDocument.credentials.length, 2);
+  assert.equal(store.state.selectedCredentialId, 'cred-2');
+
+  await store.saveCredential({ id: 'cred-1', name: 'Vassiliou-ADM', username: 'p.vassiliou-adm', domain: 'LSG', secretPassword: 'pw1-updated' });
+  assert.equal(store.state.vaultDocument.credentials.length, 2);
+  assert.equal(store.state.vaultDocument.credentials[0].username, 'p.vassiliou-adm');
+  assert.equal(store.state.vaultDocument.credentials[0].secretPassword, 'pw1-updated');
+
+  store.toggleSystemCredentialsExpanded();
+  assert.equal(store.state.isSystemCredentialsExpanded, false);
+  store.toggleSystemCredentialsExpanded();
+  assert.equal(store.state.isSystemCredentialsExpanded, true);
+
+  // Create & update Smart Folder in place and evaluate matched connections
+  await store.saveSmartFolder({
+    id: 'sf-rdp',
+    name: 'All RDP Hosts',
+    filter: { includeProtocols: ['RDP'], requiredTags: [], hostPatternRegex: '^10\\.10\\.' }
+  });
+  assert.equal(store.state.vaultDocument.smartFolders.length, 1);
+  assert.ok(store.state.expandedSmartFolderIds.has('sf-rdp'));
+  assert.equal(store.visibleConnectionsForSmartFolder('sf-rdp').length, 1);
+
+  await store.saveSmartFolder({
+    id: 'sf-rdp',
+    name: 'Subnet 10.10 All',
+    filter: { includeProtocols: [], requiredTags: [], hostPatternRegex: '^10\\.10\\.' }
+  });
+  assert.equal(store.state.vaultDocument.smartFolders.length, 1);
+  assert.equal(store.state.vaultDocument.smartFolders[0].name, 'Subnet 10.10 All');
+  assert.equal(store.visibleConnectionsForSmartFolder('sf-rdp').length, 2);
+});
+
 
 

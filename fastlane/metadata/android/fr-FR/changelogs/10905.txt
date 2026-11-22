@@ -1,0 +1,1 @@
+• NexusTS 0.9.5 : Dossiers intelligents (« Nouveau dossier intelligent… ») et dossier système épinglé « Credentials 🔒 » identiques à macOS dans la barre latérale sur ChromeOS, Googlebooks et Android.

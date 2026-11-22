@@ -2,7 +2,7 @@
   "id": "./",
   "name": "NexusTS",
   "short_name": "NexusTS",
-  "version": "0.9.4",
+  "version": "0.9.5",
   "description": "Offline-capable Remote Desktop (RDP), SSH, SFTP, VNC & Zero-Knowledge .nxts Connection Manager for ChromeOS.",
   "start_url": "./?source=pwa",
   "scope": "./",

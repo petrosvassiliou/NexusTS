@@ -1,0 +1,1 @@
+• NexusTS 0.9.5: Έξυπνοι φάκελοι και καρφιτσωμένος φάκελος συστήματος «Credentials 🔒» 1:1 όπως στο macOS στην πλαϊνή μπάρα σε ChromeOS, Googlebooks και Android.

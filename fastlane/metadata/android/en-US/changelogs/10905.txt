@@ -1,0 +1,1 @@
+• NexusTS 0.9.5: 1:1 macOS sidebar Smart Folders ('New Smart Folder…') and pinned system 'Credentials 🔒' folder with orange key rows and quick edit/copy actions on ChromeOS, Googlebooks, and Android.

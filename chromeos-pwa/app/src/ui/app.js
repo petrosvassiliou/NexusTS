@@ -21,7 +21,7 @@ import {
   PROTOCOL_CATALOG,
   randomUuid
 } from '../core/vault-models.js';
-import { NexusChromeOSStore } from '../core/workspace-store.js';
+import { NexusChromeOSStore, SYSTEM_CREDENTIALS_FOLDER_ID } from '../core/workspace-store.js';
 import {
   NexusFtpBrowserClient,
   NexusTelnetSession,
@@ -587,8 +587,8 @@ function renderFolderSubtree(parentId, depth, activeConnIds) {
   const query = store.state.sidebarFilterQuery.trim().toLowerCase();
   const qf = store.state.sidebarQuickFilter;
   const recentsSet = new Set(doc.recentConnectionIds || []);
-  const allFolders = doc.folders || [];
-  const allConns = doc.connections || [];
+  const allFolders = (doc.folders || []).filter((f) => f.id !== SYSTEM_CREDENTIALS_FOLDER_ID);
+  const allConns = (doc.connections || []).filter((c) => c.parentFolderId !== SYSTEM_CREDENTIALS_FOLDER_ID);
   const validFolderIds = new Set(allFolders.map((f) => f.id));
 
   const connMatches = (c) => {
@@ -650,6 +650,145 @@ function renderFolderSubtree(parentId, depth, activeConnIds) {
   }
   html += renderGroupedConnections(conns, depth, activeConnIds, false);
   return html;
+}
+
+function renderSmartFolderStackIcon(tint = '#7c3aed', size = 14) {
+  return `<svg class="folder-type-icon" width="${size}" height="${size}" viewBox="0 0 20 20" fill="none" aria-hidden="true"><rect x="2.6" y="6.2" width="13.2" height="10.4" rx="2.3" stroke="${tint}" stroke-width="1.6"/><path d="M5 3.8H14.8C16.1 3.8 17.2 4.9 17.2 6.2V13.4" stroke="${tint}" stroke-width="1.45" stroke-linecap="round"/><path d="M9.2 8.7L10 10.6L11.9 11.4L10 12.2L9.2 14.1L8.4 12.2L6.5 11.4L8.4 10.6L9.2 8.7Z" fill="${tint}"/></svg>`;
+}
+
+function renderSystemCredentialsFolderIcon(size = 15) {
+  return `<svg class="folder-type-icon" width="${size}" height="${size}" viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M2 5.2C2 4.2 2.8 3.4 3.8 3.4H7.5L9.2 5.2H15.8C16.8 5.2 17.6 6 17.6 7V14.4C17.6 15.4 16.8 16.2 15.8 16.2H3.8C2.8 16.2 2 15.4 2 14.4V5.2Z" fill="#ff9500" fill-opacity="0.92"/><circle cx="14.6" cy="12.2" r="4.2" fill="#fff7ed" stroke="#ff9500" stroke-width="1.2"/><circle cx="14.6" cy="11.1" r="1.35" fill="#d97706"/><path d="M12.4 14.4C12.7 13.3 13.5 12.8 14.6 12.8C15.7 12.8 16.5 13.3 16.8 14.4" stroke="#d97706" stroke-width="1.25" stroke-linecap="round"/></svg>`;
+}
+
+function renderSystemLockBadgeIcon() {
+  return `<svg class="sys-lock-icon" width="10" height="10" viewBox="0 0 14 14" fill="none" aria-hidden="true"><rect x="2.6" y="6.1" width="8.8" height="6.4" rx="1.6" fill="currentColor"/><path d="M4.6 6.1V4.5C4.6 3.17 5.67 2.1 7 2.1C8.33 2.1 9.4 3.17 9.4 4.5V6.1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>`;
+}
+
+function renderCredentialKeyIcon(hasSshKey = false, tint = '#ff9500', size = 13) {
+  if (hasSshKey) {
+    return `<svg class="conn-type-icon" width="${size}" height="${size}" viewBox="0 0 20 20" fill="none" aria-hidden="true"><circle cx="10" cy="6.2" r="3.4" stroke="${tint}" stroke-width="1.9"/><path d="M10 9.6V17.4M10 13.6H13.2M10 16.4H12.6" stroke="${tint}" stroke-width="1.9" stroke-linecap="round"/><path d="M15.2 4.2C16.5 5.3 16.5 7.1 15.2 8.2" stroke="${tint}" stroke-width="1.5" stroke-linecap="round"/></svg>`;
+  }
+  return `<svg class="conn-type-icon" width="${size}" height="${size}" viewBox="0 0 20 20" fill="none" aria-hidden="true"><circle cx="10" cy="6.2" r="3.4" stroke="${tint}" stroke-width="1.95"/><path d="M10 9.6V17.4M10 13.7H13.3M10 16.5H12.5" stroke="${tint}" stroke-width="1.95" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+}
+
+function renderSidebarCredentialRow(cr) {
+  const s = store.strings;
+  const isSelected = store.state.selectedCredentialId === cr.id;
+  const hasSsh = Boolean(cr.privateKeyPem);
+  return `
+    <div class="tree-row cred-row ${isSelected ? 'selected' : ''}"
+         style="padding-left:24px"
+         data-action="select-credential"
+         data-dblaction="edit-credential"
+         data-cred-id="${esc(cr.id)}"
+         data-tooltip="${esc(`${cr.name}${cr.username ? ` • ${cr.username}` : ''}`)}">
+      ${renderCredentialKeyIcon(hasSsh, '#ff9500', 13)}
+      <span class="tree-row-name">${esc(cr.name)}</span>
+      ${cr.totpSecretBase32 ? '<span class="cred-totp-dot" title="TOTP 2FA">⏱</span>' : ''}
+      <span class="row-actions">
+        ${cr.username ? `<button type="button" class="mini-action-btn" data-action="copy-cred-user" data-cred-id="${esc(cr.id)}" data-tooltip="${esc(s.copyUsername)}">@</button>` : ''}
+        ${cr.secretPassword ? `<button type="button" class="mini-action-btn" data-action="copy-cred-pass" data-cred-id="${esc(cr.id)}" data-tooltip="${esc(s.copyPassword)}">🔑</button>` : ''}
+        <button type="button" class="mini-action-btn" data-action="edit-credential" data-cred-id="${esc(cr.id)}" data-tooltip="${esc(s.edit)}">✎</button>
+      </span>
+    </div>
+  `;
+}
+
+function renderSmartFoldersAndCredentialsSections(activeConnIds) {
+  const s = store.strings;
+  const st = store.state;
+  if (st.sidebarQuickFilter !== 'ALL') return '';
+  const doc = st.vaultDocument;
+  const query = st.sidebarFilterQuery.trim().toLowerCase();
+
+  // 1. Intelligent Folders (Smart Folders) section — 1:1 with macOS SidebarHierarchyView.swift
+  const smartFolders = doc.smartFolders || [];
+  let smartHtml = `
+    <div class="sidebar-section-header">
+      <span>${esc(s.smartFoldersHeader)}</span>
+      <button type="button" class="section-plus-btn" data-action="open-smart-folder-modal" data-tooltip="${esc(s.newSmartFolder)}" aria-label="${esc(s.newSmartFolder)}">+</button>
+    </div>
+  `;
+
+  if (smartFolders.length === 0) {
+    smartHtml += `
+      <button type="button" class="sidebar-empty-action-row" data-action="open-smart-folder-modal">
+        ${renderSmartFolderStackIcon('currentColor', 14)}
+        <span>${esc(s.newSmartFolder)}…</span>
+      </button>
+    `;
+  } else {
+    for (const sf of smartFolders) {
+      const rawMatches = store.visibleConnectionsForSmartFolder(sf.id);
+      const matches = query
+        ? rawMatches.filter((c) => c.name.toLowerCase().includes(query) || c.host.toLowerCase().includes(query))
+        : rawMatches;
+      if (query && matches.length === 0 && !sf.name.toLowerCase().includes(query)) continue;
+      const isExpanded = st.expandedSmartFolderIds.has(sf.id) || Boolean(query);
+      const isSelected = st.selectedSmartFolderId === sf.id && !st.selectedConnectionId;
+      smartHtml += `
+        <div class="tree-row smart-folder-row ${isSelected ? 'selected' : ''}"
+             style="padding-left:6px"
+             data-action="toggle-smart-folder"
+             data-sf-id="${esc(sf.id)}">
+          ${renderFolderChevron(isExpanded, true)}
+          ${renderSmartFolderStackIcon('#7c3aed', 14)}
+          <span class="tree-row-name folder-name">${esc(sf.name)}</span>
+          <span class="folder-count">${matches.length}</span>
+          <span class="row-actions">
+            <button type="button" class="mini-action-btn" data-action="edit-smart-folder" data-sf-id="${esc(sf.id)}" data-tooltip="${esc(s.edit)}">✎</button>
+            <button type="button" class="mini-action-btn" data-action="delete-object" data-object-id="${esc(sf.id)}" data-tooltip="${esc(s.delete)}">×</button>
+          </span>
+        </div>
+      `;
+      if (isExpanded && matches.length > 0) {
+        smartHtml += renderGroupedConnections(matches, 1, activeConnIds, false);
+      }
+    }
+  }
+
+  // 2. Pinned System "Credentials" Folder — 1:1 with macOS SidebarSystemCredentialsFolderRow
+  const allCreds = doc.credentials || [];
+  const filteredCreds = query
+    ? allCreds.filter(
+        (cr) =>
+          (cr.name || '').toLowerCase().includes(query) ||
+          (cr.username || '').toLowerCase().includes(query) ||
+          (cr.domain || '').toLowerCase().includes(query)
+      )
+    : allCreds;
+  const credsExpanded = st.isSystemCredentialsExpanded || Boolean(query);
+  const isCredFolderSelected =
+    st.selectedFolderId === SYSTEM_CREDENTIALS_FOLDER_ID && !st.selectedCredentialId && !st.selectedConnectionId;
+
+  const credsHtml = `
+    <div class="sidebar-credentials-section">
+      <div class="tree-row sys-credentials-folder-row ${isCredFolderSelected ? 'selected' : ''}"
+           style="padding-left:6px"
+           data-action="toggle-credentials-folder"
+           data-drop-folder-id="${SYSTEM_CREDENTIALS_FOLDER_ID}">
+        ${renderFolderChevron(credsExpanded, true)}
+        ${renderSystemCredentialsFolderIcon(15)}
+        <span class="tree-row-name sys-credentials-title">${esc(s.systemCredentialsFolder || 'Credentials')}</span>
+        ${renderSystemLockBadgeIcon()}
+        <span class="sys-credentials-spacer"></span>
+        <span class="folder-count sys-credentials-count">${allCreds.length}</span>
+        <button type="button" class="section-plus-btn cred-plus-btn" data-action="open-credential-modal" data-tooltip="${esc(s.newCredential)}" aria-label="${esc(s.newCredential)}">+</button>
+      </div>
+      ${credsExpanded
+        ? (filteredCreds.length === 0
+            ? `
+              <button type="button" class="sidebar-empty-action-row cred-empty-row" data-action="open-credential-modal">
+                ${renderCredentialKeyIcon(false, 'currentColor', 12)}
+                <span>${esc(s.newCredential)}…</span>
+              </button>
+            `
+            : filteredCreds.map((cr) => renderSidebarCredentialRow(cr)).join(''))
+        : ''}
+    </div>
+  `;
+
+  return smartHtml + credsHtml;
 }
 
 function renderConnectionRow(c, depth, activeConnIds) {
@@ -821,6 +960,7 @@ function renderUnifiedSettings() {
               <div class="topbar-cluster">
                 ${cr.totpSecretBase32 ? `<span class="status-chip online" data-totp-secret="${esc(cr.totpSecretBase32)}">TOTP …</span>` : ''}
                 ${cr.publicKeyOpenSsh ? `<button type="button" class="pill-btn" data-action="copy-pubkey" data-cred-id="${esc(cr.id)}">Copy Public Key</button>` : ''}
+                <button type="button" class="pill-btn" data-action="edit-credential" data-cred-id="${esc(cr.id)}">${esc(s.edit)}</button>
                 <button type="button" class="pill-btn danger" data-action="delete-object" data-object-id="${esc(cr.id)}">${esc(s.delete)}</button>
               </div>
             </div>
@@ -1710,23 +1850,34 @@ function renderModal() {
   }
 
   if (activeModal.kind === 'credential') {
+    const cr = activeModal.cred || {
+      id: '',
+      name: '',
+      username: '',
+      domain: '',
+      secretPassword: '',
+      totpSecretBase32: '',
+      privateKeyPem: ''
+    };
+    const s = store.strings;
     backdrop.innerHTML = `
       <div class="modal-card">
-        <h3>${esc(store.strings.newCredential)}</h3>
+        <h3>${esc(cr.id ? `${s.edit}: ${cr.name}` : s.newCredential)}</h3>
         <div class="form-grid">
-          <div class="field-group"><label>Display Name</label><input class="text-input" id="m-cred-name" placeholder="Domain Admin" /></div>
-          <div class="field-group"><label>Username</label><input class="text-input" id="m-cred-user" placeholder="administrator" /></div>
-          <div class="field-group"><label>Domain (optional)</label><input class="text-input" id="m-cred-domain" placeholder="CORP" /></div>
-          <div class="field-group"><label>Password</label><input type="password" class="text-input" id="m-cred-pass" /></div>
-          <div class="field-group"><label>TOTP Base32 Secret (optional)</label><input class="text-input" id="m-cred-totp" placeholder="JBSWY3DPEHPK3PXP" /></div>
+          <div class="field-group"><label>Display Name</label><input class="text-input" id="m-cred-name" value="${esc(cr.name)}" placeholder="Domain Admin" /></div>
+          <div class="field-group"><label>Username</label><input class="text-input" id="m-cred-user" value="${esc(cr.username || '')}" placeholder="administrator" /></div>
+          <div class="field-group"><label>Domain (optional)</label><input class="text-input" id="m-cred-domain" value="${esc(cr.domain || '')}" placeholder="CORP" /></div>
+          <div class="field-group"><label>Password</label><input type="password" class="text-input" id="m-cred-pass" value="${esc(cr.secretPassword || '')}" /></div>
+          <div class="field-group"><label>TOTP Base32 Secret (optional)</label><input class="text-input" id="m-cred-totp" value="${esc(cr.totpSecretBase32 || '')}" placeholder="JBSWY3DPEHPK3PXP" /></div>
         </div>
         <div class="field-group">
           <label>OpenSSH Private Key PEM (optional)</label>
-          <textarea class="textarea-input" id="m-cred-pem" rows="3" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea>
+          <textarea class="textarea-input" id="m-cred-pem" rows="3" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----">${esc(cr.privateKeyPem || '')}</textarea>
         </div>
         <div class="topbar-cluster" style="justify-content:flex-end">
+          ${cr.id ? `<button type="button" class="pill-btn danger" data-action="delete-object" data-object-id="${esc(cr.id)}">${esc(s.delete)}</button>` : ''}
           <button type="button" class="pill-btn" data-action="close-modal">Cancel</button>
-          <button type="button" class="pill-btn primary" data-action="save-credential-modal">Save Credential</button>
+          <button type="button" class="pill-btn primary" data-action="save-credential-modal" data-cred-id="${esc(cr.id)}">Save Credential</button>
         </div>
       </div>
     `;
@@ -1872,29 +2023,37 @@ function renderModal() {
 
   if (activeModal.kind === 'smart-folder') {
     const s = store.strings;
+    const sf = activeModal.smartFolder || {
+      id: '',
+      name: '',
+      filter: { includeProtocols: [], requiredTags: [], hostPatternRegex: '' }
+    };
+    const selectedProto = sf.filter?.includeProtocols?.[0] || '';
+    const hostRegex = sf.filter?.hostPatternRegex || '';
     backdrop.innerHTML = `
       <div class="modal-card">
-        <h3>${esc(s.newSmartFolder)}</h3>
+        <h3>${esc(sf.id ? `${s.edit}: ${sf.name}` : s.newSmartFolder)}</h3>
         <div class="field-group">
           <label>Smart Folder Name</label>
-          <input class="text-input" id="m-sf-name" placeholder="Production Linux SSH" />
+          <input class="text-input" id="m-sf-name" value="${esc(sf.name)}" placeholder="Production Linux SSH" />
         </div>
         <div class="form-grid">
           <div class="field-group">
             <label>Protocol Filter (optional)</label>
             <select class="select-input" id="m-sf-proto">
               <option value="">All Protocols</option>
-              ${Object.entries(PROTOCOL_CATALOG).map(([k, v]) => `<option value="${k}">${esc(v.title)}</option>`).join('')}
+              ${Object.entries(PROTOCOL_CATALOG).map(([k, v]) => `<option value="${k}" ${selectedProto === k ? 'selected' : ''}>${esc(v.title)}</option>`).join('')}
             </select>
           </div>
           <div class="field-group">
             <label>Host Regex / Substring (optional)</label>
-            <input class="text-input" id="m-sf-regex" placeholder="^10\\.20\\." />
+            <input class="text-input" id="m-sf-regex" value="${esc(hostRegex)}" placeholder="^10\\.20\\." />
           </div>
         </div>
         <div class="topbar-cluster" style="justify-content:flex-end">
+          ${sf.id ? `<button type="button" class="pill-btn danger" data-action="delete-object" data-object-id="${esc(sf.id)}">${esc(s.delete)}</button>` : ''}
           <button type="button" class="pill-btn" data-action="close-modal">Cancel</button>
-          <button type="button" class="pill-btn primary" data-action="save-smart-folder-modal">Save Smart Folder</button>
+          <button type="button" class="pill-btn primary" data-action="save-smart-folder-modal" data-sf-id="${esc(sf.id)}">Save Smart Folder</button>
         </div>
       </div>
     `;
@@ -2009,11 +2168,12 @@ function renderWorkspace() {
           </div>
         </div>
         <div class="sidebar-tree" data-drop-folder-id="__ROOT__">
-          <div class="section-label">
+          <div class="sidebar-section-header">
             <span>${esc(s.foldersHeader)}</span>
-            <span>${st.vaultDocument.connections.length}</span>
+            <button type="button" class="section-plus-btn" data-action="open-connection-modal" data-tooltip="${esc(s.newConnection)}" aria-label="${esc(s.newConnection)}">+</button>
           </div>
           ${renderFolderSubtree(null, 0, activeConnIds)}
+          ${renderSmartFoldersAndCredentialsSections(activeConnIds)}
         </div>
       </aside>
 
@@ -2240,6 +2400,40 @@ function installEventDelegation() {
       case 'toggle-folder':
         store.toggleFolderExpanded(actionEl.getAttribute('data-folder-id'));
         break;
+      case 'toggle-smart-folder':
+        store.toggleSmartFolderExpanded(actionEl.getAttribute('data-sf-id'));
+        break;
+      case 'toggle-credentials-folder':
+        store.toggleSystemCredentialsExpanded();
+        break;
+      case 'select-credential':
+        store.selectCredentialInSidebar(actionEl.getAttribute('data-cred-id'));
+        break;
+      case 'edit-credential': {
+        const cr = (store.state.vaultDocument.credentials || []).find((x) => x.id === actionEl.getAttribute('data-cred-id'));
+        if (cr) {
+          store.selectCredentialInSidebar(cr.id);
+          activeModal = { kind: 'credential', cred: structuredClone(cr) };
+          renderWorkspace();
+        }
+        break;
+      }
+      case 'copy-cred-user': {
+        const cr = (store.state.vaultDocument.credentials || []).find((x) => x.id === actionEl.getAttribute('data-cred-id'));
+        if (cr?.username) {
+          await navigator.clipboard?.writeText?.(cr.username);
+          store.showToast(`${store.strings.copyUsername}: ${cr.username}`);
+        }
+        break;
+      }
+      case 'copy-cred-pass': {
+        const cr = (store.state.vaultDocument.credentials || []).find((x) => x.id === actionEl.getAttribute('data-cred-id'));
+        if (cr?.secretPassword) {
+          await navigator.clipboard?.writeText?.(cr.secretPassword);
+          store.showToast(store.strings.copyPassword);
+        }
+        break;
+      }
       case 'select-connection':
         store.selectConnectionInSidebar(actionEl.getAttribute('data-conn-id'));
         break;
@@ -2308,15 +2502,33 @@ function installEventDelegation() {
         break;
       }
       case 'open-smart-folder-modal':
-        activeModal = { kind: 'smart-folder' };
+        activeModal = { kind: 'smart-folder', smartFolder: null };
         renderWorkspace();
         break;
+      case 'edit-smart-folder': {
+        const sf = (store.state.vaultDocument.smartFolders || []).find((x) => x.id === actionEl.getAttribute('data-sf-id'));
+        if (sf) {
+          activeModal = { kind: 'smart-folder', smartFolder: structuredClone(sf) };
+          renderWorkspace();
+        }
+        break;
+      }
       case 'save-smart-folder-modal': {
+        const existingId = actionEl.getAttribute('data-sf-id') || '';
         const name = document.getElementById('m-sf-name')?.value.trim() || 'Smart Folder';
         const proto = document.getElementById('m-sf-proto')?.value || '';
         const hostPatternRegex = document.getElementById('m-sf-regex')?.value.trim() || '';
+        if (hostPatternRegex) {
+          try {
+            new RegExp(hostPatternRegex, 'i');
+          } catch {
+            store.showToast('Invalid Regular Expression.');
+            break;
+          }
+        }
         activeModal = null;
         await store.saveSmartFolder({
+          id: existingId || randomUuid(),
           name,
           filter: {
             includeProtocols: proto ? [proto] : [],
@@ -2324,7 +2536,7 @@ function installEventDelegation() {
             hostPatternRegex
           }
         });
-        store.showToast(`Created Smart Folder "${name}".`);
+        store.showToast(`${existingId ? 'Updated' : 'Created'} Smart Folder "${name}".`);
         break;
       }
       case 'open-reset-db-modal':
@@ -2345,7 +2557,7 @@ function installEventDelegation() {
         await store.toggleTodoItem(actionEl.getAttribute('data-todo-id'));
         break;
       case 'open-credential-modal':
-        activeModal = { kind: 'credential' };
+        activeModal = { kind: 'credential', cred: null };
         renderWorkspace();
         break;
       case 'open-gateway-modal':
@@ -2416,6 +2628,7 @@ function installEventDelegation() {
         break;
       }
       case 'save-credential-modal': {
+        const existingId = actionEl.getAttribute('data-cred-id') || '';
         const name = document.getElementById('m-cred-name').value.trim() || 'Credential';
         const username = document.getElementById('m-cred-user').value.trim();
         const domain = document.getElementById('m-cred-domain').value.trim();
@@ -2423,25 +2636,14 @@ function installEventDelegation() {
         const totpSecretBase32 = document.getElementById('m-cred-totp').value.trim();
         const privateKeyPem = document.getElementById('m-cred-pem').value.trim();
         activeModal = null;
-        await store.commitVaultMutation((doc) => {
-          doc.credentials.push({
-            id: randomUuid(),
-            parentFolderId: null,
-            name,
-            sourceKind: privateKeyPem ? 'SSH_KEY_PAIR' : 'VAULT_INTERNAL',
-            username,
-            domain,
-            secretPassword,
-            privateKeyPem,
-            publicKeyOpenSsh: '',
-            keyFingerprintSha256: '',
-            keyPassphrase: '',
-            externalReferenceUri: '',
-            fido2CredentialIdBase64: '',
-            totpSecretBase32,
-            updatedAtEpochMs: Date.now()
-          });
-          return doc;
+        await store.saveCredential({
+          id: existingId || randomUuid(),
+          name,
+          username,
+          domain,
+          secretPassword,
+          totpSecretBase32,
+          privateKeyPem
         });
         break;
       }
@@ -2762,8 +2964,20 @@ function installEventDelegation() {
   });
 
   document.addEventListener('dblclick', (ev) => {
-    const el = ev.target.closest('[data-dblaction="launch-connection"]');
-    if (el) store.launchConnection(el.getAttribute('data-conn-id'));
+    const connEl = ev.target.closest('[data-dblaction="launch-connection"]');
+    if (connEl) {
+      store.launchConnection(connEl.getAttribute('data-conn-id'));
+      return;
+    }
+    const credEl = ev.target.closest('[data-dblaction="edit-credential"]');
+    if (credEl) {
+      const cr = (store.state.vaultDocument.credentials || []).find((x) => x.id === credEl.getAttribute('data-cred-id'));
+      if (cr) {
+        store.selectCredentialInSidebar(cr.id);
+        activeModal = { kind: 'credential', cred: structuredClone(cr) };
+        renderWorkspace();
+      }
+    }
   });
 
   document.addEventListener('change', async (ev) => {
