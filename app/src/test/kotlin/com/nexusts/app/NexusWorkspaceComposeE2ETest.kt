@@ -2854,7 +2854,7 @@ class NexusWorkspaceComposeE2ETest {
                 )
             )
         )
-        val healed = VaultHierarchySanitizer.sanitizeVaultDocument(legacyVault).document
+        val healed = VaultHierarchySanitizer.sanitizeVaultDocument(legacyVault)
         val healedLegacy = healed.connections.first { it.id == "rdp-legacy-uninit" }.settings as ProtocolSpecificSettings.Rdp
         val healedExplicit = healed.connections.first { it.id == "rdp-explicit-off" }.settings as ProtocolSpecificSettings.Rdp
         assertTrue("Uncustomized legacy redirectClipboard=false must self-heal to true", healedLegacy.redirectClipboard)
