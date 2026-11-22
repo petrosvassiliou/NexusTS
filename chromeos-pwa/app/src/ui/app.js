@@ -36,6 +36,19 @@ import { NexusSftpBrowserClient, NexusSshInteractiveSession } from '../protocols
 import { domKeyToX11Keysym, NexusVncSession } from '../protocols/vnc-client.js';
 import { VtTerminalEmulator } from '../protocols/vt-terminal.js';
 
+// Register default TrustedTypes policy required by Chromium's `isolated-app://` CSP (`require-trusted-types-for 'script'`)
+try {
+  if (typeof globalThis.trustedTypes !== 'undefined' && globalThis.trustedTypes.createPolicy) {
+    globalThis.trustedTypes.createPolicy('default', {
+      createHTML: (s) => s,
+      createScriptURL: (s) => s,
+      createScript: (s) => s
+    });
+  }
+} catch {
+  // Policy already registered
+}
+
 const store = new NexusChromeOSStore();
 const liveSessions = new Map(); // tabId -> { kind, instance, terminal, transferState, utilLogs }
 let activeModal = null;
@@ -76,7 +89,7 @@ function cleanupTabSession(tabId) {
   liveSessions.delete(tabId);
 }
 
-async function ensureSessionStarted(tab) {
+function ensureSessionStarted(tab) {
   if (liveSessions.has(tab.tabId)) return liveSessions.get(tab.tabId);
   const conn =
     tab.adHocConnection ||
@@ -85,7 +98,7 @@ async function ensureSessionStarted(tab) {
 
   const profile = store.resolveProfileForConnection(conn);
   const cred = profile?.effectiveCredential || {};
-  const username = conn.adHocUsername || cred.username || 'root';
+  const username = conn.adHocUsername || cred.username || 'Administrator';
   const domain = conn.adHocDomain || cred.domain || '';
   const password = cred.secretPassword || '';
   const privateKeyPem = cred.privateKeyPem || '';
@@ -96,6 +109,7 @@ async function ensureSessionStarted(tab) {
   };
 
   if (conn.protocol === 'RDP' || conn.protocol === 'WINDOWS_TERMINAL_SERVICES' || conn.protocol === 'HYPER_V') {
+    const entry = { kind: 'rdp', instance: null, conn, statusText: 'Connecting RDP…', errorText: '' };
     const rdp = new NexusRdpSession({
       host: conn.host,
       port,
@@ -103,32 +117,33 @@ async function ensureSessionStarted(tab) {
       domain,
       password,
       settings: conn.settings,
-      onStatus: (msg) => updateTabStatus(tab.tabId, msg),
+      onStatus: (msg) => updateTabStatus(tab.tabId, msg, false),
       onRemoteClipboard: (txt) => navigator.clipboard?.writeText?.(txt).catch(() => {}),
-      onClose: (err) => updateTabStatus(tab.tabId, err ? `Disconnected: ${err.message}` : 'Disconnected'),
+      onClose: (err) => updateTabStatus(tab.tabId, err ? `Disconnected: ${err.message}` : 'Disconnected', Boolean(err)),
       transportOptions
     });
-    const entry = { kind: 'rdp', instance: rdp, conn, statusText: 'Connecting RDP…' };
+    entry.instance = rdp;
     liveSessions.set(tab.tabId, entry);
-    rdp.connect().catch((err) => updateTabStatus(tab.tabId, err.message));
+    rdp.connect().catch((err) => updateTabStatus(tab.tabId, err.message, true));
     return entry;
   }
 
   if (conn.protocol === 'VNC' || conn.protocol === 'APPLE_SCREEN_SHARING') {
+    const entry = { kind: 'vnc', instance: null, conn, statusText: 'Connecting VNC…', errorText: '' };
     const vnc = new NexusVncSession({
       host: conn.host,
       port,
       password,
       shared: conn.settings?.sharedSession !== false,
       viewOnly: Boolean(conn.settings?.viewOnly),
-      onStatus: (msg) => updateTabStatus(tab.tabId, msg),
+      onStatus: (msg) => updateTabStatus(tab.tabId, msg, false),
       onServerClipboard: (txt) => navigator.clipboard?.writeText?.(txt).catch(() => {}),
-      onClose: (err) => updateTabStatus(tab.tabId, err ? `Closed: ${err.message}` : 'Closed'),
+      onClose: (err) => updateTabStatus(tab.tabId, err ? `Closed: ${err.message}` : 'Closed', Boolean(err)),
       transportOptions
     });
-    const entry = { kind: 'vnc', instance: vnc, conn, statusText: 'Connecting VNC…' };
+    entry.instance = vnc;
     liveSessions.set(tab.tabId, entry);
-    vnc.connect().catch((err) => updateTabStatus(tab.tabId, err.message));
+    vnc.connect().catch((err) => updateTabStatus(tab.tabId, err.message, true));
     return entry;
   }
 
@@ -242,11 +257,27 @@ async function ensureSessionStarted(tab) {
   return entry;
 }
 
-function updateTabStatus(tabId, statusText) {
+function updateTabStatus(tabId, statusText, isError = false) {
   const entry = liveSessions.get(tabId);
-  if (entry) entry.statusText = statusText;
+  if (entry) {
+    entry.statusText = statusText;
+    entry.errorText = isError ? statusText : '';
+  }
   const el = document.getElementById(`pane-status-${tabId}`);
-  if (el) el.textContent = statusText;
+  if (el) {
+    el.textContent = statusText;
+    el.style.color = isError ? 'var(--status-danger)' : 'var(--text-secondary)';
+  }
+  const errOverlay = document.getElementById(`pane-error-overlay-${tabId}`);
+  if (errOverlay) {
+    if (isError && statusText) {
+      errOverlay.style.display = 'flex';
+      const msgEl = errOverlay.querySelector('.pane-error-msg');
+      if (msgEl) msgEl.textContent = statusText;
+    } else {
+      errOverlay.style.display = 'none';
+    }
+  }
 }
 
 async function reloadTransferDirectory(tabId, path) {
@@ -1160,12 +1191,22 @@ function renderUnifiedSettings() {
 }
 
 function renderPaneBody(tab) {
-  const entry = liveSessions.get(tab.tabId);
+  const entry = ensureSessionStarted(tab);
   if (!entry) {
-    return `<div style="color:#cbd5e1">Initializing session…</div>`;
+    return `<div style="color:#cbd5e1">Connection not found in vault.</div>`;
   }
   if (entry.kind === 'rdp' || entry.kind === 'vnc' || entry.kind === 'terminal') {
-    return `<canvas id="session-canvas-${esc(tab.tabId)}" class="session-canvas" tabindex="0" data-tab-id="${esc(tab.tabId)}"></canvas>`;
+    const showErr = Boolean(entry.errorText);
+    return `
+      <div style="position:relative;width:100%;height:100%;display:flex;align-items:center;justify-content:center;background:#0b1120">
+        <canvas id="session-canvas-${esc(tab.tabId)}" class="session-canvas" tabindex="0" data-tab-id="${esc(tab.tabId)}"></canvas>
+        <div id="pane-error-overlay-${esc(tab.tabId)}" style="display:${showErr ? 'flex' : 'none'};position:absolute;inset:0;background:rgba(15,23,42,0.86);color:#f8fafc;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:24px;text-align:center">
+          <div style="font-size:15px;font-weight:700">Session Disconnected</div>
+          <div class="pane-error-msg" style="max-width:560px;font-size:13px;color:#cbd5e1;line-height:1.5">${esc(entry.errorText || '')}</div>
+          <button type="button" class="pill-btn primary" data-action="reconnect-tab" data-tab-id="${esc(tab.tabId)}">↻ Reconnect</button>
+        </div>
+      </div>
+    `;
   }
   if (entry.kind === 'web') {
     const useControlledFrame = typeof document.createElement('controlledframe').src === 'string';
@@ -1729,14 +1770,17 @@ function renderActiveSessionsStage() {
     </div>
     <div class="tiling-grid layout-${layout}">
       ${visibleTabs.map((t) => {
-        const entry = liveSessions.get(t.tabId);
+        const entry = ensureSessionStarted(t);
+        const isRdpLike = t.protocol === 'RDP' || t.protocol === 'WINDOWS_TERMINAL_SERVICES' || t.protocol === 'HYPER_V';
         return `
           <div class="session-pane ${t.tabId === store.state.focusedTabId ? 'focused' : ''}" data-action="focus-tab" data-tab-id="${esc(t.tabId)}">
             <div class="pane-toolbar">
               <span style="display:inline-flex;align-items:center;gap:6px">${renderSidebarConnectionTypeIcon(t.protocol, null, 14)}<strong>${esc(t.title)}</strong></span>
               <div class="topbar-cluster">
-                <span id="pane-status-${esc(t.tabId)}" style="color:var(--text-secondary);font-size:11px">${esc(entry?.statusText || '')}</span>
-                ${t.protocol === 'RDP' ? `<button type="button" class="pill-btn" style="height:24px;padding:0 8px;font-size:11px" data-action="send-cad" data-tab-id="${esc(t.tabId)}">Ctrl+Alt+Del</button>` : ''}
+                <span id="pane-status-${esc(t.tabId)}" style="color:${entry?.errorText ? 'var(--status-danger)' : 'var(--text-secondary)'};font-size:11px">${esc(entry?.statusText || '')}</span>
+                ${isRdpLike ? `<button type="button" class="pill-btn" style="height:24px;padding:0 8px;font-size:11px" data-action="sync-rdp-clipboard" data-tab-id="${esc(t.tabId)}">Clipboard</button>` : ''}
+                ${isRdpLike ? `<button type="button" class="pill-btn" style="height:24px;padding:0 8px;font-size:11px" data-action="send-cad" data-tab-id="${esc(t.tabId)}">Ctrl+Alt+Del</button>` : ''}
+                <button type="button" class="pill-btn" style="height:24px;padding:0 8px;font-size:11px" data-action="reconnect-tab" data-tab-id="${esc(t.tabId)}">↻ Reconnect</button>
               </div>
             </div>
             <div class="pane-viewport">${renderPaneBody(t)}</div>
@@ -2161,23 +2205,115 @@ function renderQuickConnectResultsHtml(rawQuery) {
 
 function attachLiveCanvases() {
   for (const tab of store.state.tabs) {
-    ensureSessionStarted(tab).then((entry) => {
-      if (!entry) return;
-      const canvas = document.getElementById(`session-canvas-${tab.tabId}`);
-      if (!canvas) return;
-      if (entry.kind === 'terminal') {
-        entry.canvas = canvas;
-        entry.terminal.renderToCanvas(canvas, store.state.focusedTabId === tab.tabId);
-      } else if (entry.kind === 'rdp' || entry.kind === 'vnc') {
-        entry.instance.attachCanvas(canvas);
-      }
-    });
+    const entry = ensureSessionStarted(tab);
+    if (!entry) continue;
+    const canvas = document.getElementById(`session-canvas-${tab.tabId}`);
+    if (!canvas) continue;
+    if (entry.kind === 'terminal') {
+      entry.canvas = canvas;
+      entry.terminal.renderToCanvas(canvas, store.state.focusedTabId === tab.tabId);
+    } else if (entry.kind === 'rdp' || entry.kind === 'vnc') {
+      entry.instance.attachCanvas(canvas);
+    }
   }
+}
+
+let browserIwaWizardDismissed = false;
+
+function shouldShowBrowserIwaInstallerWizard() {
+  if (browserIwaWizardDismissed) return false;
+  if (typeof window === 'undefined' || !window.location) return false;
+  const proto = window.location.protocol || '';
+  if (proto === 'isolated-app:' || hasDirectSocketsApi()) return false;
+  if (!proto.startsWith('http')) return false;
+  if (store.state.localRelayReachable) return false;
+  const params = new URLSearchParams(window.location.search || '');
+  if (params.get('workspace') === '1' || params.has('detachedConn')) return false;
+  return true;
+}
+
+function renderChromeOsIwaInstallerWizard() {
+  return `
+    <div style="min-height:100vh;width:100%;background:linear-gradient(135deg,#eff6ff 0%,#f8fafc 50%,#e2e8f0 100%);display:flex;align-items:center;justify-content:center;padding:28px;overflow:auto">
+      <div style="max-width:820px;width:100%;background:#ffffff;border:1px solid #dde5f0;border-radius:20px;box-shadow:0 24px 60px rgba(15,23,42,0.10);padding:32px 36px;display:flex;flex-direction:column;gap:22px;color:#0f172a">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap">
+          <div style="display:flex;align-items:center;gap:14px">
+            <img src="./icons/icon-192.png" alt="NexusTS" width="52" height="52" style="border-radius:14px;box-shadow:0 6px 16px rgba(37,99,235,0.18)" />
+            <div>
+              <div style="display:flex;align-items:center;gap:8px">
+                <h1 style="margin:0;font-size:22px;font-weight:800;letter-spacing:-0.02em">NexusTS v1.0.0 — ChromeOS Installer</h1>
+                <span style="background:#dbeafe;color:#1d4ed8;font-size:11px;font-weight:700;padding:3px 9px;border-radius:999px">Signed IWA .swbn</span>
+              </div>
+              <p style="margin:4px 0 0;font-size:13px;color:#475569">Standalone ChromeOS Taskbar App • Direct TCP/UDP over Private VPN &amp; Internet • TLS + NLA RDP, SSHv2, SFTP &amp; VNC</p>
+            </div>
+          </div>
+        </div>
+
+        <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:12px 16px;font-size:13px;color:#334155;line-height:1.5">
+          <strong>Why install the <code>.swbn</code> bundle?</strong> Standard browser tabs block raw TCP/UDP sockets, preventing direct RDP (<code>:3389</code>) and SSH (<code>:22</code>) connections. Installing the signed ChromeOS <strong>Isolated Web App (<code>.swbn</code>)</strong> unlocks native <strong>Direct Sockets</strong> across both your <strong>VPN private IPs</strong> and <strong>public Internet servers</strong>, and pins NexusTS directly to your ChromeOS Taskbar (Shelf).
+        </div>
+
+        <div style="display:flex;flex-direction:column;gap:14px">
+          <div style="border:1px solid #bfdbfe;background:#eff6ff;border-radius:14px;padding:16px 18px;display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap">
+            <div>
+              <div style="font-size:12px;font-weight:800;color:#1d4ed8;text-transform:uppercase;letter-spacing:0.04em">Step 1 of 3 • Download Bundle</div>
+              <div style="font-size:15px;font-weight:700;margin-top:2px">Download Signed ChromeOS Bundle (<code>NexusTS-v1.0.0-ChromeOS-IWA.swbn</code>)</div>
+              <div style="font-size:12px;color:#475569;margin-top:2px">100% offline-capable Ed25519 Signed Web Bundle v2 • Works without Linux (Crostini)</div>
+            </div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <a href="./downloads/NexusTS-v1.0.0-ChromeOS-IWA.swbn" download="NexusTS-v1.0.0-ChromeOS-IWA.swbn" class="pill-btn primary" style="text-decoration:none;height:38px;padding:0 18px;font-weight:700;display:inline-flex;align-items:center;gap:6px">⬇ Download .swbn Installer</a>
+              <a href="https://github.com/petrosvassiliou/NexusTS/releases/download/v1.0.0/NexusTS-v1.0.0-ChromeOS-IWA.swbn" class="pill-btn" style="text-decoration:none;height:38px;padding:0 12px;display:inline-flex;align-items:center">GitHub Mirror</a>
+            </div>
+          </div>
+
+          <div style="border:1px solid #dde5f0;background:#ffffff;border-radius:14px;padding:16px 18px;display:flex;flex-direction:column;gap:10px">
+            <div>
+              <div style="font-size:12px;font-weight:800;color:#059669;text-transform:uppercase;letter-spacing:0.04em">Step 2 of 3 • One-Time ChromeOS Setting</div>
+              <div style="font-size:14px;font-weight:700;margin-top:2px">Enable Isolated Web Apps in <code>chrome://flags</code> (once per Chromebook), then click Restart</div>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:8px">
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:8px 12px">
+                <code style="font-size:12px;color:#0f172a">chrome://flags/#enable-isolated-web-apps-in-renderer</code>
+                <button type="button" class="pill-btn" data-action="copy-iwa-url" data-url="chrome://flags/#enable-isolated-web-apps-in-renderer">Copy Flag URL</button>
+              </div>
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:8px 12px">
+                <code style="font-size:12px;color:#0f172a">chrome://flags/#enable-isolated-web-app-dev-mode</code>
+                <button type="button" class="pill-btn" data-action="copy-iwa-url" data-url="chrome://flags/#enable-isolated-web-app-dev-mode">Copy Flag URL</button>
+              </div>
+            </div>
+          </div>
+
+          <div style="border:1px solid #dde5f0;background:#ffffff;border-radius:14px;padding:16px 18px;display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap">
+            <div style="flex:1;min-width:260px">
+              <div style="font-size:12px;font-weight:800;color:#7c3aed;text-transform:uppercase;letter-spacing:0.04em">Step 3 of 3 • Install &amp; Pin to Taskbar</div>
+              <div style="font-size:14px;font-weight:700;margin-top:2px">Open <code>chrome://web-app-internals</code> → click <em>“Install IWA from Signed Web Bundle”</em></div>
+              <div style="font-size:12.5px;color:#475569;margin-top:4px">Select your downloaded <code>NexusTS-v1.0.0-ChromeOS-IWA.swbn</code>. Once NexusTS opens, <strong>right-click its icon on your bottom taskbar (Shelf) → Pin</strong>!</div>
+            </div>
+            <button type="button" class="pill-btn primary" data-action="copy-iwa-url" data-url="chrome://web-app-internals" style="height:36px;padding:0 14px">Copy chrome://web-app-internals</button>
+          </div>
+        </div>
+
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding-top:6px;border-top:1px solid #e2e8f0;font-size:12px;color:#64748b">
+          <div style="display:flex;gap:12px;flex-wrap:wrap">
+            <a href="https://github.com/petrosvassiliou/NexusTS/releases/download/v1.0.0/NexusTS-v1.0.0-googlebook-android-release.apk" style="color:#1d4ed8;text-decoration:none;font-weight:600">Googlebook / Android APK (v1.0.0)</a>
+            <span>•</span>
+            <a href="https://github.com/petrosvassiliou/NexusTS/releases/download/v1.0.0/NexusTS-v1.0.0-macOS-Universal.dmg" style="color:#1d4ed8;text-decoration:none;font-weight:600">macOS Universal2 DMG (v1.0.0)</a>
+          </div>
+          <button type="button" class="pill-btn" data-action="dismiss-iwa-wizard" style="height:28px;font-size:11.5px">Open Browser Workspace (Local Relay Mode) →</button>
+        </div>
+      </div>
+    </div>
+  `;
 }
 
 function renderWorkspace() {
   const root = document.getElementById('app-root');
   if (!root) return;
+  if (shouldShowBrowserIwaInstallerWizard()) {
+    root.className = 'app-root';
+    root.innerHTML = renderChromeOsIwaInstallerWizard();
+    return;
+  }
   const s = store.strings;
   const st = store.state;
   const inSettings = st.activeDestination === 'settings';
@@ -2516,6 +2652,34 @@ function installEventDelegation() {
         await s?.instance?.sendCtrlAltDel?.();
         break;
       }
+      case 'sync-rdp-clipboard': {
+        const tid = actionEl.getAttribute('data-tab-id');
+        const s = liveSessions.get(tid);
+        const txt = await navigator.clipboard?.readText?.().catch(() => '');
+        if (txt && s?.instance?.sendClientClipboardText) {
+          await s.instance.sendClientClipboardText(txt);
+          store.showToast('ChromeOS clipboard synced to RDP session.');
+        }
+        break;
+      }
+      case 'reconnect-tab': {
+        const tid = actionEl.getAttribute('data-tab-id');
+        cleanupTabSession(tid);
+        renderWorkspace();
+        break;
+      }
+      case 'copy-iwa-url': {
+        const url = actionEl.getAttribute('data-url') || '';
+        await navigator.clipboard?.writeText?.(url).catch(() => {});
+        const orig = actionEl.textContent;
+        actionEl.textContent = '✓ Copied! Paste in Chrome address bar';
+        setTimeout(() => { actionEl.textContent = orig; }, 2200);
+        break;
+      }
+      case 'dismiss-iwa-wizard':
+        browserIwaWizardDismissed = true;
+        renderWorkspace();
+        break;
       case 'launch-local-shell':
         store.launchConnection({
           id: `local-shell-${randomUuid()}`,
@@ -3128,6 +3292,10 @@ function installEventDelegation() {
   });
 
   document.addEventListener('contextmenu', (ev) => {
+    if (ev.target.closest?.('.session-canvas')) {
+      ev.preventDefault();
+      return;
+    }
     if (store.state.isVaultLocked) return;
     const ctxEl = document.getElementById('context-menu');
     if (!ctxEl) return;
@@ -3392,6 +3560,10 @@ function installEventDelegation() {
         }
       }
     } else if (entry.kind === 'rdp') {
+      if ((ev.ctrlKey || ev.metaKey) && !ev.altKey && ev.code === 'KeyV') {
+        const clipTxt = await navigator.clipboard?.readText?.().catch(() => '');
+        if (clipTxt) await entry.instance.sendClientClipboardText?.(clipTxt);
+      }
       await entry.instance.sendKeyEvent(ev, true);
     } else if (entry.kind === 'vnc') {
       const sym = domKeyToX11Keysym(ev);
@@ -3456,6 +3628,17 @@ function installEventDelegation() {
       entry.instance.sendPointerEvent(x, y, ev.buttons & 0x07);
     }
   });
+
+  document.addEventListener('wheel', (ev) => {
+    const canvas = ev.target.closest?.('.session-canvas');
+    if (!canvas) return;
+    const entry = liveSessions.get(canvas.getAttribute('data-tab-id'));
+    if (entry?.kind === 'rdp') {
+      ev.preventDefault();
+      const { x, y } = canvasCoords(canvas, ev);
+      entry.instance.sendMouseWheel(x, y, ev.deltaY);
+    }
+  }, { passive: false });
 }
 
 async function bootstrap() {

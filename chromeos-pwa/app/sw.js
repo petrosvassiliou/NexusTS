@@ -30,6 +30,7 @@ const PRECACHE_ASSETS = [
   './src/protocols/vt-terminal.js',
   './src/protocols/ftp-telnet-serial-netutils.js',
   './src/protocols/vnc-client.js',
+  './src/protocols/tls-credssp.js',
   './src/protocols/rdp-client.js',
   './src/protocols/ssh-sftp-client.js',
   './src/ui/app.js'

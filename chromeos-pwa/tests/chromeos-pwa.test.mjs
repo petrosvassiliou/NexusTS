@@ -718,6 +718,352 @@ test('10. Pre-1.0 QS Smoke & Performance Gate: zero dead data-actions, 6-locale 
   assert.ok(mergeMs < 50, `500-conn 3-way merge took ${mergeMs.toFixed(2)}ms`);
 });
 
+test('11. ChromeOS v1.0.0 Full Windows RDP (OpenSSL 3 STARTTLS + CredSSP v6 NTLMv2 NLA + DemandActive/ConfirmActive + CLIPRDR) & .swbn Installer Bundle', async () => {
+  const net = await import('node:net');
+  const tls = await import('node:tls');
+  const cryptoNode = await import('node:crypto');
+  const { execFileSync } = await import('node:child_process');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const { BufferedByteStream } = await import('../app/src/protocols/socket-transport.js');
+  const { NexusRdpSession, PROTOCOL_HYBRID } = await import('../app/src/protocols/rdp-client.js');
+  const {
+    buildTsRequestDer,
+    extractX509SubjectPublicKeyBytes,
+    hmacMd5,
+    md5Bytes,
+    ntowfv2,
+    parseTsRequestDer,
+    Rc4Stream
+  } = await import('../app/src/protocols/tls-credssp.js');
+  const { buildAllChromeOSArtifacts } = await import('../scripts/build-chromeos-bundles.mjs');
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nxts-rdp-nla-'));
+  const keyFile = path.join(tmpDir, 'srv.key');
+  const certFile = path.join(tmpDir, 'srv.crt');
+  execFileSync('openssl', [
+    'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
+    '-keyout', keyFile, '-out', certFile, '-days', '1', '-subj', '/CN=WIN2025-DC01.corp.local'
+  ]);
+  const keyPem = fs.readFileSync(keyFile, 'utf8');
+  const certPem = fs.readFileSync(certFile, 'utf8');
+  const certDer = new cryptoNode.X509Certificate(certPem).raw;
+  const serverPubKeyBytes = extractX509SubjectPublicKeyBytes(certDer);
+
+  const expectedDomain = 'CORP';
+  const expectedUser = 'Administrator';
+  const expectedPass = 'S3cureVPN#2026!';
+  let credentialsVerifiedOnServer = false;
+  let confirmActiveReceived = false;
+  let fontListReceived = false;
+  let remoteClipboardReceived = '';
+
+  const serverChallenge = Buffer.from('1122334455667788', 'hex');
+
+  const rdpServer = net.createServer((rawSock) => {
+    rawSock.once('data', (x224Req) => {
+      assert.equal(x224Req[0], 0x03);
+      // Reply with X.224 Connection Confirm selecting PROTOCOL_HYBRID (TLS + CredSSP NLA)
+      rawSock.write(
+        Buffer.from([0x03, 0x00, 0x00, 0x13, 0x0e, 0xd0, 0x00, 0x00, 0x12, 0x34, 0x00, 0x02, 0x00, 0x08, 0x00, 0x02, 0x00, 0x00, 0x00])
+      );
+
+      const tlsSock = new tls.TLSSocket(rawSock, {
+        isServer: true,
+        key: keyPem,
+        cert: certPem,
+        minVersion: 'TLSv1.2',
+        maxVersion: 'TLSv1.2'
+      });
+
+      let stage = 'CREDSSP_1';
+      let negMsgSaved = null;
+      let chalMsgSaved = null;
+      let c2sRc4 = null;
+      let s2cRc4 = null;
+      let c2sSignKey = null;
+      let s2cSignKey = null;
+
+      tlsSock.on('data', (chunk) => {
+        const bytes = new Uint8Array(chunk);
+        if (stage === 'CREDSSP_1') {
+          const ts1 = parseTsRequestDer(bytes);
+          assert.equal(ts1.version, 6);
+          negMsgSaved = ts1.negoToken;
+
+          // Build NTLMSSP CHALLENGE_MESSAGE with MsvAvTimestamp
+          const avPairs = Buffer.from([
+            0x07, 0x00, 0x08, 0x00, 0x00, 0x80, 0x3e, 0xd5, 0xde, 0xb1, 0xdc, 0x01,
+            0x00, 0x00, 0x00, 0x00
+          ]);
+          const chal = Buffer.alloc(56 + avPairs.length);
+          chal.write('NTLMSSP\0', 0, 'ascii');
+          chal.writeUInt32LE(2, 8);
+          chal.writeUInt32LE(0xe2888235, 20); // NEGOTIATE_TARGET_INFO | KEY_EXCH | SEAL | SIGN | UNICODE
+          serverChallenge.copy(chal, 24);
+          chal.writeUInt16LE(avPairs.length, 40);
+          chal.writeUInt16LE(avPairs.length, 42);
+          chal.writeUInt32LE(56, 44);
+          avPairs.copy(chal, 56);
+          chalMsgSaved = new Uint8Array(chal);
+
+          tlsSock.write(Buffer.from(buildTsRequestDer({ version: 6, negoToken: chalMsgSaved })));
+          stage = 'CREDSSP_2';
+          return;
+        }
+
+        if (stage === 'CREDSSP_2') {
+          const ts3 = parseTsRequestDer(bytes);
+          const auth = ts3.negoToken;
+          const dv = new DataView(auth.buffer, auth.byteOffset, auth.byteLength);
+          const ntLen = dv.getUint16(20, true);
+          const ntOff = dv.getUint32(24, true);
+          const sessLen = dv.getUint16(52, true);
+          const sessOff = dv.getUint32(56, true);
+          const ntResp = auth.subarray(ntOff, ntOff + ntLen);
+          const encSessKey = auth.subarray(sessOff, sessOff + sessLen);
+
+          // Server recomputes NTOWFv2 & verifies NTProofStr!
+          const respKeyNT = ntowfv2(expectedPass, expectedUser, expectedDomain);
+          const ntProof = ntResp.subarray(0, 16);
+          const temp = ntResp.subarray(16);
+          const expectedProof = hmacMd5(respKeyNT, new Uint8Array([...serverChallenge, ...temp]));
+          assert.deepEqual(Buffer.from(ntProof), Buffer.from(expectedProof), 'Server NTLMv2 NTProofStr verified');
+
+          const sessionBaseKey = hmacMd5(respKeyNT, ntProof);
+          const exportedSessionKey = new Rc4Stream(sessionBaseKey).process(encSessKey);
+          c2sSignKey = md5Bytes(new Uint8Array([...exportedSessionKey, ...new TextEncoder().encode('session key to client-to-server signing key magic constant\0')]));
+          s2cSignKey = md5Bytes(new Uint8Array([...exportedSessionKey, ...new TextEncoder().encode('session key to server-to-client signing key magic constant\0')]));
+          const c2sSealKey = md5Bytes(new Uint8Array([...exportedSessionKey, ...new TextEncoder().encode('session key to client-to-server sealing key magic constant\0')]));
+          const s2cSealKey = md5Bytes(new Uint8Array([...exportedSessionKey, ...new TextEncoder().encode('session key to server-to-client sealing key magic constant\0')]));
+          c2sRc4 = new Rc4Stream(c2sSealKey);
+          s2cRc4 = new Rc4Stream(s2cSealKey);
+
+          // Unseal client pubKeyAuth (seq=0) and verify CredSSP v6 SHA-256 binding hash
+          const cliPlainHash = c2sRc4.process(ts3.pubKeyAuth.subarray(16));
+          c2sRc4.process(ts3.pubKeyAuth.subarray(4, 12)); // advance checksum keystream
+          const expectedC2sHash = cryptoNode
+            .createHash('sha256')
+            .update(Buffer.from('CredSSP Client-To-Server Binding Hash\0'))
+            .update(Buffer.from(ts3.clientNonce))
+            .update(Buffer.from(serverPubKeyBytes))
+            .digest();
+          assert.deepEqual(Buffer.from(cliPlainHash), expectedC2sHash);
+
+          // Seal server pubKeyAuth proof (seq=0)
+          const s2cHash = new Uint8Array(
+            cryptoNode
+              .createHash('sha256')
+              .update(Buffer.from('CredSSP Server-To-Client Binding Hash\0'))
+              .update(Buffer.from(ts3.clientNonce))
+              .update(Buffer.from(serverPubKeyBytes))
+              .digest()
+          );
+          const seq0 = new Uint8Array([0, 0, 0, 0]);
+          const encHash = s2cRc4.process(s2cHash);
+          const mac0 = hmacMd5(s2cSignKey, new Uint8Array([...seq0, ...s2cHash])).subarray(0, 8);
+          const encMac0 = s2cRc4.process(mac0);
+          const srvPubKeyAuth = new Uint8Array([1, 0, 0, 0, ...encMac0, ...seq0, ...encHash]);
+          tlsSock.write(Buffer.from(buildTsRequestDer({ version: 6, pubKeyAuth: srvPubKeyAuth })));
+          stage = 'CREDSSP_3';
+          return;
+        }
+
+        if (stage === 'CREDSSP_3') {
+          const ts5 = parseTsRequestDer(bytes);
+          const credsDer = c2sRc4.process(ts5.authInfo.subarray(16));
+          c2sRc4.process(ts5.authInfo.subarray(4, 12));
+          assert.ok(Buffer.from(credsDer).includes(Buffer.from(expectedPass, 'utf16le')));
+          credentialsVerifiedOnServer = true;
+          stage = 'MCS_CI';
+          return;
+        }
+
+        if (stage === 'MCS_CI') {
+          // Verify CS_CORE.serverSelectedProtocol == PROTOCOL_HYBRID (2)
+          assert.ok(Buffer.from(bytes).includes(Buffer.from([0x06, 0x00, 0x02, 0x00, 0x00, 0x00])));
+          // Reply with MCS Connect-Response including SC_NET (`0x0c03`, io=1003, count=1, cliprdr=1004)
+          const scNet = Buffer.from([0x03, 0x0c, 0x0a, 0x00, 0xeb, 0x03, 0x01, 0x00, 0xec, 0x03]);
+          const mcsCr = Buffer.concat([Buffer.from([0x03, 0x00, 0x00, 0x09 + scNet.length, 0x02, 0xf0, 0x80, 0x7f, 0x66]), scNet]);
+          tlsSock.write(mcsCr);
+          stage = 'MCS_SETUP';
+          return;
+        }
+
+        if (stage === 'MCS_SETUP') {
+          let pos = 0;
+          while (pos + 4 <= bytes.length && bytes[pos] === 0x03) {
+            const tLen = (bytes[pos + 2] << 8) | bytes[pos + 3];
+            const tpktBody = bytes.subarray(pos + 4, pos + tLen);
+            pos += tLen;
+            const mcsByte = tpktBody[3];
+            if (mcsByte === 0x28) {
+              // AttachUserRequest -> AttachUserConfirm (initiator offset 6 -> userChannelId 1007)
+              tlsSock.write(Buffer.from([0x03, 0x00, 0x00, 0x0b, 0x02, 0xf0, 0x80, 0x2e, 0x00, 0x00, 0x06]));
+            } else if (mcsByte === 0x38) {
+              // ChannelJoinRequest -> ChannelJoinConfirm
+              const chHi = tpktBody[6];
+              const chLo = tpktBody[7];
+              tlsSock.write(Buffer.from([0x03, 0x00, 0x00, 0x0f, 0x02, 0xf0, 0x80, 0x3e, 0x00, 0x00, 0x06, chHi, chLo, chHi, chLo]));
+            } else if (mcsByte === 0x64) {
+              // Client Info PDU received -> send Server Licensing PDU + Server DemandActivePDU (shareId = 0x000103ea)
+              const licBody = Buffer.from([0x80, 0x00, 0x00, 0x00, 0xff, 0x03, 0x10, 0x00, 0x07, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00]);
+              const licPkt = Buffer.concat([Buffer.from([0x02, 0xf0, 0x80, 0x68, 0x00, 0x01, 0x03, 0xeb, 0x70, licBody.length]), licBody]);
+              const licTpkt = Buffer.concat([Buffer.from([0x03, 0x00, 0x00, 4 + licPkt.length]), licPkt]);
+              tlsSock.write(licTpkt);
+
+              const daBody = Buffer.from([
+                0x1a, 0x00, 0x11, 0x00, 0xea, 0x03, // ShareControlHeader (len=26, PDUTYPE_DEMANDACTIVEPDU=0x11)
+                0xea, 0x03, 0x01, 0x00,             // shareId = 0x000103ea
+                0x04, 0x00, 0x04, 0x00,             // lenSourceDescriptor=4, lenCombinedCaps=4
+                0x52, 0x44, 0x50, 0x00,             // "RDP\0"
+                0x00, 0x00, 0x00, 0x00,             // numberCapabilities=0, pad2Octets=0
+                0x00, 0x00, 0x00, 0x00              // sessionId=0
+              ]);
+              const daMcs = Buffer.concat([Buffer.from([0x02, 0xf0, 0x80, 0x68, 0x00, 0x01, 0x03, 0xeb, 0x70, daBody.length]), daBody]);
+              tlsSock.write(Buffer.concat([Buffer.from([0x03, 0x00, 0x00, 4 + daMcs.length]), daMcs]));
+              stage = 'ACTIVE';
+            }
+          }
+          return;
+        }
+
+        if (stage === 'ACTIVE') {
+          // Inspect ConfirmActive + Synchronize + Control + FontList PDUs
+          let pos = 0;
+          while (pos + 4 <= bytes.length && bytes[pos] === 0x03) {
+            const tLen = (bytes[pos + 2] << 8) | bytes[pos + 3];
+            const body = bytes.subarray(pos + 4, pos + tLen);
+            pos += tLen;
+            if (body[3] === 0x64) {
+              const ch = (body[6] << 8) | body[7];
+              const perOff = (body[9] & 0x80) ? 11 : 10;
+              const uData = body.subarray(perOff);
+              if (ch === 1003 && uData.length >= 6) {
+                const pduType = uData[2] & 0x0f;
+                if (pduType === 0x03) confirmActiveReceived = true;
+                if (pduType === 0x07 && uData[14] === 39) {
+                  fontListReceived = true;
+                  // Send a 2x2 uncompressed 24-bpp pure blue [B=255, G=0, R=0] Fast-Path Bitmap update + CLIPRDR Format List!
+                  const bmpPixels = Buffer.alloc(2 * 2 * 3);
+                  for (let p = 0; p < 4; p++) { bmpPixels[p * 3] = 255; bmpPixels[p * 3 + 1] = 64; bmpPixels[p * 3 + 2] = 16; }
+                  const tsBmp = Buffer.alloc(4 + 18 + bmpPixels.length);
+                  tsBmp.writeUInt16LE(0x0001, 0);
+                  tsBmp.writeUInt16LE(1, 2);
+                  tsBmp.writeUInt16LE(0, 4);  // destLeft
+                  tsBmp.writeUInt16LE(0, 6);  // destTop
+                  tsBmp.writeUInt16LE(1, 8);  // destRight
+                  tsBmp.writeUInt16LE(1, 10); // destBottom
+                  tsBmp.writeUInt16LE(2, 12); // width
+                  tsBmp.writeUInt16LE(2, 14); // height
+                  tsBmp.writeUInt16LE(24, 16); // bpp
+                  tsBmp.writeUInt16LE(0, 18); // uncompressed
+                  tsBmp.writeUInt16LE(bmpPixels.length, 20);
+                  bmpPixels.copy(tsBmp, 22);
+                  const fpHdr = Buffer.from([0x00, 2 + 3 + tsBmp.length, 0x01, tsBmp.length & 0xff, (tsBmp.length >>> 8) & 0xff]);
+                  tlsSock.write(Buffer.concat([fpHdr, tsBmp]));
+
+                  // Send CLIPRDR CB_FORMAT_DATA_RESPONSE on channel 1004
+                  const utf16Clip = Buffer.from('Hello from VPN Windows Server!\0', 'utf16le');
+                  const clipPdu = Buffer.alloc(8 + utf16Clip.length);
+                  clipPdu.writeUInt16LE(0x0005, 0); // CB_FORMAT_DATA_RESPONSE
+                  clipPdu.writeUInt16LE(0x0001, 2); // CB_RESPONSE_OK
+                  clipPdu.writeUInt32LE(utf16Clip.length, 4);
+                  utf16Clip.copy(clipPdu, 8);
+                  const vcHdr = Buffer.alloc(8);
+                  vcHdr.writeUInt32LE(clipPdu.length, 0);
+                  vcHdr.writeUInt32LE(0x03, 4);
+                  const vcAll = Buffer.concat([vcHdr, clipPdu]);
+                  const clipMcs = Buffer.concat([Buffer.from([0x02, 0xf0, 0x80, 0x68, 0x00, 0x01, 0x03, 0xec, 0x70, vcAll.length]), vcAll]);
+                  tlsSock.write(Buffer.concat([Buffer.from([0x03, 0x00, 0x00, 4 + clipMcs.length]), clipMcs]));
+                }
+              }
+            }
+          }
+        }
+      });
+    });
+  });
+
+  await new Promise((r) => rdpServer.listen(0, '127.0.0.1', r));
+  const srvPort = rdpServer.address().port;
+
+  let paintedPixels = null;
+  const mockCanvas = {
+    width: 0,
+    height: 0,
+    getContext() {
+      return {
+        putImageData(imgData) {
+          paintedPixels = imgData.data;
+        }
+      };
+    }
+  };
+  if (typeof globalThis.ImageData === 'undefined') {
+    globalThis.ImageData = class {
+      constructor(data, width, height) { this.data = data; this.width = width; this.height = height; }
+    };
+  }
+
+  const rdp = new NexusRdpSession({
+    host: '127.0.0.1',
+    port: srvPort,
+    domain: expectedDomain,
+    username: expectedUser,
+    password: expectedPass,
+    width: 1280,
+    height: 800,
+    canvas: mockCanvas,
+    onRemoteClipboard: (txt) => { remoteClipboardReceived = txt; },
+    transportOptions: {
+      streamFactory: async (h, p) => {
+        const sock = net.connect(p, h);
+        await new Promise((r) => sock.once('connect', r));
+        const st = new BufferedByteStream({
+          transportKind: 'direct-sockets',
+          remoteAddress: h,
+          remotePort: p,
+          writeFn: (b) => new Promise((res, rej) => sock.write(b, (e) => (e ? rej(e) : res()))),
+          closeFn: () => sock.destroy()
+        });
+        sock.on('data', (c) => st.pushInbound(new Uint8Array(c)));
+        sock.on('close', () => st.markClosed());
+        return st;
+      }
+    }
+  });
+
+  await rdp.connect();
+  // Wait briefly for post-ClientInfo DemandActive -> ConfirmActive -> FastPath Bitmap + CLIPRDR exchange
+  for (let i = 0; i < 40 && (!paintedPixels || !remoteClipboardReceived); i++) {
+    await new Promise((r) => setTimeout(r, 25));
+  }
+
+  assert.equal(rdp.selectedProtocol, PROTOCOL_HYBRID);
+  assert.equal(credentialsVerifiedOnServer, true, 'CredSSP v6 NTLMv2 credentials verified on TLS server');
+  assert.equal(confirmActiveReceived, true, 'Client sent ConfirmActivePDU');
+  assert.equal(fontListReceived, true, 'Client completed full 5-PDU MS-RDPBCGR activation');
+  assert.ok(paintedPixels, 'Canvas received live RDP desktop pixels');
+  assert.equal(paintedPixels[0], 16);  // R
+  assert.equal(paintedPixels[1], 64);  // G
+  assert.equal(paintedPixels[2], 255); // B
+  assert.equal(remoteClipboardReceived, 'Hello from VPN Windows Server!');
+
+  await rdp.close();
+  rdpServer.close();
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+
+  // Verify `.swbn` installer & update manifest staged inside hosting-dist/downloads/
+  const artifacts = buildAllChromeOSArtifacts({ version: '1.0.0', releaseTag: 'v1.0.0' });
+  assert.ok(fs.existsSync(`${artifacts.hostingDistDir}/downloads/NexusTS-v1.0.0-ChromeOS-IWA.swbn`));
+  assert.ok(fs.existsSync(`${artifacts.hostingDistDir}/downloads/iwa-update-manifest.json`));
+  const hostedHtml = fs.readFileSync(`${artifacts.hostingDistDir}/index.html`, 'utf8');
+  assert.equal(hostedHtml.includes('rel="manifest"'), false, 'Hosted landing HTML must not offer socket-less browser PWA install');
+  fs.rmSync(`${artifacts.hostingDistDir}/../dist`, { recursive: true, force: true });
+});
+
+
 
 
 

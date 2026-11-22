@@ -122,12 +122,18 @@ export function buildUnsignedWebBundleB2(files) {
     const body = fs.readFileSync(file.full);
     const ext = path.extname(file.rel).toLowerCase();
     const contentType = MIME_BY_EXT[ext] || 'application/octet-stream';
+    const iwaPermissionsPolicy =
+      'cross-origin-isolated=(self), direct-sockets=(self), direct-sockets-private=(self), controlled-frame=(self), serial=(self), usb=(self), clipboard-read=(self), clipboard-write=(self), fullscreen=(self), window-management=(self)';
+    const iwaCsp =
+      "base-uri 'none'; default-src 'self'; object-src 'none'; frame-src 'self' https: http: blob: data:; connect-src 'self' https: http: wss: ws: blob: data:; script-src 'self' 'wasm-unsafe-eval'; img-src 'self' https: blob: data:; media-src 'self' https: blob: data:; font-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; require-trusted-types-for 'script'; trusted-types default; frame-ancestors 'self';";
     const headersCbor = cborMap([
       [cborBytes(Buffer.from(':status')), cborBytes(Buffer.from('200'))],
+      [cborBytes(Buffer.from('content-security-policy')), cborBytes(Buffer.from(iwaCsp))],
       [cborBytes(Buffer.from('content-type')), cborBytes(Buffer.from(contentType))],
-      [cborBytes(Buffer.from('cross-origin-opener-policy')), cborBytes(Buffer.from('same-origin'))],
       [cborBytes(Buffer.from('cross-origin-embedder-policy')), cborBytes(Buffer.from('require-corp'))],
-      [cborBytes(Buffer.from('cross-origin-resource-policy')), cborBytes(Buffer.from('same-origin'))]
+      [cborBytes(Buffer.from('cross-origin-opener-policy')), cborBytes(Buffer.from('same-origin'))],
+      [cborBytes(Buffer.from('cross-origin-resource-policy')), cborBytes(Buffer.from('same-origin'))],
+      [cborBytes(Buffer.from('permissions-policy')), cborBytes(Buffer.from(iwaPermissionsPolicy))]
     ]);
     const respCbor = cborArray([cborBytes(headersCbor), cborBytes(body)]);
     responseItems.push({ relPath: `/${file.rel}`, respCbor });
@@ -312,25 +318,61 @@ export function buildFirebaseHostingSite({ version = '1.0.0', releaseTag = 'v1.0
   manifestObj.version = version;
   fs.writeFileSync(manifestDestPath, `${JSON.stringify(manifestObj, null, 2)}\n`);
 
+  // Strip browser PWA <link rel="manifest"> from hosted https:// landing HTML so ChromeOS users install the .swbn IWA, not a socket-less web tab
+  const hostedIndexPath = path.join(HOSTING_DIST_DIR, 'index.html');
+  const hostedIndexHtml = fs
+    .readFileSync(hostedIndexPath, 'utf8')
+    .replace(/\s*<link\s+rel="manifest"\s+href="[^"]+"\s*\/?>/i, '');
+  fs.writeFileSync(hostedIndexPath, hostedIndexHtml);
+
+  // Build and stage Signed Web Bundle (.swbn) & IWA Update Manifest directly inside hosting-dist/downloads/
+  const allAppFiles = walkFiles(APP_DIR);
+  const unsignedForHosting = buildUnsignedWebBundleB2(allAppFiles);
+  const signingPem = process.env.NEXUSTS_IWA_ED25519_PEM || null;
+  const signedForHosting = signWebBundleIntegrityBlockV2(unsignedForHosting, signingPem);
+  const downloadsDir = path.join(HOSTING_DIST_DIR, 'downloads');
+  fs.mkdirSync(downloadsDir, { recursive: true });
+  fs.writeFileSync(path.join(downloadsDir, `NexusTS-${releaseTag}-ChromeOS-IWA.swbn`), signedForHosting.swbnBytes);
+  fs.writeFileSync(path.join(downloadsDir, 'NexusTS-ChromeOS-IWA.swbn'), signedForHosting.swbnBytes);
+  fs.writeFileSync(
+    path.join(downloadsDir, 'iwa-update-manifest.json'),
+    `${JSON.stringify(
+      {
+        versions: [
+          {
+            version,
+            src: `https://nexusts-prod.web.app/downloads/NexusTS-${releaseTag}-ChromeOS-IWA.swbn`
+          }
+        ]
+      },
+      null,
+      2
+    )}\n`
+  );
+
   // Emit live version.json & GitHub Pages SPA 404.html + .nojekyll
   const versionMeta = {
-    name: 'NexusTS ChromeOS PWA',
+    name: 'NexusTS ChromeOS Isolated Web App Installer',
     version,
     releaseTag,
     buildHash,
+    webBundleId: signedForHosting.webBundleId,
+    iwaOrigin: signedForHosting.origin,
+    swbnUrl: `/downloads/NexusTS-${releaseTag}-ChromeOS-IWA.swbn`,
     wasmBundled: hasWasm,
     builtAt: new Date().toISOString()
   };
   const versionJsonPath = path.join(HOSTING_DIST_DIR, 'version.json');
   fs.writeFileSync(versionJsonPath, `${JSON.stringify(versionMeta, null, 2)}\n`);
-  fs.copyFileSync(path.join(HOSTING_DIST_DIR, 'index.html'), path.join(HOSTING_DIST_DIR, '404.html'));
+  fs.copyFileSync(hostedIndexPath, path.join(HOSTING_DIST_DIR, '404.html'));
   fs.writeFileSync(path.join(HOSTING_DIST_DIR, '.nojekyll'), '');
 
   return {
     hostingDistDir: HOSTING_DIST_DIR,
-    hostingFileCount: appFiles.length + 2,
+    hostingFileCount: appFiles.length + 5,
     precachedCount: audit.precachedCount,
     buildHash,
+    webBundleId: signedForHosting.webBundleId,
     wasmBundled: hasWasm,
     versionJsonPath
   };
