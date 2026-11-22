@@ -2661,8 +2661,8 @@ class NexusWorkspaceComposeE2ETest {
         assertTrue(android.provider.DocumentsContract.isDocumentUri(context, pdfUri))
         assertTrue(android.provider.DocumentsContract.isDocumentUri(context, folderUri))
 
-        // Query & stream single file exactly as AOSP DocumentsUI CopyJob does
-        context.contentResolver.query(pdfUri, null, null, null, null).use { c ->
+        // Query & stream single file exactly as AOSP DocumentsUI CopyJob does (API 26+ Bundle query)
+        context.contentResolver.query(pdfUri, null, android.os.Bundle.EMPTY, null).use { c ->
             assertNotNull(c)
             assertTrue(c!!.moveToFirst())
             assertEquals(
@@ -2682,7 +2682,7 @@ class NexusWorkspaceComposeE2ETest {
         assertArrayEquals(expectedPdfBytes, readPdfBytes)
 
         // Query folder & recursive children exactly as AOSP DocumentsUI CopyJob does
-        context.contentResolver.query(folderUri, null, null, null, null).use { c ->
+        context.contentResolver.query(folderUri, null, android.os.Bundle.EMPTY, null).use { c ->
             assertNotNull(c)
             assertTrue(c!!.moveToFirst())
             assertEquals(
@@ -2697,7 +2697,7 @@ class NexusWorkspaceComposeE2ETest {
         val folderDocId = android.provider.DocumentsContract.getDocumentId(folderUri)
         val childrenUri = android.provider.DocumentsContract.buildChildDocumentsUri(ownAuthority, folderDocId)
         val childEntries = mutableMapOf<String, Pair<String, String>>()
-        context.contentResolver.query(childrenUri, null, null, null, null).use { c ->
+        context.contentResolver.query(childrenUri, null, android.os.Bundle.EMPTY, null).use { c ->
             assertNotNull(c)
             while (c!!.moveToNext()) {
                 val id = c.getString(c.getColumnIndexOrThrow(android.provider.DocumentsContract.Document.COLUMN_DOCUMENT_ID))
@@ -2717,7 +2717,7 @@ class NexusWorkspaceComposeE2ETest {
         // Security invariant: path traversal outside cliprdr_recv and write mode must throw SecurityException
         val traversalUri = android.provider.DocumentsContract.buildDocumentUri(ownAuthority, "cliprdr:../../vaults/default.nxts")
         val blockedTraversal = runCatching {
-            context.contentResolver.query(traversalUri, null, null, null, null)?.close()
+            context.contentResolver.query(traversalUri, null, android.os.Bundle.EMPTY, null)?.close()
         }.exceptionOrNull()
         assertTrue(
             "Expected SecurityException for path traversal, got $blockedTraversal",
@@ -2865,7 +2865,7 @@ class NexusWorkspaceComposeE2ETest {
 class TestExternalFilesDocumentsProvider : android.provider.DocumentsProvider() {
     companion object {
         @Volatile
-        var rootDir: java.io.File = java.io.File(System.getProperty("java.io.tmpdir", "/tmp"))
+        var rootDir: java.io.File = java.io.File(System.getProperty("java.io.tmpdir") ?: "/tmp")
     }
 
     private val defaultDocCols = arrayOf(
@@ -2878,6 +2878,13 @@ class TestExternalFilesDocumentsProvider : android.provider.DocumentsProvider() 
     )
 
     override fun onCreate(): Boolean = true
+
+    override fun getDocumentType(documentId: String?): String =
+        if (resolve(documentId).isDirectory) {
+            android.provider.DocumentsContract.Document.MIME_TYPE_DIR
+        } else {
+            "application/octet-stream"
+        }
 
     override fun queryRoots(projection: Array<out String>?): android.database.Cursor =
         android.database.MatrixCursor(

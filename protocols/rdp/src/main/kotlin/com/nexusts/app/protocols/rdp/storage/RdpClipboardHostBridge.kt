@@ -190,6 +190,18 @@ object RdpClipboardHostBridge {
         val lastModified: Long
     )
 
+    private fun queryResolverCompat(
+        context: Context,
+        uri: Uri,
+        projection: Array<String>?
+    ): android.database.Cursor? {
+        return runCatching {
+            context.contentResolver.query(uri, projection, android.os.Bundle.EMPTY, null)
+        }.getOrElse {
+            context.contentResolver.query(uri, projection, null, null, null)
+        }
+    }
+
     private fun queryContentMetadata(context: Context, uri: Uri): QueriedContentMeta? {
         return runCatching {
             val projection = arrayOf(
@@ -199,13 +211,11 @@ object RdpClipboardHostBridge {
                 Document.COLUMN_LAST_MODIFIED
             )
             val cursor = runCatching {
-                context.contentResolver.query(uri, projection, null, null, null)
-            }.getOrNull() ?: context.contentResolver.query(
+                queryResolverCompat(context, uri, projection)
+            }.getOrNull() ?: queryResolverCompat(
+                context,
                 uri,
-                arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE),
-                null,
-                null,
-                null
+                arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE)
             )
             cursor?.use { c ->
                 if (!c.moveToFirst()) return@runCatching null
@@ -309,17 +319,15 @@ object RdpClipboardHostBridge {
 
         val usedChildNames = mutableSetOf<String>()
         runCatching {
-            context.contentResolver.query(
+            queryResolverCompat(
+                context,
                 childrenUri,
                 arrayOf(
                     Document.COLUMN_DOCUMENT_ID,
                     Document.COLUMN_DISPLAY_NAME,
                     Document.COLUMN_MIME_TYPE,
                     Document.COLUMN_LAST_MODIFIED
-                ),
-                null,
-                null,
-                null
+                )
             )?.use { cursor ->
                 val idCol = cursor.getColumnIndex(Document.COLUMN_DOCUMENT_ID)
                 val nameCol = cursor.getColumnIndex(Document.COLUMN_DISPLAY_NAME)
