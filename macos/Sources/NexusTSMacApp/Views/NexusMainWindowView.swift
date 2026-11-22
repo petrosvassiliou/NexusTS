@@ -306,6 +306,7 @@ public struct NexusMainWindowView: View {
                     .frame(height: 175)
             }
         }
+    }
 }
 
 // MARK: - 1:1 Googlebook Top Workspace Bar (`DesktopTopWindowChrome`, 58pt)

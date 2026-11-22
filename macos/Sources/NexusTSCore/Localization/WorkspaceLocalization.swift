@@ -797,7 +797,7 @@ public extension LocalizedWorkspaceStrings {
         }
     }
 
-    func syncedRevLabel(_ rev: UInt64) -> String {
+    func syncedRevLabel(_ rev: Int64) -> String {
         switch connections {
         case "Verbindungen": return "Synchron (Rev \(rev))"
         case "Connessioni": return "Sincronizzato (rev \(rev))"
