@@ -1068,7 +1068,11 @@ public final class WorkspaceStore: ObservableObject {
     // Broadcast, Preferences & Sync
     @Published public var broadcastInputEnabled: Bool = false
     @Published public var remoteKeyCaptureEnabled: Bool = false
-    @Published public var appLanguage: NexusAppLanguage = .system
+    @Published public var appLanguage: NexusAppLanguage = UserDefaults.standard.string(forKey: "nexusts.macos.appLanguage").flatMap(NexusAppLanguage.init(rawValue:)) ?? .system {
+        didSet {
+            UserDefaults.standard.set(appLanguage.rawValue, forKey: "nexusts.macos.appLanguage")
+        }
+    }
     @Published public var terminalFontName: String = "SF Mono"
     @Published public var terminalFontSize: Double = 13.0
     @Published public var spotlightIndexingEnabled: Bool = true
@@ -1104,6 +1108,7 @@ public final class WorkspaceStore: ObservableObject {
     @Published public var editingCredential: VaultCredential? = nil
     @Published public var isPresentingNewCredentialSheet: Bool = false
     @Published public var pendingRoyalImport: PendingRoyalTsImport? = nil
+    @Published public var isPresentingImportFilePicker: Bool = false
     @Published public var isPresentingResetDatabaseSheet: Bool = false
     @Published public var activeAppError: NexusAppError? = nil
     @Published public var statusToastMessage: String? = nil

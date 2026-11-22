@@ -21,7 +21,7 @@ on:
       release_tag:
         description: "Tag name when publishing via workflow_dispatch"
         required: false
-        default: "v0.9.2"
+        default: "v0.9.3"
         type: string
 
 permissions:
@@ -319,7 +319,7 @@ jobs:
           set -euo pipefail
           TAG_NAME="${GITHUB_REF_NAME}"
           if [[ "${TAG_NAME}" != v* ]]; then
-            TAG_NAME="${{ inputs.release_tag || 'v0.9.2' }}"
+            TAG_NAME="${{ inputs.release_tag || 'v0.9.3' }}"
           fi
           echo "tag_name=${TAG_NAME}" >> "${GITHUB_OUTPUT}"
 
@@ -354,12 +354,12 @@ jobs:
             ## NexusTS ${{ steps.stage.outputs.tag_name }} (`com.nexusts.app` / `com.nexusts.app.macos` / `com.nexusts.app.chromeos`)
             **Native & Offline Remote Management Workspace for ChromeOS (IWA & PWA), Googlebook OS, Android Tablets & macOS**
 
-            > **ChromeOS Offline PWA + Isolated Web App Dual-Build (`0.9.2` / `versionCode = 10902`)**: Introduces the 100% offline-capable ChromeOS edition with 1:1 feature parity — packaged both as a **Signed Isolated Web App (`.swbn`)** with native ChromeOS `Direct Sockets API` (`TCPSocket` / `UDPSocket`) for standalone raw RDP, SSH, SFTP, VNC, FTP, Telnet & Wake-on-LAN without any helper process, and as a **Standard Offline PWA (`.zip`)** with Service Worker precaching + optional `nexusts-local-relay` Crostini companion binary. Byte-for-byte compatible `.nxts` v2 Argon2id + AES-256-GCM vaults and automatic Google Drive sync across ChromeOS, macOS, and Android.
+            > **ChromeOS Offline PWA + Isolated Web App Dual-Build (`0.9.3` / `versionCode = 10903`)**: Introduces the 100% offline-capable ChromeOS edition with 1:1 feature parity — packaged both as a **Signed Isolated Web App (`.swbn`)** with native ChromeOS `Direct Sockets API` (`TCPSocket` / `UDPSocket`) for standalone raw RDP, SSH, SFTP, VNC, FTP, Telnet & Wake-on-LAN without any helper process, and as a **Standard Offline PWA (`.zip`)** with Service Worker precaching + optional `nexusts-local-relay` Crostini companion binary. Byte-for-byte compatible `.nxts` v2 Argon2id + AES-256-GCM vaults and automatic Google Drive sync across ChromeOS, macOS, and Android.
 
             ### Signed Deliverables
             - **`NexusTS-${{ steps.stage.outputs.tag_name }}-ChromeOS-IWA.swbn` & `update-manifest.json`**: Signed ChromeOS Isolated Web App bundle (`isolated-app://`) with native `Direct Sockets`, `Controlled Frame`, and `Web Serial` — 100% standalone & offline.
             - **`NexusTS-${{ steps.stage.outputs.tag_name }}-ChromeOS-Offline-PWA.zip` + `nexusts-local-relay` (`x86_64` & `arm64`)**: Self-contained Offline PWA bundle + optional zero-dependency Linux/Crostini local socket relay for unmanaged Chromebooks.
-            - **`NexusTS-${{ steps.stage.outputs.tag_name }}-googlebook-android-release.apk` & `.aab`**: Signed (APK Signature Scheme v2/v3/v4, RSA-4096) universal `arm64-v8a` + `x86_64` APK (`versionCode = 10902`) with 16 KB ELF page alignment.
+            - **`NexusTS-${{ steps.stage.outputs.tag_name }}-googlebook-android-release.apk` & `.aab`**: Signed (APK Signature Scheme v2/v3/v4, RSA-4096) universal `arm64-v8a` + `x86_64` APK (`versionCode = 10903`) with 16 KB ELF page alignment.
             - **`NexusTS-${{ steps.stage.outputs.tag_name }}-macOS-Universal.zip` & `.dmg`**: Self-contained Universal2 (`arm64` + `x86_64`) macOS application bundle.
 
             ### Highlights in ${{ steps.stage.outputs.tag_name }}

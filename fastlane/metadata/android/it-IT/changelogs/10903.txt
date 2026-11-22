@@ -1,0 +1,1 @@
+• NexusTS 0.9.3: Interfaccia Googlebook unificata su tutte le piattaforme (Googlebook, ChromeOS e macOS) con barra superiore espressiva, pulsante diviso Nuova connessione, selettore lingua con bandiere e schermata principale Launchpad.

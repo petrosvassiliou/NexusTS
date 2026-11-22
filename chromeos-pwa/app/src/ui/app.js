@@ -17,6 +17,7 @@ import {
   effectiveConnectionPort,
   expandTaskVariables,
   parseKeySequenceSteps,
+  parseQuickConnectInput,
   PROTOCOL_CATALOG,
   randomUuid
 } from '../core/vault-models.js';
@@ -38,6 +39,9 @@ import { VtTerminalEmulator } from '../protocols/vt-terminal.js';
 const store = new NexusChromeOSStore();
 const liveSessions = new Map(); // tabId -> { kind, instance, terminal, transferState, utilLogs }
 let activeModal = null;
+let openTopDropdown = null; // 'create' | 'lang' | 'tools' | null
+let showAddTodoComposer = false;
+let quickConnectQuery = '';
 let dragPayload = null;
 let totpRefreshInterval = null;
 const windowChannel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('nexusts-chromeos-tabs') : null;
@@ -1034,22 +1038,487 @@ function renderPaneBody(tab) {
   return '';
 }
 
+// 1:1 Port of Googlebook `NexusLanguageFlagBadge` (24x16 crisp rounded vector flags)
+function renderFlagSvg(localeCode) {
+  const code = String(localeCode || 'de').toLowerCase().slice(0, 2);
+  let inner = '';
+  switch (code) {
+    case 'de':
+      inner = '<rect width="24" height="5.34" fill="#18181B"/><rect y="5.33" width="24" height="5.34" fill="#DD0000"/><rect y="10.66" width="24" height="5.34" fill="#FFCE00"/>';
+      break;
+    case 'fr':
+      inner = '<rect width="8" height="16" fill="#002395"/><rect x="8" width="8" height="16" fill="#FFFFFF"/><rect x="16" width="8" height="16" fill="#ED2939"/>';
+      break;
+    case 'it':
+      inner = '<rect width="8" height="16" fill="#009246"/><rect x="8" width="8" height="16" fill="#FFFFFF"/><rect x="16" width="8" height="16" fill="#CE2B37"/>';
+      break;
+    case 'es':
+      inner = '<rect width="24" height="4" fill="#AA151B"/><rect y="4" width="24" height="8" fill="#F1BF00"/><rect y="12" width="24" height="4" fill="#AA151B"/>';
+      break;
+    case 'el':
+      inner = '<rect width="24" height="16" fill="#0D5EAF"/><path d="M0 2.67H24M0 6.22H24M0 9.78H24M0 13.33H24" stroke="#FFFFFF" stroke-width="1.78"/><rect width="8.9" height="8.9" fill="#0D5EAF"/><path d="M4.45 0V8.9M0 4.45H8.9" stroke="#FFFFFF" stroke-width="1.85"/>';
+      break;
+    case 'en':
+    default:
+      inner = '<rect width="24" height="16" fill="#012169"/><path d="M0 0L24 16M24 0L0 16" stroke="#FFFFFF" stroke-width="2.9"/><path d="M0 0L24 16M24 0L0 16" stroke="#C8102E" stroke-width="1.45"/><path d="M12 0V16M0 8H24" stroke="#FFFFFF" stroke-width="4.4"/><path d="M12 0V16M0 8H24" stroke="#C8102E" stroke-width="2.5"/>';
+      break;
+  }
+  return `<svg class="flag-badge-svg" width="24" height="16" viewBox="0 0 24 16" fill="none" aria-hidden="true"><g>${inner}</g><rect x="0.35" y="0.35" width="23.3" height="15.3" rx="3.4" stroke="rgba(15,23,42,0.16)" stroke-width="0.7"/></svg>`;
+}
+
+// Crisp Material 3 Outline Icons matching Googlebook `DesktopTopWindowChrome` & `ExpressiveVaultOverviewDashboard`
+function renderMaterialIcon(name, size = 18) {
+  const common = `width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.95" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"`;
+  switch (name) {
+    case 'menu':
+      return `<svg ${common}><path d="M4 7h16M4 12h16M4 17h16"/></svg>`;
+    case 'settings':
+      return `<svg ${common}><circle cx="12" cy="12" r="3.2"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.08a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.08a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>`;
+    case 'arrowBack':
+      return `<svg ${common}><path d="M19 12H5M12 19l-7-7 7-7"/></svg>`;
+    case 'search':
+      return `<svg ${common}><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.8-3.8"/></svg>`;
+    case 'add':
+      return `<svg ${common}><path d="M12 5v14M5 12h14"/></svg>`;
+    case 'chevronDown':
+      return `<svg ${common}><path d="M6 9l6 6 6-6"/></svg>`;
+    case 'folder':
+      return `<svg ${common}><path d="M3 6.5A1.5 1.5 0 0 1 4.5 5h4.6l2 2.2h8.4A1.5 1.5 0 0 1 21 8.7v8.8a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5v-11z"/></svg>`;
+    case 'sparkles':
+      return `<svg ${common}><path d="M12 3l1.9 4.6L18.5 9.5l-4.6 1.9L12 16l-1.9-4.6L5.5 9.5l4.6-1.9L12 3z"/><path d="M19 15l.9 2.1L22 18l-2.1.9L19 21l-.9-2.1L16 18l2.1-.9L19 15z"/></svg>`;
+    case 'key':
+      return `<svg ${common}><circle cx="7.5" cy="15.5" r="4.5"/><path d="M10.7 12.3L21 2M17 6l3 3"/></svg>`;
+    case 'bookmark':
+      return `<svg ${common}><path d="M6 4h12a1 1 0 0 1 1 1v15l-7-4-7 4V5a1 1 0 0 1 1-1z"/></svg>`;
+    case 'terminal':
+      return `<svg ${common}><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M7 9l3.5 3L7 15M12.5 15H17"/></svg>`;
+    case 'upload':
+      return `<svg ${common}><path d="M12 16V4M7 9l5-5 5 5M4 20h16"/></svg>`;
+    case 'download':
+      return `<svg ${common}><path d="M12 4v12M7 11l5 5 5-5M4 20h16"/></svg>`;
+    case 'cloudSync':
+      return `<svg ${common}><path d="M6.5 18h11a4.5 4.5 0 0 0 .9-8.9A6 6 0 0 0 6.7 7.6 4 4 0 0 0 6.5 18z"/></svg>`;
+    case 'podcasts':
+      return `<svg ${common}><circle cx="12" cy="12" r="2"/><path d="M8.5 8.5a5 5 0 0 1 7 0M15.5 15.5a5 5 0 0 1-7 0M5.6 5.6a9 9 0 0 1 12.8 0M18.4 18.4a9 9 0 0 1-12.8 0"/></svg>`;
+    case 'info':
+      return `<svg ${common}><circle cx="12" cy="12" r="9"/><path d="M12 16v-4M12 8h.01"/></svg>`;
+    case 'lock':
+      return `<svg ${common}><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>`;
+    case 'lockOpen':
+      return `<svg ${common}><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 7.4-2.1"/></svg>`;
+    case 'moreVert':
+      return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="5.5" r="1.85"/><circle cx="12" cy="12" r="1.85"/><circle cx="12" cy="18.5" r="1.85"/></svg>`;
+    case 'star':
+      return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="#f59e0b" aria-hidden="true"><path d="M12 2.5l2.93 5.94 6.56.95-4.74 4.62 1.12 6.53L12 17.45l-5.87 3.09 1.12-6.53-4.74-4.62 6.56-.95L12 2.5z"/></svg>`;
+    case 'check':
+      return `<svg ${common}><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>`;
+    case 'trash':
+      return `<svg ${common}><path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v3"/></svg>`;
+    case 'edit':
+      return `<svg ${common}><path d="M12 20h9M16.5 3.5a2.12 2.12 0 1 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/></svg>`;
+    case 'keyboard':
+      return `<svg ${common}><rect x="2.5" y="6" width="19" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M8 14h8"/></svg>`;
+    default:
+      return `<svg ${common}><circle cx="12" cy="12" r="8"/></svg>`;
+  }
+}
+
+function renderCreateDropdownMenu(s) {
+  return `
+    <div class="topbar-dropdown align-right" role="menu">
+      <button type="button" class="dropdown-item" data-action="open-connection-modal">${renderMaterialIcon('add', 16)}<span>${esc(s.newConnection)}</span><span class="dropdown-kbd">Ctrl+N</span></button>
+      <button type="button" class="dropdown-item" data-action="open-folder-modal">${renderMaterialIcon('folder', 16)}<span>${esc(s.newFolder)}</span></button>
+      <button type="button" class="dropdown-item" data-action="open-smart-folder-modal">${renderMaterialIcon('sparkles', 16)}<span>${esc(s.newSmartFolder)}</span></button>
+      <button type="button" class="dropdown-item" data-action="open-credential-modal">${renderMaterialIcon('key', 16)}<span>${esc(s.newCredential)}</span></button>
+      <button type="button" class="dropdown-item" data-action="open-template-modal">${renderMaterialIcon('bookmark', 16)}<span>${esc(s.newTemplate)}</span></button>
+      <div class="dropdown-divider"></div>
+      <button type="button" class="dropdown-item" data-action="launch-local-shell">${renderMaterialIcon('terminal', 16)}<span>${esc(s.localTerminalCta)}</span></button>
+      <button type="button" class="dropdown-item" data-action="open-import-modal">${renderMaterialIcon('upload', 16)}<span>${esc(s.importShortCta)}</span></button>
+      <div class="dropdown-divider"></div>
+      <button type="button" class="dropdown-item" data-action="export-vault" data-format="NXTS">${renderMaterialIcon('download', 16)}<span>${esc(s.exportNxts)}</span></button>
+      <button type="button" class="dropdown-item" data-action="export-vault" data-format="RTSX">${renderMaterialIcon('download', 16)}<span>${esc(s.exportRtsx)}</span></button>
+      <button type="button" class="dropdown-item" data-action="export-vault" data-format="CSV">${renderMaterialIcon('download', 16)}<span>${esc(s.exportCsv)}</span></button>
+    </div>
+  `;
+}
+
+function renderLanguageDropdownMenu(currentLocale) {
+  return `
+    <div class="topbar-dropdown align-right lang-dropdown" role="menu">
+      ${SUPPORTED_LOCALES.map((l) => `
+        <button type="button" class="dropdown-item ${currentLocale === l.code ? 'selected' : ''}" data-action="select-locale" data-locale="${esc(l.code)}">
+          ${renderFlagSvg(l.code)}
+          <span style="flex:1">${esc(l.label)}</span>
+          ${currentLocale === l.code ? `<span class="dropdown-check">${renderMaterialIcon('check', 15)}</span>` : ''}
+        </button>
+      `).join('')}
+    </div>
+  `;
+}
+
+function renderToolsDropdownMenu(st, s) {
+  return `
+    <div class="topbar-dropdown align-right" role="menu">
+      <button type="button" class="dropdown-item" data-action="open-settings-updates">${renderMaterialIcon('download', 16)}<span>${esc(s.settingsTabUpdates)}</span></button>
+      <button type="button" class="dropdown-item ${st.isBottomDrawerVisible ? 'selected' : ''}" data-action="toggle-bottom-drawer">
+        ${renderMaterialIcon('terminal', 16)}
+        <span style="flex:1">${esc(s.drawerAuditLogs)}</span>
+        ${st.isBottomDrawerVisible ? `<span class="dropdown-check">${renderMaterialIcon('check', 15)}</span>` : ''}
+      </button>
+      <button type="button" class="dropdown-item ${st.remoteKeyCaptureEnabled ? 'selected' : ''}" data-action="toggle-key-capture">
+        ${renderMaterialIcon('keyboard', 16)}
+        <span style="flex:1">${esc(s.remoteKeyCapture)}</span>
+        ${st.remoteKeyCaptureEnabled ? `<span class="dropdown-check">${renderMaterialIcon('check', 15)}</span>` : ''}
+      </button>
+      <button type="button" class="dropdown-item ${st.broadcastInputEnabled ? 'selected' : ''}" data-action="toggle-broadcast">
+        ${renderMaterialIcon('podcasts', 16)}
+        <span style="flex:1">${esc(s.broadcastInput)}</span>
+        ${st.broadcastInputEnabled ? `<span class="dropdown-check">${renderMaterialIcon('check', 15)}</span>` : ''}
+      </button>
+      <div class="dropdown-divider"></div>
+      <button type="button" class="dropdown-item danger" data-action="open-reset-db-modal">${renderMaterialIcon('trash', 16)}<span>${esc(s.resetDatabaseCta)}</span></button>
+    </div>
+  `;
+}
+
+// 1:1 Port of Googlebook `DesktopTopWindowChrome` (58px, clean right cluster, Split-Action button & Flag Picker)
+function renderGooglebookTopBar() {
+  const s = store.strings;
+  const st = store.state;
+  const inSettings = st.activeDestination === 'settings';
+  const defaultVaultNames = new Set(['NexusTS Enterprise Vault', 'NexusTS Vault']);
+  const showVaultPill = st.vaultDocument.name && !defaultVaultNames.has(st.vaultDocument.name);
+
+  return `
+    <header class="topbar">
+      <div class="topbar-cluster">
+        <button type="button"
+                class="morph-icon-btn ${st.isSidebarVisible ? 'active' : ''}"
+                data-action="toggle-sidebar"
+                data-tooltip="${esc(s.toggleSidebar)}"
+                data-shortcut="Ctrl+B">
+          ${renderMaterialIcon('menu', 20)}
+        </button>
+        <div class="brand-lockup">
+          <img src="./icons/favicon.svg" alt="" class="brand-emblem" />
+          <h1 class="brand-title">${esc(s.appName)}</h1>
+        </div>
+        ${showVaultPill ? `<span class="vault-pill">${esc(st.vaultDocument.name)}</span>` : ''}
+        <button type="button"
+                id="btn-top-settings"
+                class="gb-tonal-pill ${inSettings ? 'active' : ''}"
+                data-action="toggle-settings"
+                data-tooltip="${esc(s.navSettings)}"
+                data-shortcut="Ctrl+,">
+          ${renderMaterialIcon('settings', 17)}
+          <span>${esc(s.navSettings)}</span>
+        </button>
+        ${inSettings ? `
+          <button type="button" class="gb-action-chip" data-action="return-connections">
+            ${renderMaterialIcon('arrowBack', 15)}
+            <span>${esc(s.navConnections)}</span>
+          </button>
+        ` : ''}
+      </div>
+
+      <button type="button"
+              class="gb-quick-trigger"
+              data-action="open-quick-connect-modal"
+              data-tooltip="${esc(s.quickConnectButton)}"
+              data-shortcut="Ctrl+K">
+        <span class="gb-quick-trigger-icon">${renderMaterialIcon('search', 17)}</span>
+        <span class="gb-quick-trigger-label">${esc(s.quickConnectButton)}</span>
+        <span class="kbd-badge">Ctrl+K</span>
+      </button>
+
+      <div class="topbar-cluster">
+        ${st.swUpdateWaiting
+          ? `<button type="button" class="gb-tonal-pill update-ready" data-action="apply-sw-update" data-tooltip="${esc(s.updateReadyTooltip)}">${renderMaterialIcon('download', 16)}<span>${esc(s.applyUpdateCta)}</span></button>`
+          : ''}
+        ${st.pwaInstallAvailable
+          ? `<button type="button" class="gb-tonal-pill" data-action="install-pwa" data-tooltip="${esc(s.installAppTooltip)}">${renderMaterialIcon('download', 16)}<span>${esc(s.installAppCta)}</span></button>`
+          : ''}
+
+        <div class="dropdown-anchor">
+          <div class="split-action-group">
+            <button type="button"
+                    class="split-btn-lead"
+                    data-action="open-connection-modal"
+                    data-tooltip="${esc(s.newConnection)}"
+                    data-shortcut="Ctrl+N">
+              ${renderMaterialIcon('add', 18)}
+              <span>${esc(s.newConnection)}</span>
+            </button>
+            <button type="button"
+                    class="split-btn-trail ${openTopDropdown === 'create' ? 'open' : ''}"
+                    data-action="toggle-create-menu"
+                    aria-label="Create &amp; Import Menu"
+                    aria-expanded="${openTopDropdown === 'create'}">
+              ${renderMaterialIcon('chevronDown', 17)}
+            </button>
+          </div>
+          ${openTopDropdown === 'create' ? renderCreateDropdownMenu(s) : ''}
+        </div>
+
+        ${st.driveLinkedName ? `
+          <button type="button" class="gb-action-chip synced" data-action="drive-sync-now" data-tooltip="${esc(s.driveSyncNow)}">
+            ${renderMaterialIcon('cloudSync', 15)}
+            <span>${esc((s.syncedRevFormat || 'Synced (rev {rev})').replace('{rev}', String(st.vaultDocument.revision)))}</span>
+          </button>
+        ` : ''}
+
+        ${st.broadcastInputEnabled ? `
+          <button type="button" class="morph-icon-btn active" data-action="toggle-broadcast" data-tooltip="${esc(s.broadcastInput)}">
+            ${renderMaterialIcon('podcasts', 19)}
+          </button>
+        ` : ''}
+
+        <div class="dropdown-anchor">
+          <button type="button"
+                  class="lang-pill-btn ${openTopDropdown === 'lang' ? 'active' : ''}"
+                  data-action="toggle-lang-menu"
+                  aria-expanded="${openTopDropdown === 'lang'}">
+            ${renderFlagSvg(st.locale)}
+            <span>${esc(st.locale.toUpperCase())}</span>
+            ${renderMaterialIcon('chevronDown', 15)}
+          </button>
+          ${openTopDropdown === 'lang' ? renderLanguageDropdownMenu(st.locale) : ''}
+        </div>
+
+        <button type="button"
+                class="morph-icon-btn ${st.isInspectorVisible ? 'active' : ''}"
+                data-action="toggle-inspector"
+                data-tooltip="${esc(s.toggleInspector)}">
+          ${renderMaterialIcon('info', 20)}
+        </button>
+
+        <button type="button"
+                class="morph-icon-btn"
+                data-action="lock-vault"
+                data-tooltip="${esc(s.lockVault)}"
+                data-shortcut="Ctrl+Shift+L">
+          ${renderMaterialIcon(st.isVaultLocked ? 'lock' : 'lockOpen', 20)}
+        </button>
+
+        <div class="dropdown-anchor">
+          <button type="button"
+                  class="morph-icon-btn ${openTopDropdown === 'tools' ? 'active' : ''}"
+                  data-action="toggle-tools-menu"
+                  aria-label="Workspace Tools"
+                  aria-expanded="${openTopDropdown === 'tools'}">
+            ${renderMaterialIcon('moreVert', 20)}
+          </button>
+          ${openTopDropdown === 'tools' ? renderToolsDropdownMenu(st, s) : ''}
+        </div>
+      </div>
+    </header>
+  `;
+}
+
+// 1:1 Port of Googlebook `ExpressiveVaultOverviewDashboard` (Welcome Card when empty; Hero Command Launchpad + Favorites + Checklist when populated)
+function renderGooglebookOverviewDashboard() {
+  const s = store.strings;
+  const st = store.state;
+  const doc = st.vaultDocument;
+  const conns = doc.connections || [];
+  const todos = doc.todoItems || [];
+  const templates = doc.templates || [];
+  const favorites = conns.filter((c) => c.favorite);
+  const activeConnIds = new Set(st.tabs.map((t) => t.connectionId));
+
+  if (conns.length === 0 && todos.length === 0 && !showAddTodoComposer) {
+    const protocols = ['RDP', 'SSH', 'SFTP', 'VNC', 'HTTPS', 'K8s', 'Serial'];
+    return `
+      <div class="gb-welcome-stage">
+        <div class="gb-welcome-card">
+          <img src="./icons/favicon.svg" alt="" class="gb-welcome-emblem" />
+          <div class="gb-welcome-copy">
+            <h2 class="gb-welcome-title">${esc(s.emptyWorkspaceTitle)}</h2>
+            <p class="gb-welcome-subtitle">${esc(s.emptyWorkspaceHint)}</p>
+          </div>
+          <div class="gb-welcome-actions">
+            <button type="button" class="pill-btn primary gb-cta-btn" data-action="open-connection-modal">
+              ${renderMaterialIcon('add', 18)}
+              <span>${esc(s.newConnection)}</span>
+            </button>
+            <button type="button" class="gb-tonal-pill gb-cta-btn" data-action="open-quick-connect-modal">
+              ${renderMaterialIcon('search', 17)}
+              <span>${esc(s.quickConnectButton)}</span>
+            </button>
+            <button type="button" class="pill-btn gb-cta-btn" data-action="launch-local-shell">
+              ${renderMaterialIcon('terminal', 17)}
+              <span>${esc(s.localTerminalCta)}</span>
+            </button>
+            <button type="button" class="pill-btn gb-cta-btn" data-action="open-import-modal">
+              ${renderMaterialIcon('upload', 17)}
+              <span>${esc(s.importShortCta)}</span>
+            </button>
+            ${st.pwaInstallAvailable ? `
+              <button type="button" class="gb-tonal-pill gb-cta-btn" data-action="install-pwa" data-tooltip="${esc(s.installAppTooltip)}">
+                ${renderMaterialIcon('download', 17)}
+                <span>${esc(s.installAppCta)}</span>
+              </button>
+            ` : ''}
+          </div>
+          <div class="gb-welcome-divider"></div>
+          <div class="gb-proto-chips">
+            ${protocols.map((p) => `<span class="gb-proto-chip">${esc(p)}</span>`).join('')}
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  return `
+    <div class="gb-launchpad-scroll">
+      <div class="gb-launchpad-wrap">
+        <section class="gb-hero-card">
+          <div class="gb-hero-top">
+            <div class="gb-hero-identity">
+              <img src="./icons/favicon.svg" alt="" class="gb-hero-emblem" />
+              <div>
+                <h2 class="gb-hero-title">${esc(doc.name)}</h2>
+                <div class="gb-hero-stats">${conns.length} ${esc(s.navConnections.toLowerCase())} • ${st.tabs.length} ${esc(s.activeSessionsLower)}</div>
+              </div>
+            </div>
+            <div class="gb-hero-actions">
+              <button type="button" class="pill-btn" data-action="launch-local-shell">
+                ${renderMaterialIcon('terminal', 16)}
+                <span>${esc(s.localTerminalCta)}</span>
+              </button>
+              <button type="button" class="pill-btn primary" data-action="open-connection-modal">
+                ${renderMaterialIcon('add', 17)}
+                <span>${esc(s.newConnection)}</span>
+              </button>
+            </div>
+          </div>
+
+          <button type="button" class="gb-quick-search-bar" data-action="open-quick-connect-modal">
+            <span class="gb-quick-search-icon">${renderMaterialIcon('search', 18)}</span>
+            <span class="gb-quick-search-text">${esc(s.quickConnectLaunchpadHint)}</span>
+            <span class="kbd-badge">Ctrl+K</span>
+          </button>
+
+          <div class="gb-hero-pills">
+            ${templates.length > 0 ? `
+              <button type="button" class="gb-tonal-pill small" data-action="open-settings-templates">
+                ${renderMaterialIcon('bookmark', 15)}
+                <span>${esc(s.settingsTabTemplates)} (${templates.length})</span>
+              </button>
+            ` : ''}
+            <button type="button" class="pill-btn small" data-action="open-import-modal">
+              ${renderMaterialIcon('upload', 15)}
+              <span>${esc(s.importShortCta)}</span>
+            </button>
+            ${todos.length === 0 && !showAddTodoComposer ? `
+              <button type="button" class="gb-ghost-pill" data-action="open-todo-composer">
+                ${renderMaterialIcon('add', 15)}
+                <span>${esc(s.addTodoCta)}</span>
+              </button>
+            ` : ''}
+          </div>
+        </section>
+
+        ${favorites.length > 0 ? `
+          <section class="gb-section">
+            <div class="gb-section-header">
+              ${renderMaterialIcon('star', 18)}
+              <h3>${esc(s.filterFavorites)}</h3>
+            </div>
+            <div class="gb-fav-grid">
+              ${favorites.map((fav) => {
+                const tint = protocolAppleTint(fav.protocol, fav.inheritable?.displayColorAccentHex);
+                const badge = PROTOCOL_CATALOG[fav.protocol]?.badge || fav.protocol;
+                const isLive = activeConnIds.has(fav.id);
+                const isSelected = st.selectedConnectionId === fav.id;
+                return `
+                  <div class="gb-fav-card ${isSelected ? 'selected' : ''}"
+                       style="--fav-tint:${esc(tint)}"
+                       data-action="select-connection"
+                       data-dblaction="launch-connection"
+                       data-conn-id="${esc(fav.id)}">
+                    <div class="gb-fav-card-top">
+                      <span class="gb-fav-proto">
+                        ${renderSidebarConnectionTypeIcon(fav.protocol, fav.inheritable?.displayColorAccentHex, 15)}
+                        <span>${esc(badge)}</span>
+                        ${isLive ? '<span class="active-dot"></span>' : ''}
+                      </span>
+                      <span class="gb-fav-actions">
+                        <button type="button" class="mini-action-btn" data-action="launch-connection" data-conn-id="${esc(fav.id)}" data-tooltip="${esc(s.connectNow)}">⚡</button>
+                        <button type="button" class="mini-action-btn" data-action="edit-connection" data-conn-id="${esc(fav.id)}" data-tooltip="${esc(s.edit)}">${renderMaterialIcon('edit', 13)}</button>
+                      </span>
+                    </div>
+                    <div class="gb-fav-name">${esc(fav.name)}</div>
+                  </div>
+                `;
+              }).join('')}
+            </div>
+          </section>
+        ` : `
+          <div class="gb-hint-card">
+            ${renderMaterialIcon('star', 18)}
+            <span>${esc(s.favoritesEmptyHint)}</span>
+          </div>
+        `}
+
+        ${todos.length > 0 || showAddTodoComposer ? `
+          <section class="gb-todo-card">
+            <div class="gb-todo-header">
+              <h3>${esc(s.todoTitle)}</h3>
+              <form id="gb-todo-form" class="gb-todo-form">
+                <input class="text-input" id="gb-todo-input" placeholder="${esc(s.addTodoCta)}…" autocomplete="off" />
+                <button type="submit" class="pill-btn primary small">${renderMaterialIcon('add', 15)}<span>${esc(s.addTodoCta)}</span></button>
+              </form>
+            </div>
+            <div class="gb-todo-list">
+              ${todos.map((td) => `
+                <div class="gb-todo-row ${td.completed ? 'done' : ''}">
+                  <button type="button" class="gb-todo-check ${td.completed ? 'checked' : ''}" data-action="toggle-todo" data-todo-id="${esc(td.id)}">
+                    ${td.completed ? renderMaterialIcon('check', 13) : ''}
+                  </button>
+                  <span class="gb-todo-text" data-action="toggle-todo" data-todo-id="${esc(td.id)}">${esc(td.title)}</span>
+                  <button type="button" class="mini-action-btn" data-action="delete-object" data-object-id="${esc(td.id)}" data-tooltip="${esc(s.delete)}">✕</button>
+                </div>
+              `).join('')}
+            </div>
+          </section>
+        ` : ''}
+      </div>
+    </div>
+  `;
+}
+
+function renderBottomAuditDrawer() {
+  if (!store.state.isBottomDrawerVisible) return '';
+  const s = store.strings;
+  const logs = store.state.auditLogs || [];
+  return `
+    <section class="bottom-audit-drawer">
+      <div class="audit-drawer-bar">
+        <strong>${esc(s.drawerAuditLogs)} &amp; ${esc(s.broadcastInput)}</strong>
+        <form id="broadcast-line-form" class="audit-broadcast-form">
+          <input class="text-input" id="broadcast-line-input" placeholder="Broadcast command to active terminal tabs…" autocomplete="off" />
+          <button type="submit" class="pill-btn primary small">Send</button>
+        </form>
+        <div class="topbar-cluster">
+          <button type="button" class="pill-btn small" data-action="clear-audit-logs">Clear</button>
+          <button type="button" class="mini-action-btn" data-action="toggle-bottom-drawer">✕</button>
+        </div>
+      </div>
+      <div class="audit-drawer-logs">
+        ${logs.length > 0
+          ? logs.map((l) => `<div class="audit-log-line"><span class="audit-ts">${esc(l.timestamp)}</span><span class="audit-cat">[${esc(l.category)}]</span><span>${esc(l.message)}</span></div>`).join('')
+          : `<div class="audit-log-empty">Vault Rev ${store.state.vaultDocument.revision} • Zero-Knowledge Argon2id + AES-256-GCM active.</div>`}
+      </div>
+    </section>
+  `;
+}
+
 function renderActiveSessionsStage() {
   const s = store.strings;
   const tabs = store.state.tabs;
   if (tabs.length === 0) {
-    return `
-      <div class="empty-stage">
-        <img src="./icons/favicon.svg" alt="" style="width:62px;height:62px;border-radius:15px" />
-        <h2>${esc(s.emptyWorkspaceTitle)}</h2>
-        <p>${esc(s.emptyWorkspaceHint)}</p>
-        <div class="topbar-cluster">
-          <button type="button" class="pill-btn primary" data-action="open-connection-modal">+ ${esc(s.newConnection)}</button>
-          <button type="button" class="pill-btn" data-action="open-settings-sync">☁️ ${esc(s.driveTitle)}</button>
-          ${store.state.pwaInstallAvailable ? `<button type="button" class="pill-btn primary" data-action="install-pwa" data-tooltip="${esc(s.installAppTooltip)}">⬇ ${esc(s.installAppCta)}</button>` : ''}
-        </div>
-      </div>
-    `;
+    return renderGooglebookOverviewDashboard();
   }
 
   const layout = store.state.tilingLayout;
@@ -1374,7 +1843,124 @@ function renderModal() {
         </div>
       </div>
     `;
+    return;
   }
+
+  if (activeModal.kind === 'quick-connect') {
+    const s = store.strings;
+    backdrop.innerHTML = `
+      <div class="qc-palette-card">
+        <form id="qc-palette-form" class="qc-palette-bar">
+          <span class="qc-palette-icon">${renderMaterialIcon('search', 19)}</span>
+          <input class="qc-palette-input" id="qc-palette-input" value="${esc(quickConnectQuery)}" placeholder="${esc(s.quickConnectPlaceholder)}" autocomplete="off" autofocus />
+          <span class="kbd-badge">Esc</span>
+        </form>
+        <div id="qc-palette-results" class="qc-palette-results">
+          ${renderQuickConnectResultsHtml(quickConnectQuery)}
+        </div>
+      </div>
+    `;
+    setTimeout(() => document.getElementById('qc-palette-input')?.focus(), 10);
+    return;
+  }
+
+  if (activeModal.kind === 'smart-folder') {
+    const s = store.strings;
+    backdrop.innerHTML = `
+      <div class="modal-card">
+        <h3>${esc(s.newSmartFolder)}</h3>
+        <div class="field-group">
+          <label>Smart Folder Name</label>
+          <input class="text-input" id="m-sf-name" placeholder="Production Linux SSH" />
+        </div>
+        <div class="form-grid">
+          <div class="field-group">
+            <label>Protocol Filter (optional)</label>
+            <select class="select-input" id="m-sf-proto">
+              <option value="">All Protocols</option>
+              ${Object.entries(PROTOCOL_CATALOG).map(([k, v]) => `<option value="${k}">${esc(v.title)}</option>`).join('')}
+            </select>
+          </div>
+          <div class="field-group">
+            <label>Host Regex / Substring (optional)</label>
+            <input class="text-input" id="m-sf-regex" placeholder="^10\\.20\\." />
+          </div>
+        </div>
+        <div class="topbar-cluster" style="justify-content:flex-end">
+          <button type="button" class="pill-btn" data-action="close-modal">Cancel</button>
+          <button type="button" class="pill-btn primary" data-action="save-smart-folder-modal">Save Smart Folder</button>
+        </div>
+      </div>
+    `;
+    return;
+  }
+
+  if (activeModal.kind === 'reset-db') {
+    const s = store.strings;
+    backdrop.innerHTML = `
+      <div class="modal-card">
+        <h3>${esc(s.resetDatabaseCta)}</h3>
+        <p style="margin:0;color:var(--text-secondary)">This disconnects local Google Drive sync and resets the local ChromeOS vault to a clean empty database. Files on Google Drive are not deleted.</p>
+        <div class="topbar-cluster" style="justify-content:flex-end">
+          <button type="button" class="pill-btn" data-action="close-modal">Cancel</button>
+          <button type="button" class="pill-btn danger" data-action="confirm-reset-db">${esc(s.delete)}</button>
+        </div>
+      </div>
+    `;
+  }
+}
+
+function renderQuickConnectResultsHtml(rawQuery) {
+  const s = store.strings;
+  const doc = store.state.vaultDocument;
+  const q = String(rawQuery || '').trim().toLowerCase();
+  const conns = doc.connections || [];
+  const matches = q
+    ? conns.filter((c) => c.name.toLowerCase().includes(q) || c.host.toLowerCase().includes(q) || c.protocol.toLowerCase().includes(q))
+    : conns.slice(0, 12);
+
+  let adHocHtml = '';
+  if (q && (q.includes('://') || q.includes('.') || q.includes(':'))) {
+    const parsed = parseQuickConnectInput(rawQuery.trim());
+    if (parsed && parsed.host) {
+      adHocHtml = `
+        <div class="qc-result-row adhoc">
+          <div class="qc-result-main" data-action="quick-connect-adhoc" data-uri="${esc(rawQuery.trim())}">
+            ${renderSidebarConnectionTypeIcon(parsed.protocol, null, 18)}
+            <div class="qc-result-meta">
+              <strong>Instant Connect: ${esc(parsed.host)}:${esc(parsed.port)}</strong>
+              <span>${esc(PROTOCOL_CATALOG[parsed.protocol]?.title || parsed.protocol)}</span>
+            </div>
+          </div>
+          <button type="button" class="pill-btn primary small" data-action="quick-connect-adhoc" data-uri="${esc(rawQuery.trim())}">${esc(s.connectNow)}</button>
+        </div>
+      `;
+    }
+  }
+
+  const rowsHtml = matches.slice(0, 16).map((c) => {
+    const protoTitle = PROTOCOL_CATALOG[c.protocol]?.title || c.protocol;
+    return `
+      <div class="qc-result-row">
+        <div class="qc-result-main" data-action="quick-connect-launch" data-conn-id="${esc(c.id)}">
+          ${renderSidebarConnectionTypeIcon(c.protocol, c.inheritable?.displayColorAccentHex, 17)}
+          <div class="qc-result-meta">
+            <strong>${esc(c.name)}</strong>
+            <span>${esc(protoTitle)} • ${esc(c.host)}:${effectiveConnectionPort(c)}</span>
+          </div>
+        </div>
+        <div class="topbar-cluster" style="gap:6px">
+          <button type="button" class="pill-btn small" data-action="quick-connect-split" data-conn-id="${esc(c.id)}">${esc(s.tilingSplitH)}</button>
+          <button type="button" class="pill-btn primary small" data-action="quick-connect-launch" data-conn-id="${esc(c.id)}">${esc(s.connectNow)}</button>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  if (!adHocHtml && !rowsHtml) {
+    return `<div class="qc-empty-state">Type a hostname or URI such as <code>rdp://10.0.0.25</code> or <code>ssh://root@10.0.0.10</code> and press Enter.</div>`;
+  }
+  return adHocHtml + rowsHtml;
 }
 
 function attachLiveCanvases() {
@@ -1403,57 +1989,8 @@ function renderWorkspace() {
 
   root.className = `app-root ${st.isFullScreenSession ? 'fullscreen-session' : ''}`;
 
-  const transportLabel = st.directSocketsAvailable
-    ? s.directSocketsBadge
-    : st.localRelayReachable
-      ? s.relayModeBadge
-      : s.offlineReadyBadge;
-
   root.innerHTML = `
-    <header class="topbar">
-      <div class="topbar-cluster">
-        <button type="button" class="icon-btn ${st.isSidebarVisible ? 'active' : ''}" data-action="toggle-sidebar" data-tooltip="${esc(s.toggleSidebar)}" data-shortcut="Ctrl+B">☰</button>
-        <div class="brand-lockup">
-          <img src="./icons/favicon.svg" alt="" class="brand-emblem" />
-          <h1 class="brand-title">${esc(s.appName)}</h1>
-        </div>
-        ${st.vaultDocument.name !== 'NexusTS Enterprise Vault' ? `<span class="vault-pill">${esc(st.vaultDocument.name)}</span>` : ''}
-        <button type="button"
-                id="btn-top-settings"
-                class="pill-btn ${inSettings ? 'active' : ''}"
-                data-action="toggle-settings"
-                data-tooltip="${esc(s.navSettings)}"
-                data-shortcut="Ctrl+,">
-          <span>⚙</span>
-          <span>${esc(s.navSettings)}</span>
-        </button>
-        ${inSettings ? `<button type="button" class="pill-btn" data-action="return-connections">← ${esc(s.navConnections)}</button>` : ''}
-      </div>
-
-      <form class="omnibox-form" id="quick-connect-form">
-        <span>🔎</span>
-        <input class="omnibox-input" id="quick-connect-input" placeholder="${esc(s.quickConnectPlaceholder)}" autocomplete="off" />
-        <span class="kbd-badge">Ctrl+K</span>
-      </form>
-
-      <div class="topbar-cluster">
-        ${st.swUpdateWaiting
-          ? `<button type="button" class="pill-btn primary" data-action="apply-sw-update" data-tooltip="${esc(s.updateReadyTooltip)}">↻ ${esc(s.applyUpdateCta)}</button>`
-          : ''}
-        ${st.pwaInstallAvailable
-          ? `<button type="button" class="pill-btn primary" data-action="install-pwa" data-tooltip="${esc(s.installAppTooltip)}">⬇ ${esc(s.installAppCta)}</button>`
-          : ''}
-        <span class="status-chip ${st.directSocketsAvailable || st.localRelayReachable ? 'online' : ''}">
-          <span class="status-dot"></span>${esc(transportLabel)}
-        </span>
-        <button type="button" class="pill-btn primary" data-action="open-connection-modal" data-tooltip="${esc(s.newConnection)}" data-shortcut="Ctrl+N">+ ${esc(s.newMenu)}</button>
-        <button type="button" class="icon-btn" data-action="open-folder-modal" data-tooltip="${esc(s.newFolder)}">📁+</button>
-        <button type="button" class="icon-btn" data-action="launch-local-shell" data-tooltip="${esc(s.newLocalShell)}">&gt;_</button>
-        <button type="button" class="icon-btn ${st.broadcastInputEnabled ? 'active' : ''}" data-action="toggle-broadcast" data-tooltip="${esc(s.broadcastInput)}">📡</button>
-        <button type="button" class="icon-btn ${st.isInspectorVisible ? 'active' : ''}" data-action="toggle-inspector" data-tooltip="${esc(s.toggleInspector)}">ⓘ</button>
-        <button type="button" class="icon-btn" data-action="lock-vault" data-tooltip="${esc(s.lockVault)}" data-shortcut="Ctrl+Shift+L">🔒</button>
-      </div>
-    </header>
+    ${renderGooglebookTopBar()}
 
     <div class="workspace-body">
       <aside class="sidebar ${st.isSidebarVisible ? '' : 'hidden'}" aria-label="${esc(s.foldersHeader)}">
@@ -1475,7 +2012,10 @@ function renderWorkspace() {
       </aside>
 
       <main class="center-stage">
-        ${inSettings ? renderUnifiedSettings() : renderActiveSessionsStage()}
+        <div class="center-stage-main">
+          ${inSettings ? renderUnifiedSettings() : renderActiveSessionsStage()}
+        </div>
+        ${renderBottomAuditDrawer()}
       </main>
 
       ${renderInspector()}
@@ -1576,20 +2116,80 @@ function installEventDelegation() {
     if (store.state.driveNeedsPermissionGrant) {
       store.tryRestoreDrivePermissionOnUserGesture();
     }
+
+    // Close Quick-Connect palette when clicking its backdrop
+    if (ev.target.id === 'modal-backdrop' && activeModal?.kind === 'quick-connect') {
+      activeModal = null;
+      renderModal();
+      return;
+    }
+
     const actionEl = ev.target.closest('[data-action]');
-    if (!actionEl) return;
+    if (!actionEl) {
+      if (openTopDropdown && !ev.target.closest('.dropdown-anchor')) {
+        openTopDropdown = null;
+        renderWorkspace();
+      }
+      return;
+    }
     const action = actionEl.getAttribute('data-action');
+
+    const isDropdownToggle = action === 'toggle-create-menu' || action === 'toggle-lang-menu' || action === 'toggle-tools-menu';
+    if (!isDropdownToggle && openTopDropdown) {
+      openTopDropdown = null;
+    }
 
     if (action !== 'focus-tab' && action !== 'select-connection' && action !== 'toggle-folder') {
       ev.stopPropagation();
     }
 
     switch (action) {
+      case 'toggle-create-menu':
+        openTopDropdown = openTopDropdown === 'create' ? null : 'create';
+        renderWorkspace();
+        break;
+      case 'toggle-lang-menu':
+        openTopDropdown = openTopDropdown === 'lang' ? null : 'lang';
+        renderWorkspace();
+        break;
+      case 'toggle-tools-menu':
+        openTopDropdown = openTopDropdown === 'tools' ? null : 'tools';
+        renderWorkspace();
+        break;
+      case 'open-quick-connect-modal':
+        quickConnectQuery = '';
+        activeModal = { kind: 'quick-connect' };
+        renderWorkspace();
+        break;
+      case 'quick-connect-launch':
+        activeModal = null;
+        store.launchConnection(actionEl.getAttribute('data-conn-id'));
+        break;
+      case 'quick-connect-split':
+        activeModal = null;
+        if (store.state.tilingLayout === 'SINGLE') {
+          store.setState({ tilingLayout: 'SPLIT_H' });
+        }
+        store.launchConnection(actionEl.getAttribute('data-conn-id'), { forceNewTab: true });
+        break;
+      case 'quick-connect-adhoc':
+        activeModal = null;
+        store.launchQuickConnect(actionEl.getAttribute('data-uri'));
+        break;
       case 'toggle-sidebar':
         store.setState({ isSidebarVisible: !store.state.isSidebarVisible });
         break;
       case 'toggle-inspector':
         store.setState({ isInspectorVisible: !store.state.isInspectorVisible });
+        break;
+      case 'toggle-bottom-drawer':
+        store.setState({ isBottomDrawerVisible: !store.state.isBottomDrawerVisible });
+        break;
+      case 'clear-audit-logs':
+        store.setState({ auditLogs: [] });
+        break;
+      case 'toggle-key-capture':
+        store.setState({ remoteKeyCaptureEnabled: !store.state.remoteKeyCaptureEnabled });
         break;
       case 'toggle-broadcast':
         store.setState({ broadcastInputEnabled: !store.state.broadcastInputEnabled });
@@ -1599,6 +2199,12 @@ function installEventDelegation() {
         break;
       case 'open-settings-sync':
         store.openSettingsTab('sync');
+        break;
+      case 'open-settings-updates':
+        store.openSettingsTab('updates');
+        break;
+      case 'open-settings-templates':
+        store.openSettingsTab('templates');
         break;
       case 'return-connections':
         store.returnToConnections();
@@ -1666,41 +2272,78 @@ function installEventDelegation() {
         break;
       case 'open-connection-modal':
         activeModal = { kind: 'connection', conn: null };
-        renderModal();
+        renderWorkspace();
         break;
       case 'edit-connection': {
         const c = store.state.vaultDocument.connections.find((x) => x.id === actionEl.getAttribute('data-conn-id'));
-        if (c) { activeModal = { kind: 'connection', conn: structuredClone(c) }; renderModal(); }
+        if (c) { activeModal = { kind: 'connection', conn: structuredClone(c) }; renderWorkspace(); }
         break;
       }
       case 'open-folder-modal':
         activeModal = { kind: 'folder', folder: null };
-        renderModal();
+        renderWorkspace();
         break;
       case 'edit-folder': {
         const f = store.state.vaultDocument.folders.find((x) => x.id === actionEl.getAttribute('data-folder-id'));
-        if (f) { activeModal = { kind: 'folder', folder: structuredClone(f) }; renderModal(); }
+        if (f) { activeModal = { kind: 'folder', folder: structuredClone(f) }; renderWorkspace(); }
         break;
       }
+      case 'open-smart-folder-modal':
+        activeModal = { kind: 'smart-folder' };
+        renderWorkspace();
+        break;
+      case 'save-smart-folder-modal': {
+        const name = document.getElementById('m-sf-name')?.value.trim() || 'Smart Folder';
+        const proto = document.getElementById('m-sf-proto')?.value || '';
+        const hostPatternRegex = document.getElementById('m-sf-regex')?.value.trim() || '';
+        activeModal = null;
+        await store.saveSmartFolder({
+          name,
+          filter: {
+            includeProtocols: proto ? [proto] : [],
+            requiredTags: [],
+            hostPatternRegex
+          }
+        });
+        store.showToast(`Created Smart Folder "${name}".`);
+        break;
+      }
+      case 'open-reset-db-modal':
+        activeModal = { kind: 'reset-db' };
+        renderWorkspace();
+        break;
+      case 'confirm-reset-db':
+        activeModal = null;
+        for (const [tid] of liveSessions) cleanupTabSession(tid);
+        await store.resetVaultDatabase();
+        break;
+      case 'open-todo-composer':
+        showAddTodoComposer = true;
+        renderWorkspace();
+        setTimeout(() => document.getElementById('gb-todo-input')?.focus(), 10);
+        break;
+      case 'toggle-todo':
+        await store.toggleTodoItem(actionEl.getAttribute('data-todo-id'));
+        break;
       case 'open-credential-modal':
         activeModal = { kind: 'credential' };
-        renderModal();
+        renderWorkspace();
         break;
       case 'open-gateway-modal':
         activeModal = { kind: 'gateway' };
-        renderModal();
+        renderWorkspace();
         break;
       case 'open-template-modal':
         activeModal = { kind: 'template' };
-        renderModal();
+        renderWorkspace();
         break;
       case 'open-task-modal':
         activeModal = { kind: 'task' };
-        renderModal();
+        renderWorkspace();
         break;
       case 'open-import-modal':
         activeModal = { kind: 'import' };
-        renderModal();
+        renderWorkspace();
         break;
       case 'close-modal': {
         const cancelCb = activeModal?.onCancel;
@@ -2123,16 +2766,53 @@ function installEventDelegation() {
         nextEl.focus();
         nextEl.setSelectionRange(pos, pos);
       }
+    } else if (ev.target.id === 'qc-palette-input') {
+      quickConnectQuery = ev.target.value;
+      const resultsEl = document.getElementById('qc-palette-results');
+      if (resultsEl) {
+        resultsEl.innerHTML = renderQuickConnectResultsHtml(quickConnectQuery);
+      }
     }
   });
 
   document.addEventListener('submit', async (ev) => {
-    if (ev.target.id === 'quick-connect-form') {
+    if (ev.target.id === 'qc-palette-form') {
       ev.preventDefault();
-      const input = document.getElementById('quick-connect-input');
-      if (input?.value.trim()) {
-        store.launchQuickConnect(input.value.trim());
+      const raw = document.getElementById('qc-palette-input')?.value.trim() || '';
+      if (!raw) return;
+      const q = raw.toLowerCase();
+      const firstMatch = (store.state.vaultDocument.connections || []).find(
+        (c) => c.name.toLowerCase().includes(q) || c.host.toLowerCase().includes(q)
+      );
+      activeModal = null;
+      if (firstMatch && !raw.includes('://')) {
+        store.launchConnection(firstMatch.id);
+      } else {
+        store.launchQuickConnect(raw);
+      }
+    } else if (ev.target.id === 'gb-todo-form') {
+      ev.preventDefault();
+      const input = document.getElementById('gb-todo-input');
+      const title = input?.value.trim() || '';
+      if (title) {
+        showAddTodoComposer = false;
+        await store.addTodoItem(title);
+      }
+    } else if (ev.target.id === 'broadcast-line-form') {
+      ev.preventDefault();
+      const input = document.getElementById('broadcast-line-input');
+      const cmd = input?.value || '';
+      if (cmd) {
+        const bytes = new TextEncoder().encode(`${cmd}\r`);
+        let count = 0;
+        for (const [, entry] of liveSessions) {
+          if (entry.kind === 'terminal') {
+            await entry.instance?.sendInput?.(bytes);
+            count += 1;
+          }
+        }
         input.value = '';
+        store.appendAuditLog('Broadcast', `Sent command to ${count} terminal session(s): ${cmd}`);
       }
     } else if (ev.target.id === 'unlock-vault-form') {
       ev.preventDefault();
@@ -2170,17 +2850,50 @@ function installEventDelegation() {
   // Canvas keyboard & mouse forwarding for RDP / VNC / Terminal + Global ChromeOS Shortcuts
   document.addEventListener('keydown', async (ev) => {
     store.recordUserActivity();
-    if (ev.ctrlKey && !ev.shiftKey && ev.key.toLowerCase() === 'k') {
+    if (ev.key === 'Escape') {
+      if (openTopDropdown) {
+        openTopDropdown = null;
+        renderWorkspace();
+        return;
+      }
+      if (activeModal) {
+        const cancelCb = activeModal.onCancel;
+        activeModal = null;
+        renderModal();
+        await cancelCb?.();
+        return;
+      }
+    }
+    if ((ev.ctrlKey || ev.metaKey) && !ev.shiftKey && ev.key.toLowerCase() === 'k') {
       ev.preventDefault();
-      document.getElementById('quick-connect-input')?.focus();
+      openTopDropdown = null;
+      quickConnectQuery = '';
+      activeModal = activeModal?.kind === 'quick-connect' ? null : { kind: 'quick-connect' };
+      renderWorkspace();
       return;
     }
-    if (ev.ctrlKey && ev.key === ',') {
+    if ((ev.ctrlKey || ev.metaKey) && !ev.shiftKey && ev.key.toLowerCase() === 'b') {
+      if (!ev.target.closest?.('.session-canvas')) {
+        ev.preventDefault();
+        store.setState({ isSidebarVisible: !store.state.isSidebarVisible });
+        return;
+      }
+    }
+    if ((ev.ctrlKey || ev.metaKey) && !ev.shiftKey && ev.key.toLowerCase() === 'n') {
+      if (!ev.target.closest?.('.session-canvas')) {
+        ev.preventDefault();
+        openTopDropdown = null;
+        activeModal = { kind: 'connection', conn: null };
+        renderWorkspace();
+        return;
+      }
+    }
+    if ((ev.ctrlKey || ev.metaKey) && ev.key === ',') {
       ev.preventDefault();
       store.toggleSettingsButton();
       return;
     }
-    if (ev.ctrlKey && ev.shiftKey && ev.key.toLowerCase() === 'l') {
+    if ((ev.ctrlKey || ev.metaKey) && ev.shiftKey && ev.key.toLowerCase() === 'l') {
       ev.preventDefault();
       store.lockVault();
       return;
@@ -2310,10 +3023,12 @@ async function bootstrap() {
     store.launchConnection(detachedConnId);
   } else if (launcherAction && !store.state.isVaultLocked) {
     if (launcherAction === 'new-connection') {
-      activeModal = { kind: 'connection', connId: '' };
+      activeModal = { kind: 'connection', conn: null };
       renderModal();
     } else if (launcherAction === 'quick-connect') {
-      setTimeout(() => document.getElementById('quick-connect-input')?.focus(), 60);
+      quickConnectQuery = '';
+      activeModal = { kind: 'quick-connect' };
+      renderModal();
     } else if (launcherAction === 'drive-sync') {
       store.openSettingsTab('sync');
     } else if (launcherAction === 'settings') {

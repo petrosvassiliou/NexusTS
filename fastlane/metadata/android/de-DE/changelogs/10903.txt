@@ -1,0 +1,1 @@
+• NexusTS 0.9.3: Einheitliche Googlebook-Oberfläche auf allen Plattformen (Googlebook, ChromeOS & macOS) mit Expressive-Kopfleiste, geteiltem „Neue Verbindung“-Menü, Flaggen-Sprachauswahl, Schnellverbindung (Strg+K / ⌘K) und Launchpad-Startansicht.

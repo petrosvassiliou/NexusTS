@@ -833,7 +833,7 @@ public struct MacReleaseUpdateCandidate: Equatable, Sendable {
 }
 
 public enum MacGitHubReleaseUpdater {
-    public static let currentVersion = "0.9.2"
+    public static let currentVersion = "0.9.3"
     public static let githubTokenKeychainKey = "github_release_pat"
 
     private static let legacyPreRebaseVersions: Set<String> = [

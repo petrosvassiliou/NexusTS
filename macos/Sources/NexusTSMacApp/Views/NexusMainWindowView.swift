@@ -7,7 +7,6 @@ public struct NexusMainWindowView: View {
     @EnvironmentObject private var store: WorkspaceStore
     @Environment(\.openWindow) private var openWindow
 
-    @State private var isImportingVaultFile = false
     @State private var pendingEncryptedImportURL: URL? = nil
     @State private var importArchivePassword: String = ""
     @State private var exportPayload: ExportedFileDocument? = nil
@@ -19,7 +18,8 @@ public struct NexusMainWindowView: View {
 
     public var body: some View {
         ZStack {
-            LiquidGlassBackdropAura()
+            Color(red: 0.973, green: 0.980, blue: 0.988)
+                .ignoresSafeArea()
 
             if store.isVaultLocked {
                 ZeroKnowledgeLockShieldView()
@@ -32,21 +32,44 @@ public struct NexusMainWindowView: View {
                         .zIndex(20)
                 }
             } else {
-                NavigationSplitView(columnVisibility: $store.columnVisibility) {
-                    SidebarHierarchyView()
-                        .navigationSplitViewColumnWidth(min: 185, ideal: 225, max: 340)
-                } detail: {
-                    workspaceDetailCanvas
-                        .inspector(isPresented: $store.isInspectorPresented) {
-                            InspectorColumnView()
-                                .inspectorColumnWidth(min: 265, ideal: 300, max: 375)
+                VStack(spacing: 0) {
+                    GooglebookDesktopTopBar(
+                        onImportVault: {
+                            store.isPresentingImportFilePicker = true
+                        },
+                        onExportVault: { fmt in
+                            do {
+                                let data = try VaultDocumentExporter.export(document: store.document, format: fmt)
+                                exportFormat = fmt
+                                exportPayload = ExportedFileDocument(data: data)
+                                isExportingVaultFile = true
+                            } catch {
+                                store.reportError(error, operationTitle: "Vault Export Failed")
+                            }
                         }
-                }
-                .navigationTitle(store.document.name)
-                .navigationSubtitle("Rev \(store.document.revision) • \(store.syncStatusSummary)")
-                .toolbarBackground(.ultraThinMaterial, for: .windowToolbar)
-                .toolbar {
-                    unifiedMacToolbar
+                    )
+
+                    Divider()
+
+                    HStack(spacing: 0) {
+                        if store.columnVisibility != .detailOnly {
+                            SidebarHierarchyView()
+                                .frame(width: 242)
+                                .background(Color.white)
+                            Divider()
+                        }
+
+                        workspaceDetailCanvas
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                        if store.isInspectorPresented && store.activeSection == .sessions {
+                            Divider()
+                            InspectorColumnView()
+                                .frame(width: 295)
+                                .background(Color.white)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
 
                 if store.isQuickConnectPresented {
@@ -134,7 +157,7 @@ public struct NexusMainWindowView: View {
             }
         }
         .fileImporter(
-            isPresented: $isImportingVaultFile,
+            isPresented: $store.isPresentingImportFilePicker,
             allowedContentTypes: [.data, .xml, .json, .commaSeparatedText, .zip],
             allowsMultipleSelection: false
         ) { result in
@@ -283,211 +306,606 @@ public struct NexusMainWindowView: View {
                     .frame(height: 175)
             }
         }
+}
+
+// MARK: - 1:1 Googlebook Top Workspace Bar (`DesktopTopWindowChrome`, 58pt)
+
+private struct GooglebookDesktopTopBar: View {
+    @EnvironmentObject private var store: WorkspaceStore
+    let onImportVault: () -> Void
+    let onExportVault: (VaultExportFormat) -> Void
+
+    @State private var isCreateMenuPresented = false
+    @State private var isLangMenuPresented = false
+    @State private var isToolsMenuPresented = false
+
+    private static let royalSapphire = Color(red: 0.114, green: 0.306, blue: 0.847)
+    private static let royalSapphireHover = Color(red: 0.094, green: 0.255, blue: 0.725)
+    private static let surfaceLow = Color(red: 0.945, green: 0.961, blue: 0.976)
+    private static let activeContainer = Color(red: 0.859, green: 0.918, blue: 0.996)
+    private static let activeOnContainer = Color(red: 0.118, green: 0.227, blue: 0.541)
+    private static let subtleBorder = Color.black.opacity(0.09)
+
+    private var showsVaultPill: Bool {
+        let trimmed = store.document.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !trimmed.isEmpty && trimmed != "NexusTS Enterprise Vault" && trimmed != "NexusTS Vault"
     }
 
-    @ToolbarContentBuilder
-    private var unifiedMacToolbar: some ToolbarContent {
-        ToolbarItemGroup(placement: .navigation) {
-            Button {
-                store.toggleSidebarVisibility()
-            } label: {
-                Label(MacWorkspaceShortcut.toggleSidebar.title(in: store.strings), systemImage: "line.3.horizontal")
-            }
-            .accessibilityIdentifier("nexusts.toolbar.toggleSidebar")
-            .discreetTooltip(
-                MacWorkspaceShortcut.toggleSidebar.title(in: store.strings),
-                shortcut: MacWorkspaceShortcut.toggleSidebar.keycap
-            )
-
-            Button {
-                store.toggleUnifiedSettings()
-            } label: {
-                Label(
-                    store.strings.settings,
-                    systemImage: store.activeSection == .sessions ? "gearshape" : "gearshape.fill"
-                )
-            }
-            .accessibilityIdentifier("nexusts.toolbar.settings")
-            .discreetTooltip(store.strings.settings, shortcut: "⌘,")
-
-            if store.activeSection != .sessions {
-                Button {
-                    store.selectSection(.sessions)
-                } label: {
-                    Label(store.strings.connections, systemImage: "chevron.left")
+    var body: some View {
+        HStack(spacing: 12) {
+            // Left Cluster: Morphing Menu + Emblem + "NexusTS" + Vault Pill + Settings Pill + Return Chip
+            HStack(spacing: 10) {
+                GooglebookMorphIconButton(
+                    systemName: "line.3.horizontal",
+                    isActive: store.columnVisibility != .detailOnly,
+                    accessibilityId: "nexusts.toolbar.toggleSidebar",
+                    tooltip: MacWorkspaceShortcut.toggleSidebar.title(in: store.strings),
+                    shortcut: MacWorkspaceShortcut.toggleSidebar.keycap
+                ) {
+                    store.toggleSidebarVisibility()
                 }
-                .accessibilityIdentifier("nexusts.toolbar.backConnections")
-                .discreetTooltip(store.strings.connections, shortcut: "⌘1")
-            }
-        }
 
-        ToolbarItemGroup(placement: .primaryAction) {
-            Menu {
-                Button {
-                    store.presentNewConnectionSheet(defaultProtocol: .RDP)
-                } label: {
-                    Label("\(MacWorkspaceShortcut.newConnection.menuTitle(in: store.strings)) (\(MacWorkspaceShortcut.newConnection.keycap))", systemImage: "plus.rectangle.on.rectangle")
+                HStack(spacing: 9) {
+                    Image(nsImage: NSApp.applicationIconImage)
+                        .resizable()
+                        .interpolation(.high)
+                        .frame(width: 30, height: 30)
+                        .clipShape(RoundedRectangle(cornerRadius: 8.5, style: .continuous))
+
+                    Text("NexusTS")
+                        .font(.system(size: 15.5, weight: .semibold))
+                        .foregroundStyle(Color(red: 0.059, green: 0.090, blue: 0.165))
+                }
+                .padding(.trailing, 2)
+
+                if showsVaultPill {
+                    Text(store.document.name)
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .padding(.horizontal, 11)
+                        .padding(.vertical, 5)
+                        .background(Capsule(style: .continuous).fill(Self.surfaceLow))
+                        .frame(maxWidth: 160)
                 }
 
                 Button {
-                    store.presentNewConnectionSheet(defaultProtocol: .SSH)
+                    store.toggleUnifiedSettings()
                 } label: {
-                    Label("New SSH Connection…", systemImage: "terminal")
-                }
-
-                Button {
-                    store.presentNewFolderSheet()
-                } label: {
-                    Label("\(MacWorkspaceShortcut.newFolder.menuTitle(in: store.strings)) (\(MacWorkspaceShortcut.newFolder.keycap))", systemImage: "folder.badge.plus")
-                }
-
-                Button {
-                    store.isPresentingNewSmartFolderSheet = true
-                } label: {
-                    Label(store.strings.newSmartFolder, systemImage: "sparkles.rectangle.stack")
-                }
-
-                Button {
-                    store.isPresentingNewCredentialSheet = true
-                } label: {
-                    Label(store.strings.newCredential, systemImage: "key.fill")
-                }
-
-                Divider()
-
-                Button {
-                    store.openLocalTerminal()
-                } label: {
-                    Label("\(MacWorkspaceShortcut.localTerminal.title(in: store.strings)) (\(MacWorkspaceShortcut.localTerminal.keycap))", systemImage: "apple.terminal")
-                }
-
-                Divider()
-
-                Button {
-                    isImportingVaultFile = true
-                } label: {
-                    Label("Import Vault (.nxts, .rtsz, .rtsx, .rjson, .1pux, .kdbx, .csv)…", systemImage: "square.and.arrow.down")
-                }
-
-                Menu("Export Vault") {
-                    ForEach(VaultExportFormat.allCases) { fmt in
-                        Button(fmt.displayTitle) {
-                            do {
-                                let data = try VaultDocumentExporter.export(document: store.document, format: fmt)
-                                exportFormat = fmt
-                                exportPayload = ExportedFileDocument(data: data)
-                                isExportingVaultFile = true
-                            } catch {
-                                store.reportError(error, operationTitle: "Vault Export Failed")
-                            }
-                        }
+                    HStack(spacing: 7) {
+                        Image(systemName: "gearshape")
+                            .font(.system(size: 14, weight: .medium))
+                        Text(store.strings.settings)
+                            .font(.system(size: 12.5, weight: store.activeSection == .sessions ? .medium : .semibold))
+                            .lineLimit(1)
                     }
+                    .foregroundStyle(store.activeSection == .sessions ? Color.primary : Self.activeOnContainer)
+                    .padding(.horizontal, 14)
+                    .frame(height: 38)
+                    .background(
+                        Capsule(style: .continuous)
+                            .fill(store.activeSection == .sessions ? Self.surfaceLow : Self.activeContainer)
+                    )
+                    .overlay(
+                        Capsule(style: .continuous)
+                            .strokeBorder(
+                                store.activeSection == .sessions
+                                    ? Self.subtleBorder
+                                    : Self.royalSapphire.opacity(0.32),
+                                lineWidth: 1
+                            )
+                    )
                 }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("nexusts.toolbar.settings")
+                .discreetTooltip(store.strings.settings, shortcut: "⌘,")
 
-                Divider()
-
-                Button(role: .destructive) {
-                    store.isPresentingResetDatabaseSheet = true
-                } label: {
-                    Label(store.strings.resetDatabase, systemImage: "trash")
+                if store.activeSection != .sessions {
+                    Button {
+                        store.selectSection(.sessions)
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "arrow.left")
+                                .font(.system(size: 12.5, weight: .semibold))
+                            Text(store.strings.connections)
+                                .font(.system(size: 12, weight: .medium))
+                                .lineLimit(1)
+                        }
+                        .foregroundStyle(Color.primary)
+                        .padding(.horizontal, 12)
+                        .frame(height: 34)
+                        .background(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .fill(Color.white)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .strokeBorder(Color.black.opacity(0.14), lineWidth: 1)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("nexusts.toolbar.backConnections")
+                    .discreetTooltip(store.strings.connections, shortcut: "⌘1")
                 }
-            } label: {
-                Label(store.strings.newConnection, systemImage: "plus")
-            } primaryAction: {
-                store.presentNewConnectionSheet()
             }
-            .accessibilityIdentifier("nexusts.toolbar.newConnection")
-            .discreetTooltip(
-                MacWorkspaceShortcut.newConnection.title(in: store.strings),
-                shortcut: MacWorkspaceShortcut.newConnection.keycap
-            )
 
-            Button {
-                store.openLocalTerminal()
-            } label: {
-                Label(MacWorkspaceShortcut.localTerminal.title(in: store.strings), systemImage: "terminal")
-            }
-            .accessibilityIdentifier("nexusts.toolbar.localTerminal")
-            .discreetTooltip(
-                MacWorkspaceShortcut.localTerminal.title(in: store.strings),
-                shortcut: MacWorkspaceShortcut.localTerminal.keycap
-            )
+            Spacer(minLength: 8)
 
+            // Center Cluster: Sleek 38pt Quick-Connect Trigger Pill (`⌘K`)
             Button {
                 store.toggleQuickConnect()
             } label: {
-                Label(MacWorkspaceShortcut.quickConnect.title(in: store.strings), systemImage: "sparkle.magnifyingglass")
+                HStack(spacing: 9) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 13.5, weight: .medium))
+                        .foregroundStyle(.secondary)
+                    Text(store.strings.quickConnectTitle)
+                        .font(.system(size: 12.5, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    Spacer(minLength: 8)
+                    KeycapBadge("⌘K")
+                }
+                .padding(.horizontal, 13)
+                .frame(minWidth: 190, idealWidth: 300, maxWidth: 340)
+                .frame(height: 38)
+                .background(Capsule(style: .continuous).fill(Self.surfaceLow))
+                .overlay(Capsule(style: .continuous).strokeBorder(Self.subtleBorder, lineWidth: 1))
             }
+            .buttonStyle(.plain)
             .accessibilityIdentifier("nexusts.toolbar.quickConnect")
             .discreetTooltip(
                 MacWorkspaceShortcut.quickConnect.title(in: store.strings),
                 shortcut: MacWorkspaceShortcut.quickConnect.keycap
             )
 
-            Button {
-                store.splitFocusedPane(.horizontal)
-            } label: {
-                Label(MacWorkspaceShortcut.splitRight.title(in: store.strings), systemImage: "rectangle.split.2x1")
-            }
-            .accessibilityIdentifier("nexusts.toolbar.splitRight")
-            .discreetTooltip(
-                MacWorkspaceShortcut.splitRight.title(in: store.strings),
-                shortcut: MacWorkspaceShortcut.splitRight.keycap
-            )
+            Spacer(minLength: 8)
 
-            Button {
-                store.splitFocusedPane(.vertical)
-            } label: {
-                Label(MacWorkspaceShortcut.splitDown.title(in: store.strings), systemImage: "rectangle.split.1x2")
-            }
-            .accessibilityIdentifier("nexusts.toolbar.splitDown")
-            .discreetTooltip(
-                MacWorkspaceShortcut.splitDown.title(in: store.strings),
-                shortcut: MacWorkspaceShortcut.splitDown.keycap
-            )
+            // Right Cluster: Split-Action Primary Button + Synced Chip + Flag Language Picker + Inspector + Lock + Tools Menu
+            HStack(spacing: 8) {
+                HStack(spacing: 3) {
+                    Button {
+                        store.presentNewConnectionSheet()
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "plus")
+                                .font(.system(size: 13, weight: .bold))
+                            Text(store.strings.newConnection)
+                                .font(.system(size: 12.5, weight: .semibold))
+                                .lineLimit(1)
+                        }
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 14)
+                        .frame(height: 40)
+                        .background(
+                            UnevenRoundedRectangle(
+                                topLeadingRadius: 20,
+                                bottomLeadingRadius: 20,
+                                bottomTrailingRadius: 6,
+                                topTrailingRadius: 6,
+                                style: .continuous
+                            )
+                            .fill(Self.royalSapphire)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("nexusts.toolbar.newConnection")
+                    .discreetTooltip(
+                        MacWorkspaceShortcut.newConnection.title(in: store.strings),
+                        shortcut: MacWorkspaceShortcut.newConnection.keycap
+                    )
 
-            Toggle(isOn: $store.broadcastInputEnabled) {
-                Label(MacWorkspaceShortcut.broadcastInput.title(in: store.strings), systemImage: "dot.radiowaves.left.and.right")
-            }
-            .accessibilityIdentifier("nexusts.toolbar.broadcastInput")
-            .discreetTooltip(
-                MacWorkspaceShortcut.broadcastInput.title(in: store.strings),
-                shortcut: MacWorkspaceShortcut.broadcastInput.keycap
-            )
+                    Button {
+                        isCreateMenuPresented.toggle()
+                    } label: {
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 11.5, weight: .bold))
+                            .foregroundStyle(.white)
+                            .frame(width: 35, height: 40)
+                            .background(
+                                UnevenRoundedRectangle(
+                                    topLeadingRadius: isCreateMenuPresented ? 12 : 6,
+                                    bottomLeadingRadius: isCreateMenuPresented ? 12 : 6,
+                                    bottomTrailingRadius: isCreateMenuPresented ? 12 : 20,
+                                    topTrailingRadius: isCreateMenuPresented ? 12 : 20,
+                                    style: .continuous
+                                )
+                                .fill(isCreateMenuPresented ? Self.royalSapphireHover : Self.royalSapphire)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .popover(isPresented: $isCreateMenuPresented, arrowEdge: .bottom) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            GooglebookMenuRowButton(title: store.strings.newConnection, symbol: "plus", shortcut: "⌘N") {
+                                isCreateMenuPresented = false
+                                store.presentNewConnectionSheet()
+                            }
+                            GooglebookMenuRowButton(title: store.strings.newFolder, symbol: "folder.badge.plus", shortcut: "⇧⌘N") {
+                                isCreateMenuPresented = false
+                                store.presentNewFolderSheet()
+                            }
+                            GooglebookMenuRowButton(title: store.strings.newSmartFolder, symbol: "sparkles.rectangle.stack") {
+                                isCreateMenuPresented = false
+                                store.isPresentingNewSmartFolderSheet = true
+                            }
+                            GooglebookMenuRowButton(title: store.strings.newCredential, symbol: "key") {
+                                isCreateMenuPresented = false
+                                store.isPresentingNewCredentialSheet = true
+                            }
+                            GooglebookMenuRowButton(title: store.strings.newTemplate, symbol: "bookmark") {
+                                isCreateMenuPresented = false
+                                store.openUnifiedSettings(tab: .templates)
+                            }
+                            Divider().padding(.vertical, 4)
+                            GooglebookMenuRowButton(title: store.strings.localTerminal, symbol: "terminal", shortcut: "⌘T") {
+                                isCreateMenuPresented = false
+                                store.openLocalTerminal()
+                            }
+                            GooglebookMenuRowButton(title: store.strings.importShortCta, symbol: "square.and.arrow.up") {
+                                isCreateMenuPresented = false
+                                onImportVault()
+                            }
+                            Divider().padding(.vertical, 4)
+                            ForEach(VaultExportFormat.allCases) { fmt in
+                                GooglebookMenuRowButton(title: fmt.displayTitle, symbol: "square.and.arrow.down") {
+                                    isCreateMenuPresented = false
+                                    onExportVault(fmt)
+                                }
+                            }
+                        }
+                        .padding(6)
+                        .frame(width: 268)
+                    }
+                }
 
-            Button {
-                Task { await store.syncCloudNow(reportErrors: true) }
-            } label: {
-                Label(MacWorkspaceShortcut.syncNow.title(in: store.strings), systemImage: "arrow.triangle.2.circlepath.icloud")
-            }
-            .accessibilityIdentifier("nexusts.toolbar.syncNow")
-            .discreetTooltip(
-                MacWorkspaceShortcut.syncNow.title(in: store.strings),
-                shortcut: MacWorkspaceShortcut.syncNow.keycap
-            )
+                if store.hasConfiguredCloudSync {
+                    Button {
+                        Task { await store.syncCloudNow(reportErrors: true) }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "icloud.and.arrow.up")
+                                .font(.system(size: 13, weight: .medium))
+                            Text(store.strings.syncedRevLabel(store.document.revision))
+                                .font(.system(size: 11.5, weight: .medium))
+                                .lineLimit(1)
+                        }
+                        .foregroundStyle(Color(red: 0.016, green: 0.471, blue: 0.341))
+                        .padding(.horizontal, 11)
+                        .frame(height: 34)
+                        .background(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .fill(Color(red: 0.016, green: 0.471, blue: 0.341).opacity(0.08))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .strokeBorder(Color(red: 0.016, green: 0.471, blue: 0.341).opacity(0.24), lineWidth: 1)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("nexusts.toolbar.syncNow")
+                    .discreetTooltip(
+                        MacWorkspaceShortcut.syncNow.title(in: store.strings),
+                        shortcut: MacWorkspaceShortcut.syncNow.keycap
+                    )
+                }
 
-            Button {
-                store.lockVault()
-            } label: {
-                Label(MacWorkspaceShortcut.lockVault.title(in: store.strings), systemImage: "lock")
-            }
-            .accessibilityIdentifier("nexusts.toolbar.lockVault")
-            .discreetTooltip(
-                MacWorkspaceShortcut.lockVault.title(in: store.strings),
-                shortcut: MacWorkspaceShortcut.lockVault.keycap
-            )
+                if store.broadcastInputEnabled {
+                    GooglebookMorphIconButton(
+                        systemName: "dot.radiowaves.left.and.right",
+                        isActive: true,
+                        accessibilityId: "nexusts.toolbar.broadcastInput",
+                        tooltip: MacWorkspaceShortcut.broadcastInput.title(in: store.strings),
+                        shortcut: MacWorkspaceShortcut.broadcastInput.keycap
+                    ) {
+                        store.broadcastInputEnabled.toggle()
+                    }
+                }
 
-            Button {
-                store.toggleInspector()
-            } label: {
-                Label(MacWorkspaceShortcut.toggleInspector.title(in: store.strings), systemImage: "sidebar.trailing")
+                // Vector Flag Language Picker Pill (`[ 🇩🇪 DE ▾ ]`)
+                Button {
+                    isLangMenuPresented.toggle()
+                } label: {
+                    HStack(spacing: 7) {
+                        MacLanguageFlagBadge(code: store.appLanguage.resolvedCode)
+                        Text(store.appLanguage.resolvedCode.uppercased())
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(.primary)
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 11)
+                    .frame(height: 40)
+                    .background(Capsule(style: .continuous).fill(Self.surfaceLow))
+                    .overlay(Capsule(style: .continuous).strokeBorder(Self.subtleBorder, lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+                .popover(isPresented: $isLangMenuPresented, arrowEdge: .bottom) {
+                    let languageChoices: [(NexusAppLanguage, String, String)] = [
+                        (.de, "de", "Deutsch"),
+                        (.en, "en", "English"),
+                        (.fr, "fr", "Français"),
+                        (.it, "it", "Italiano"),
+                        (.es, "es", "Español"),
+                        (.el, "el", "Ελληνικά")
+                    ]
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(languageChoices, id: \.1) { lang, code, label in
+                            let selected = store.appLanguage.resolvedCode == code
+                            Button {
+                                store.appLanguage = lang
+                                isLangMenuPresented = false
+                            } label: {
+                                HStack(spacing: 10) {
+                                    MacLanguageFlagBadge(code: code)
+                                    Text(label)
+                                        .font(.system(size: 12.5, weight: selected ? .semibold : .regular))
+                                        .foregroundStyle(.primary)
+                                    Spacer()
+                                    if selected {
+                                        Image(systemName: "checkmark")
+                                            .font(.system(size: 11.5, weight: .bold))
+                                            .foregroundStyle(Self.royalSapphire)
+                                    }
+                                }
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 7)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                        .fill(selected ? Self.royalSapphire.opacity(0.08) : Color.clear)
+                                )
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(6)
+                    .frame(width: 196)
+                }
+
+                GooglebookMorphIconButton(
+                    systemName: "info.circle",
+                    isActive: store.isInspectorPresented,
+                    accessibilityId: "nexusts.toolbar.toggleInspector",
+                    tooltip: MacWorkspaceShortcut.toggleInspector.title(in: store.strings),
+                    shortcut: MacWorkspaceShortcut.toggleInspector.keycap
+                ) {
+                    store.toggleInspector()
+                }
+
+                GooglebookMorphIconButton(
+                    systemName: "lock.open",
+                    isActive: false,
+                    accessibilityId: "nexusts.toolbar.lockVault",
+                    tooltip: MacWorkspaceShortcut.lockVault.title(in: store.strings),
+                    shortcut: MacWorkspaceShortcut.lockVault.keycap
+                ) {
+                    store.lockVault()
+                }
+
+                GooglebookMorphIconButton(
+                    systemName: "ellipsis",
+                    isActive: isToolsMenuPresented,
+                    rotationDegrees: 90,
+                    accessibilityId: "nexusts.toolbar.toolsMenu",
+                    tooltip: store.strings.studios
+                ) {
+                    isToolsMenuPresented.toggle()
+                }
+                .popover(isPresented: $isToolsMenuPresented, arrowEdge: .bottom) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        GooglebookMenuRowButton(title: store.strings.updatesSettings, symbol: "arrow.down.circle") {
+                            isToolsMenuPresented = false
+                            store.isPresentingSoftwareUpdateSheet = true
+                            Task { await store.checkGitHubUpdates(manual: true) }
+                        }
+                        GooglebookMenuRowButton(
+                            title: store.strings.auditConsole,
+                            symbol: "terminal",
+                            isChecked: store.isBottomConsolePresented
+                        ) {
+                            isToolsMenuPresented = false
+                            store.isBottomConsolePresented.toggle()
+                        }
+                        GooglebookMenuRowButton(
+                            title: "Remote Key Capture",
+                            symbol: "keyboard",
+                            isChecked: store.remoteKeyCaptureEnabled
+                        ) {
+                            isToolsMenuPresented = false
+                            store.remoteKeyCaptureEnabled.toggle()
+                        }
+                        GooglebookMenuRowButton(
+                            title: store.strings.broadcastInput,
+                            symbol: "dot.radiowaves.left.and.right",
+                            isChecked: store.broadcastInputEnabled
+                        ) {
+                            isToolsMenuPresented = false
+                            store.broadcastInputEnabled.toggle()
+                        }
+                        if !store.paneTree.allTabs.isEmpty {
+                            Divider().padding(.vertical, 4)
+                            GooglebookMenuRowButton(title: store.strings.splitRight, symbol: "rectangle.split.2x1", shortcut: "⌘D") {
+                                isToolsMenuPresented = false
+                                store.splitFocusedPane(.horizontal)
+                            }
+                            GooglebookMenuRowButton(title: store.strings.splitDown, symbol: "rectangle.split.1x2", shortcut: "⇧⌘D") {
+                                isToolsMenuPresented = false
+                                store.splitFocusedPane(.vertical)
+                            }
+                        }
+                        Divider().padding(.vertical, 4)
+                        GooglebookMenuRowButton(title: store.strings.resetDatabase, symbol: "trash", isDestructive: true) {
+                            isToolsMenuPresented = false
+                            store.isPresentingResetDatabaseSheet = true
+                        }
+                    }
+                    .padding(6)
+                    .frame(width: 256)
+                }
             }
-            .accessibilityIdentifier("nexusts.toolbar.toggleInspector")
-            .discreetTooltip(
-                MacWorkspaceShortcut.toggleInspector.title(in: store.strings),
-                shortcut: MacWorkspaceShortcut.toggleInspector.keycap
-            )
         }
+        .padding(.horizontal, 16)
+        .frame(height: 58)
+        .background(Color.white)
+    }
+}
+
+private struct GooglebookMorphIconButton: View {
+    let systemName: String
+    let isActive: Bool
+    var rotationDegrees: Double = 0
+    var accessibilityId: String = ""
+    var tooltip: String = ""
+    var shortcut: String? = nil
+    let action: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 15.5, weight: .medium))
+                .rotationEffect(.degrees(rotationDegrees))
+                .foregroundStyle(
+                    isActive
+                        ? Color(red: 0.118, green: 0.227, blue: 0.541)
+                        : (isHovered ? Color.primary : Color.secondary)
+                )
+                .frame(width: 40, height: 40)
+                .background(
+                    RoundedRectangle(cornerRadius: isActive ? 13 : 20, style: .continuous)
+                        .fill(
+                            isActive
+                                ? Color(red: 0.859, green: 0.918, blue: 0.996)
+                                : (isHovered ? Color(red: 0.945, green: 0.961, blue: 0.976) : Color.clear)
+                        )
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: isActive ? 13 : 20, style: .continuous)
+                        .strokeBorder(
+                            isActive ? Color(red: 0.114, green: 0.306, blue: 0.847).opacity(0.24) : Color.clear,
+                            lineWidth: 1
+                        )
+                )
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier(accessibilityId)
+        .discreetTooltip(tooltip, shortcut: shortcut)
+        .onHover { hovering in
+            withAnimation(.easeOut(duration: 0.14)) {
+                isHovered = hovering
+            }
+        }
+    }
+}
+
+private struct GooglebookMenuRowButton: View {
+    let title: String
+    let symbol: String
+    var shortcut: String? = nil
+    var isChecked: Bool = false
+    var isDestructive: Bool = false
+    let action: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Image(systemName: symbol)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(isDestructive ? Color.red : Color.secondary)
+                    .frame(width: 18)
+                Text(title)
+                    .font(.system(size: 12.5, weight: isChecked ? .semibold : .regular))
+                    .foregroundStyle(isDestructive ? Color.red : Color.primary)
+                    .lineLimit(1)
+                Spacer(minLength: 8)
+                if isChecked {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 11.5, weight: .bold))
+                        .foregroundStyle(Color(red: 0.114, green: 0.306, blue: 0.847))
+                } else if let shortcut {
+                    Text(shortcut)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(
+                        isHovered
+                            ? (isDestructive ? Color.red.opacity(0.10) : Color(red: 0.937, green: 0.965, blue: 1.0))
+                            : Color.clear
+                    )
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+    }
+}
+
+// Crisp 24x16 Vector Flag Badge matching Googlebook `NexusLanguageFlagBadge`
+struct MacLanguageFlagBadge: View {
+    let code: String
+
+    var body: some View {
+        Canvas { context, size in
+            let w = size.width
+            let h = size.height
+            switch code.lowercased() {
+            case "de":
+                context.fill(Path(CGRect(x: 0, y: 0, width: w, height: h / 3)), with: .color(Color(red: 0.09, green: 0.09, blue: 0.11)))
+                context.fill(Path(CGRect(x: 0, y: h / 3, width: w, height: h / 3)), with: .color(Color(red: 0.87, green: 0.0, blue: 0.0)))
+                context.fill(Path(CGRect(x: 0, y: 2 * h / 3, width: w, height: h / 3)), with: .color(Color(red: 1.0, green: 0.81, blue: 0.0)))
+            case "fr":
+                context.fill(Path(CGRect(x: 0, y: 0, width: w / 3, height: h)), with: .color(Color(red: 0.0, green: 0.14, blue: 0.58)))
+                context.fill(Path(CGRect(x: w / 3, y: 0, width: w / 3, height: h)), with: .color(.white))
+                context.fill(Path(CGRect(x: 2 * w / 3, y: 0, width: w / 3, height: h)), with: .color(Color(red: 0.93, green: 0.16, blue: 0.22)))
+            case "it":
+                context.fill(Path(CGRect(x: 0, y: 0, width: w / 3, height: h)), with: .color(Color(red: 0.0, green: 0.57, blue: 0.27)))
+                context.fill(Path(CGRect(x: w / 3, y: 0, width: w / 3, height: h)), with: .color(.white))
+                context.fill(Path(CGRect(x: 2 * w / 3, y: 0, width: w / 3, height: h)), with: .color(Color(red: 0.81, green: 0.17, blue: 0.22)))
+            case "es":
+                context.fill(Path(CGRect(x: 0, y: 0, width: w, height: h * 0.25)), with: .color(Color(red: 0.67, green: 0.08, blue: 0.11)))
+                context.fill(Path(CGRect(x: 0, y: h * 0.25, width: w, height: h * 0.5)), with: .color(Color(red: 0.95, green: 0.75, blue: 0.0)))
+                context.fill(Path(CGRect(x: 0, y: h * 0.75, width: w, height: h * 0.25)), with: .color(Color(red: 0.67, green: 0.08, blue: 0.11)))
+            case "el":
+                let blue = Color(red: 0.05, green: 0.37, blue: 0.69)
+                context.fill(Path(CGRect(x: 0, y: 0, width: w, height: h)), with: .color(blue))
+                let stripeH = h / 9.0
+                for idx in stride(from: 1, to: 9, by: 2) {
+                    context.fill(Path(CGRect(x: 0, y: CGFloat(idx) * stripeH, width: w, height: stripeH)), with: .color(.white))
+                }
+                let canton = stripeH * 5.0
+                context.fill(Path(CGRect(x: 0, y: 0, width: canton, height: canton)), with: .color(blue))
+                context.fill(Path(CGRect(x: canton * 0.4, y: 0, width: canton * 0.2, height: canton)), with: .color(.white))
+                context.fill(Path(CGRect(x: 0, y: canton * 0.4, width: canton, height: canton * 0.2)), with: .color(.white))
+            default:
+                context.fill(Path(CGRect(x: 0, y: 0, width: w, height: h)), with: .color(Color(red: 0.0, green: 0.13, blue: 0.41)))
+                var diag = Path()
+                diag.move(to: .zero)
+                diag.addLine(to: CGPoint(x: w, y: h))
+                diag.move(to: CGPoint(x: w, y: 0))
+                diag.addLine(to: CGPoint(x: 0, y: h))
+                context.stroke(diag, with: .color(.white), lineWidth: 2.8)
+                context.stroke(diag, with: .color(Color(red: 0.78, green: 0.06, blue: 0.18)), lineWidth: 1.4)
+                context.fill(Path(CGRect(x: w * 0.41, y: 0, width: w * 0.18, height: h)), with: .color(.white))
+                context.fill(Path(CGRect(x: 0, y: h * 0.36, width: w, height: h * 0.28)), with: .color(.white))
+                context.fill(Path(CGRect(x: w * 0.44, y: 0, width: w * 0.12, height: h)), with: .color(Color(red: 0.78, green: 0.06, blue: 0.18)))
+                context.fill(Path(CGRect(x: 0, y: h * 0.42, width: w, height: h * 0.16)), with: .color(Color(red: 0.78, green: 0.06, blue: 0.18)))
+            }
+        }
+        .frame(width: 24, height: 16)
+        .clipShape(RoundedRectangle(cornerRadius: 3.5, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 3.5, style: .continuous)
+                .strokeBorder(Color.black.opacity(0.15), lineWidth: 0.65)
+        )
     }
 }
 

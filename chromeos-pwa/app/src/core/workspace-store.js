@@ -76,9 +76,11 @@ export class NexusChromeOSStore {
       activeSettingsTab: 'general',
       isSidebarVisible: true,
       isInspectorVisible: false,
+      isBottomDrawerVisible: false,
       isFullScreenSession: false,
       remoteKeyCaptureEnabled: false,
       broadcastInputEnabled: false,
+      auditLogs: [],
 
       // Sidebar state
       sidebarFilterQuery: '',
@@ -105,7 +107,7 @@ export class NexusChromeOSStore {
       localRelayReachable: false,
       localRelayUrl: 'ws://127.0.0.1:44890',
       localRelayHttpUrl: 'http://127.0.0.1:44890',
-      appVersion: '0.9.2',
+      appVersion: '0.9.3',
       pwaStandalone: false,
       pwaInstallAvailable: false,
       swUpdateWaiting: false,
@@ -797,5 +799,83 @@ export class NexusChromeOSStore {
     const sf = (this.state.vaultDocument.smartFolders || []).find((s) => s.id === smartFolderId);
     if (!sf) return [];
     return evaluateSmartFolder(sf, this.state.vaultDocument);
+  }
+
+  appendAuditLog(category, message) {
+    const entry = {
+      id: randomUuid(),
+      timestamp: new Date().toLocaleTimeString(),
+      category,
+      message
+    };
+    this.setState({
+      auditLogs: [entry, ...(this.state.auditLogs || [])].slice(0, 120)
+    });
+  }
+
+  async addTodoItem(title) {
+    const clean = String(title || '').trim();
+    if (!clean) return;
+    await this.commitVaultMutation((doc) => {
+      doc.todoItems = doc.todoItems || [];
+      doc.todoItems.push({
+        id: randomUuid(),
+        title: clean,
+        completed: false,
+        targetObjectId: null,
+        updatedAtEpochMs: Date.now()
+      });
+      return doc;
+    });
+  }
+
+  async toggleTodoItem(todoId) {
+    await this.commitVaultMutation((doc) => {
+      const item = (doc.todoItems || []).find((t) => t.id === todoId);
+      if (item) {
+        item.completed = !item.completed;
+        item.updatedAtEpochMs = Date.now();
+      }
+      return doc;
+    });
+  }
+
+  async saveSmartFolder(sfData) {
+    const id = sfData.id || randomUuid();
+    await this.commitVaultMutation((doc) => {
+      doc.smartFolders = doc.smartFolders || [];
+      doc.smartFolders.push({
+        id,
+        name: String(sfData.name || 'Smart Folder'),
+        filter: sfData.filter || {
+          includeProtocols: [],
+          requiredTags: [],
+          hostPatternRegex: ''
+        },
+        updatedAtEpochMs: Date.now()
+      });
+      return doc;
+    });
+  }
+
+  async resetVaultDatabase() {
+    await this.disconnectGoogleDriveSync();
+    const fresh = createStarterVault(this.deviceId);
+    this._masterPassphrase = DEFAULT_TRANSPARENT_PASSPHRASE;
+    await idbSet('vault.sealed', null);
+    await idbSet('vault.unencryptedDraft', null);
+    this.setState({
+      vaultDocument: fresh,
+      hasEncryptedLocalVault: false,
+      hasCustomPassphrase: false,
+      isVaultLocked: false,
+      isStarterUninitialized: true,
+      tabs: [],
+      focusedTabId: null,
+      selectedConnectionId: null,
+      selectedFolderId: null,
+      expandedFolderIds: new Set(),
+      toastMessage: 'NexusTS database has been reset to a clean empty vault.'
+    });
   }
 }

@@ -697,5 +697,116 @@ public extension LocalizedWorkspaceStrings {
         default: return "Updates"
         }
     }
+
+    var emptyWorkspaceTitle: String {
+        switch connections {
+        case "Verbindungen": return "Bereit für direkte Verbindungen"
+        case "Connessioni": return "Pronto per le connessioni dirette"
+        case "Conexiones": return "Listo para conexiones directas"
+        case "Συνδέσεις": return "Έτοιμο για απευθείας συνδέσεις"
+        case "Connexions": return "Prêt pour les connexions directes"
+        default: return "Ready for Direct Connections"
+        }
+    }
+
+    var emptyWorkspaceHint: String {
+        switch connections {
+        case "Verbindungen": return "Doppelklicke links auf einen Server, drücke ⌘K für die Schnellverbindung oder erstelle eine neue RDP-, SSH-, SFTP- oder VNC-Verbindung."
+        case "Connessioni": return "Fai doppio clic su un server nella barra laterale, premi ⌘K per Connessione rapida o crea una nuova connessione RDP, SSH, SFTP o VNC."
+        case "Conexiones": return "Haz doble clic en un servidor de la barra lateral, pulsa ⌘K para Conexión rápida o crea una nueva conexión RDP, SSH, SFTP o VNC."
+        case "Συνδέσεις": return "Κάντε διπλό κλικ σε διακομιστή στην πλαϊνή μπάρα, πατήστε ⌘K για Γρήγορη σύνδεση ή δημιουργήστε νέα σύνδεση RDP, SSH, SFTP ή VNC."
+        case "Connexions": return "Double-cliquez sur un serveur dans la barre latérale, appuyez sur ⌘K pour Connexion rapide ou créez une connexion RDP, SSH, SFTP ou VNC."
+        default: return "Double-click any server in the sidebar, press ⌘K for Quick Connect, or create a new RDP, SSH, SFTP, or VNC connection."
+        }
+    }
+
+    var quickConnectLaunchpadHint: String {
+        switch connections {
+        case "Verbindungen": return "Schnellverbindung — Server, Hosts oder Protokolle suchen…"
+        case "Connessioni": return "Connessione rapida — cerca server, host o protocolli…"
+        case "Conexiones": return "Conexión rápida — buscar servidores, hosts o protocolos…"
+        case "Συνδέσεις": return "Γρήγορη σύνδεση — αναζήτηση διακομιστών, hosts ή πρωτοκόλλων…"
+        case "Connexions": return "Connexion rapide — rechercher serveurs, hôtes ou protocoles…"
+        default: return "Quick Connect — search servers, hosts, or protocols…"
+        }
+    }
+
+    var importShortCta: String {
+        switch connections {
+        case "Verbindungen": return ".rtsz importieren"
+        case "Connessioni": return "Importa .rtsz"
+        case "Conexiones": return "Importar .rtsz"
+        case "Συνδέσεις": return "Εισαγωγή .rtsz"
+        case "Connexions": return "Importer .rtsz"
+        default: return "Import .rtsz"
+        }
+    }
+
+    var activeSessionsLower: String {
+        switch connections {
+        case "Verbindungen": return "aktive Sitzungen"
+        case "Connessioni": return "sessioni attive"
+        case "Conexiones": return "sesiones activas"
+        case "Συνδέσεις": return "ενεργές συνεδρίες"
+        case "Connexions": return "sessions actives"
+        default: return "active sessions"
+        }
+    }
+
+    var addTodoCta: String {
+        switch connections {
+        case "Verbindungen": return "Aufgabe hinzufügen"
+        case "Connessioni": return "Aggiungi attività"
+        case "Conexiones": return "Añadir tarea"
+        case "Συνδέσεις": return "Προσθήκη εργασίας"
+        case "Connexions": return "Ajouter une tâche"
+        default: return "Add To-Do"
+        }
+    }
+
+    var todoTitle: String {
+        switch connections {
+        case "Verbindungen": return "Checkliste"
+        case "Connessioni": return "Elenco attività"
+        case "Conexiones": return "Lista de tareas"
+        case "Συνδέσεις": return "Λίστα εργασιών"
+        case "Connexions": return "Liste de tâches"
+        default: return "Workspace Checklist"
+        }
+    }
+
+    var favoritesEmptyHint: String {
+        switch connections {
+        case "Verbindungen": return "Doppelklicke links auf einen Server zum Verbinden oder markiere eine Verbindung als Favorit."
+        case "Connessioni": return "Fai doppio clic su un server nella barra laterale o aggiungi una connessione ai Preferiti."
+        case "Conexiones": return "Haz doble clic en un servidor de la barra lateral o marca una conexión como favorita."
+        case "Συνδέσεις": return "Κάντε διπλό κλικ σε διακομιστή στην πλαϊνή μπάρα ή προσθέστε σύνδεση στα Αγαπημένα."
+        case "Connexions": return "Double-cliquez sur un serveur dans la barre latérale ou épinglez une connexion en favori."
+        default: return "Double-click any server in the sidebar to launch a session, or star a connection to pin it to Favorites."
+        }
+    }
+
+    var newTemplate: String {
+        switch connections {
+        case "Verbindungen": return "Neue Vorlage…"
+        case "Connessioni": return "Nuovo modello…"
+        case "Conexiones": return "Nueva plantilla…"
+        case "Συνδέσεις": return "Νέο πρότυπο…"
+        case "Connexions": return "Nouveau modèle…"
+        default: return "New Template…"
+        }
+    }
+
+    func syncedRevLabel(_ rev: UInt64) -> String {
+        switch connections {
+        case "Verbindungen": return "Synchron (Rev \(rev))"
+        case "Connessioni": return "Sincronizzato (rev \(rev))"
+        case "Conexiones": return "Sincronizado (rev \(rev))"
+        case "Συνδέσεις": return "Συγχρονισμένο (έκδ. \(rev))"
+        case "Connexions": return "Synchronisé (rév \(rev))"
+        default: return "Synced (rev \(rev))"
+        }
+    }
 }
+
 

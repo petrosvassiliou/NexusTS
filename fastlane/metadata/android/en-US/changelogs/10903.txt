@@ -1,0 +1,1 @@
+• NexusTS 0.9.3: Unified Googlebook M3 Expressive Top Bar, Split-Action New Connection menu, Vector Flag Language Picker, Floating Quick-Connect Command Palette, and Launchpad Main Screen across Googlebook, ChromeOS, and macOS.

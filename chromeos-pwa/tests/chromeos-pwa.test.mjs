@@ -418,16 +418,16 @@ test('7. Firebase Hosting ChromeOS Start-Menu PWA (nexusts-prod): manifest short
   assert.ok(noCacheRule);
   assert.equal(noCacheRule.headers[0].value, 'no-cache, no-store, must-revalidate');
 
-  const hostingInfo = buildFirebaseHostingSite({ version: '0.9.2', releaseTag: 'v0.9.2' });
+  const hostingInfo = buildFirebaseHostingSite({ version: '0.9.3', releaseTag: 'v0.9.3' });
   assert.equal(hostingInfo.buildHash.length, 12);
   assert.ok(fs.existsSync(hostingInfo.versionJsonPath));
 
   const versionJson = JSON.parse(fs.readFileSync(hostingInfo.versionJsonPath, 'utf8'));
-  assert.equal(versionJson.version, '0.9.2');
+  assert.equal(versionJson.version, '0.9.3');
   assert.equal(versionJson.buildHash, hostingInfo.buildHash);
 
   const hostedSw = fs.readFileSync(`${hostingInfo.hostingDistDir}/sw.js`, 'utf8');
-  assert.ok(hostedSw.includes(`nexusts-chromeos-offline-v0.9.2-${hostingInfo.buildHash}`));
+  assert.ok(hostedSw.includes(`nexusts-chromeos-offline-v0.9.3-${hostingInfo.buildHash}`));
   assert.equal(hostedSw.includes('.well-known'), false);
   assert.ok(hostedSw.includes("event.data.type === 'SKIP_WAITING'"));
 
@@ -435,7 +435,7 @@ test('7. Firebase Hosting ChromeOS Start-Menu PWA (nexusts-prod): manifest short
   assert.equal(hostedManifest.display, 'standalone');
   assert.equal(hostedManifest.start_url, './?source=pwa');
   assert.equal(hostedManifest.shortcuts.length, 4);
-  assert.equal(hostedManifest.version, '0.9.2');
+  assert.equal(hostedManifest.version, '0.9.3');
   assert.equal(hostedManifest.theme_color, '#ffffff');
   assert.equal(hostedManifest.background_color, '#f8fafc');
 
@@ -447,8 +447,13 @@ test('7. Firebase Hosting ChromeOS Start-Menu PWA (nexusts-prod): manifest short
   assert.ok(hostedAppJs.includes('function renderSidebarConnectionTypeIcon'));
   assert.ok(hostedAppJs.includes('M5.8 8.8L8.8 11.6L5.8 14.4M14.2 5.6L11.2 8.4L14.2 11.2'));
   assert.equal(hostedAppJs.includes('<span class="proto-badge">${esc(badge)}</span>'), false);
+  assert.ok(hostedAppJs.includes('function renderGooglebookTopBar'));
+  assert.ok(hostedAppJs.includes('function renderGooglebookOverviewDashboard'));
+  assert.ok(hostedAppJs.includes('function renderFlagSvg'));
+  assert.ok(hostedAppJs.includes('split-action-group'));
+  assert.ok(hostedAppJs.includes('qc-palette-card'));
 
-  assert.equal(compareSemver('0.9.2', '0.9.1'), 1);
+  assert.equal(compareSemver('0.9.3', '0.9.2'), 1);
   assert.equal(compareSemver('0.9.0', '0.9.0-beta.1'), 1);
   assert.equal(canInstallPwa(), false);
   assert.equal(isRunningStandalone(), false);
@@ -457,6 +462,8 @@ test('7. Firebase Hosting ChromeOS Start-Menu PWA (nexusts-prod): manifest short
     const dict = resolveStrings(loc.code);
     assert.ok(dict.installAppCta.length > 0);
     assert.ok(dict.applyUpdateCta.length > 0);
+    assert.ok(dict.quickConnectButton.length > 0);
+    assert.ok(dict.quickConnectLaunchpadHint.length > 0);
   }
 });
 

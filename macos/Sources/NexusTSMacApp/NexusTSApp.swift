@@ -83,7 +83,7 @@ public struct NexusTSApp: App {
                     }
                 }
         }
-        .windowToolbarStyle(.unified(showsTitle: true))
+        .windowToolbarStyle(.unifiedCompact(showsTitle: false))
         .defaultSize(width: 1380, height: 860)
         .commands {
             ToolbarCommands()

@@ -459,6 +459,90 @@ for (const [code, extra] of Object.entries(PWA_INSTALL_STRINGS)) {
   Object.assign(STRINGS[code], extra);
 }
 
+const GOOGLEBOOK_UI_STRINGS = {
+  en: {
+    quickConnectButton: 'Quick Connect',
+    quickConnectLaunchpadHint: 'Quick Connect — search servers, hosts, or protocols…',
+    localTerminalCta: 'Local Terminal',
+    importShortCta: 'Import .rtsz',
+    activeSessionsLower: 'active sessions',
+    addTodoCta: 'Add To-Do',
+    todoTitle: 'Workspace Checklist',
+    favoritesEmptyHint: 'Double-click any server in the sidebar to launch a session, or star a connection to pin it to Favorites.',
+    drawerAuditLogs: 'Audit Logs',
+    resetDatabaseCta: 'Reset NexusTS Database…',
+    syncedRevFormat: 'Synced (rev {rev})'
+  },
+  de: {
+    quickConnectButton: 'Schnellverbindung',
+    quickConnectLaunchpadHint: 'Schnellverbindung — Server, Hosts oder Protokolle suchen…',
+    localTerminalCta: 'Lokales Terminal',
+    importShortCta: '.rtsz importieren',
+    activeSessionsLower: 'aktive Sitzungen',
+    addTodoCta: 'Aufgabe hinzufügen',
+    todoTitle: 'Checkliste',
+    favoritesEmptyHint: 'Doppelklicke links auf einen Server zum Verbinden oder markiere eine Verbindung als Favorit.',
+    drawerAuditLogs: 'Audit-Protokoll',
+    resetDatabaseCta: 'NexusTS-Datenbank zurücksetzen…',
+    syncedRevFormat: 'Synchron (Rev {rev})'
+  },
+  fr: {
+    quickConnectButton: 'Connexion rapide',
+    quickConnectLaunchpadHint: 'Connexion rapide — rechercher serveurs, hôtes ou protocoles…',
+    localTerminalCta: 'Terminal local',
+    importShortCta: 'Importer .rtsz',
+    activeSessionsLower: 'sessions actives',
+    addTodoCta: 'Ajouter une tâche',
+    todoTitle: 'Liste de tâches',
+    favoritesEmptyHint: 'Double-cliquez sur un serveur dans la barre latérale ou épinglez une connexion en favori.',
+    drawerAuditLogs: 'Journaux d’audit',
+    resetDatabaseCta: 'Réinitialiser la base NexusTS…',
+    syncedRevFormat: 'Synchronisé (rév {rev})'
+  },
+  it: {
+    quickConnectButton: 'Connessione rapida',
+    quickConnectLaunchpadHint: 'Connessione rapida — cerca server, host o protocolli…',
+    localTerminalCta: 'Terminale locale',
+    importShortCta: 'Importa .rtsz',
+    activeSessionsLower: 'sessioni attive',
+    addTodoCta: 'Aggiungi attività',
+    todoTitle: 'Elenco attività',
+    favoritesEmptyHint: 'Fai doppio clic su un server nella barra laterale o aggiungi una connessione ai Preferiti.',
+    drawerAuditLogs: 'Log di controllo',
+    resetDatabaseCta: 'Reimposta database NexusTS…',
+    syncedRevFormat: 'Sincronizzato (rev {rev})'
+  },
+  es: {
+    quickConnectButton: 'Conexión rápida',
+    quickConnectLaunchpadHint: 'Conexión rápida — buscar servidores, hosts o protocolos…',
+    localTerminalCta: 'Terminal local',
+    importShortCta: 'Importar .rtsz',
+    activeSessionsLower: 'sesiones activas',
+    addTodoCta: 'Añadir tarea',
+    todoTitle: 'Lista de tareas',
+    favoritesEmptyHint: 'Haz doble clic en un servidor de la barra lateral o marca una conexión como favorita.',
+    drawerAuditLogs: 'Registros de auditoría',
+    resetDatabaseCta: 'Restablecer base de datos NexusTS…',
+    syncedRevFormat: 'Sincronizado (rev {rev})'
+  },
+  el: {
+    quickConnectButton: 'Γρήγορη σύνδεση',
+    quickConnectLaunchpadHint: 'Γρήγορη σύνδεση — αναζήτηση διακομιστών, hosts ή πρωτοκόλλων…',
+    localTerminalCta: 'Τοπικό τερματικό',
+    importShortCta: 'Εισαγωγή .rtsz',
+    activeSessionsLower: 'ενεργές συνεδρίες',
+    addTodoCta: 'Προσθήκη εργασίας',
+    todoTitle: 'Λίστα εργασιών',
+    favoritesEmptyHint: 'Κάντε διπλό κλικ σε διακομιστή στην πλαϊνή μπάρα ή προσθέστε σύνδεση στα Αγαπημένα.',
+    drawerAuditLogs: 'Αρχεία καταγραφής',
+    resetDatabaseCta: 'Επαναφορά βάσης NexusTS…',
+    syncedRevFormat: 'Συγχρονισμένο (έκδ. {rev})'
+  }
+};
+for (const [code, extra] of Object.entries(GOOGLEBOOK_UI_STRINGS)) {
+  Object.assign(STRINGS[code], extra);
+}
+
 export function resolveStrings(localeCode = 'de') {
   const short = String(localeCode || 'de').toLowerCase().slice(0, 2);
   return STRINGS[short] || STRINGS.en;
