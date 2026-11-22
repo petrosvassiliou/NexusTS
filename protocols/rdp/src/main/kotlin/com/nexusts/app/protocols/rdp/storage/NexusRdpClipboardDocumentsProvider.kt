@@ -59,7 +59,7 @@ class NexusRdpClipboardDocumentsProvider : DocumentsProvider() {
             throw FileNotFoundException("Not a directory: $parentDocumentId")
         }
         val cursor = MatrixCursor(resolveDocumentProjection(projection))
-        val baseDir = recvBaseDirectory(requireContext())
+        val baseDir = recvBaseDirectory(attachedContext())
         val children = parent.listFiles()
             ?.sortedWith(compareBy<File>({ !it.isDirectory }, { it.name.lowercase() }))
             .orEmpty()
@@ -83,7 +83,7 @@ class NexusRdpClipboardDocumentsProvider : DocumentsProvider() {
         parentDocumentId: String?,
         childDocumentId: String?
     ): DocumentsContract.Path {
-        val baseDir = recvBaseDirectory(requireContext())
+        val baseDir = recvBaseDirectory(attachedContext())
         val startFile = if (parentDocumentId.isNullOrBlank()) {
             baseDir
         } else {
@@ -140,11 +140,11 @@ class NexusRdpClipboardDocumentsProvider : DocumentsProvider() {
         return ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
     }
 
-    private fun requireContext(): Context =
+    private fun attachedContext(): Context =
         context ?: throw IllegalStateException("NexusRdpClipboardDocumentsProvider not attached")
 
     private fun resolveScopedFile(documentId: String?): File {
-        val ctx = requireContext()
+        val ctx = attachedContext()
         val baseDir = recvBaseDirectory(ctx)
         val rawId = documentId?.trim().orEmpty()
         if (rawId.isEmpty() || rawId == DOC_ID_ROOT) {
