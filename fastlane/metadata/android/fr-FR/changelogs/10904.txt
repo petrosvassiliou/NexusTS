@@ -1,0 +1,1 @@
+• NexusTS 0.9.4 : Activation automatique du capteur Touch ID et d’empreinte digitale dès que le coffre est verrouillé sur macOS, Googlebooks et ChromeOS — déverrouillage direct au toucher.

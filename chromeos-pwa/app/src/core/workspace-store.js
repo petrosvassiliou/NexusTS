@@ -64,6 +64,9 @@ export class NexusChromeOSStore {
       isVaultLocked: false,
       isStarterUninitialized: true,
       vaultUnlockError: '',
+      platformBiometricAvailable: false,
+      biometricUnlockEnrolled: false,
+      isBiometricPromptActive: false,
       idleAutoLockMinutes: 0,
       lastActivityEpochMs: Date.now(),
 
@@ -107,7 +110,7 @@ export class NexusChromeOSStore {
       localRelayReachable: false,
       localRelayUrl: 'ws://127.0.0.1:44890',
       localRelayHttpUrl: 'http://127.0.0.1:44890',
-      appVersion: '0.9.3',
+      appVersion: '0.9.4',
       pwaStandalone: false,
       pwaInstallAvailable: false,
       swUpdateWaiting: false,
@@ -197,6 +200,18 @@ export class NexusChromeOSStore {
         this.state.selectedConnectionId = sanitized.connections[0]?.id || null;
       }
     }
+
+    if (typeof globalThis.PublicKeyCredential?.isUserVerifyingPlatformAuthenticatorAvailable === 'function') {
+      try {
+        this.state.platformBiometricAvailable = Boolean(
+          await globalThis.PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable()
+        );
+      } catch {
+        this.state.platformBiometricAvailable = false;
+      }
+    }
+    const storedBio = await idbGet('vault.webauthnBiometric');
+    this.state.biometricUnlockEnrolled = Boolean(storedBio?.credentialIdBytes && storedBio?.ciphertext);
 
     this.state.initialized = true;
     this._emit();
@@ -455,7 +470,7 @@ export class NexusChromeOSStore {
     return toClose.length;
   }
 
-  async setMasterPassphraseAndEncrypt(newPassphrase) {
+  async setMasterPassphraseAndEncrypt(newPassphrase, { enableBiometrics = true } = {}) {
     const clean = String(newPassphrase || '');
     const isCustom = clean.length > 0;
     if (isCustom && clean.length < 4) {
@@ -469,6 +484,16 @@ export class NexusChromeOSStore {
       revision: this.state.vaultDocument.revision
     });
     await idbSet('vault.unencryptedDraft', null);
+    if (!isCustom || !enableBiometrics) {
+      await idbSet('vault.webauthnBiometric', null);
+      this.state.biometricUnlockEnrolled = false;
+    } else if (this.state.platformBiometricAvailable) {
+      try {
+        await this.enrollWebAuthnBiometricUnlock(clean);
+      } catch {
+        // Non-fatal if user cancels WebAuthn ceremony while saving password
+      }
+    }
     this.setState({
       hasEncryptedLocalVault: true,
       hasCustomPassphrase: isCustom,
@@ -481,12 +506,113 @@ export class NexusChromeOSStore {
     }
   }
 
+  async enrollWebAuthnBiometricUnlock(passphraseToSeal = this._masterPassphrase) {
+    if (!passphraseToSeal || passphraseToSeal === DEFAULT_TRANSPARENT_PASSPHRASE) {
+      return false;
+    }
+    if (!globalThis.navigator?.credentials?.create || !globalThis.crypto?.subtle) {
+      return false;
+    }
+    const challenge = globalThis.crypto.getRandomValues(new Uint8Array(32));
+    const userId = globalThis.crypto.getRandomValues(new Uint8Array(16));
+    const cred = await globalThis.navigator.credentials.create({
+      publicKey: {
+        challenge,
+        rp: { name: 'NexusTS Enterprise Vault' },
+        user: {
+          id: userId,
+          name: 'vault@nexusts.local',
+          displayName: this.state.vaultDocument.name || 'NexusTS Vault'
+        },
+        pubKeyCredParams: [
+          { type: 'public-key', alg: -7 },
+          { type: 'public-key', alg: -257 }
+        ],
+        authenticatorSelection: {
+          authenticatorAttachment: 'platform',
+          userVerification: 'required',
+          residentKey: 'discouraged'
+        },
+        timeout: 60000
+      }
+    });
+    if (!cred?.rawId) return false;
+    const aesKey = await globalThis.crypto.subtle.generateKey(
+      { name: 'AES-GCM', length: 256 },
+      false,
+      ['encrypt', 'decrypt']
+    );
+    const iv = globalThis.crypto.getRandomValues(new Uint8Array(12));
+    const plainBytes = new TextEncoder().encode(passphraseToSeal);
+    const ciphertextBuf = await globalThis.crypto.subtle.encrypt({ name: 'AES-GCM', iv }, aesKey, plainBytes);
+    await idbSet('vault.webauthnBiometric', {
+      credentialIdBytes: new Uint8Array(cred.rawId),
+      aesKey,
+      iv,
+      ciphertext: new Uint8Array(ciphertextBuf)
+    });
+    this.setState({ biometricUnlockEnrolled: true });
+    return true;
+  }
+
+  async unlockWithWebAuthnBiometrics({ automatic = false } = {}) {
+    if (!this.state.isVaultLocked || this.state.isBiometricPromptActive) return false;
+    if (automatic && this._autoBioDismissedInFocus) return false;
+    const record = await idbGet('vault.webauthnBiometric');
+    if (!record?.credentialIdBytes || !record?.aesKey || !record?.ciphertext) return false;
+    if (!globalThis.navigator?.credentials?.get) return false;
+
+    if (!automatic) {
+      this._autoBioDismissedInFocus = false;
+    }
+    this.setState({ isBiometricPromptActive: true, vaultUnlockError: '' });
+    try {
+      const challenge = globalThis.crypto.getRandomValues(new Uint8Array(32));
+      const assertion = await globalThis.navigator.credentials.get({
+        publicKey: {
+          challenge,
+          allowCredentials: [{ type: 'public-key', id: record.credentialIdBytes }],
+          userVerification: 'required',
+          timeout: 60000
+        }
+      });
+      if (!assertion) {
+        this.setState({ isBiometricPromptActive: false });
+        return false;
+      }
+      const plainBuf = await globalThis.crypto.subtle.decrypt(
+        { name: 'AES-GCM', iv: record.iv },
+        record.aesKey,
+        record.ciphertext
+      );
+      const pass = new TextDecoder().decode(plainBuf);
+      this._autoBioDismissedInFocus = false;
+      this.setState({ isBiometricPromptActive: false });
+      return await this.unlockVault(pass);
+    } catch (err) {
+      const isCancel = err?.name === 'NotAllowedError' || err?.name === 'AbortError';
+      if (automatic && isCancel) {
+        this._autoBioDismissedInFocus = true;
+      }
+      this.setState({
+        isBiometricPromptActive: false,
+        vaultUnlockError: automatic || isCancel ? '' : (err?.message || 'Biometric unlock failed.')
+      });
+      return false;
+    }
+  }
+
+  resetAutoBiometricDismissal() {
+    this._autoBioDismissedInFocus = false;
+  }
+
   async unlockVault(passphrase) {
     try {
       const effective = passphrase || DEFAULT_TRANSPARENT_PASSPHRASE;
       const sealed = await loadEncryptedVaultFromOfflineStore();
       if (!sealed) {
         this._masterPassphrase = effective;
+        this._autoBioDismissedInFocus = false;
         this.setState({
           hasCustomPassphrase: effective !== DEFAULT_TRANSPARENT_PASSPHRASE,
           isVaultLocked: false,
@@ -496,6 +622,7 @@ export class NexusChromeOSStore {
       }
       const doc = await unsealVaultDocument(sealed, effective);
       this._masterPassphrase = effective;
+      this._autoBioDismissedInFocus = false;
       this.setState({
         vaultDocument: doc,
         hasCustomPassphrase: effective !== DEFAULT_TRANSPARENT_PASSPHRASE,
@@ -523,6 +650,7 @@ export class NexusChromeOSStore {
       return;
     }
     this._masterPassphrase = '';
+    this._autoBioDismissedInFocus = false;
     this.setState({
       isVaultLocked: true,
       vaultUnlockError: ''
@@ -862,12 +990,16 @@ export class NexusChromeOSStore {
     await this.disconnectGoogleDriveSync();
     const fresh = createStarterVault(this.deviceId);
     this._masterPassphrase = DEFAULT_TRANSPARENT_PASSPHRASE;
+    this._autoBioDismissedInFocus = false;
     await idbSet('vault.sealed', null);
     await idbSet('vault.unencryptedDraft', null);
+    await idbSet('vault.webauthnBiometric', null);
     this.setState({
       vaultDocument: fresh,
       hasEncryptedLocalVault: false,
       hasCustomPassphrase: false,
+      biometricUnlockEnrolled: false,
+      isBiometricPromptActive: false,
       isVaultLocked: false,
       isStarterUninitialized: true,
       tabs: [],

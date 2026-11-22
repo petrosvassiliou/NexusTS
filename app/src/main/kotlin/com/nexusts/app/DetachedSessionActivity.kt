@@ -50,7 +50,10 @@ import com.nexusts.app.feature.workspace.ActiveProtocolSessionDispatcher
 import com.nexusts.app.feature.workspace.FullScreenVaultUnlockShield
 import com.nexusts.app.feature.workspace.NexusWorkspaceViewModel
 import com.nexusts.app.protocols.ssh.bridge.SshNativeBridge
+import com.nexusts.app.security.BiometricVaultUnlockManager
 import dagger.hilt.android.AndroidEntryPoint
+import javax.inject.Inject
+import kotlinx.coroutines.delay
 import kotlinx.serialization.json.Json
 
 /**
@@ -61,11 +64,15 @@ import kotlinx.serialization.json.Json
 @AndroidEntryPoint
 class DetachedSessionActivity : AppCompatActivity() {
 
+    @Inject
+    lateinit var biometricUnlockManager: BiometricVaultUnlockManager
+
     private val viewModel: NexusWorkspaceViewModel by viewModels()
     private var detachedTab: WorkspaceSessionTab? = null
     private var reDockedToWorkspace: Boolean = false
     private var detachedKeyCaptureEnabled: Boolean = false
     private var onReleaseDetachedCapture: (() -> Unit)? = null
+    private var isBiometricPromptActive: Boolean = false
     private val consumedShortcutKeyCodes = mutableSetOf<Int>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -107,6 +114,24 @@ class DetachedSessionActivity : AppCompatActivity() {
             CompositionLocalProvider(LocalNexusShortcutEngine provides viewModel.shortcutEngine) {
                 NexusTSTheme {
                     if (uiState.isVaultLocked) {
+                        val bioEnabled = biometricUnlockManager.isBiometricUnlockEnabled() && !uiState.hasPreImportBackup
+                        androidx.compose.runtime.LaunchedEffect(uiState.isVaultLocked, bioEnabled) {
+                            if (uiState.isVaultLocked && bioEnabled && !isBiometricPromptActive) {
+                                delay(180L)
+                                if (!isBiometricPromptActive && viewModel.uiState.value.isVaultLocked) {
+                                    isBiometricPromptActive = true
+                                    biometricUnlockManager.authenticateAndUnsealPassphrase(
+                                        activity = this@DetachedSessionActivity,
+                                        onSuccess = { chars ->
+                                            isBiometricPromptActive = false
+                                            viewModel.unlockVaultWithPassphrase(chars)
+                                        },
+                                        onError = { isBiometricPromptActive = false },
+                                        onCanceled = { isBiometricPromptActive = false }
+                                    )
+                                }
+                            }
+                        }
                         FullScreenVaultUnlockShield(
                             vaultTitle = uiState.pendingImportFileName ?: uiState.vaultDocument.name,
                             unlockError = uiState.vaultUnlockError,
@@ -114,7 +139,25 @@ class DetachedSessionActivity : AppCompatActivity() {
                             strings = strings,
                             onUnlock = { pass -> viewModel.unlockVaultWithPassphrase(pass.toCharArray()) },
                             onCancelPendingImport = viewModel::cancelPendingVaultImport,
-                            onOpenVaultPicker = {}
+                            onOpenVaultPicker = {},
+                            biometricUnlockAvailable = bioEnabled,
+                            onBiometricUnlock = {
+                                if (!isBiometricPromptActive) {
+                                    isBiometricPromptActive = true
+                                    biometricUnlockManager.authenticateAndUnsealPassphrase(
+                                        activity = this@DetachedSessionActivity,
+                                        onSuccess = { chars ->
+                                            isBiometricPromptActive = false
+                                            viewModel.unlockVaultWithPassphrase(chars)
+                                        },
+                                        onError = { msg ->
+                                            isBiometricPromptActive = false
+                                            viewModel.notifyUserMessage(msg)
+                                        },
+                                        onCanceled = { isBiometricPromptActive = false }
+                                    )
+                                }
+                            }
                         )
                     } else {
                         Surface(

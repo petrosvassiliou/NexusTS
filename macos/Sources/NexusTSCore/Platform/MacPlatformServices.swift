@@ -12,6 +12,7 @@ import UniformTypeIdentifiers
 
 public enum BiometricUnlockError: LocalizedError, Sendable {
     case biometricsUnavailable(String)
+    case userCancelled
     case authenticationCancelled(String)
     case keychainFailure(OSStatus)
     case localKeystoreFailure(String)
@@ -20,6 +21,7 @@ public enum BiometricUnlockError: LocalizedError, Sendable {
     public var errorDescription: String? {
         switch self {
         case .biometricsUnavailable(let msg): return msg
+        case .userCancelled: return nil
         case .authenticationCancelled(let msg): return msg
         case .keychainFailure(let status): return "macOS Keychain returned OSStatus \(status)."
         case .localKeystoreFailure(let msg): return "Failed to seal Touch ID unlock key: \(msg)"
@@ -203,22 +205,36 @@ public final class MacKeychainAndBiometrics: @unchecked Sendable {
         return context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error)
     }
 
+    private static let primaryLocalVaultSlot = "__primary_local_vault__"
+
     public func hasStoredPassphrase(forVaultId vaultId: String) -> Bool {
         lock.lock()
         defer { lock.unlock() }
         let map = loadStoreMapLocked()
-        return map["\(Self.vaultNamespace):\(vaultId)"] != nil
+        if map["\(Self.vaultNamespace):\(vaultId)"] != nil {
+            return true
+        }
+        return map["\(Self.vaultNamespace):\(Self.primaryLocalVaultSlot)"] != nil
+    }
+
+    public var hasAnyStoredVaultPassphrase: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        let prefix = "\(Self.vaultNamespace):"
+        return loadStoreMapLocked().keys.contains { $0.hasPrefix(prefix) }
     }
 
     public func storePassphraseInKeychain(_ passphrase: String, forVaultId vaultId: String) throws {
         try sealSecret(passphrase, namespace: Self.vaultNamespace, account: vaultId)
+        try sealSecret(passphrase, namespace: Self.vaultNamespace, account: Self.primaryLocalVaultSlot)
     }
 
     public func deleteStoredPassphrase(forVaultId vaultId: String) {
         lock.lock()
         defer { lock.unlock() }
         let target = "\(Self.vaultNamespace):\(vaultId)"
-        removeEntriesLocked { $0 == target }
+        let primary = "\(Self.vaultNamespace):\(Self.primaryLocalVaultSlot)"
+        removeEntriesLocked { $0 == target || $0 == primary }
     }
 
     public func deleteAllVaultPassphrases() {
@@ -232,7 +248,7 @@ public final class MacKeychainAndBiometrics: @unchecked Sendable {
         forVaultId vaultId: String,
         reason: String = "Unlock your encrypted NexusTS connection vault"
     ) async throws -> String {
-        guard hasStoredPassphrase(forVaultId: vaultId) else {
+        guard hasStoredPassphrase(forVaultId: vaultId) || hasAnyStoredVaultPassphrase else {
             throw BiometricUnlockError.noStoredPassphrase
         }
 
@@ -255,17 +271,45 @@ public final class MacKeychainAndBiometrics: @unchecked Sendable {
         do {
             let granted = try await context.evaluatePolicy(policy, localizedReason: reason)
             guard granted else {
-                throw BiometricUnlockError.authenticationCancelled("Authentication was not granted.")
+                throw BiometricUnlockError.userCancelled
             }
+        } catch let bioErr as BiometricUnlockError {
+            throw bioErr
         } catch {
+            let nsErr = error as NSError
+            if nsErr.domain == LAErrorDomain {
+                let cancelCodes: Set<Int> = [
+                    LAError.userCancel.rawValue,
+                    LAError.userFallback.rawValue,
+                    LAError.systemCancel.rawValue,
+                    LAError.appCancel.rawValue
+                ]
+                if cancelCodes.contains(nsErr.code) {
+                    throw BiometricUnlockError.userCancelled
+                }
+            }
             throw BiometricUnlockError.authenticationCancelled(error.localizedDescription)
         }
 
         do {
-            guard let secret = try unsealSecret(namespace: Self.vaultNamespace, account: vaultId) else {
-                throw BiometricUnlockError.noStoredPassphrase
+            if let direct = try unsealSecret(namespace: Self.vaultNamespace, account: vaultId) {
+                return direct
             }
-            return secret
+            if let primary = try unsealSecret(namespace: Self.vaultNamespace, account: Self.primaryLocalVaultSlot) {
+                return primary
+            }
+            lock.lock()
+            let fallbackAccounts = loadStoreMapLocked().keys.compactMap { key -> String? in
+                let prefix = "\(Self.vaultNamespace):"
+                return key.hasPrefix(prefix) ? String(key.dropFirst(prefix.count)) : nil
+            }
+            lock.unlock()
+            for acct in fallbackAccounts {
+                if let val = try? unsealSecret(namespace: Self.vaultNamespace, account: acct) {
+                    return val
+                }
+            }
+            throw BiometricUnlockError.noStoredPassphrase
         } catch let bioErr as BiometricUnlockError {
             throw bioErr
         } catch {
@@ -833,7 +877,7 @@ public struct MacReleaseUpdateCandidate: Equatable, Sendable {
 }
 
 public enum MacGitHubReleaseUpdater {
-    public static let currentVersion = "0.9.3"
+    public static let currentVersion = "0.9.4"
     public static let githubTokenKeychainKey = "github_release_pat"
 
     private static let legacyPreRebaseVersions: Set<String> = [

@@ -1112,9 +1112,15 @@ public final class WorkspaceStore: ObservableObject {
     @Published public var isPresentingResetDatabaseSheet: Bool = false
     @Published public var activeAppError: NexusAppError? = nil
     @Published public var statusToastMessage: String? = nil
+    @Published public private(set) var isTouchIdPromptActive: Bool = false
+
+    private static let lastVaultIdDefaultsKey = "nexusts.macos.lastVaultDocumentId"
+    private static let lastVaultNameDefaultsKey = "nexusts.macos.lastVaultName"
+    private static let touchIdOptOutDefaultsKey = "nexusts.macos.touchIdUserOptedOut"
 
     private var activePassphrase: String = NxtsVaultSerializer.defaultTransparentPassphrase
     private var isStarterVaultUninitialized: Bool = false
+    private var didDismissAutoTouchIdWhileActive: Bool = false
     private var terminalControllers: [UUID: LiveTerminalController] = [:]
     private var rdpSessions: [UUID: NativeRdpSession] = [:]
     private var transferControllers: [UUID: LiveTransferController] = [:]
@@ -1122,6 +1128,7 @@ public final class WorkspaceStore: ObservableObject {
     private var didShutdownForTermination: Bool = false
     private var appWillTerminateObserver: NSObjectProtocol?
     private var appDidBecomeActiveObserver: NSObjectProtocol?
+    private var appDidResignActiveObserver: NSObjectProtocol?
     private var cloudDebouncedSyncTask: Task<Void, Never>? = nil
     private var cloudWatcherLoopTask: Task<Void, Never>? = nil
     private var pendingFollowUpCloudSync: Bool = false
@@ -1177,14 +1184,30 @@ public final class WorkspaceStore: ObservableObject {
                 }
             }
         }
+        self.appDidResignActiveObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didResignActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.didDismissAutoTouchIdWhileActive = false
+            }
+        }
         self.appDidBecomeActiveObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didBecomeActiveNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated {
-                guard let self, !self.isVaultLocked, self.hasConfiguredCloudSync else { return }
-                self.scheduleDebouncedCloudSync(delayNanoseconds: 350_000_000)
+                guard let self else { return }
+                if self.isVaultLocked {
+                    Task { @MainActor [weak self] in
+                        try? await Task.sleep(nanoseconds: 140_000_000)
+                        await self?.triggerAutomaticTouchIdIfEligible()
+                    }
+                } else if self.hasConfiguredCloudSync {
+                    self.scheduleDebouncedCloudSync(delayNanoseconds: 350_000_000)
+                }
             }
         }
         installCloudFileWatcher()
@@ -1282,9 +1305,16 @@ public final class WorkspaceStore: ObservableObject {
             }
             MacSpotlightVaultIndexer.reindexConnections(in: sanitized, enabled: spotlightIndexingEnabled)
         } else {
-            // Custom master passphrase is set -> present Zero-Knowledge Lock Shield + Touch ID!
+            // Custom master passphrase is set -> restore persisted vault ID/name & present Lock Shield + automatic Touch ID!
+            if let savedId = UserDefaults.standard.string(forKey: Self.lastVaultIdDefaultsKey), !savedId.isEmpty {
+                self.document.documentId = savedId
+            }
+            if let savedName = UserDefaults.standard.string(forKey: Self.lastVaultNameDefaultsKey), !savedName.isEmpty {
+                self.document.name = savedName
+            }
             self.hasCustomPassphrase = true
             self.isVaultLocked = true
+            self.didDismissAutoTouchIdWhileActive = false
         }
     }
 
@@ -1303,6 +1333,8 @@ public final class WorkspaceStore: ObservableObject {
             } else {
                 try FileManager.default.moveItem(at: tmp, to: url)
             }
+            UserDefaults.standard.set(document.documentId, forKey: Self.lastVaultIdDefaultsKey)
+            UserDefaults.standard.set(document.name, forKey: Self.lastVaultNameDefaultsKey)
             MacSpotlightVaultIndexer.reindexConnections(in: document, enabled: spotlightIndexingEnabled)
 
             if triggerCloudSync && autoSyncOnSave && hasConfiguredCloudSync && !isVaultLocked {
@@ -1362,6 +1394,7 @@ public final class WorkspaceStore: ObservableObject {
         detachedWindowTabs.removeAll()
         isFullScreenSessionMode = false
         NativeSshCryptoBridge.clearAgentKeys()
+        didDismissAutoTouchIdWhileActive = false
         isVaultLocked = true
         unlockErrorText = nil
         appendAudit("Security", "Vault locked and in-memory keys zeroized.")
@@ -1380,9 +1413,22 @@ public final class WorkspaceStore: ObservableObject {
                 if let opened = try? NxtsVaultSerializer.open(sealedData: data, passphrase: pass) {
                     let sanitized = VaultHierarchySanitizer.sanitizeVaultDocument(opened)
                     self.activePassphrase = pass
+                    self.hasCustomPassphrase = (pass != NxtsVaultSerializer.defaultTransparentPassphrase && !pass.isEmpty)
                     self.document = sanitized
                     self.isVaultLocked = false
+                    self.didDismissAutoTouchIdWhileActive = false
                     self.unlockErrorText = nil
+                    UserDefaults.standard.set(sanitized.documentId, forKey: Self.lastVaultIdDefaultsKey)
+                    UserDefaults.standard.set(sanitized.name, forKey: Self.lastVaultNameDefaultsKey)
+                    // Auto-enroll Touch ID on Mac when unlocking a custom-passphrase vault (unless explicitly opted out)
+                    if self.hasCustomPassphrase,
+                       !UserDefaults.standard.bool(forKey: Self.touchIdOptOutDefaultsKey),
+                       MacKeychainAndBiometrics.shared.canUseTouchIdOrCompanion {
+                        try? MacKeychainAndBiometrics.shared.storePassphraseInKeychain(
+                            pass,
+                            forVaultId: sanitized.documentId
+                        )
+                    }
                     if sanitized != opened {
                         persistLocalVault(triggerCloudSync: false)
                     }
@@ -1400,6 +1446,7 @@ public final class WorkspaceStore: ObservableObject {
             return false
         }
         self.isVaultLocked = false
+        self.didDismissAutoTouchIdWhileActive = false
         if hasConfiguredCloudSync {
             installCloudFileWatcher()
             Task { [weak self] in
@@ -1409,15 +1456,43 @@ public final class WorkspaceStore: ObservableObject {
         return true
     }
 
-    public func unlockWithTouchId() async {
+    public func unlockWithTouchId(isAutoPrompt: Bool = false) async {
+        guard isVaultLocked, !isTouchIdPromptActive else { return }
+        if !isAutoPrompt {
+            didDismissAutoTouchIdWhileActive = false
+            unlockErrorText = nil
+        }
+        isTouchIdPromptActive = true
+        defer { isTouchIdPromptActive = false }
+
         do {
             let pass = try await MacKeychainAndBiometrics.shared.unlockPassphraseWithBiometrics(
                 forVaultId: document.documentId
             )
             _ = unlockVault(withPassphrase: pass)
+        } catch BiometricUnlockError.userCancelled {
+            if isAutoPrompt {
+                didDismissAutoTouchIdWhileActive = true
+            }
+            unlockErrorText = nil
         } catch {
-            unlockErrorText = error.localizedDescription
+            if !isAutoPrompt {
+                unlockErrorText = error.localizedDescription
+            }
         }
+    }
+
+    public func triggerAutomaticTouchIdIfEligible() async {
+        guard isVaultLocked,
+              !isTouchIdPromptActive,
+              !didDismissAutoTouchIdWhileActive,
+              NSApp.isActive,
+              MacKeychainAndBiometrics.shared.canUseTouchIdOrCompanion,
+              (MacKeychainAndBiometrics.shared.hasStoredPassphrase(forVaultId: document.documentId)
+               || MacKeychainAndBiometrics.shared.hasAnyStoredVaultPassphrase) else {
+            return
+        }
+        await unlockWithTouchId(isAutoPrompt: true)
     }
 
     public func configureMasterPassphrase(_ newPassphrase: String, saveForTouchId: Bool) throws {
@@ -1439,12 +1514,14 @@ public final class WorkspaceStore: ObservableObject {
         }
 
         if saveForTouchId && !newPassphrase.isEmpty {
+            UserDefaults.standard.set(false, forKey: Self.touchIdOptOutDefaultsKey)
             try MacKeychainAndBiometrics.shared.storePassphraseInKeychain(
                 newPassphrase,
                 forVaultId: document.documentId
             )
             appendAudit("Security", "Master passphrase sealed for Touch ID / Apple Watch unlock.")
         } else {
+            UserDefaults.standard.set(!newPassphrase.isEmpty, forKey: Self.touchIdOptOutDefaultsKey)
             MacKeychainAndBiometrics.shared.deleteStoredPassphrase(forVaultId: document.documentId)
             if newPassphrase.isEmpty {
                 appendAudit("Security", "Vault reset to automatic passwordless sync key.")
@@ -1459,6 +1536,7 @@ public final class WorkspaceStore: ObservableObject {
         isFullScreenSessionMode = false
         NativeSshCryptoBridge.clearAgentKeys()
         MacKeychainAndBiometrics.shared.deleteAllVaultPassphrases()
+        UserDefaults.standard.removeObject(forKey: Self.touchIdOptOutDefaultsKey)
 
         let url = Self.localVaultFileURL
         try? FileManager.default.removeItem(at: url)

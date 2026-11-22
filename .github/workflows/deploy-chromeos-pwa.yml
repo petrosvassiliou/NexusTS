@@ -27,7 +27,7 @@ jobs:
       id-token: write
     env:
       FIREBASE_PROJECT_ID: ${{ vars.FIREBASE_PROJECT_ID || 'nexusts-prod' }}
-      NEXUSTS_RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'v0.9.3' }}
+      NEXUSTS_RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'v0.9.4' }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4

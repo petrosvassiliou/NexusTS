@@ -1,0 +1,1 @@
+• NexusTS 0.9.4: Automatic Touch ID & Fingerprint sensor activation whenever the vault is locked on macOS, Googlebooks, and ChromeOS — unlock with a single finger touch without clicking a button first.

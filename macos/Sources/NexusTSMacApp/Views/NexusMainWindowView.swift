@@ -1073,6 +1073,11 @@ struct ZeroKnowledgeLockShieldView: View {
     @EnvironmentObject private var store: WorkspaceStore
     @State private var passphraseInput: String = ""
 
+    private var hasTouchIdEnrolled: Bool {
+        MacKeychainAndBiometrics.shared.hasStoredPassphrase(forVaultId: store.document.documentId)
+            || MacKeychainAndBiometrics.shared.hasAnyStoredVaultPassphrase
+    }
+
     var body: some View {
         ZStack {
             LiquidGlassBackdropAura()
@@ -1090,7 +1095,7 @@ struct ZeroKnowledgeLockShieldView: View {
                             Circle()
                                 .strokeBorder(Color.accentColor.opacity(0.38), lineWidth: 0.85)
                         )
-                    Image(systemName: "lock.shield.fill")
+                    Image(systemName: store.isTouchIdPromptActive ? "touchid" : "lock.shield.fill")
                         .font(.system(size: 40, weight: .semibold))
                         .symbolRenderingMode(.hierarchical)
                         .foregroundStyle(Color.accentColor)
@@ -1113,13 +1118,14 @@ struct ZeroKnowledgeLockShieldView: View {
                         }
 
                     HStack(spacing: 10) {
-                        if MacKeychainAndBiometrics.shared.hasStoredPassphrase(forVaultId: store.document.documentId) {
+                        if hasTouchIdEnrolled {
                             Button {
-                                Task { await store.unlockWithTouchId() }
+                                Task { await store.unlockWithTouchId(isAutoPrompt: false) }
                             } label: {
                                 Label(store.strings.unlockWithTouchId, systemImage: "touchid")
                             }
                             .controlSize(.large)
+                            .disabled(store.isTouchIdPromptActive)
                         }
 
                         Button(store.strings.unlockVault) {
@@ -1144,6 +1150,7 @@ struct ZeroKnowledgeLockShieldView: View {
                     } label: {
                         Text(store.strings.resetDatabase)
                             .font(.caption)
+                            .fixedSize()
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(.secondary)
@@ -1155,6 +1162,10 @@ struct ZeroKnowledgeLockShieldView: View {
                 tint: Color.accentColor,
                 prominence: .elevated
             )
+        }
+        .task(id: store.document.documentId) {
+            try? await Task.sleep(nanoseconds: 160_000_000)
+            await store.triggerAutomaticTouchIdIfEligible()
         }
     }
 }

@@ -51,11 +51,18 @@ class BiometricVaultUnlockManager @Inject constructor(
     fun hasEnrolledPassphrase(): Boolean =
         !prefs.getString(KEY_SEALED_PASSPHRASE, null).isNullOrBlank()
 
+    fun isUserExplicitlyOptedOut(): Boolean =
+        prefs.getBoolean(KEY_BIOMETRIC_USER_OPTED_OUT, false)
+
     fun setBiometricUnlockEnabled(enabled: Boolean) {
         if (!enabled) {
-            clearEnrolledPassphrase()
+            prefs.edit().putBoolean(KEY_BIOMETRIC_USER_OPTED_OUT, true).apply()
+            clearEnrolledPassphrase(preserveOptOut = true)
         } else {
-            prefs.edit().putBoolean(KEY_BIOMETRIC_UNLOCK_ENABLED, true).apply()
+            prefs.edit()
+                .putBoolean(KEY_BIOMETRIC_UNLOCK_ENABLED, true)
+                .putBoolean(KEY_BIOMETRIC_USER_OPTED_OUT, false)
+                .apply()
         }
     }
 
@@ -85,6 +92,7 @@ class BiometricVaultUnlockManager @Inject constructor(
             prefs.edit()
                 .putString(KEY_SEALED_PASSPHRASE, sealed)
                 .putBoolean(KEY_BIOMETRIC_UNLOCK_ENABLED, enableBiometricUnlock)
+                .putBoolean(KEY_BIOMETRIC_USER_OPTED_OUT, !enableBiometricUnlock)
                 .apply()
             true
         } catch (_: Exception) {
@@ -94,11 +102,14 @@ class BiometricVaultUnlockManager @Inject constructor(
         }
     }
 
-    fun clearEnrolledPassphrase() {
-        prefs.edit()
+    fun clearEnrolledPassphrase(preserveOptOut: Boolean = false) {
+        val editor = prefs.edit()
             .remove(KEY_SEALED_PASSPHRASE)
             .putBoolean(KEY_BIOMETRIC_UNLOCK_ENABLED, false)
-            .apply()
+        if (!preserveOptOut) {
+            editor.remove(KEY_BIOMETRIC_USER_OPTED_OUT)
+        }
+        editor.apply()
     }
 
     /**
@@ -128,9 +139,10 @@ class BiometricVaultUnlockManager @Inject constructor(
     fun authenticateAndUnsealPassphrase(
         activity: FragmentActivity,
         title: String = "Unlock NexusTS Vault",
-        subtitle: String = "Verify your identity to unseal your Argon2id encrypted connection vault",
+        subtitle: String = "Touch the fingerprint sensor or verify your identity to unlock NexusTS",
         onSuccess: (CharArray) -> Unit,
-        onError: (String) -> Unit
+        onError: (String) -> Unit,
+        onCanceled: () -> Unit = {}
     ) {
         if (!hasEnrolledPassphrase()) {
             onError("No vault passphrase is enrolled for biometric unlock yet.")
@@ -153,10 +165,12 @@ class BiometricVaultUnlockManager @Inject constructor(
             }
 
             override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
-                if (errorCode != BiometricPrompt.ERROR_USER_CANCELED &&
-                    errorCode != BiometricPrompt.ERROR_NEGATIVE_BUTTON &&
-                    errorCode != BiometricPrompt.ERROR_CANCELED
+                if (errorCode == BiometricPrompt.ERROR_USER_CANCELED ||
+                    errorCode == BiometricPrompt.ERROR_NEGATIVE_BUTTON ||
+                    errorCode == BiometricPrompt.ERROR_CANCELED
                 ) {
+                    onCanceled()
+                } else {
                     onError(errString.toString())
                 }
             }
@@ -248,6 +262,7 @@ class BiometricVaultUnlockManager @Inject constructor(
     companion object {
         const val PREFS_NAME = "nexusts_biometric_vault_prefs"
         private const val KEY_BIOMETRIC_UNLOCK_ENABLED = "biometric_unlock_enabled"
+        private const val KEY_BIOMETRIC_USER_OPTED_OUT = "biometric_user_opted_out"
         private const val KEY_SEALED_PASSPHRASE = "sealed_biometric_passphrase"
         private const val KEY_IDLE_AUTO_LOCK_MINUTES = "idle_auto_lock_minutes"
         private const val KEY_JVM_TEST_AES_KEY = "jvm_fallback_aes256_key"

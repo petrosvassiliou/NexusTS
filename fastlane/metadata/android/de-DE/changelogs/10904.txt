@@ -1,0 +1,1 @@
+• NexusTS 0.9.4: Automatische Aktivierung des Touch-ID- & Fingerabdrucksensors bei gesperrtem Tresor auf macOS, Googlebooks und ChromeOS — direkt per Fingerdruck entsperren ohne vorherigen Klick.

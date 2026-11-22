@@ -783,8 +783,14 @@ function renderUnifiedSettings() {
             </select>
           </div>
         </div>
-        <div class="topbar-cluster">
+        <div class="topbar-cluster" style="flex-wrap:wrap">
           <button type="button" class="pill-btn primary" data-action="apply-master-passphrase">Save Security Settings</button>
+          ${store.state.hasCustomPassphrase && store.state.platformBiometricAvailable && !store.state.biometricUnlockEnrolled
+            ? `<button type="button" class="pill-btn" data-action="enroll-webauthn-bio">Enable Touch ID / Fingerprint Unlock</button>`
+            : ''}
+          ${store.state.biometricUnlockEnrolled
+            ? `<span class="status-chip online"><span class="status-dot"></span>Touch ID / Fingerprint Auto-Unlock Active</span>`
+            : ''}
           ${store.state.hasCustomPassphrase ? `<button type="button" class="pill-btn" data-action="lock-vault">${esc(s.lockVault)}</button>` : ''}
         </div>
       </div>
@@ -2022,9 +2028,10 @@ function renderWorkspace() {
     </div>
   `;
 
-  // Lock shield
+  // Lock shield + Automatic Touch ID / Fingerprint Sensor Activation
   const lockShield = document.getElementById('lock-shield');
   if (st.isVaultLocked) {
+    const wasHidden = lockShield.classList.contains('hidden');
     lockShield.className = 'lock-shield';
     lockShield.innerHTML = `
       <form class="modal-card" id="unlock-vault-form" style="max-width:410px;text-align:center">
@@ -2033,9 +2040,21 @@ function renderWorkspace() {
         <p style="margin:0;color:var(--text-secondary)">Argon2id + AES-256-GCM Zero-Knowledge Vault</p>
         <input type="password" class="text-input" id="unlock-passphrase-input" placeholder="Master Passphrase" autofocus />
         ${st.vaultUnlockError ? `<div style="color:var(--status-danger);font-size:12px">${esc(st.vaultUnlockError)}</div>` : ''}
-        <button type="submit" class="pill-btn primary" style="justify-content:center">${esc(s.unlockVault)}</button>
+        <div class="topbar-cluster" style="justify-content:center;flex-wrap:wrap">
+          ${st.biometricUnlockEnrolled
+            ? `<button type="button" class="pill-btn" data-action="unlock-webauthn-bio" ${st.isBiometricPromptActive ? 'disabled' : ''}>Touch ID / Fingerprint</button>`
+            : ''}
+          <button type="submit" class="pill-btn primary" style="justify-content:center">${esc(s.unlockVault)}</button>
+        </div>
       </form>
     `;
+    if (wasHidden && st.biometricUnlockEnrolled && !st.isBiometricPromptActive) {
+      setTimeout(() => {
+        if (store.state.isVaultLocked && store.state.biometricUnlockEnrolled) {
+          store.unlockWithWebAuthnBiometrics({ automatic: true });
+        }
+      }, 150);
+    }
   } else {
     lockShield.className = 'lock-shield hidden';
     lockShield.innerHTML = '';
@@ -3012,6 +3031,18 @@ async function bootstrap() {
   store.subscribe(() => renderWorkspace());
   installEventDelegation();
   installDiscreetTooltips();
+  window.addEventListener('blur', () => {
+    store.resetAutoBiometricDismissal();
+  });
+  window.addEventListener('focus', () => {
+    if (store.state.isVaultLocked && store.state.biometricUnlockEnrolled) {
+      setTimeout(() => {
+        if (store.state.isVaultLocked && store.state.biometricUnlockEnrolled) {
+          store.unlockWithWebAuthnBiometrics({ automatic: true });
+        }
+      }, 150);
+    }
+  });
   await store.initializeOffline();
   await refreshRelayStatus();
 

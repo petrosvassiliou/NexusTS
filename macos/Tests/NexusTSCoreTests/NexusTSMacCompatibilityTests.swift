@@ -352,11 +352,11 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
     }
 
     func testV118LocalizationUpgradeVersionAndVaultReplacementCompatibility() throws {
-        XCTAssertEqual(MacGitHubReleaseUpdater.currentVersion, "0.9.3")
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.9.3", isNewerThan: "0.9.1"))
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.9.3", isNewerThan: "0.9.0"))
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.9.3", isNewerThan: "0.8.14"))
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.9.3", isNewerThan: "0.3.0-beta.6"))
+        XCTAssertEqual(MacGitHubReleaseUpdater.currentVersion, "0.9.4")
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.9.4", isNewerThan: "0.9.1"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.9.4", isNewerThan: "0.9.0"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.9.4", isNewerThan: "0.8.14"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.9.4", isNewerThan: "0.3.0-beta.6"))
         XCTAssertEqual(LocalizedWorkspaceStrings.catalog(for: .en).studios, "Manage")
         XCTAssertEqual(LocalizedWorkspaceStrings.catalog(for: .en).logOffSession, "Log Off Session")
 
@@ -1561,6 +1561,8 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
         // Sealing passphrase for nxts-default-vault succeeds without invoking legacy SecKeychain or OSStatus -60006
         try store.storePassphraseInKeychain("My-Custom-Master-Key-2026!", forVaultId: "nxts-default-vault")
         XCTAssertTrue(store.hasStoredPassphrase(forVaultId: "nxts-default-vault"))
+        XCTAssertTrue(store.hasStoredPassphrase(forVaultId: "cold-start-placeholder-uuid"))
+        XCTAssertTrue(store.hasAnyStoredVaultPassphrase)
         let unsealed = try store.unsealSecret(namespace: "vault", account: "nxts-default-vault")
         XCTAssertEqual(unsealed, "My-Custom-Master-Key-2026!")
 
@@ -1572,6 +1574,7 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
 
         store.deleteStoredPassphrase(forVaultId: "nxts-default-vault")
         XCTAssertFalse(store.hasStoredPassphrase(forVaultId: "nxts-default-vault"))
+        XCTAssertFalse(store.hasAnyStoredVaultPassphrase)
 
         // Verify reencryptLinkedFile re-seals linked Google Drive .nxts when switching or resetting passphrase
         let suiteName = "com.nexusts.tests.reencrypt.\(UUID().uuidString)"

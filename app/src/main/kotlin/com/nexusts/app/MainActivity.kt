@@ -120,6 +120,12 @@ class MainActivity : AppCompatActivity() {
     @Volatile
     private var lastUserInteractionElapsedRealtimeMs: Long = SystemClock.elapsedRealtime()
 
+    @Volatile
+    private var isBiometricPromptActive: Boolean = false
+
+    @Volatile
+    private var autoBiometricDismissedWhileResumed: Boolean = false
+
     private val playUpdateLauncher = registerForActivityResult(
         ActivityResultContracts.StartIntentSenderForResult()
     ) { /* Play Core handles installation flow & emits InstallState updates */ }
@@ -258,6 +264,38 @@ class MainActivity : AppCompatActivity() {
                 ActiveSessionsForegroundService.syncSessionKeepAlive(this@MainActivity, activeCount)
             }
 
+            // 0. Automatic Googlebook Fingerprint / Touch ID Sensor Activation whenever Vault is Locked
+            LaunchedEffect(uiState.isVaultLocked, uiState.biometricUnlockEnabled, uiState.hasPreImportBackup) {
+                if (uiState.isVaultLocked) {
+                    if (uiState.biometricUnlockEnabled && !uiState.hasPreImportBackup) {
+                        autoBiometricDismissedWhileResumed = false
+                        delay(180L)
+                        if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) &&
+                            workspaceViewModel.uiState.value.isVaultLocked &&
+                            !autoBiometricDismissedWhileResumed
+                        ) {
+                            triggerBiometricUnlockPrompt(isAutomatic = true)
+                        }
+                    }
+                } else {
+                    autoBiometricDismissedWhileResumed = false
+                    // Automatically enroll custom passphrase for Fingerprint unlock on first manual unlock (unless opted out)
+                    if (!biometricUnlockManager.hasEnrolledPassphrase() &&
+                        !biometricUnlockManager.isUserExplicitlyOptedOut() &&
+                        biometricUnlockManager.isBiometricOrDeviceCredentialAvailable()
+                    ) {
+                        resolveQuickLockPassphraseOrNull()?.let { pass ->
+                            try {
+                                biometricUnlockManager.enrollPassphrase(pass, enableBiometricUnlock = true)
+                                syncBiometricAndVaultSecurityState()
+                            } finally {
+                                pass.fill('\u0000')
+                            }
+                        }
+                    }
+                }
+            }
+
             // 1. Automatic Startup & Vault-Unlock Google Drive Sync
             LaunchedEffect(uiState.isVaultLocked, uiState.driveLinkedSafLabel, uiState.driveSignedInEmail) {
                 if (!uiState.isVaultLocked) {
@@ -270,7 +308,7 @@ class MainActivity : AppCompatActivity() {
                 }
             }
 
-            // 2. Live Remote Google Drive Change Detection (SAF ContentObserver + Activity ON_RESUME)
+            // 2. Live Remote Google Drive Change Detection + Automatic Biometric Re-Arm on Resume
             DisposableEffect(uiState.driveLinkedSafLabel, uiState.isVaultLocked) {
                 val linkedInfo = safDriveBridge.getLinkedVaultInfo()
                 var registeredObserver: ContentObserver? = null
@@ -290,11 +328,31 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 val lifecycleObserver = LifecycleEventObserver { _, event ->
-                    if (event == Lifecycle.Event.ON_RESUME && !workspaceViewModel.uiState.value.isVaultLocked) {
-                        if (safDriveBridge.getLinkedVaultInfo() != null) {
-                            scheduleDebouncedSafDriveSync(delayMs = 400L)
-                        } else if (workspaceViewModel.uiState.value.driveSignedInEmail.isNotBlank()) {
-                            GoogleDriveVaultSyncEngine.triggerImmediateDeltaSync(this@MainActivity)
+                    if (event == Lifecycle.Event.ON_STOP) {
+                        autoBiometricDismissedWhileResumed = false
+                    } else if (event == Lifecycle.Event.ON_RESUME) {
+                        val cur = workspaceViewModel.uiState.value
+                        if (cur.isVaultLocked) {
+                            if (biometricUnlockManager.isBiometricUnlockEnabled() &&
+                                !cur.hasPreImportBackup &&
+                                !autoBiometricDismissedWhileResumed
+                            ) {
+                                lifecycleScope.launch {
+                                    delay(150L)
+                                    if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) &&
+                                        workspaceViewModel.uiState.value.isVaultLocked &&
+                                        !autoBiometricDismissedWhileResumed
+                                    ) {
+                                        triggerBiometricUnlockPrompt(isAutomatic = true)
+                                    }
+                                }
+                            }
+                        } else {
+                            if (safDriveBridge.getLinkedVaultInfo() != null) {
+                                scheduleDebouncedSafDriveSync(delayMs = 400L)
+                            } else if (cur.driveSignedInEmail.isNotBlank()) {
+                                GoogleDriveVaultSyncEngine.triggerImmediateDeltaSync(this@MainActivity)
+                            }
                         }
                     }
                 }
@@ -609,11 +667,7 @@ class MainActivity : AppCompatActivity() {
                         workspaceViewModel.notifyUserMessage("Skipped update prompt for $tag.")
                     },
                     onRequestBiometricUnlock = {
-                        biometricUnlockManager.authenticateAndUnsealPassphrase(
-                            activity = this@MainActivity,
-                            onSuccess = { chars -> workspaceViewModel.unlockVaultWithPassphrase(chars) },
-                            onError = { msg -> workspaceViewModel.notifyUserMessage(msg) }
-                        )
+                        triggerBiometricUnlockPrompt(isAutomatic = false)
                     },
                     onQuickLockVault = {
                         performQuickOrIdleLock(isIdleAutoLock = false)
@@ -737,6 +791,44 @@ class MainActivity : AppCompatActivity() {
         triggerFileImportFromActivity = null
         updateCoordinator.unregisterFlexibleListener()
         super.onDestroy()
+    }
+
+    private fun triggerBiometricUnlockPrompt(isAutomatic: Boolean) {
+        if (isBiometricPromptActive) return
+        if (!biometricUnlockManager.isBiometricUnlockEnabled() ||
+            !biometricUnlockManager.isBiometricOrDeviceCredentialAvailable()
+        ) {
+            if (!isAutomatic) {
+                workspaceViewModel.notifyUserMessage(
+                    "Biometric or device credential authentication is not configured on this device."
+                )
+            }
+            return
+        }
+        if (!isAutomatic) {
+            autoBiometricDismissedWhileResumed = false
+        }
+        isBiometricPromptActive = true
+        biometricUnlockManager.authenticateAndUnsealPassphrase(
+            activity = this,
+            onSuccess = { chars ->
+                isBiometricPromptActive = false
+                autoBiometricDismissedWhileResumed = false
+                workspaceViewModel.unlockVaultWithPassphrase(chars)
+            },
+            onError = { msg ->
+                isBiometricPromptActive = false
+                if (!isAutomatic) {
+                    workspaceViewModel.notifyUserMessage(msg)
+                }
+            },
+            onCanceled = {
+                isBiometricPromptActive = false
+                if (isAutomatic) {
+                    autoBiometricDismissedWhileResumed = true
+                }
+            }
+        )
     }
 
     private fun syncBiometricAndVaultSecurityState() {

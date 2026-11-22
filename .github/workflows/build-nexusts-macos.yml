@@ -21,7 +21,7 @@ on:
       release_tag:
         description: "Tag name when publishing via workflow_dispatch"
         required: false
-        default: "v0.9.3"
+        default: "v0.9.4"
         type: string
       runner_label:
         description: "GitHub-hosted macOS runner label (macos-15-intel avoids arm64 queue backlogs)"
@@ -192,7 +192,7 @@ jobs:
           echo "==> Executing packaged NexusTS --self-test binary"
           SELF_TEST_OUT="$("${BIN}" --self-test)"
           echo "${SELF_TEST_OUT}"
-          echo "${SELF_TEST_OUT}" | grep -q "NEXUSTS_MACOS_SELF_TEST_OK version=0.9.3"
+          echo "${SELF_TEST_OUT}" | grep -q "NEXUSTS_MACOS_SELF_TEST_OK version=0.9.4"
 
       - name: Upload NexusTS macOS Universal DMG & App Bundle
         uses: actions/upload-artifact@v4
@@ -223,7 +223,7 @@ jobs:
           set -euo pipefail
           TAG_NAME="${GITHUB_REF_NAME}"
           if [[ "${TAG_NAME}" != v* ]]; then
-            TAG_NAME="${{ inputs.release_tag || 'v0.9.3' }}"
+            TAG_NAME="${{ inputs.release_tag || 'v0.9.4' }}"
           fi
           echo "tag_name=${TAG_NAME}" >> "${GITHUB_OUTPUT}"
 
