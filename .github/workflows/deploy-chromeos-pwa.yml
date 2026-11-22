@@ -1,17 +1,6 @@
 name: Deploy ChromeOS PWA to Firebase Hosting
 
 on:
-  push:
-    branches:
-      - main
-      - 'beta*'
-    tags:
-      - 'v*'
-    paths:
-      - 'chromeos-pwa/**'
-      - 'firebase.json'
-      - '.firebaserc'
-      - '.github/workflows/deploy-chromeos-pwa.yml'
   workflow_dispatch:
 
 concurrency:

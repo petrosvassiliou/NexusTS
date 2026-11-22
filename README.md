@@ -1,18 +1,17 @@
 <div align="center">
 
-<img src="chromeos-pwa/app/icons/icon-192.png" alt="NexusTS Logo" width="96" height="96" />
+<img src="docs/icons/icon-192.png" alt="NexusTS Logo" width="96" height="96" />
 
 # NexusTS `v1.0.0`
 
 **Desktop-Class Remote Management, FreeRDP 3.12, SSHv2, SFTP & Zero-Knowledge `.nxts` Connection Workspace**  
-*Native for **Googlebook OS & Android**, **macOS Universal2 (Apple Silicon + Intel)**, and **ChromeOS (Signed IWA `.swbn` & Offline PWA)***
+*Native for **Googlebook OS & Android** (`arm64-v8a` + `x86_64`) and **macOS Universal2** (Apple Silicon + Intel)*
 
 [![Release v1.0.0](https://img.shields.io/badge/release-v1.0.0-1d4ed8?style=flat-square)](https://github.com/petrosvassiliou/NexusTS/releases/tag/v1.0.0)
-[![Platforms](https://img.shields.io/badge/platforms-Googlebook%20%7C%20Android%20%7C%20macOS%20%7C%20ChromeOS-059669?style=flat-square)](https://github.com/petrosvassiliou/NexusTS/releases/tag/v1.0.0)
+[![Platforms](https://img.shields.io/badge/platforms-Googlebook%20%7C%20Android%20%7C%20macOS%20Universal2-059669?style=flat-square)](https://github.com/petrosvassiliou/NexusTS/releases/tag/v1.0.0)
 [![Vault Crypto](https://img.shields.io/badge/vault-Argon2id%20%2B%20AES--256--GCM-7c3aed?style=flat-square)](#zero-knowledge-nxts-v2-vault--live-cloud-sync)
-[![ChromeOS Web App](https://img.shields.io/badge/ChromeOS%20PWA-nexusts--prod.web.app-0284c7?style=flat-square)](https://nexusts-prod.web.app/)
 
-[**Download Latest Release (`v1.0.0`)**](https://github.com/petrosvassiliou/NexusTS/releases/tag/v1.0.0) · [**Launch ChromeOS Web App**](https://nexusts-prod.web.app/) · [**Production Deployment Guide**](docs/PRODUCTION_DEPLOYMENT.md)
+[**Download Latest Release (`v1.0.0`)**](https://github.com/petrosvassiliou/NexusTS/releases/tag/v1.0.0) · [**Production Deployment Guide**](docs/PRODUCTION_DEPLOYMENT.md)
 
 </div>
 
@@ -27,26 +26,26 @@ Existing Android-based RDP and remote desktop managers were designed around phon
 - Swallowed hardware keyboard shortcuts (`Win`, `Alt+Tab`, `F1–F12`, `Ctrl+V`) and laggy right-click context menus.
 - Isolated single-connection screens with **no split-pane tiling**, **no cascading folder credential inheritance**, **no Royal TS `.rtsz` compatibility**, and **no zero-knowledge cross-platform vault sync**.
 
-**NexusTS `1.0.0`** solves this from the ground up: a unified, light-first desktop remote management workspace inspired by **Royal TS**, powered by **C++20 FreeRDP 3.12** and **Rust (`russh`, `argon2`, `aes-gcm`)**, sharing a single byte-identical encrypted `.nxts` v2 vault across **Googlebook OS / Android**, **macOS**, and **ChromeOS**.
+**NexusTS `1.0.0`** solves this from the ground up: a unified, light-first desktop remote management workspace inspired by **Royal TS**, powered by **C++20 FreeRDP 3.12** and **Rust (`russh`, `argon2`, `aes-gcm`)**, sharing a single byte-identical encrypted `.nxts` v2 vault across **Googlebook OS / Android** and **macOS**.
 
 ---
 
 ## High-Resolution Platform Screenshots (`3200×2000` Retina)
 
-### 1. Googlebook OS & Android Edition (`com.nexusts.app` — Native FreeRDP 3.12 + `russh` Split Workspace)
+### 1. Googlebook OS & Android — Live Split-Pane FreeRDP 3.12 + `russh` SSHv2/SFTP (`com.nexusts.app`)
 *Freeform desktop windowing, side-by-side FreeRDP 3.12 (`AVC444`, `/admin`, `Auto-Fit DISP`, `HiDPI 200%`), bidirectional `DocumentsProvider` file & recursive folder copy/paste with Googlebook `Files`, `russh` SSHv2 + Dual-Pane SFTP v3 Commander, and multi-monitor tab tear-off.*
 
-![NexusTS on Googlebook OS & Android](docs/screenshots/nexusts-googlebook-android-rdp-split.png)
+![NexusTS on Googlebook OS & Android — Live RDP & SSH Split Workspace](docs/screenshots/nexusts-googlebook-android-rdp-split.png)
 
-### 2. macOS Universal2 Edition (`com.nexusts.app.macos` — Apple Silicon & Intel, macOS 14+)
+### 2. Googlebook OS & Android — Unified Vault Overview Dashboard & Hardware Shortcuts
+*1:1 desktop workspace parity with macOS: live telemetry cards, pinned RFC 6238 TOTP credentials, Googlebook hardware keyboard shortcuts (`Ctrl+K`, `Ctrl+D`, `Ctrl+Shift+B`), USB-C Serial UART console, and automatic fingerprint sensor unlock.*
+
+![NexusTS on Googlebook OS & Android — Vault Overview Dashboard](docs/screenshots/nexusts-googlebook-android-overview.png)
+
+### 3. macOS Universal2 Edition (`com.nexusts.app.macos` — Apple Silicon & Intel, macOS 14+)
 *Unified workspace UI with native macOS Sonoma/Sequoia window chrome, automatic Touch ID hardware sensor detection, Vault Overview Dashboard, `⌘K` Quick Connect, and `⌥⌘I` Cascading Folder Inheritance Inspector.*
 
 ![NexusTS on macOS Universal2](docs/screenshots/nexusts-macos-universal-workspace.png)
-
-### 3. ChromeOS Isolated Web App (`.swbn`) & Offline Start-Menu PWA (`com.nexusts.app.chromeos`)
-*100% offline standalone ChromeOS workspace using native `Direct Sockets` (`TCPSocket` / `UDPSocket`), `Controlled Frame`, `Web Serial` UART, Rust WebAssembly cryptography, and persistent Google Drive `FileSystemFileHandle` sync.*
-
-![NexusTS on ChromeOS IWA & Offline PWA](docs/screenshots/nexusts-chromeos-iwa-pwa-overview.png)
 
 ### 4. Unified 8-Tab Settings, Zero-Knowledge Google Drive Sync & 1-Click Migration Studio
 *Zero-prompt passwordless or Master-Passphrase Argon2id + AES-256-GCM live Google Drive sync, 1-click non-destructive import from Royal TS (`.rtsz`/`.rtsx`), KeePass XML, Bitwarden, 1Password (`.1pux`), and CSV, localized across 6 languages (`EN`, `DE`, `IT`, `ES`, `EL`, `FR`).*
@@ -57,21 +56,21 @@ Existing Android-based RDP and remote desktop managers were designed around phon
 
 ## Feature Matrix (`v1.0.0`)
 
-| Capability | Googlebook OS & Android (`APK` / `AAB`) | macOS Universal2 (`DMG` / `ZIP`) | ChromeOS (`IWA .swbn` & `PWA`) |
-| :--- | :---: | :---: | :---: |
-| **Unified Light-First Workspace & Vault Overview** | Yes (Jetpack Compose M3 Expressive) | Yes (SwiftUI + AppKit) | Yes (Strict-CSP Offline ES Modules) |
-| **Recursive Split-Pane Tiling & Tab Tear-Off** | Left/Right, Top/Bottom, External Display Tear-Off | `HSplitView`/`VSplitView` + Detached Windows | Single, Split H/V, Quad + Multi-Window |
-| **RDP Engine** | FreeRDP 3.12 C++20 NDK (`AVC444`, `DISP_DVC`) | FreeRDP 3.12 Universal2 (`AVC444`, `DISP_DVC`) | X.224 / Hyper-V PCB / RLE + Direct Sockets |
-| **Bidirectional RDP File & Folder Copy/Paste** | Native `DocumentsProvider` (`Files` app + Drag & Drop) | Native `NSPasteboard` (`Finder` + `⌘C`/`⌘V`) | Clipboard Sync + Shared Staging |
-| **Hyper-V Enhanced Session (`VMConnect` 2179)** | Yes (Preconnection Blob PCB + Auto-Heal) | Yes (Preconnection Blob PCB + Auto-Heal) | Yes (PCB Negotiation) |
-| **SSHv2, Bastion ProxyJump & Port Forwarding** | Rust `russh` (`-L`, `-R`, `-D` SOCKS5, `.cast`) | Rust `russh` + Local `/bin/zsh` PTY | Direct SSHv2 + SFTP v3 + Terminal |
-| **Dual-Pane SFTP v3 & FTP File Commander** | Streaming SFTP v3 + SAF Integration | Dual-Pane Finder + SFTP v3 | SFTP v3 + FTP Browser |
-| **VNC / Apple Remote Desktop & Web Sessions** | RFB / ZRLE + Isolated Web Sessions | RFB + 1-Click `Screen Sharing.app` + `WKWebView` | RFB / DES + `<controlledframe>` |
-| **Hardware USB-C Serial UART & YubiKey PIV** | `UsbManager` UART (`9600–921600`) + CCID APDU | IOKit `/dev/cu.*` + Smartcard Redirection | `Web Serial API` (`navigator.serial`) |
-| **Kubernetes, Docker & Network Diagnostics** | K8s/Docker Exec & Logs + Ping/Scan/WoL | K8s/Docker Socket + 6-Tool Net Studio | TCP Ping, Concurrent Port Scan & WoL |
-| **Zero-Knowledge `.nxts` v2 Live Cloud Sync** | Google Drive SAF + Drive REST API v3 | Google Drive + iCloud Drive | ChromeOS `FileSystemFileHandle` Drive Sync |
-| **Automatic Biometric Unlock** | Biometric / Googlebook Fingerprint Auto-Prompt | Automatic Touch ID & Apple Watch Detection | WebAuthn / Passkey PRF Unlock |
-| **Royal TS, KeePass, Bitwarden & 1Password Import** | `.rtsz`, `.rtsx`, `.xml`, `.json`, `.1pux`, `.csv` | `.rtsz`, `.rtsx`, `.xml`, `.json`, `.1pux`, `.csv` | `.rtsz`, `.rtsx`, `.xml`, `.json`, `.csv` |
+| Capability | Googlebook OS & Android (`APK` / `AAB`) | macOS Universal2 (`DMG` / `ZIP`) |
+| :--- | :---: | :---: |
+| **Unified Light-First Workspace & Vault Overview** | Yes (Jetpack Compose M3 Expressive) | Yes (SwiftUI + AppKit) |
+| **Recursive Split-Pane Tiling & Tab Tear-Off** | Left/Right, Top/Bottom, External Display Tear-Off | `HSplitView`/`VSplitView` + Detached Windows |
+| **RDP Engine** | FreeRDP 3.12 C++20 NDK (`AVC444`, `DISP_DVC`) | FreeRDP 3.12 Universal2 (`AVC444`, `DISP_DVC`) |
+| **Bidirectional RDP File & Folder Copy/Paste** | Native `DocumentsProvider` (`Files` app + Drag & Drop) | Native `NSPasteboard` (`Finder` + `⌘C`/`⌘V`) |
+| **Hyper-V Enhanced Session (`VMConnect` 2179)** | Yes (Preconnection Blob PCB + Auto-Heal) | Yes (Preconnection Blob PCB + Auto-Heal) |
+| **SSHv2, Bastion ProxyJump & Port Forwarding** | Rust `russh` (`-L`, `-R`, `-D` SOCKS5, `.cast`) | Rust `russh` + Local `/bin/zsh` PTY |
+| **Dual-Pane SFTP v3 & FTP File Commander** | Streaming SFTP v3 + SAF Integration | Dual-Pane Finder + SFTP v3 |
+| **VNC / Apple Remote Desktop & Web Sessions** | RFB / ZRLE + Isolated Web Sessions | RFB + 1-Click `Screen Sharing.app` + `WKWebView` |
+| **Hardware USB-C Serial UART & YubiKey PIV** | `UsbManager` UART (`9600–921600`) + CCID APDU | IOKit `/dev/cu.*` + Smartcard Redirection |
+| **Kubernetes, Docker & Network Diagnostics** | K8s/Docker Exec & Logs + Ping/Scan/WoL | K8s/Docker Socket + 6-Tool Net Studio |
+| **Zero-Knowledge `.nxts` v2 Live Cloud Sync** | Google Drive SAF + Drive REST API v3 | Google Drive + iCloud Drive |
+| **Automatic Biometric Unlock** | Biometric / Googlebook Fingerprint Auto-Prompt | Automatic Touch ID & Apple Watch Detection |
+| **Royal TS, KeePass, Bitwarden & 1Password Import** | `.rtsz`, `.rtsx`, `.xml`, `.json`, `.1pux`, `.csv` | `.rtsz`, `.rtsx`, `.xml`, `.json`, `.1pux`, `.csv` |
 
 ---
 
@@ -83,19 +82,16 @@ All signed release artifacts and `SHA256SUMS` manifests are published on [**GitH
   - Download `NexusTS-v1.0.0-googlebook-android-release.apk` (signed with APK Signature Scheme v2/v3/v4, RSA-4096, Play-Protect compliant with built-in GitHub & Play updater).
 - **macOS 14 Sonoma / macOS 15 Sequoia (`arm64` + `x86_64` Universal2)**:
   - Download `NexusTS-v1.0.0-macOS-Universal.dmg` (or `.zip`) and drag **NexusTS.app** to `/Applications`.
-- **ChromeOS**:
-  - **1-Click Start-Menu PWA:** Open [**https://nexusts-prod.web.app/**](https://nexusts-prod.web.app/) in Chrome on ChromeOS and click **Install App** to pin NexusTS to your Launcher & Shelf with 100% offline Service Worker caching.
-  - **Standalone Direct-Sockets IWA (`.swbn`):** Install `NexusTS-v1.0.0-ChromeOS-IWA.swbn` via `chrome://web-app-internals` (*Install IWA from Signed Web Bundle*) or Enterprise Policy (`IsolatedWebAppInstallForceList`) for raw TCP/UDP sockets with zero companion relay.
 
 ---
 
 ## Zero-Knowledge `.nxts` v2 Vault & Live Cloud Sync
 
-Every platform reads and writes the exact same binary **`.nxts` v2 (`NXTS\x00\x02`)** container:
+Both platforms read and write the exact same binary **`.nxts` v2 (`NXTS\x00\x02`)** container:
 
 - **Authenticated Cryptography:** Key derivation via **RFC 9106 Argon2id** (`64 MiB, t=3, p=4`), subkey expansion via **HKDF-SHA256**, and payload encryption via **AES-256-GCM** with header Additional Authenticated Data (AAD).
 - **Frictionless or Master-Passphrase Modes:** Sync across Google Drive out of the box with **zero master-password prompts** using NexusTS's transparent authenticated envelope, or lock your vault behind a custom Master Passphrase with **automatic Touch ID / Fingerprint hardware detection**.
-- **Conflict-Free Multi-Device Sync:** Concurrent edits on a Mac, a Googlebook, and a Chromebook are merged deterministically at the object level using **3-way vector-clock delta resolution** (`VaultDeltaConflictResolver`).
+- **Conflict-Free Multi-Device Sync:** Concurrent edits on a Mac and a Googlebook / Android device are merged deterministically at the object level using **3-way vector-clock delta resolution** (`VaultDeltaConflictResolver`).
 
 ---
 
@@ -117,7 +113,6 @@ NexusTS/
 │   ├── cpp/                         # C++20 FreeRDP 3.12 Session, RDPGFX/AVC444, CLIPRDR File Streams, DISP_DVC, AAudio/CoreAudio
 │   └── rust/                        # Rust Workspace (nexusts-crypto, nexusts-terminal, nexusts-transfer, nexusts-vnc, nexusts-netutils)
 ├── macos/                           # Native Swift + SwiftUI/AppKit macOS 14+ App (Universal2 arm64 + x86_64)
-├── chromeos-pwa/                    # ChromeOS Signed Isolated Web App (.swbn), Offline Service Worker PWA & Linux Relay
 └── docs/screenshots/                # High-Resolution 3200x2000 Retina Platform Screenshots
 ```
 
@@ -137,10 +132,4 @@ cargo test --manifest-path native/rust/Cargo.toml
 ./scripts/build-macos-native.sh --universal
 swift test --package-path macos
 ./scripts/package-macos-app.sh --universal
-```
-
-### ChromeOS Isolated Web App (`.swbn`) & Offline PWA
-```bash
-npm --prefix chromeos-pwa test
-npm --prefix chromeos-pwa run build
 ```

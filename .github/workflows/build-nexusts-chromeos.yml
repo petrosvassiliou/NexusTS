@@ -1,11 +1,6 @@
 name: NexusTS ChromeOS Offline PWA & Isolated Web App (.swbn) CI
 
 on:
-  push:
-    branches: [ main ]
-    tags: [ "v*" ]
-  pull_request:
-    branches: [ main ]
   workflow_dispatch:
     inputs:
       publish_release:
