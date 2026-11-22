@@ -1,0 +1,1 @@
+• NexusTS 0.9.9: Risolto il copia/incolla bidirezionale di file, cartelle e testo RDP su Googlebook e Android! Il nuovo DocumentsProvider elimina l'errore "Operazione file non supportata" nell'app File locale e la sincronizzazione CLIPRDR pre-incolla consente di incollare e trascinare file e cartelle locali nelle sessioni RDP.

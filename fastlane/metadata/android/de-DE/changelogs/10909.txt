@@ -1,0 +1,1 @@
+• NexusTS 0.9.9: Bidirektionales Kopieren & Einfügen von Dateien, Ordnern und Text in RDP auf Googlebooks und Android behoben! Ein sicherer DocumentsProvider behebt „Dateivorgang wird nicht unterstützt“ beim Einfügen in der Dateien-App, und automatische Fokus-/Vorab-Synchronisierung ermöglicht nahtloses Einfügen und Drag-and-Drop in RDP-Sitzungen.

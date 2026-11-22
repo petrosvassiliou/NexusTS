@@ -207,6 +207,18 @@
                 android:resource="@xml/file_paths" />
         </provider>
 
+        <!-- Scoped DocumentsProvider for pasting RDP CLIPRDR files & folders into Googlebook / Android Files app -->
+        <provider
+            android:name="com.nexusts.app.protocols.rdp.storage.NexusRdpClipboardDocumentsProvider"
+            android:authorities="${applicationId}.rdp.clipboard.documents"
+            android:exported="true"
+            android:grantUriPermissions="true"
+            android:permission="android.permission.MANAGE_DOCUMENTS">
+            <intent-filter>
+                <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
+            </intent-filter>
+        </provider>
+
     </application>
 
 </manifest>

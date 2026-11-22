@@ -1,0 +1,1 @@
+• NexusTS 0.9.9 : Correction du copier-coller bidirectionnel RDP de fichiers, dossiers et texte sur Googlebooks et Android ! Le nouveau DocumentsProvider élimine l’erreur d’opération non prise en charge dans l’application Fichiers et la synchronisation CLIPRDR permet de coller et glisser-déposer des fichiers vers RDP.

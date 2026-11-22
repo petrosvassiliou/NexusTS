@@ -1,0 +1,1 @@
+• NexusTS 0.9.9: ¡Corregido copiar y pegar bidireccional de archivos, carpetas y texto por RDP en Googlebooks y Android! El nuevo DocumentsProvider soluciona el mensaje "Operación no compatible" en la app Archivos y la sincronización CLIPRDR permite pegar y arrastrar archivos y carpetas locales hacia sesiones RDP.

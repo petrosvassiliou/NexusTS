@@ -437,8 +437,28 @@ object VaultHierarchySanitizer {
         val validFolderIds = cleanedFolders.map { it.id }.toSet()
 
         val cleanedConnections = activeConnsWithoutDemo.map { conn ->
-            if (conn.parentFolderId != null && conn.parentFolderId !in validFolderIds) {
-                conn.copy(parentFolderId = null)
+            val normalizedParent = if (conn.parentFolderId != null && conn.parentFolderId !in validFolderIds) {
+                null
+            } else {
+                conn.parentFolderId
+            }
+            val healedSettings = when (val s = conn.settings) {
+                is com.nexusts.app.core.vault.model.ProtocolSpecificSettings.Rdp -> {
+                    val healClip = !s.redirectClipboard && !s.redirectClipboardCustomized
+                    val healHv = s.hyperVVmId.isNotBlank() && !s.hyperVEnhancedSession && !s.hyperVEnhancedSessionCustomized
+                    if (healClip || healHv) {
+                        s.copy(
+                            redirectClipboard = if (healClip) true else s.redirectClipboard,
+                            hyperVEnhancedSession = if (healHv) true else s.hyperVEnhancedSession
+                        )
+                    } else {
+                        s
+                    }
+                }
+                else -> s
+            }
+            if (normalizedParent != conn.parentFolderId || healedSettings != conn.settings) {
+                conn.copy(parentFolderId = normalizedParent, settings = healedSettings)
             } else {
                 conn
             }

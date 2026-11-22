@@ -1518,10 +1518,10 @@ class NexusWorkspaceComposeE2ETest {
 
     @Test
     fun compactFlushLeftSidebarFolderContextMenusStartAllRdpRenameDeleteAndV117UpgradeParity() {
-        assertEquals(10908, BuildConfig.VERSION_CODE)
+        assertEquals(10909, BuildConfig.VERSION_CODE)
         assertTrue(
-            "Expected BuildConfig.VERSION_NAME (${BuildConfig.VERSION_NAME}) to start with 0.9.8",
-            BuildConfig.VERSION_NAME.startsWith("0.9.8")
+            "Expected BuildConfig.VERSION_NAME (${BuildConfig.VERSION_NAME}) to start with 0.9.9",
+            BuildConfig.VERSION_NAME.startsWith("0.9.9")
         )
         assertEquals("Manage", WorkspaceLocalizedStrings.defaultEnglish().navStudiosMenu)
 
@@ -2595,7 +2595,352 @@ class NexusWorkspaceComposeE2ETest {
         assertEquals("Verknüpft", deStrings.ovLinked)
         assertEquals("Lokal", deStrings.ovLocal)
     }
+
+    @Test
+    fun v099RdpBidirectionalFileAndFolderClipboardDocumentsProviderAndHostStagingWorkEndToEnd() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val clipboardManager = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+
+        val ownAuthority = com.nexusts.app.protocols.rdp.storage.NexusRdpClipboardDocumentsProvider.authority(context)
+        val ownProviderClass = com.nexusts.app.protocols.rdp.storage.NexusRdpClipboardDocumentsProvider::class.java
+        val ownProviderInfo = android.content.pm.ProviderInfo().apply {
+            packageName = context.packageName
+            name = ownProviderClass.name
+            authority = ownAuthority
+            exported = true
+            grantUriPermissions = true
+            readPermission = android.Manifest.permission.MANAGE_DOCUMENTS
+            writePermission = android.Manifest.permission.MANAGE_DOCUMENTS
+        }
+        Shadows.shadowOf(context.packageManager).apply {
+            addOrUpdateProvider(ownProviderInfo)
+            addIntentFilterForProvider(
+                android.content.ComponentName(context.packageName, ownProviderClass.name),
+                android.content.IntentFilter("android.content.action.DOCUMENTS_PROVIDER")
+            )
+        }
+        org.robolectric.Robolectric.buildContentProvider(ownProviderClass).create(ownProviderInfo)
+
+        // 1. Remote RDP -> Local Googlebook Files (DocumentsUI): file + nested folder + clipper:opType=1
+        val recvBase = com.nexusts.app.protocols.rdp.storage.NexusRdpClipboardDocumentsProvider.recvBaseDirectory(context)
+        val clipBatchDir = java.io.File(recvBase, "clip_test_099").apply {
+            deleteRecursively()
+            mkdirs()
+        }
+        val expectedPdfBytes = "%PDF-1.7 NexusTS Remote Report Payload\n".toByteArray(StandardCharsets.UTF_8)
+        val stagedPdf = java.io.File(clipBatchDir, "Q4_Report.pdf").apply {
+            writeBytes(expectedPdfBytes)
+        }
+        val stagedFolder = java.io.File(clipBatchDir, "Deploy_Scripts").apply { mkdirs() }
+        val expectedPs1 = "Write-Host 'Deploying NexusTS 0.9.9'\r\n"
+        java.io.File(stagedFolder, "bootstrap.ps1").writeText(expectedPs1, StandardCharsets.UTF_8)
+        val nestedDir = java.io.File(stagedFolder, "nested").apply { mkdirs() }
+        java.io.File(nestedDir, "config.json").writeText("{\"env\":\"prod\"}", StandardCharsets.UTF_8)
+
+        val publishedSig = com.nexusts.app.protocols.rdp.storage.RdpClipboardHostBridge.publishRemoteFilesToHostClipboard(
+            context = context,
+            manager = clipboardManager,
+            localPaths = listOf(stagedPdf.absolutePath, stagedFolder.absolutePath)
+        )
+        assertNotNull("Expected remote files to publish onto host ClipboardManager", publishedSig)
+
+        val primaryClip = clipboardManager.primaryClip
+        assertNotNull(primaryClip)
+        assertEquals(2, primaryClip!!.itemCount)
+        assertNotNull(
+            "DocumentsUI requires PersistableBundle extras with clipper:opType = 1 (OPERATION_COPY)",
+            primaryClip.description.extras
+        )
+        assertEquals(
+            1,
+            primaryClip.description.extras!!.getInt("clipper:opType", -1)
+        )
+
+        val pdfUri = primaryClip.getItemAt(0).uri
+        val folderUri = primaryClip.getItemAt(1).uri
+        assertTrue(android.provider.DocumentsContract.isDocumentUri(context, pdfUri))
+        assertTrue(android.provider.DocumentsContract.isDocumentUri(context, folderUri))
+
+        // Query & stream single file exactly as AOSP DocumentsUI CopyJob does
+        context.contentResolver.query(pdfUri, null, null, null, null).use { c ->
+            assertNotNull(c)
+            assertTrue(c!!.moveToFirst())
+            assertEquals(
+                "Q4_Report.pdf",
+                c.getString(c.getColumnIndexOrThrow(android.provider.DocumentsContract.Document.COLUMN_DISPLAY_NAME))
+            )
+            assertEquals(
+                "application/pdf",
+                c.getString(c.getColumnIndexOrThrow(android.provider.DocumentsContract.Document.COLUMN_MIME_TYPE))
+            )
+            assertEquals(
+                expectedPdfBytes.size.toLong(),
+                c.getLong(c.getColumnIndexOrThrow(android.provider.DocumentsContract.Document.COLUMN_SIZE))
+            )
+        }
+        val readPdfBytes = context.contentResolver.openInputStream(pdfUri)!!.use { it.readBytes() }
+        assertArrayEquals(expectedPdfBytes, readPdfBytes)
+
+        // Query folder & recursive children exactly as AOSP DocumentsUI CopyJob does
+        context.contentResolver.query(folderUri, null, null, null, null).use { c ->
+            assertNotNull(c)
+            assertTrue(c!!.moveToFirst())
+            assertEquals(
+                "Deploy_Scripts",
+                c.getString(c.getColumnIndexOrThrow(android.provider.DocumentsContract.Document.COLUMN_DISPLAY_NAME))
+            )
+            assertEquals(
+                android.provider.DocumentsContract.Document.MIME_TYPE_DIR,
+                c.getString(c.getColumnIndexOrThrow(android.provider.DocumentsContract.Document.COLUMN_MIME_TYPE))
+            )
+        }
+        val folderDocId = android.provider.DocumentsContract.getDocumentId(folderUri)
+        val childrenUri = android.provider.DocumentsContract.buildChildDocumentsUri(ownAuthority, folderDocId)
+        val childEntries = mutableMapOf<String, Pair<String, String>>()
+        context.contentResolver.query(childrenUri, null, null, null, null).use { c ->
+            assertNotNull(c)
+            while (c!!.moveToNext()) {
+                val id = c.getString(c.getColumnIndexOrThrow(android.provider.DocumentsContract.Document.COLUMN_DOCUMENT_ID))
+                val name = c.getString(c.getColumnIndexOrThrow(android.provider.DocumentsContract.Document.COLUMN_DISPLAY_NAME))
+                val mime = c.getString(c.getColumnIndexOrThrow(android.provider.DocumentsContract.Document.COLUMN_MIME_TYPE))
+                childEntries[name] = id to mime
+            }
+        }
+        assertEquals(setOf("nested", "bootstrap.ps1"), childEntries.keys)
+        assertEquals(android.provider.DocumentsContract.Document.MIME_TYPE_DIR, childEntries.getValue("nested").second)
+        val ps1Uri = android.provider.DocumentsContract.buildDocumentUri(ownAuthority, childEntries.getValue("bootstrap.ps1").first)
+        assertEquals(
+            expectedPs1,
+            context.contentResolver.openInputStream(ps1Uri)!!.use { it.readBytes().toString(StandardCharsets.UTF_8) }
+        )
+
+        // Security invariant: path traversal outside cliprdr_recv and write mode must throw SecurityException
+        val traversalUri = android.provider.DocumentsContract.buildDocumentUri(ownAuthority, "cliprdr:../../vaults/default.nxts")
+        val blockedTraversal = runCatching {
+            context.contentResolver.query(traversalUri, null, null, null, null)?.close()
+        }.exceptionOrNull()
+        assertTrue(
+            "Expected SecurityException for path traversal, got $blockedTraversal",
+            blockedTraversal is SecurityException
+        )
+        val blockedWrite = runCatching {
+            context.contentResolver.openOutputStream(pdfUri, "w")?.close()
+        }.exceptionOrNull()
+        assertTrue(
+            "Expected SecurityException for write mode, got $blockedWrite",
+            blockedWrite is SecurityException
+        )
+
+        // Echo-loop prevention: own provider URIs on host clipboard must NOT re-stage back to remote
+        val echoCheck = com.nexusts.app.protocols.rdp.storage.RdpClipboardHostBridge.extractHostClipboardPayload(
+            context = context,
+            manager = clipboardManager
+        )
+        assertSame(
+            com.nexusts.app.protocols.rdp.storage.RdpClipboardHostBridge.HostClipboardPayload.OwnOrUnreadableFileIntent,
+            echoCheck
+        )
+
+        // 2. Local Googlebook Files (DocumentsUI) -> Remote RDP: file + recursive folder staging
+        val extRoot = Files.createTempDirectory("nexusts-googlebook-files-ext").toFile()
+        try {
+            TestExternalFilesDocumentsProvider.rootDir = extRoot
+            val extAuthority = "com.android.externalstorage.documents.test099"
+            val extProviderInfo = android.content.pm.ProviderInfo().apply {
+                packageName = context.packageName
+                name = TestExternalFilesDocumentsProvider::class.java.name
+                authority = extAuthority
+                exported = true
+                grantUriPermissions = true
+                readPermission = android.Manifest.permission.MANAGE_DOCUMENTS
+                writePermission = android.Manifest.permission.MANAGE_DOCUMENTS
+            }
+            org.robolectric.Robolectric.buildContentProvider(
+                TestExternalFilesDocumentsProvider::class.java
+            ).create(extProviderInfo)
+
+            val invoiceBytes = "Invoice-2026-Total: 4200 EUR".toByteArray(StandardCharsets.UTF_8)
+            java.io.File(extRoot, "Invoice_2026.csv").writeBytes(invoiceBytes)
+            val assetsDir = java.io.File(extRoot, "Project_Assets").apply { mkdirs() }
+            java.io.File(assetsDir, "logo.svg").writeText("<svg/>", StandardCharsets.UTF_8)
+            val subDir = java.io.File(assetsDir, "sub").apply { mkdirs() }
+            java.io.File(subDir, "notes.txt").writeText("Hello from Googlebook Files!", StandardCharsets.UTF_8)
+
+            val extFileUri = android.provider.DocumentsContract.buildDocumentUri(extAuthority, "Invoice_2026.csv")
+            val extFolderUri = android.provider.DocumentsContract.buildDocumentUri(extAuthority, "Project_Assets")
+            val localCopyClip = android.content.ClipData(
+                android.content.ClipDescription(
+                    "Copied from Files",
+                    arrayOf("text/csv", android.provider.DocumentsContract.Document.MIME_TYPE_DIR)
+                ),
+                android.content.ClipData.Item(extFileUri)
+            ).apply {
+                addItem(android.content.ClipData.Item(extFolderUri))
+            }
+            clipboardManager.setPrimaryClip(localCopyClip)
+
+            val extracted = com.nexusts.app.protocols.rdp.storage.RdpClipboardHostBridge.extractHostClipboardPayload(
+                context = context,
+                manager = clipboardManager
+            )
+            assertTrue("Expected Files payload, got $extracted", extracted is com.nexusts.app.protocols.rdp.storage.RdpClipboardHostBridge.HostClipboardPayload.Files)
+            val filesPayload = extracted as com.nexusts.app.protocols.rdp.storage.RdpClipboardHostBridge.HostClipboardPayload.Files
+            assertEquals(2, filesPayload.uris.size)
+
+            val stagedPaths = com.nexusts.app.protocols.rdp.storage.RdpClipboardHostBridge.stageUrisToLocalFiles(
+                context = context,
+                uris = filesPayload.uris
+            )
+            assertEquals(2, stagedPaths.size)
+            val stagedInvoice = java.io.File(stagedPaths[0])
+            val stagedAssets = java.io.File(stagedPaths[1])
+            assertEquals("Invoice_2026.csv", stagedInvoice.name)
+            assertArrayEquals(invoiceBytes, stagedInvoice.readBytes())
+            assertEquals("Project_Assets", stagedAssets.name)
+            assertTrue(stagedAssets.isDirectory)
+            assertEquals("<svg/>", java.io.File(stagedAssets, "logo.svg").readText(StandardCharsets.UTF_8))
+            assertEquals(
+                "Hello from Googlebook Files!",
+                java.io.File(stagedAssets, "sub/notes.txt").readText(StandardCharsets.UTF_8)
+            )
+
+            // Also verify text/uri-list payload extraction from desktop/Wayland bridges
+            val directLocalFile = java.io.File(extRoot, "waybridge_readme.md").apply {
+                writeText("# Bridged File", StandardCharsets.UTF_8)
+            }
+            val uriListClip = android.content.ClipData(
+                android.content.ClipDescription("URI List", arrayOf("text/uri-list")),
+                android.content.ClipData.Item(Uri.fromFile(directLocalFile).toString())
+            )
+            val uriListExtracted = com.nexusts.app.protocols.rdp.storage.RdpClipboardHostBridge.extractClipDataPayload(
+                context = context,
+                clip = uriListClip
+            )
+            assertTrue(uriListExtracted is com.nexusts.app.protocols.rdp.storage.RdpClipboardHostBridge.HostClipboardPayload.Files)
+            val stagedUriList = com.nexusts.app.protocols.rdp.storage.RdpClipboardHostBridge.stageUrisToLocalFiles(
+                context = context,
+                uris = (uriListExtracted as com.nexusts.app.protocols.rdp.storage.RdpClipboardHostBridge.HostClipboardPayload.Files).uris
+            )
+            assertEquals(1, stagedUriList.size)
+            assertEquals("# Bridged File", java.io.File(stagedUriList.first()).readText(StandardCharsets.UTF_8))
+        } finally {
+            extRoot.deleteRecursively()
+            clipBatchDir.deleteRecursively()
+        }
+
+        // 3. VaultHierarchySanitizer self-heals uncustomized legacy redirectClipboard=false while preserving explicit false
+        val legacyVault = NxtsVaultDocument(
+            name = "Legacy Clipboard Vault",
+            connections = listOf(
+                VaultConnection(
+                    id = "rdp-legacy-uninit",
+                    name = "Legacy RDP",
+                    host = "10.0.0.11",
+                    protocol = VaultProtocolType.RDP,
+                    settings = ProtocolSpecificSettings.Rdp(
+                        redirectClipboard = false,
+                        redirectClipboardCustomized = false
+                    )
+                ),
+                VaultConnection(
+                    id = "rdp-explicit-off",
+                    name = "Locked Down Jumpbox",
+                    host = "10.0.0.12",
+                    protocol = VaultProtocolType.RDP,
+                    settings = ProtocolSpecificSettings.Rdp(
+                        redirectClipboard = false,
+                        redirectClipboardCustomized = true
+                    )
+                )
+            )
+        )
+        val healed = VaultHierarchySanitizer.sanitizeVaultDocument(legacyVault).document
+        val healedLegacy = healed.connections.first { it.id == "rdp-legacy-uninit" }.settings as ProtocolSpecificSettings.Rdp
+        val healedExplicit = healed.connections.first { it.id == "rdp-explicit-off" }.settings as ProtocolSpecificSettings.Rdp
+        assertTrue("Uncustomized legacy redirectClipboard=false must self-heal to true", healedLegacy.redirectClipboard)
+        assertFalse("Explicitly disabled redirectClipboard must remain false", healedExplicit.redirectClipboard)
+    }
 }
+
+class TestExternalFilesDocumentsProvider : android.provider.DocumentsProvider() {
+    companion object {
+        @Volatile
+        var rootDir: java.io.File = java.io.File(System.getProperty("java.io.tmpdir", "/tmp"))
+    }
+
+    private val defaultDocCols = arrayOf(
+        android.provider.DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+        android.provider.DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+        android.provider.DocumentsContract.Document.COLUMN_MIME_TYPE,
+        android.provider.DocumentsContract.Document.COLUMN_SIZE,
+        android.provider.DocumentsContract.Document.COLUMN_LAST_MODIFIED,
+        android.provider.DocumentsContract.Document.COLUMN_FLAGS
+    )
+
+    override fun onCreate(): Boolean = true
+
+    override fun queryRoots(projection: Array<out String>?): android.database.Cursor =
+        android.database.MatrixCursor(
+            projection ?: arrayOf(
+                android.provider.DocumentsContract.Root.COLUMN_ROOT_ID,
+                android.provider.DocumentsContract.Root.COLUMN_DOCUMENT_ID
+            )
+        )
+
+    override fun queryDocument(documentId: String?, projection: Array<out String>?): android.database.Cursor {
+        val f = resolve(documentId)
+        val c = android.database.MatrixCursor(projection ?: defaultDocCols)
+        addRow(c, documentId.orEmpty(), f)
+        return c
+    }
+
+    override fun queryChildDocuments(
+        parentDocumentId: String?,
+        projection: Array<out String>?,
+        sortOrder: String?
+    ): android.database.Cursor {
+        val dir = resolve(parentDocumentId)
+        val c = android.database.MatrixCursor(projection ?: defaultDocCols)
+        val base = rootDir.canonicalFile
+        for (child in dir.listFiles().orEmpty()) {
+            val rel = child.canonicalFile.path.removePrefix(base.path + java.io.File.separator)
+                .replace(java.io.File.separatorChar, '/')
+            addRow(c, rel, child)
+        }
+        return c
+    }
+
+    override fun openDocument(
+        documentId: String?,
+        mode: String?,
+        signal: android.os.CancellationSignal?
+    ): android.os.ParcelFileDescriptor =
+        android.os.ParcelFileDescriptor.open(resolve(documentId), android.os.ParcelFileDescriptor.MODE_READ_ONLY)
+
+    private fun resolve(docId: String?): java.io.File =
+        if (docId.isNullOrEmpty()) rootDir else java.io.File(rootDir, docId)
+
+    private fun addRow(cursor: android.database.MatrixCursor, id: String, file: java.io.File) {
+        val row = cursor.newRow()
+        val mime = if (file.isDirectory) {
+            android.provider.DocumentsContract.Document.MIME_TYPE_DIR
+        } else {
+            "application/octet-stream"
+        }
+        for (col in cursor.columnNames) {
+            when (col) {
+                android.provider.DocumentsContract.Document.COLUMN_DOCUMENT_ID -> row.add(id)
+                android.provider.DocumentsContract.Document.COLUMN_DISPLAY_NAME -> row.add(file.name)
+                android.provider.DocumentsContract.Document.COLUMN_MIME_TYPE -> row.add(mime)
+                android.provider.DocumentsContract.Document.COLUMN_SIZE -> row.add(if (file.isDirectory) 0L else file.length())
+                android.provider.DocumentsContract.Document.COLUMN_LAST_MODIFIED -> row.add(file.lastModified())
+                android.provider.DocumentsContract.Document.COLUMN_FLAGS -> row.add(0)
+                else -> row.add(null)
+            }
+        }
+    }
+}
+
 
 
 

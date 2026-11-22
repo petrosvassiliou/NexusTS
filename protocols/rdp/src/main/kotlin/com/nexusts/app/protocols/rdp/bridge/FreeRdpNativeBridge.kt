@@ -1,6 +1,8 @@
 package com.nexusts.app.protocols.rdp.bridge
 
 import android.Manifest
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.pm.PackageManager
 import android.hardware.usb.UsbConstants
@@ -19,10 +21,20 @@ import com.nexusts.app.core.vault.model.RdpAudioRedirectionMode
 import com.nexusts.app.core.vault.model.RdpGfxCodecProfile
 import com.nexusts.app.core.vault.model.RdpResizeBehavior
 import com.nexusts.app.core.vault.model.VaultConnection
+import com.nexusts.app.protocols.rdp.storage.RdpClipboardHostBridge
 import com.nexusts.app.protocols.rdp.storage.SafRdpSharedDriveSynchronizer
+import java.io.File
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /**
  * JNI Bridge to `libnexusts_rdp_jni.so` (FreeRDP 3.x + Adaptive RDPGFX/H.264 + AAudio + DISP_DVC + RDPDR).
@@ -542,6 +554,21 @@ class RdpManagedSession(
     )
     val remoteDesktopDimensions: StateFlow<Pair<Int, Int>> = _remoteDesktopDimensions.asStateFlow()
 
+    private val clipboardScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val clipboardMutex = Mutex()
+
+    @Volatile
+    private var lastSyncedHostText: String? = null
+
+    @Volatile
+    private var lastSyncedHostFilesSig: String? = null
+
+    @Volatile
+    private var lastObservedRemoteClipSeq: Long = 0L
+
+    private val _clipboardStatusSummary = MutableStateFlow<String?>(null)
+    val clipboardStatusSummary: StateFlow<String?> = _clipboardStatusSummary.asStateFlow()
+
     @Volatile
     var isMicrophoneRedirected: Boolean = false
         private set
@@ -559,6 +586,10 @@ class RdpManagedSession(
         _isReconnecting.value = false
         _reconnectAttempt.value = 0
         _lastError.value = null
+        lastSyncedHostText = null
+        lastSyncedHostFilesSig = null
+        lastObservedRemoteClipSeq = 0L
+        _clipboardStatusSummary.value = null
         if (prevHandle != 0L && FreeRdpNativeBridge.isNativeLoaded) {
             runCatching { FreeRdpNativeBridge.nativeDestroySession(prevHandle) }
         }
@@ -773,6 +804,13 @@ class RdpManagedSession(
             _isConnected.value = connected
             if (connected) {
                 syncServerDesktopDimensions()
+                if (settings.redirectClipboard) {
+                    syncHostClipboardFromSystemAsync(
+                        context = appContext ?: context,
+                        force = true,
+                        retryOnEmptyFocusTransition = true
+                    )
+                }
             } else {
                 val rawNativeErr = if (createdHandle != 0L) {
                     runCatching { FreeRdpNativeBridge.nativeGetLastError(createdHandle) }.getOrDefault("")
@@ -959,6 +997,166 @@ class RdpManagedSession(
         }
     }
 
+    private suspend fun syncHostClipboardInternal(
+        ctx: Context?,
+        force: Boolean,
+        retryOnEmptyFocusTransition: Boolean
+    ) {
+        if (!settings.redirectClipboard || ctx == null) return
+        val manager = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return
+        var payload = RdpClipboardHostBridge.extractHostClipboardPayload(ctx, manager)
+        if (payload is RdpClipboardHostBridge.HostClipboardPayload.Empty && retryOnEmptyFocusTransition) {
+            delay(85L)
+            payload = RdpClipboardHostBridge.extractHostClipboardPayload(ctx, manager)
+        }
+        when (payload) {
+            is RdpClipboardHostBridge.HostClipboardPayload.Files -> {
+                if (force || payload.signature != lastSyncedHostFilesSig) {
+                    val staged = RdpClipboardHostBridge.stageUrisToLocalFiles(ctx, payload.uris)
+                    if (staged.isNotEmpty()) {
+                        lastSyncedHostFilesSig = payload.signature
+                        lastSyncedHostText = null
+                        syncClipboardFilesToRemote(staged)
+                        _clipboardStatusSummary.value = if (staged.size == 1) {
+                            "Clipboard • ${File(staged.first()).name}"
+                        } else {
+                            "Clipboard • ${staged.size} items"
+                        }
+                    }
+                }
+            }
+            is RdpClipboardHostBridge.HostClipboardPayload.Text -> {
+                if (force || payload.text != lastSyncedHostText) {
+                    lastSyncedHostText = payload.text
+                    lastSyncedHostFilesSig = null
+                    syncClipboardToRemote(payload.text)
+                    _clipboardStatusSummary.value = "Clipboard • Text"
+                }
+            }
+            RdpClipboardHostBridge.HostClipboardPayload.OwnOrUnreadableFileIntent,
+            RdpClipboardHostBridge.HostClipboardPayload.Empty -> Unit
+        }
+    }
+
+    fun syncHostClipboardFromSystemAsync(
+        context: Context? = appContext,
+        force: Boolean = false,
+        retryOnEmptyFocusTransition: Boolean = false
+    ) {
+        context?.applicationContext?.let { appContext = it }
+        if (!settings.redirectClipboard) return
+        val targetCtx = context ?: appContext ?: return
+        clipboardScope.launch {
+            clipboardMutex.withLock {
+                syncHostClipboardInternal(
+                    ctx = targetCtx,
+                    force = force,
+                    retryOnEmptyFocusTransition = retryOnEmptyFocusTransition
+                )
+            }
+        }
+    }
+
+    suspend fun pollAndPublishRemoteClipboard(context: Context? = appContext) {
+        context?.applicationContext?.let { appContext = it }
+        val ctx = context ?: appContext ?: return
+        if (!settings.redirectClipboard) return
+        val latestSeq = remoteClipboardSequence()
+        if (latestSeq <= lastObservedRemoteClipSeq) return
+
+        clipboardMutex.withLock {
+            val seq = remoteClipboardSequence()
+            if (seq <= lastObservedRemoteClipSeq) return
+            lastObservedRemoteClipSeq = seq
+
+            val manager = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return
+            when (remoteClipboardKind()) {
+                RemoteClipboardKind.FILES -> {
+                    val files = pullRemoteClipboardFiles()
+                    if (files.isNotEmpty()) {
+                        val published = RdpClipboardHostBridge.publishRemoteFilesToHostClipboard(
+                            context = ctx,
+                            manager = manager,
+                            localPaths = files
+                        )
+                        if (published != null) {
+                            lastSyncedHostText = null
+                            lastSyncedHostFilesSig = null
+                            _clipboardStatusSummary.value = if (files.size == 1) {
+                                "Clipboard • ${File(files.first()).name}"
+                            } else {
+                                "Clipboard • ${files.size} items"
+                            }
+                        }
+                    }
+                }
+                RemoteClipboardKind.TEXT -> {
+                    val remoteText = pullRemoteClipboardText()
+                    if (remoteText.isNotEmpty() && remoteText != lastSyncedHostText) {
+                        lastSyncedHostText = remoteText
+                        lastSyncedHostFilesSig = null
+                        runCatching {
+                            manager.setPrimaryClip(ClipData.newPlainText("NexusTS RDP", remoteText))
+                        }
+                        _clipboardStatusSummary.value = "Clipboard • Text"
+                    }
+                }
+                RemoteClipboardKind.NONE -> {
+                    lastSyncedHostText = null
+                    lastSyncedHostFilesSig = null
+                }
+            }
+        }
+    }
+
+    fun handleDroppedClipData(
+        context: Context,
+        clipData: ClipData,
+        remoteX: Int,
+        remoteY: Int,
+        onDone: (() -> Unit)? = null
+    ) {
+        context.applicationContext?.let { appContext = it }
+        if (!settings.redirectClipboard) {
+            onDone?.invoke()
+            return
+        }
+        sendMouse(FreeRdpNativeBridge.PTRFLAGS_MOVE, remoteX, remoteY)
+        clipboardScope.launch {
+            try {
+                clipboardMutex.withLock {
+                    when (val payload = RdpClipboardHostBridge.extractClipDataPayload(context, clipData)) {
+                        is RdpClipboardHostBridge.HostClipboardPayload.Files -> {
+                            val staged = RdpClipboardHostBridge.stageUrisToLocalFiles(context, payload.uris)
+                            if (staged.isNotEmpty()) {
+                                lastSyncedHostFilesSig = payload.signature
+                                lastSyncedHostText = null
+                                syncClipboardFilesToRemote(staged)
+                                _clipboardStatusSummary.value = if (staged.size == 1) {
+                                    "Clipboard • ${File(staged.first()).name}"
+                                } else {
+                                    "Clipboard • ${staged.size} items"
+                                }
+                                requestSynchronizedPaste()
+                            }
+                        }
+                        is RdpClipboardHostBridge.HostClipboardPayload.Text -> {
+                            lastSyncedHostText = payload.text
+                            lastSyncedHostFilesSig = null
+                            syncClipboardToRemote(payload.text)
+                            _clipboardStatusSummary.value = "Clipboard • Text"
+                            requestSynchronizedPaste()
+                        }
+                        RdpClipboardHostBridge.HostClipboardPayload.OwnOrUnreadableFileIntent,
+                        RdpClipboardHostBridge.HostClipboardPayload.Empty -> Unit
+                    }
+                }
+            } finally {
+                onDone?.invoke()
+            }
+        }
+    }
+
     fun logOffRemoteSession() {
         val handle = nativeHandle
         if (handle != 0L && FreeRdpNativeBridge.isNativeLoaded) {
@@ -988,7 +1186,24 @@ class RdpManagedSession(
                     FreeRdpNativeBridge.nativeSendKeyScancode(handle, 0x5B, false, true)
                     FreeRdpNativeBridge.nativeSendKeyScancode(handle, 0x5C, false, true)
                 }
-                FreeRdpNativeBridge.nativeRequestSynchronizedPaste(handle)
+                val ctx = appContext
+                if (ctx == null) {
+                    FreeRdpNativeBridge.nativeRequestSynchronizedPaste(handle)
+                } else {
+                    clipboardScope.launch {
+                        clipboardMutex.withLock {
+                            syncHostClipboardInternal(
+                                ctx = ctx,
+                                force = false,
+                                retryOnEmptyFocusTransition = true
+                            )
+                            val activeHandle = nativeHandle
+                            if (activeHandle != 0L && FreeRdpNativeBridge.isNativeLoaded) {
+                                FreeRdpNativeBridge.nativeRequestSynchronizedPaste(activeHandle)
+                            }
+                        }
+                    }
+                }
                 return true
             }
         }
@@ -1108,6 +1323,41 @@ class RdpManagedSession(
         }
     }
 
+    /**
+     * Synchronizes any newly copied host files/text over CLIPRDR BEFORE forwarding right-mouse-button
+     * press/release so Windows Explorer enables **Paste** in its context menu on the very first right-click.
+     */
+    fun sendRightMouseButtonWithClipboardSync(
+        x: Int,
+        y: Int,
+        isDown: Boolean,
+        context: Context? = appContext
+    ) {
+        context?.applicationContext?.let { appContext = it }
+        val flags = if (isDown) {
+            FreeRdpNativeBridge.PTRFLAGS_DOWN or FreeRdpNativeBridge.PTRFLAGS_BUTTON2_RIGHT
+        } else {
+            FreeRdpNativeBridge.PTRFLAGS_BUTTON2_RIGHT
+        }
+        val targetCtx = context ?: appContext
+        if (!settings.redirectClipboard || targetCtx == null) {
+            sendMouse(flags, x, y)
+            return
+        }
+        clipboardScope.launch {
+            clipboardMutex.withLock {
+                if (isDown) {
+                    syncHostClipboardInternal(
+                        ctx = targetCtx,
+                        force = false,
+                        retryOnEmptyFocusTransition = true
+                    )
+                }
+                sendMouse(flags, x, y)
+            }
+        }
+    }
+
     fun sendExtendedMouse(xflags: Int, x: Int, y: Int) {
         val handle = nativeHandle
         if (handle != 0L && FreeRdpNativeBridge.isNativeLoaded) {
@@ -1121,6 +1371,7 @@ class RdpManagedSession(
         _isConnected.value = false
         _isReconnecting.value = false
         _reconnectAttempt.value = 0
+        clipboardScope.cancel()
         val handle = nativeHandle
         nativeHandle = 0L
         synchronized(surfaceLock) {

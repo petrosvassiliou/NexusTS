@@ -1,6 +1,7 @@
 # Keep JNI entrypoints across Rust & C++ FreeRDP bridges
 -keep class com.nexusts.app.core.vault.crypto.NativeVaultCryptoBridge { *; }
 -keep class com.nexusts.app.protocols.rdp.bridge.FreeRdpNativeBridge { *; }
+-keep class com.nexusts.app.protocols.rdp.storage.NexusRdpClipboardDocumentsProvider { *; }
 -keep class com.nexusts.app.protocols.ssh.bridge.SshNativeBridge { *; }
 -keep class com.nexusts.app.protocols.vnc.bridge.VncNativeBridge { *; }
 -keepclasseswithmembernames,includedescriptorclasses class com.nexusts.app.** {

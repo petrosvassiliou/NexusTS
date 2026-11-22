@@ -1,0 +1,1 @@
+• NexusTS 0.9.9: Fixed bidirectional RDP file, folder & text copy/paste on Googlebooks and Android! Scoped DocumentsProvider with DocumentsUI copy metadata fixes "File operation is not supported" when pasting remote RDP files into local Files, and window-focus + pre-paste CLIPRDR staging enables seamless local-to-remote file, folder, and drag-and-drop paste.
