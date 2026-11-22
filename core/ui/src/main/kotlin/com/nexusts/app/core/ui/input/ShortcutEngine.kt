@@ -251,7 +251,7 @@ class NexusShortcutEngine(
         val matchedAction: NexusShortcutAction = _bindings.value.values.firstOrNull { binding ->
             (!remoteCaptureActive || binding.bypassesRemoteCapture) && binding.chord.matchesAndroidKeyEvent(native)
         }?.action ?: run {
-            // Secondary universal desktop tab-switching chords: Ctrl+Tab, Ctrl+Shift+Tab, and F11 fullscreen
+            // Secondary universal desktop chords: Ctrl+Tab, Ctrl+Shift+Tab, F11 fullscreen, and legacy Ctrl+Shift+M broadcast
             if (!remoteCaptureActive &&
                 native.keyCode == AndroidKeyEvent.KEYCODE_TAB &&
                 native.isCtrlPressed &&
@@ -267,6 +267,13 @@ class NexusShortcutEngine(
                 !native.isShiftPressed
             ) {
                 NexusShortcutAction.TOGGLE_FULLSCREEN_SESSION
+            } else if (!remoteCaptureActive &&
+                native.keyCode == AndroidKeyEvent.KEYCODE_M &&
+                (native.isCtrlPressed || native.isMetaPressed) &&
+                native.isShiftPressed &&
+                !native.isAltPressed
+            ) {
+                NexusShortcutAction.TOGGLE_BROADCAST_INPUT
             } else {
                 return false
             }
@@ -366,10 +373,6 @@ class NexusShortcutEngine(
             ShortcutBinding(
                 action = NexusShortcutAction.TOGGLE_BROADCAST_INPUT,
                 chord = KeyChord(AndroidKeyEvent.KEYCODE_B, primaryOrMeta = true, shift = true)
-            ),
-            ShortcutBinding(
-                action = NexusShortcutAction.TOGGLE_BROADCAST_INPUT,
-                chord = KeyChord(AndroidKeyEvent.KEYCODE_M, primaryOrMeta = true, shift = true)
             ),
             ShortcutBinding(
                 action = NexusShortcutAction.ZOOM_IN_SESSION,

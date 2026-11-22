@@ -2554,33 +2554,33 @@ class NexusWorkspaceComposeE2ETest {
         assertTrue(vm.uiState.value.isQuickConnectVisible)
         assertTrue(vm.tilingController.rootNode.value is PaneNode.Leaf)
 
-        // 2. ShortcutEngine.dispatchAndroidKeyEvent returns false when inline handler declines action (DetachedSessionActivity passthrough)
-        val engine = com.nexusts.app.core.ui.input.ShortcutEngine()
-        val ctrlKDown = android.view.KeyEvent(
-            0L,
+        // 2. NexusShortcutEngine.dispatchAndroidKeyEvent returns false when inline handler declines action (DetachedSessionActivity passthrough)
+        val engine = com.nexusts.app.core.ui.input.NexusShortcutEngine()
+        val ctrlKDown = KeyEvent(
             10L,
-            android.view.KeyEvent.ACTION_DOWN,
-            android.view.KeyEvent.KEYCODE_K,
+            15L,
+            KeyEvent.ACTION_DOWN,
+            KeyEvent.KEYCODE_K,
             0,
-            android.view.KeyEvent.META_CTRL_ON
+            KeyEvent.META_CTRL_ON or KeyEvent.META_CTRL_LEFT_ON
         )
         assertFalse(
             "Declined shortcut must return false so terminal/RDP receives Ctrl+K",
-            engine.dispatchAndroidKeyEvent(ctrlKDown, remoteCaptureActive = true) { false }
+            engine.dispatchAndroidKeyEvent(native = ctrlKDown, remoteCaptureActive = true) { false }
         )
 
-        // Verify Ctrl+Shift+B dispatches TOGGLE_BROADCAST_INPUT matching Overview Cheat Sheet
+        // Verify Ctrl+Shift+B and Ctrl+Shift+M both dispatch TOGGLE_BROADCAST_INPUT
         var matchedBroadcast = false
-        val ctrlShiftB = android.view.KeyEvent(
-            0L,
+        val ctrlShiftB = KeyEvent(
             20L,
-            android.view.KeyEvent.ACTION_DOWN,
-            android.view.KeyEvent.KEYCODE_B,
+            25L,
+            KeyEvent.ACTION_DOWN,
+            KeyEvent.KEYCODE_B,
             0,
-            android.view.KeyEvent.META_CTRL_ON or android.view.KeyEvent.META_SHIFT_ON
+            KeyEvent.META_CTRL_ON or KeyEvent.META_CTRL_LEFT_ON or KeyEvent.META_SHIFT_ON or KeyEvent.META_SHIFT_LEFT_ON
         )
         assertTrue(
-            engine.dispatchAndroidKeyEvent(ctrlShiftB, remoteCaptureActive = false) { act ->
+            engine.dispatchAndroidKeyEvent(native = ctrlShiftB, remoteCaptureActive = false) { act: NexusShortcutAction ->
                 matchedBroadcast = (act == NexusShortcutAction.TOGGLE_BROADCAST_INPUT)
                 true
             }
