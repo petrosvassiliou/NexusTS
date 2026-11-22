@@ -559,37 +559,68 @@ function renderGroupedConnections(conns, depth, activeConnIds, preserveOrder = f
   return html;
 }
 
-function countFolderSubtreeStats(folderId, allFolders, allConns, activeConnIds) {
-  let total = 0;
-  let live = 0;
-  const stack = [folderId];
-  const seen = new Set();
-  while (stack.length) {
-    const fid = stack.pop();
-    if (seen.has(fid)) continue;
-    seen.add(fid);
-    for (const c of allConns) {
-      if (c.parentFolderId === fid) {
-        total += 1;
-        if (activeConnIds.has(c.id)) live += 1;
-      }
-    }
-    for (const sub of allFolders) {
-      if (sub.parentFolderId === fid) stack.push(sub.id);
-    }
-  }
-  return { total, live };
-}
-
-// Rendering Helpers (1:1 with macOS SidebarHierarchyView.swift)
-function renderFolderSubtree(parentId, depth, activeConnIds) {
-  const doc = store.state.vaultDocument;
-  const query = store.state.sidebarFilterQuery.trim().toLowerCase();
-  const qf = store.state.sidebarQuickFilter;
-  const recentsSet = new Set(doc.recentConnectionIds || []);
+function buildSidebarTreeIndex(doc, activeConnIds) {
   const allFolders = (doc.folders || []).filter((f) => f.id !== SYSTEM_CREDENTIALS_FOLDER_ID);
   const allConns = (doc.connections || []).filter((c) => c.parentFolderId !== SYSTEM_CREDENTIALS_FOLDER_ID);
   const validFolderIds = new Set(allFolders.map((f) => f.id));
+  const effectiveParent = (rawParentId) => (rawParentId && validFolderIds.has(rawParentId) ? rawParentId : null);
+
+  const foldersByParent = new Map();
+  const connsByParent = new Map();
+  const directStats = new Map();
+
+  for (const f of allFolders) {
+    const pid = effectiveParent(f.parentFolderId);
+    if (!foldersByParent.has(pid)) foldersByParent.set(pid, []);
+    foldersByParent.get(pid).push(f);
+    directStats.set(f.id, { total: 0, live: 0 });
+  }
+  for (const list of foldersByParent.values()) {
+    list.sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name));
+  }
+
+  for (const c of allConns) {
+    const pid = effectiveParent(c.parentFolderId);
+    if (!connsByParent.has(pid)) connsByParent.set(pid, []);
+    connsByParent.get(pid).push(c);
+    if (pid && directStats.has(pid)) {
+      const ds = directStats.get(pid);
+      ds.total += 1;
+      if (activeConnIds.has(c.id)) ds.live += 1;
+    }
+  }
+
+  const subtreeStats = new Map();
+  const visiting = new Set();
+  const computeStats = (fid) => {
+    if (subtreeStats.has(fid)) return subtreeStats.get(fid);
+    if (visiting.has(fid)) return { total: 0, live: 0 };
+    visiting.add(fid);
+    const base = directStats.get(fid) || { total: 0, live: 0 };
+    let total = base.total;
+    let live = base.live;
+    for (const child of foldersByParent.get(fid) || []) {
+      const cs = computeStats(child.id);
+      total += cs.total;
+      live += cs.live;
+    }
+    visiting.delete(fid);
+    const out = { total, live };
+    subtreeStats.set(fid, out);
+    return out;
+  };
+  for (const f of allFolders) computeStats(f.id);
+
+  return { allConns, foldersByParent, connsByParent, subtreeStats };
+}
+
+// Rendering Helpers (1:1 with macOS SidebarHierarchyView.swift, O(F + C) pre-indexed)
+function renderFolderSubtree(parentId, depth, activeConnIds, treeIndex = null) {
+  const doc = store.state.vaultDocument;
+  const idx = treeIndex || buildSidebarTreeIndex(doc, activeConnIds);
+  const query = store.state.sidebarFilterQuery.trim().toLowerCase();
+  const qf = store.state.sidebarQuickFilter;
+  const recentsSet = new Set(doc.recentConnectionIds || []);
 
   const connMatches = (c) => {
     if (qf === 'FAVORITES' && !c.favorite) return false;
@@ -600,26 +631,19 @@ function renderFolderSubtree(parentId, depth, activeConnIds) {
 
   if (qf !== 'ALL' && parentId === null) {
     const filtered = qf === 'RECENTS'
-      ? (doc.recentConnectionIds || []).map((id) => allConns.find((c) => c.id === id)).filter((c) => c && connMatches(c))
-      : allConns.filter(connMatches);
+      ? (doc.recentConnectionIds || []).map((id) => idx.allConns.find((c) => c.id === id)).filter((c) => c && connMatches(c))
+      : idx.allConns.filter(connMatches);
     return renderGroupedConnections(filtered, 0, activeConnIds, qf === 'RECENTS');
   }
 
-  const effectiveParent = (rawParentId) => (rawParentId && validFolderIds.has(rawParentId) ? rawParentId : null);
-
-  const folders = allFolders
-    .filter((f) => effectiveParent(f.parentFolderId) === parentId)
-    .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name));
-  const conns = allConns
-    .filter((c) => effectiveParent(c.parentFolderId) === parentId && connMatches(c));
+  const folders = idx.foldersByParent.get(parentId) || [];
+  const conns = (idx.connsByParent.get(parentId) || []).filter(connMatches);
 
   let html = '';
   for (const f of folders) {
     const isOpen = store.state.expandedFolderIds.has(f.id) || Boolean(query);
-    const hasChildFolders = allFolders.some((sf) => effectiveParent(sf.parentFolderId) === f.id);
-    const hasChildConns = allConns.some((sc) => effectiveParent(sc.parentFolderId) === f.id);
-    const hasChildren = hasChildFolders || hasChildConns;
-    const stats = countFolderSubtreeStats(f.id, allFolders, allConns, activeConnIds);
+    const hasChildren = (idx.foldersByParent.get(f.id)?.length || 0) > 0 || (idx.connsByParent.get(f.id)?.length || 0) > 0;
+    const stats = idx.subtreeStats.get(f.id) || { total: 0, live: 0 };
     const isSelected = store.state.selectedFolderId === f.id && !store.state.selectedConnectionId;
     const padLeft = 6 + depth * 14;
 
@@ -645,11 +669,24 @@ function renderFolderSubtree(parentId, depth, activeConnIds) {
       </div>
     `;
     if (isOpen) {
-      html += renderFolderSubtree(f.id, depth + 1, activeConnIds);
+      html += renderFolderSubtree(f.id, depth + 1, activeConnIds, idx);
     }
   }
   html += renderGroupedConnections(conns, depth, activeConnIds, false);
   return html;
+}
+
+function renderSidebarTreeBodyHtml(activeConnIds) {
+  const s = store.strings;
+  const idx = buildSidebarTreeIndex(store.state.vaultDocument, activeConnIds);
+  return `
+    <div class="sidebar-section-header">
+      <span>${esc(s.foldersHeader)}</span>
+      <button type="button" class="section-plus-btn" data-action="open-connection-modal" data-tooltip="${esc(s.newConnection)}" aria-label="${esc(s.newConnection)}">+</button>
+    </div>
+    ${renderFolderSubtree(null, 0, activeConnIds, idx)}
+    ${renderSmartFoldersAndCredentialsSections(activeConnIds)}
+  `;
 }
 
 function renderSmartFolderStackIcon(tint = '#7c3aed', size = 14) {
@@ -1488,7 +1525,7 @@ function renderGooglebookOverviewDashboard() {
   const isLinked = Boolean(st.driveLinkedName);
   const syncSubtitle = isLinked
     ? (st.driveStatusMessage || `Up to date with ${st.driveLinkedName}`)
-    : 'Local encrypted vault';
+    : (s.ovLocalEncryptedVault || 'Local encrypted vault');
 
   const shortcuts = [
     { label: s.quickConnectButton, keys: 'Ctrl+K', action: 'open-quick-connect-modal', extra: '', active: false },
@@ -1537,8 +1574,8 @@ function renderGooglebookOverviewDashboard() {
               <span class="ov-stat-value">${conns.length}</span>
             </div>
             <div class="ov-stat-meta">
-              <strong>Connections</strong>
-              <span>${folders.length} folders</span>
+              <strong>${esc(s.navConnections)}</strong>
+              <span>${esc((s.ovFoldersCount || '{count} folders').replace('{count}', String(folders.length)))}</span>
             </div>
           </button>
 
@@ -1548,8 +1585,8 @@ function renderGooglebookOverviewDashboard() {
               <span class="ov-stat-value">${st.tabs.length}</span>
             </div>
             <div class="ov-stat-meta">
-              <strong>Live Sessions</strong>
-              <span>${detachedCount} detached windows</span>
+              <strong>${esc(s.ovLiveSessions || 'Live Sessions')}</strong>
+              <span>${esc((s.ovDetachedWindows || '{count} detached windows').replace('{count}', String(detachedCount)))}</span>
             </div>
           </button>
 
@@ -1559,18 +1596,18 @@ function renderGooglebookOverviewDashboard() {
               <span class="ov-stat-value">${creds.length}</span>
             </div>
             <div class="ov-stat-meta">
-              <strong>Credentials &amp; TOTP</strong>
-              <span>SSH Keys &amp; Passwords</span>
+              <strong>${esc(s.ovCredentialsTotp || 'Credentials & TOTP')}</strong>
+              <span>${esc(s.ovSshAndPasswords || 'SSH Keys & Passwords')}</span>
             </div>
           </button>
 
           <button type="button" class="ov-stat-card teal" data-action="open-settings-sync">
             <div class="ov-stat-top">
               ${renderOverviewStatIcon('sync')}
-              <span class="ov-stat-value">${isLinked ? 'Linked' : 'Local'}</span>
+              <span class="ov-stat-value">${esc(isLinked ? (s.ovLinked || 'Linked') : (s.ovLocal || 'Local'))}</span>
             </div>
             <div class="ov-stat-meta">
-              <strong>Cloud Sync</strong>
+              <strong>${esc(s.ovCloudSync || 'Cloud Sync')}</strong>
               <span>${esc(syncSubtitle)}</span>
             </div>
           </button>
@@ -2162,12 +2199,7 @@ function renderWorkspace() {
           </div>
         </div>
         <div class="sidebar-tree" data-drop-folder-id="__ROOT__">
-          <div class="sidebar-section-header">
-            <span>${esc(s.foldersHeader)}</span>
-            <button type="button" class="section-plus-btn" data-action="open-connection-modal" data-tooltip="${esc(s.newConnection)}" aria-label="${esc(s.newConnection)}">+</button>
-          </div>
-          ${renderFolderSubtree(null, 0, activeConnIds)}
-          ${renderSmartFoldersAndCredentialsSections(activeConnIds)}
+          ${renderSidebarTreeBodyHtml(activeConnIds)}
         </div>
       </aside>
 
@@ -2214,15 +2246,25 @@ function renderWorkspace() {
     lockShield.innerHTML = '';
   }
 
-  // Toast
+  // Toast (deduplicated auto-dismiss timer)
   const toastEl = document.getElementById('toast-banner');
   if (st.toastMessage) {
     toastEl.textContent = st.toastMessage;
     toastEl.className = 'toast-banner';
-    setTimeout(() => {
-      if (store.state.toastMessage === st.toastMessage) store.setState({ toastMessage: '' });
-    }, 3600);
+    if (st.toastMessage !== lastScheduledToastMessage) {
+      lastScheduledToastMessage = st.toastMessage;
+      clearTimeout(toastDismissTimer);
+      const scheduledMsg = st.toastMessage;
+      toastDismissTimer = setTimeout(() => {
+        if (store.state.toastMessage === scheduledMsg) {
+          lastScheduledToastMessage = '';
+          store.setState({ toastMessage: '' });
+        }
+      }, 3600);
+    }
   } else {
+    lastScheduledToastMessage = '';
+    clearTimeout(toastDismissTimer);
     toastEl.className = 'toast-banner hidden';
   }
 
@@ -2232,7 +2274,9 @@ function renderWorkspace() {
 }
 
 async function refreshTotpBadges() {
+  if (typeof document !== 'undefined' && document.hidden) return;
   const badges = document.querySelectorAll('[data-totp-secret]');
+  if (!badges.length) return;
   for (const el of badges) {
     const res = await computeTotpCode(el.getAttribute('data-totp-secret'));
     if (res) el.textContent = `${res.code} (${res.remainingSec}s)`;
@@ -2286,6 +2330,10 @@ function installDiscreetTooltips() {
 function installEventDelegation() {
   document.addEventListener('click', async (ev) => {
     store.recordUserActivity();
+    const ctxEl = document.getElementById('context-menu');
+    if (ctxEl && !ctxEl.classList.contains('hidden')) {
+      ctxEl.className = 'context-menu hidden';
+    }
     if (store.state.driveNeedsPermissionGrant) {
       store.tryRestoreDrivePermissionOnUserGesture();
     }
@@ -2512,6 +2560,9 @@ function installEventDelegation() {
       }
       case 'save-smart-folder-modal': {
         const existingId = actionEl.getAttribute('data-sf-id') || '';
+        const prevSf = existingId
+          ? (store.state.vaultDocument.smartFolders || []).find((s) => s.id === existingId)
+          : activeModal?.smartFolder;
         const name = document.getElementById('m-sf-name')?.value.trim() || 'Smart Folder';
         const proto = document.getElementById('m-sf-proto')?.value || '';
         const hostPatternRegex = document.getElementById('m-sf-regex')?.value.trim() || '';
@@ -2529,7 +2580,7 @@ function installEventDelegation() {
           name,
           filter: {
             includeProtocols: proto ? [proto] : [],
-            requiredTags: [],
+            requiredTags: Array.isArray(prevSf?.filter?.requiredTags) ? prevSf.filter.requiredTags : [],
             hostPatternRegex
           }
         });
@@ -2582,6 +2633,9 @@ function installEventDelegation() {
       }
       case 'save-connection-modal': {
         const existingId = actionEl.getAttribute('data-conn-id') || '';
+        const prevConn = existingId
+          ? (store.state.vaultDocument.connections || []).find((c) => c.id === existingId)
+          : activeModal?.conn;
         const proto = document.getElementById('m-conn-proto').value;
         const host = document.getElementById('m-conn-host').value.trim();
         const name = document.getElementById('m-conn-name').value.trim() || host;
@@ -2590,26 +2644,39 @@ function installEventDelegation() {
         const credId = document.getElementById('m-conn-cred').value || null;
         const favorite = document.getElementById('m-conn-fav').checked;
         if (!host) { store.showToast('Please enter a hostname or IP address.'); break; }
-        const settings = defaultSettingsForProtocol(proto, host);
+        const baseSettings = defaultSettingsForProtocol(proto, host);
+        const settings = prevConn && prevConn.protocol === proto && prevConn.settings
+          ? { ...baseSettings, ...structuredClone(prevConn.settings) }
+          : baseSettings;
         if (port > 0 && 'port' in settings) settings.port = port;
         if (proto === 'UTILITY_WAKE_ON_LAN') settings.wolMacAddress = host;
+        const mergedInheritable = defaultInheritableProperties({
+          ...(prevConn?.inheritable || {}),
+          credentialMode: credId ? 'OVERRIDE_EXPLICIT' : 'INHERIT_FROM_PARENT',
+          explicitCredentialId: credId || null
+        });
         activeModal = null;
         await store.saveConnection({
           id: existingId || randomUuid(),
           name,
           host,
           protocol: proto,
+          osFamily: prevConn && prevConn.protocol === proto ? prevConn.osFamily : undefined,
           parentFolderId,
           favorite,
-          inheritable: defaultInheritableProperties(
-            credId ? { credentialMode: 'OVERRIDE_EXPLICIT', explicitCredentialId: credId } : {}
-          ),
+          tags: Array.isArray(prevConn?.tags) ? prevConn.tags : [],
+          notes: prevConn?.notes || '',
+          sortOrder: typeof prevConn?.sortOrder === 'number' ? prevConn.sortOrder : undefined,
+          inheritable: mergedInheritable,
           settings
         });
         break;
       }
       case 'save-folder-modal': {
         const id = actionEl.getAttribute('data-folder-id') || '';
+        const prevFolder = id
+          ? (store.state.vaultDocument.folders || []).find((f) => f.id === id)
+          : activeModal?.folder;
         const name = document.getElementById('m-fld-name').value.trim() || 'New Folder';
         const parentFolderId = document.getElementById('m-fld-parent').value || null;
         const credId = document.getElementById('m-fld-cred').value || null;
@@ -2618,9 +2685,13 @@ function installEventDelegation() {
           id: id || randomUuid(),
           name,
           parentFolderId,
-          inheritable: defaultInheritableProperties(
-            credId ? { credentialMode: 'OVERRIDE_EXPLICIT', explicitCredentialId: credId } : {}
-          )
+          description: prevFolder?.description || '',
+          tags: Array.isArray(prevFolder?.tags) ? prevFolder.tags : [],
+          inheritable: defaultInheritableProperties({
+            ...(prevFolder?.inheritable || {}),
+            credentialMode: credId ? 'OVERRIDE_EXPLICIT' : 'INHERIT_FROM_PARENT',
+            explicitCredentialId: credId || null
+          })
         });
         break;
       }
@@ -2795,6 +2866,52 @@ function installEventDelegation() {
         } catch (err) {
           store.showToast(err.message);
         }
+        break;
+      }
+      case 'enroll-webauthn-bio': {
+        const typedPw = document.getElementById('sec-new-passphrase')?.value || '';
+        try {
+          if (typedPw && !store.state.hasCustomPassphrase) {
+            await store.setMasterPassphraseAndEncrypt(typedPw, { enableBiometrics: true });
+            store.showToast('Master Passphrase & Touch ID / Fingerprint auto-unlock enabled.');
+            break;
+          }
+          const ok = await store.enrollWebAuthnBiometricUnlock();
+          store.showToast(
+            ok
+              ? 'Touch ID / Fingerprint auto-unlock enabled.'
+              : 'Set a Master Passphrase first or verify biometric sensor availability.'
+          );
+        } catch (err) {
+          if (err?.name !== 'NotAllowedError' && err?.name !== 'AbortError') {
+            store.showToast(err.message || 'Biometric enrollment failed.');
+          }
+        }
+        break;
+      }
+      case 'unlock-webauthn-bio':
+        await store.unlockWithWebAuthnBiometrics({ automatic: false });
+        break;
+      case 'toggle-favorite':
+        await store.toggleConnectionFavorite(actionEl.getAttribute('data-conn-id'));
+        break;
+      case 'new-conn-in-folder': {
+        const folderId = actionEl.getAttribute('data-folder-id') || '';
+        activeModal = {
+          kind: 'connection',
+          conn: {
+            id: '',
+            name: '',
+            host: '',
+            protocol: 'RDP',
+            parentFolderId: folderId,
+            favorite: false,
+            notes: '',
+            inheritable: defaultInheritableProperties(),
+            settings: defaultSettingsForProtocol('RDP')
+          }
+        };
+        renderWorkspace();
         break;
       }
       case 'drive-create-synced':
@@ -2978,6 +3095,13 @@ function installEventDelegation() {
   });
 
   document.addEventListener('change', async (ev) => {
+    if (ev.target.id === 'm-conn-proto') {
+      const portInput = document.getElementById('m-conn-port');
+      if (portInput) {
+        portInput.value = String(PROTOCOL_CATALOG[ev.target.value]?.defaultPort || 22);
+      }
+      return;
+    }
     const ch = ev.target.getAttribute('data-change');
     if (ch === 'set-locale') await store.setLocale(ev.target.value);
     else if (ch === 'set-autolock') {
@@ -2988,13 +3112,11 @@ function installEventDelegation() {
 
   document.addEventListener('input', (ev) => {
     if (ev.target.id === 'sidebar-filter-input') {
-      const val = ev.target.value;
-      const pos = ev.target.selectionStart;
-      store.setState({ sidebarFilterQuery: val });
-      const nextEl = document.getElementById('sidebar-filter-input');
-      if (nextEl) {
-        nextEl.focus();
-        nextEl.setSelectionRange(pos, pos);
+      store.state.sidebarFilterQuery = ev.target.value;
+      const treeEl = document.querySelector('.sidebar-tree');
+      if (treeEl) {
+        const activeConnIds = new Set(store.state.tabs.map((t) => t.connectionId));
+        treeEl.innerHTML = renderSidebarTreeBodyHtml(activeConnIds);
       }
     } else if (ev.target.id === 'qc-palette-input') {
       quickConnectQuery = ev.target.value;
@@ -3003,6 +3125,69 @@ function installEventDelegation() {
         resultsEl.innerHTML = renderQuickConnectResultsHtml(quickConnectQuery);
       }
     }
+  });
+
+  document.addEventListener('contextmenu', (ev) => {
+    if (store.state.isVaultLocked) return;
+    const ctxEl = document.getElementById('context-menu');
+    if (!ctxEl) return;
+    const s = store.strings;
+    const connRow = ev.target.closest('.conn-row, .ov-fav-card');
+    const folderRow = !connRow ? ev.target.closest('.folder-row') : null;
+    const sfRow = !connRow && !folderRow ? ev.target.closest('.smart-folder-row') : null;
+    const credRow = !connRow && !folderRow && !sfRow ? ev.target.closest('.cred-row') : null;
+
+    let menuHtml = '';
+    if (connRow) {
+      const connId = connRow.getAttribute('data-conn-id');
+      const conn = (store.state.vaultDocument.connections || []).find((c) => c.id === connId);
+      if (!conn) return;
+      menuHtml = `
+        <button type="button" class="dropdown-item" data-action="launch-connection" data-conn-id="${esc(conn.id)}">${renderMaterialIcon('terminal', 15)}<span>${esc(s.connectNow)}</span></button>
+        <button type="button" class="dropdown-item" data-action="quick-connect-split" data-conn-id="${esc(conn.id)}">${renderMaterialIcon('add', 15)}<span>${esc(s.tilingSplitH)}</span></button>
+        <button type="button" class="dropdown-item" data-action="toggle-favorite" data-conn-id="${esc(conn.id)}">${renderMaterialIcon('star', 15)}<span>${esc(s.toggleFavorite)}</span></button>
+        <div class="dropdown-divider"></div>
+        <button type="button" class="dropdown-item" data-action="edit-connection" data-conn-id="${esc(conn.id)}">${renderMaterialIcon('edit', 15)}<span>${esc(s.edit)}</span></button>
+        <button type="button" class="dropdown-item danger" data-action="delete-object" data-object-id="${esc(conn.id)}">${renderMaterialIcon('trash', 15)}<span>${esc(s.delete)}</span></button>
+      `;
+    } else if (folderRow) {
+      const folderId = folderRow.getAttribute('data-folder-id');
+      menuHtml = `
+        <button type="button" class="dropdown-item" data-action="new-conn-in-folder" data-folder-id="${esc(folderId)}">${renderMaterialIcon('add', 15)}<span>${esc(s.newConnection)}</span></button>
+        <button type="button" class="dropdown-item" data-action="start-folder-rdp" data-folder-id="${esc(folderId)}">${renderMaterialIcon('terminal', 15)}<span>${esc(s.startAllRdpInFolder)}</span></button>
+        <div class="dropdown-divider"></div>
+        <button type="button" class="dropdown-item" data-action="edit-folder" data-folder-id="${esc(folderId)}">${renderMaterialIcon('edit', 15)}<span>${esc(s.edit)}</span></button>
+        <button type="button" class="dropdown-item danger" data-action="delete-object" data-object-id="${esc(folderId)}">${renderMaterialIcon('trash', 15)}<span>${esc(s.delete)}</span></button>
+      `;
+    } else if (sfRow) {
+      const sfId = sfRow.getAttribute('data-sf-id');
+      menuHtml = `
+        <button type="button" class="dropdown-item" data-action="edit-smart-folder" data-sf-id="${esc(sfId)}">${renderMaterialIcon('edit', 15)}<span>${esc(s.edit)}</span></button>
+        <button type="button" class="dropdown-item danger" data-action="delete-object" data-object-id="${esc(sfId)}">${renderMaterialIcon('trash', 15)}<span>${esc(s.delete)}</span></button>
+      `;
+    } else if (credRow) {
+      const credId = credRow.getAttribute('data-cred-id');
+      const cr = (store.state.vaultDocument.credentials || []).find((x) => x.id === credId);
+      if (!cr) return;
+      menuHtml = `
+        ${cr.username ? `<button type="button" class="dropdown-item" data-action="copy-cred-user" data-cred-id="${esc(cr.id)}">${renderMaterialIcon('key', 15)}<span>${esc(s.copyUsername)}</span></button>` : ''}
+        ${cr.secretPassword ? `<button type="button" class="dropdown-item" data-action="copy-cred-pass" data-cred-id="${esc(cr.id)}">${renderMaterialIcon('lock', 15)}<span>${esc(s.copyPassword)}</span></button>` : ''}
+        <button type="button" class="dropdown-item" data-action="edit-credential" data-cred-id="${esc(cr.id)}">${renderMaterialIcon('edit', 15)}<span>${esc(s.edit)}</span></button>
+        <div class="dropdown-divider"></div>
+        <button type="button" class="dropdown-item danger" data-action="delete-object" data-object-id="${esc(cr.id)}">${renderMaterialIcon('trash', 15)}<span>${esc(s.delete)}</span></button>
+      `;
+    } else {
+      ctxEl.className = 'context-menu hidden';
+      return;
+    }
+
+    ev.preventDefault();
+    ctxEl.innerHTML = menuHtml;
+    const x = Math.max(8, Math.min(window.innerWidth - 236, ev.clientX));
+    const y = Math.max(8, Math.min(window.innerHeight - 220, ev.clientY));
+    ctxEl.style.left = `${x}px`;
+    ctxEl.style.top = `${y}px`;
+    ctxEl.className = 'context-menu';
   });
 
   document.addEventListener('submit', async (ev) => {
@@ -3080,7 +3265,12 @@ function installEventDelegation() {
   // Canvas keyboard & mouse forwarding for RDP / VNC / Terminal + Global ChromeOS Shortcuts
   document.addEventListener('keydown', async (ev) => {
     store.recordUserActivity();
+    const ctxEl = document.getElementById('context-menu');
     if (ev.key === 'Escape') {
+      if (ctxEl && !ctxEl.classList.contains('hidden')) {
+        ctxEl.className = 'context-menu hidden';
+        return;
+      }
       if (openTopDropdown) {
         openTopDropdown = null;
         renderWorkspace();
@@ -3094,7 +3284,11 @@ function installEventDelegation() {
         return;
       }
     }
-    if ((ev.ctrlKey || ev.metaKey) && !ev.shiftKey && ev.key.toLowerCase() === 'k') {
+
+    // Block all global workspace shortcuts while the vault is locked behind the Lock Shield
+    if (store.state.isVaultLocked) return;
+
+    if ((ev.ctrlKey || ev.metaKey) && !ev.shiftKey && !ev.altKey && ev.key.toLowerCase() === 'k') {
       ev.preventDefault();
       openTopDropdown = null;
       quickConnectQuery = '';
@@ -3102,28 +3296,42 @@ function installEventDelegation() {
       renderWorkspace();
       return;
     }
-    if ((ev.ctrlKey || ev.metaKey) && !ev.shiftKey && ev.key.toLowerCase() === 'b') {
+    if ((ev.ctrlKey || ev.metaKey) && (ev.altKey || ev.shiftKey) && ev.key.toLowerCase() === 't') {
+      if (!ev.target.closest?.('.session-canvas')) {
+        ev.preventDefault();
+        openTopDropdown = null;
+        store.launchConnection({
+          id: `local-shell-${randomUuid()}`,
+          name: store.strings.newLocalShell,
+          host: '127.0.0.1',
+          protocol: 'SSH',
+          settings: defaultSettingsForProtocol('SSH')
+        }, { forceNewTab: true });
+        return;
+      }
+    }
+    if ((ev.ctrlKey || ev.metaKey) && !ev.shiftKey && !ev.altKey && ev.key.toLowerCase() === 'b') {
       if (!ev.target.closest?.('.session-canvas')) {
         ev.preventDefault();
         store.setState({ isSidebarVisible: !store.state.isSidebarVisible });
         return;
       }
     }
-    if ((ev.ctrlKey || ev.metaKey) && ev.shiftKey && ev.key.toLowerCase() === 'b') {
+    if ((ev.ctrlKey || ev.metaKey) && ev.shiftKey && !ev.altKey && ev.key.toLowerCase() === 'b') {
       if (!ev.target.closest?.('.session-canvas')) {
         ev.preventDefault();
         store.setState({ broadcastInputEnabled: !store.state.broadcastInputEnabled });
         return;
       }
     }
-    if ((ev.ctrlKey || ev.metaKey) && !ev.shiftKey && ev.key.toLowerCase() === 'i') {
+    if ((ev.ctrlKey || ev.metaKey) && !ev.shiftKey && !ev.altKey && ev.key.toLowerCase() === 'i') {
       if (!ev.target.closest?.('.session-canvas')) {
         ev.preventDefault();
         store.setState({ isInspectorVisible: !store.state.isInspectorVisible });
         return;
       }
     }
-    if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === 'd') {
+    if ((ev.ctrlKey || ev.metaKey) && !ev.altKey && ev.key.toLowerCase() === 'd') {
       if (!ev.target.closest?.('.session-canvas')) {
         ev.preventDefault();
         const target = ev.shiftKey ? 'SPLIT_V' : 'SPLIT_H';
@@ -3131,11 +3339,20 @@ function installEventDelegation() {
         return;
       }
     }
-    if ((ev.ctrlKey || ev.metaKey) && !ev.shiftKey && ev.key.toLowerCase() === 'n') {
+    if ((ev.ctrlKey || ev.metaKey) && !ev.shiftKey && !ev.altKey && ev.key.toLowerCase() === 'n') {
       if (!ev.target.closest?.('.session-canvas')) {
         ev.preventDefault();
         openTopDropdown = null;
         activeModal = { kind: 'connection', conn: null };
+        renderWorkspace();
+        return;
+      }
+    }
+    if ((ev.ctrlKey || ev.metaKey) && ev.shiftKey && !ev.altKey && ev.key.toLowerCase() === 'n') {
+      if (!ev.target.closest?.('.session-canvas')) {
+        ev.preventDefault();
+        openTopDropdown = null;
+        activeModal = { kind: 'folder', folder: null };
         renderWorkspace();
         return;
       }
@@ -3145,7 +3362,7 @@ function installEventDelegation() {
       store.toggleSettingsButton();
       return;
     }
-    if ((ev.ctrlKey || ev.metaKey) && ev.shiftKey && ev.key.toLowerCase() === 'l') {
+    if ((ev.ctrlKey || ev.metaKey) && ev.shiftKey && !ev.altKey && ev.key.toLowerCase() === 'l') {
       ev.preventDefault();
       store.lockVault();
       return;

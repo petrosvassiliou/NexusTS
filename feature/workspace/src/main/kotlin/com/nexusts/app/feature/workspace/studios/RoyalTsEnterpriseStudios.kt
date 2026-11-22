@@ -452,7 +452,7 @@ fun ExpressiveVaultOverviewDashboard(
 
     val shortcutItems = listOf(
         OverviewShortcutSpec(strings.quickConnectButton, "Ctrl+K", false, onOpenQuickConnect),
-        OverviewShortcutSpec(localTerminalLabel, "Ctrl+Alt+T", false, onLaunchLocalShell),
+        OverviewShortcutSpec(localTerminalLabel, "Ctrl+T", false, onLaunchLocalShell),
         OverviewShortcutSpec(strings.actionNewConnection, "Ctrl+N", false, onNewConnection),
         OverviewShortcutSpec(strings.splitRight, "Ctrl+D", false, onSplitRight),
         OverviewShortcutSpec(strings.splitDown, "Ctrl+Shift+D", false, onSplitDown),
@@ -593,32 +593,34 @@ fun ExpressiveVaultOverviewDashboard(
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
                 MacStyleOverviewStatCard(
-                    title = "Connections",
+                    title = strings.navConnections,
                     value = activeConnections.size.toString(),
-                    subtitle = "${activeFolders.size} folders",
+                    subtitle = strings.ovFoldersCount(activeFolders.size),
                     icon = Icons.Outlined.DesktopWindows,
                     tint = Color(0xFF007AFF),
                     onClick = onOpenQuickConnect
                 )
                 MacStyleOverviewStatCard(
-                    title = "Live Sessions",
+                    title = strings.overviewActiveSessions,
                     value = activeSessionCount.toString(),
-                    subtitle = "$detachedWindowCount detached windows",
+                    subtitle = strings.ovDetachedWindows(detachedWindowCount),
                     icon = Icons.Outlined.Splitscreen,
                     tint = Color(0xFF34C759),
-                    onClick = {}
+                    onClick = {
+                        if (activeSessionCount == 0) onLaunchLocalShell()
+                    }
                 )
                 MacStyleOverviewStatCard(
-                    title = "Credentials & TOTP",
+                    title = strings.ovCredentialsTotp,
                     value = activeCredentials.size.toString(),
-                    subtitle = "SSH Keys & Passwords",
+                    subtitle = strings.ovSshAndPasswords,
                     icon = Icons.Outlined.Key,
                     tint = Color(0xFFFF9500),
                     onClick = onOpenCredentials
                 )
                 MacStyleOverviewStatCard(
-                    title = "Cloud Sync",
-                    value = if (isDriveLinked) "Linked" else "Local",
+                    title = strings.navDriveSync,
+                    value = if (isDriveLinked) strings.ovLinked else strings.ovLocal,
                     subtitle = syncStatusSummary,
                     icon = Icons.Outlined.CloudSync,
                     tint = Color(0xFF00A8C6),

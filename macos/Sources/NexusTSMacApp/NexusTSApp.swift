@@ -73,9 +73,11 @@ public struct NexusTSApp: App {
                     DiscreetTooltipController.shared.installIfNeeded()
                 }
                 .onOpenURL { incomingURL in
+                    guard !store.isVaultLocked else { return }
                     handleIncomingURL(incomingURL)
                 }
                 .onContinueUserActivity(CSSearchableItemActionType) { activity in
+                    guard !store.isVaultLocked else { return }
                     if let identifier = activity.userInfo?[CSSearchableItemActivityIdentifier] as? String,
                        let connId = MacSpotlightVaultIndexer.connectionId(fromSpotlightIdentifier: identifier),
                        let conn = store.activeConnections.first(where: { $0.id == connId }) {
@@ -171,6 +173,7 @@ struct NexusMenuBarCommands: Commands {
             Button(store.strings.newSmartFolder) {
                 store.isPresentingNewSmartFolderSheet = true
             }
+            .keyboardShortcut("n", modifiers: [.command, .option, .shift])
             .disabled(store.isVaultLocked)
 
             Button(store.strings.newCredential) {
@@ -191,6 +194,23 @@ struct NexusMenuBarCommands: Commands {
             }
             .keyboardShortcut("k", modifiers: [.command])
             .disabled(store.isVaultLocked)
+        }
+
+        // Bind ⌘W to close the active session tab when sessions are open in the main window, falling back to closing keyWindow.
+        CommandGroup(replacing: .saveItem) {
+            Button(store.focusedOrFirstActiveTab != nil && !store.isVaultLocked && store.activeSection == .sessions
+                   ? store.strings.disconnectSession
+                   : "Close Window") {
+                if !store.isVaultLocked,
+                   store.activeSection == .sessions,
+                   let tab = store.focusedOrFirstActiveTab,
+                   NSApp.keyWindow?.identifier?.rawValue.contains("detached") != true {
+                    store.closeTab(tab.id)
+                } else {
+                    NSApp.keyWindow?.performClose(nil)
+                }
+            }
+            .keyboardShortcut("w", modifiers: [.command])
         }
 
         CommandGroup(replacing: .undoRedo) {

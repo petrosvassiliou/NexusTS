@@ -248,7 +248,9 @@ public struct InspectorColumnView: View {
                 }
                 .formStyle(.grouped)
                 .onReceive(secondTimer) { now in
-                    totpTick = now
+                    if !(profile.effectiveCredential?.totpSecretBase32.isEmpty ?? true) {
+                        totpTick = now
+                    }
                 }
             } else {
                 Form {
@@ -257,7 +259,7 @@ public struct InspectorColumnView: View {
                         LabeledContent("Revision", value: "#\(store.document.revision)")
                         LabeledContent("Connections", value: "\(store.activeConnections.count)")
                         LabeledContent("Folders", value: "\(store.activeFolders.count)")
-                        LabeledContent("Credentials", value: "\(store.document.credentials.count)")
+                        LabeledContent("Credentials", value: "\(store.activeCredentials.count)")
                     }
 
                     Section("SSH Key Generator") {

@@ -9,6 +9,7 @@ public struct NexusMainWindowView: View {
 
     @AppStorage("nexusts.macos.sidebarWidth") private var sidebarWidth: Double = 268
     @State private var sidebarDragStartWidth: Double? = nil
+    @State private var didPushSidebarResizeCursor: Bool = false
     @State private var pendingEncryptedImportURL: URL? = nil
     @State private var importArchivePassword: String = ""
     @State private var exportPayload: ExportedFileDocument? = nil
@@ -41,7 +42,7 @@ public struct NexusMainWindowView: View {
                         },
                         onExportVault: { fmt in
                             do {
-                                let data = try VaultDocumentExporter.export(document: store.document, format: fmt)
+                                let data = try store.exportVaultData(format: fmt)
                                 exportFormat = fmt
                                 exportPayload = ExportedFileDocument(data: data)
                                 isExportingVaultFile = true
@@ -67,10 +68,18 @@ public struct NexusMainWindowView: View {
                                         .frame(width: 8)
                                         .contentShape(Rectangle())
                                         .onHover { hovering in
-                                            if hovering {
+                                            if hovering && !didPushSidebarResizeCursor {
                                                 NSCursor.resizeLeftRight.push()
-                                            } else {
+                                                didPushSidebarResizeCursor = true
+                                            } else if !hovering && didPushSidebarResizeCursor {
                                                 NSCursor.pop()
+                                                didPushSidebarResizeCursor = false
+                                            }
+                                        }
+                                        .onDisappear {
+                                            if didPushSidebarResizeCursor {
+                                                NSCursor.pop()
+                                                didPushSidebarResizeCursor = false
                                             }
                                         }
                                         .gesture(
@@ -190,7 +199,7 @@ public struct NexusMainWindowView: View {
         }
         .fileImporter(
             isPresented: $store.isPresentingImportFilePicker,
-            allowedContentTypes: [.data, .xml, .json, .commaSeparatedText, .zip],
+            allowedContentTypes: [.item, .data, .xml, .json, .commaSeparatedText, .zip],
             allowsMultipleSelection: false
         ) { result in
             switch result {
@@ -326,9 +335,12 @@ public struct NexusMainWindowView: View {
                 Divider()
             }
 
-            if store.activeSection == .sessions {
+            switch store.activeSection {
+            case .sessions:
                 SplitPaneWorkspaceView()
-            } else {
+            case .overview:
+                VaultOverviewDashboardView()
+            default:
                 UnifiedWorkspaceSettingsView(showsWorkspaceHeader: true)
             }
 
@@ -698,7 +710,7 @@ private struct GooglebookDesktopTopBar: View {
 
                 GooglebookMorphIconButton(
                     systemName: "info.circle",
-                    isActive: store.isInspectorPresented,
+                    isActive: store.isInspectorPresented && store.activeSection == .sessions,
                     accessibilityId: "nexusts.toolbar.toggleInspector",
                     tooltip: MacWorkspaceShortcut.toggleInspector.title(in: store.strings),
                     shortcut: MacWorkspaceShortcut.toggleInspector.keycap
@@ -741,7 +753,7 @@ private struct GooglebookDesktopTopBar: View {
                             store.isBottomConsolePresented.toggle()
                         }
                         GooglebookMenuRowButton(
-                            title: "Remote Key Capture",
+                            title: store.strings.remoteKeyCapture,
                             symbol: "keyboard",
                             isChecked: store.remoteKeyCaptureEnabled
                         ) {
@@ -1391,7 +1403,7 @@ private struct FullScreenSessionMacWorkspaceView: View {
                             .font(.caption.weight(.semibold))
                     }
                     .controlSize(.small)
-                    .discreetTooltip("Exit Full Screen", shortcut: "⌃⌘F")
+                    .discreetTooltip("Exit Full Screen", shortcut: MacWorkspaceShortcut.fullScreenSession.keycap)
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 6)
@@ -1418,7 +1430,7 @@ private struct FullScreenSessionMacWorkspaceView: View {
                             .font(.caption2)
                     }
                     .buttonStyle(.plain)
-                    .discreetTooltip("Exit Full Screen", shortcut: "⌃⌘F")
+                    .discreetTooltip("Exit Full Screen", shortcut: MacWorkspaceShortcut.fullScreenSession.keycap)
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 3)

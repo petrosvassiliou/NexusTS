@@ -115,7 +115,7 @@ export class NexusChromeOSStore {
       localRelayReachable: false,
       localRelayUrl: 'ws://127.0.0.1:44890',
       localRelayHttpUrl: 'http://127.0.0.1:44890',
-      appVersion: '0.9.7',
+      appVersion: '0.9.8',
       pwaStandalone: false,
       pwaInstallAvailable: false,
       swUpdateWaiting: false,
@@ -716,13 +716,39 @@ export class NexusChromeOSStore {
   }
 
   async _persistLocalVault(doc) {
-    const effective = this._masterPassphrase || DEFAULT_TRANSPARENT_PASSPHRASE;
-    const sealed = await sealVaultDocument(doc, effective, this.kdfParams);
-    await saveEncryptedVaultToOfflineStore(sealed, {
-      documentId: doc.documentId,
-      revision: doc.revision
+    this._latestDocToPersist = doc;
+    if (this._persistInFlightPromise) {
+      return await this._persistInFlightPromise;
+    }
+    this._persistInFlightPromise = (async () => {
+      try {
+        while (this._latestDocToPersist) {
+          const targetDoc = this._latestDocToPersist;
+          this._latestDocToPersist = null;
+          const effective = this._masterPassphrase || DEFAULT_TRANSPARENT_PASSPHRASE;
+          const sealed = await sealVaultDocument(targetDoc, effective, this.kdfParams);
+          await saveEncryptedVaultToOfflineStore(sealed, {
+            documentId: targetDoc.documentId,
+            revision: targetDoc.revision
+          });
+          this.state.hasEncryptedLocalVault = true;
+        }
+      } finally {
+        this._persistInFlightPromise = null;
+      }
+    })();
+    return await this._persistInFlightPromise;
+  }
+
+  async toggleConnectionFavorite(connectionId) {
+    return await this.commitVaultMutation((doc) => {
+      const conn = (doc.connections || []).find((c) => c.id === connectionId);
+      if (conn) {
+        conn.favorite = !conn.favorite;
+        conn.updatedAtEpochMs = Date.now();
+      }
+      return doc;
     });
-    this.state.hasEncryptedLocalVault = true;
   }
 
   _scheduleDebouncedDriveSync() {

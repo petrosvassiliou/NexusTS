@@ -48,9 +48,9 @@ public struct VaultOverviewDashboardView: View {
                 // Summary Metric Cards
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 185), spacing: 14)], spacing: 14) {
                     OverviewStatCard(
-                        title: "Connections",
+                        title: store.strings.connections,
                         value: "\(store.activeConnections.count)",
-                        subtitle: "\(store.activeFolders.count) folders",
+                        subtitle: store.strings.ovFoldersCount(store.activeFolders.count),
                         symbol: "server.rack",
                         tint: Color(nsColor: .systemBlue)
                     ) {
@@ -58,19 +58,27 @@ public struct VaultOverviewDashboardView: View {
                     }
 
                     OverviewStatCard(
-                        title: "Live Sessions",
+                        title: store.strings.ovLiveSessions,
                         value: "\(store.paneTree.allTabs.count + store.detachedWindowTabs.count)",
-                        subtitle: "\(store.detachedWindowTabs.count) detached windows",
+                        subtitle: store.strings.ovDetachedWindows(store.detachedWindowTabs.count),
                         symbol: "macwindow.split.2x1",
                         tint: Color(nsColor: .systemGreen)
                     ) {
-                        store.selectSection(.sessions)
+                        if !store.paneTree.allTabs.isEmpty {
+                            store.selectSection(.sessions)
+                        } else if !store.detachedWindowTabs.isEmpty {
+                            NSApp.windows
+                                .filter { $0.identifier?.rawValue.contains("detached") == true }
+                                .forEach { $0.makeKeyAndOrderFront(nil) }
+                        } else {
+                            store.openLocalTerminal()
+                        }
                     }
 
                     OverviewStatCard(
-                        title: "Credentials & TOTP",
+                        title: store.strings.ovCredentialsTotp,
                         value: "\(store.activeCredentials.count)",
-                        subtitle: "SSH Keys & Passwords",
+                        subtitle: store.strings.ovSshAndPasswords,
                         symbol: "key.horizontal.fill",
                         tint: Color(nsColor: .systemOrange)
                     ) {
@@ -78,8 +86,8 @@ public struct VaultOverviewDashboardView: View {
                     }
 
                     OverviewStatCard(
-                        title: "Cloud Sync",
-                        value: store.linkedCloudFileURL != nil ? "Linked" : "Local",
+                        title: store.strings.cloudSync,
+                        value: store.hasConfiguredCloudSync ? store.strings.ovLinked : store.strings.ovLocal,
                         subtitle: store.syncStatusSummary,
                         symbol: "icloud.fill",
                         tint: Color(nsColor: .systemTeal)
@@ -553,7 +561,9 @@ public struct CredentialsStudioView: View {
             .frame(minWidth: 340)
         }
         .onReceive(totpTimer) { now in
-            tickDate = now
+            if store.activeCredentials.contains(where: { !$0.totpSecretBase32.isEmpty }) {
+                tickDate = now
+            }
         }
     }
 }
@@ -566,15 +576,17 @@ public struct GatewaysStudioView: View {
     @State private var gwHost: String = ""
     @State private var gwPort: Int = 22
     @State private var gwKind: GatewayTransportKind = .SSH_TUNNEL_BASTION
+    @State private var gwCredentialId: String = ""
     @State private var gatewayHealthById: [String: String] = [:]
 
     public init() {}
 
     public var body: some View {
+        let activeGateways = store.document.gateways.filter { !store.document.tombstonedObjectIds.contains($0.id) }
         HSplitView {
             List {
                 Section("Configured Bastions & Gateways") {
-                    ForEach(store.document.gateways) { gw in
+                    ForEach(activeGateways) { gw in
                         HStack(spacing: 12) {
                             Image(systemName: "network.badge.shield.half.filled")
                                 .font(.title3)
@@ -628,15 +640,28 @@ public struct GatewaysStudioView: View {
                     }
                     TextField("Hostname / IP", text: $gwHost)
                     TextField("Port", value: $gwPort, format: .number)
+                    Picker("Bastion Credential", selection: $gwCredentialId) {
+                        Text("None").tag("")
+                        ForEach(store.activeCredentials) { cred in
+                            Text("\(cred.name) (\(cred.username))").tag(cred.id)
+                        }
+                    }
 
                     Button("Add Gateway") {
                         guard !gwName.isEmpty, !gwHost.isEmpty else { return }
-                        let gw = SecureGatewayConfig(name: gwName, kind: gwKind, host: gwHost, port: gwPort)
+                        let gw = SecureGatewayConfig(
+                            name: gwName,
+                            kind: gwKind,
+                            host: gwHost,
+                            port: gwPort,
+                            credentialId: gwCredentialId.isEmpty ? nil : gwCredentialId
+                        )
                         store.commitMutation("Added gateway \(gw.name)") { doc in
                             doc.gateways.append(gw)
                         }
                         gwName = ""
                         gwHost = ""
+                        gwCredentialId = ""
                     }
                     .buttonStyle(.borderedProminent)
                 }

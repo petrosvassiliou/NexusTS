@@ -1,0 +1,1 @@
+• NexusTS 0.9.8: Versión Pre-1.0 de control de calidad (QS) y rendimiento — bloqueo Zero-Knowledge reforzado, localización completa en 6 idiomas, árbol lateral O(F+C) para más de 500 conexiones y mejoras de atajos en macOS, ChromeOS, Googlebooks y Android.

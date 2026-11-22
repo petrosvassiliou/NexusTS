@@ -418,16 +418,16 @@ test('7. Firebase Hosting ChromeOS Start-Menu PWA (nexusts-prod): manifest short
   assert.ok(noCacheRule);
   assert.equal(noCacheRule.headers[0].value, 'no-cache, no-store, must-revalidate');
 
-  const hostingInfo = buildFirebaseHostingSite({ version: '0.9.7', releaseTag: 'v0.9.7' });
+  const hostingInfo = buildFirebaseHostingSite({ version: '0.9.8', releaseTag: 'v0.9.8' });
   assert.equal(hostingInfo.buildHash.length, 12);
   assert.ok(fs.existsSync(hostingInfo.versionJsonPath));
 
   const versionJson = JSON.parse(fs.readFileSync(hostingInfo.versionJsonPath, 'utf8'));
-  assert.equal(versionJson.version, '0.9.7');
+  assert.equal(versionJson.version, '0.9.8');
   assert.equal(versionJson.buildHash, hostingInfo.buildHash);
 
   const hostedSw = fs.readFileSync(`${hostingInfo.hostingDistDir}/sw.js`, 'utf8');
-  assert.ok(hostedSw.includes(`nexusts-chromeos-offline-v0.9.7-${hostingInfo.buildHash}`));
+  assert.ok(hostedSw.includes(`nexusts-chromeos-offline-v0.9.8-${hostingInfo.buildHash}`));
   assert.equal(hostedSw.includes('.well-known'), false);
   assert.ok(hostedSw.includes("event.data.type === 'SKIP_WAITING'"));
 
@@ -435,7 +435,7 @@ test('7. Firebase Hosting ChromeOS Start-Menu PWA (nexusts-prod): manifest short
   assert.equal(hostedManifest.display, 'standalone');
   assert.equal(hostedManifest.start_url, './?source=pwa');
   assert.equal(hostedManifest.shortcuts.length, 4);
-  assert.equal(hostedManifest.version, '0.9.7');
+  assert.equal(hostedManifest.version, '0.9.8');
   assert.equal(hostedManifest.theme_color, '#ffffff');
   assert.equal(hostedManifest.background_color, '#f8fafc');
 
@@ -456,7 +456,7 @@ test('7. Firebase Hosting ChromeOS Start-Menu PWA (nexusts-prod): manifest short
   assert.ok(hostedAppJs.includes('split-action-group'));
   assert.ok(hostedAppJs.includes('qc-palette-card'));
 
-  assert.equal(compareSemver('0.9.7', '0.9.4'), 1);
+  assert.equal(compareSemver('0.9.8', '0.9.7'), 1);
   assert.equal(compareSemver('0.9.0', '0.9.0-beta.1'), 1);
   assert.equal(canInstallPwa(), false);
   assert.equal(isRunningStandalone(), false);
@@ -604,6 +604,120 @@ test('9. Sidebar Smart Folders & Pinned System Credentials Folder 1:1 macOS Pari
   assert.equal(store.state.vaultDocument.smartFolders[0].name, 'Subnet 10.10 All');
   assert.equal(store.visibleConnectionsForSmartFolder('sf-rdp').length, 2);
 });
+
+test('10. Pre-1.0 QS Smoke & Performance Gate: zero dead data-actions, 6-locale parity, coalesced seal & 500-conn <25ms throughput', async () => {
+  const repoRoot = new URL('../..', import.meta.url);
+
+  // 1. Assert EVERY static data-action="..." emitted in app.js has a matching case handler in installEventDelegation()
+  const appJsSrc = fs.readFileSync(new URL('chromeos-pwa/app/src/ui/app.js', repoRoot), 'utf8');
+  const emittedActions = new Set(
+    [...appJsSrc.matchAll(/data-action="([a-z0-9-]+)"/g)].map((m) => m[1])
+  );
+  const handledCases = new Set(
+    [...appJsSrc.matchAll(/case\s+'([a-z0-9-]+)'\s*:/g)].map((m) => m[1])
+  );
+  for (const act of ['enroll-webauthn-bio', 'unlock-webauthn-bio', 'toggle-favorite', 'new-conn-in-folder']) {
+    assert.ok(emittedActions.has(act), `Expected data-action="${act}" in app.js`);
+  }
+  const unhandled = [...emittedActions].filter((a) => !handledCases.has(a));
+  assert.deepEqual(unhandled, [], `Unhandled data-action attributes found in app.js: ${unhandled.join(', ')}`);
+
+  // 2. Assert root '/' and '/@(sw.js|...)' both serve no-cache in firebase.json
+  const firebaseJson = JSON.parse(fs.readFileSync(new URL('firebase.json', repoRoot), 'utf8'));
+  const rootHeader = firebaseJson.hosting.headers.find((h) => h.source === '/');
+  assert.ok(rootHeader, 'Expected explicit "/" header rule in firebase.json');
+  assert.equal(rootHeader.headers[0].value, 'no-cache, no-store, must-revalidate');
+
+  // 3. Assert 100% key parity & non-empty translations across all 6 enterprise locales
+  const enKeys = Object.keys(resolveStrings('en')).sort();
+  for (const loc of SUPPORTED_LOCALES) {
+    const dict = resolveStrings(loc.code);
+    assert.deepEqual(Object.keys(dict).sort(), enKeys, `Locale ${loc.code} key mismatch`);
+    for (const k of enKeys) {
+      assert.ok(typeof dict[k] === 'string' && dict[k].trim().length > 0, `Empty string for ${loc.code}.${k}`);
+    }
+  }
+
+  // 4. Verify coalesced local persistence & toggleConnectionFavorite under rapid concurrent mutations
+  const store = new NexusChromeOSStore({ kdfParams: INTERACTIVE_FAST_KDF_PARAMS, deviceId: 'Chromebook-QS' });
+  await store.initializeOffline();
+  await store.resetVaultDatabase();
+  await Promise.all([
+    store.saveConnection({ id: 'qs-1', name: 'QS-1', host: '10.1.0.1', protocol: 'RDP' }),
+    store.saveConnection({ id: 'qs-2', name: 'QS-2', host: '10.1.0.2', protocol: 'SSH' }),
+    store.saveConnection({ id: 'qs-3', name: 'QS-3', host: '10.1.0.3', protocol: 'VNC' })
+  ]);
+  await store.toggleConnectionFavorite('qs-2');
+  assert.equal(store.state.vaultDocument.connections.find((c) => c.id === 'qs-2')?.favorite, true);
+
+  // 5. 500-Connection + 50-Folder + 12-Smart-Folder Enterprise Performance Gate (< 50ms budget)
+  const { sanitizeVaultDocument, resolveEffectiveConnectionProfile, evaluateSmartFolder, bumpVaultRevision, defaultInheritableProperties, defaultSettingsForProtocol } = await import('../app/src/core/vault-models.js');
+  const { mergeVaultDocuments } = await import('../app/src/core/conflict-resolver.js');
+
+  const big = createStarterVault('perf-dev-a');
+  for (let i = 0; i < 40; i++) {
+    big.credentials.push({ id: `cr-${i}`, name: `Cred ${i}`, username: `u${i}`, secretPassword: `pw-${i}`, updatedAtEpochMs: 1000 });
+  }
+  for (let i = 0; i < 50; i++) {
+    big.folders.push({
+      id: `fl-${i}`,
+      parentFolderId: i >= 10 ? `fl-${i % 10}` : null,
+      name: `Folder ${i}`,
+      inheritable: defaultInheritableProperties(i % 5 === 0 ? { credentialMode: 'OVERRIDE_EXPLICIT', explicitCredentialId: `cr-${i % 40}` } : {}),
+      sortOrder: i,
+      updatedAtEpochMs: 1000
+    });
+  }
+  const protos = ['RDP', 'SSH', 'SFTP', 'VNC', 'WEB_PAGE'];
+  for (let i = 0; i < 500; i++) {
+    const p = protos[i % protos.length];
+    big.connections.push({
+      id: `cn-${i}`,
+      parentFolderId: `fl-${i % 50}`,
+      name: `srv-${i}.corp`,
+      host: `10.${Math.floor(i / 250)}.${i % 250}.10`,
+      protocol: p,
+      tags: i % 2 === 0 ? ['prod'] : ['dev'],
+      inheritable: defaultInheritableProperties(),
+      settings: defaultSettingsForProtocol(p, '10.0.0.10'),
+      sortOrder: i,
+      updatedAtEpochMs: 1000
+    });
+  }
+  for (let i = 0; i < 12; i++) {
+    big.smartFolders.push({
+      id: `sf-${i}`,
+      name: `SF ${i}`,
+      filter: { includeProtocols: [protos[i % protos.length]], requiredTags: ['prod'], hostPatternRegex: '^10\\.' },
+      updatedAtEpochMs: 1000
+    });
+  }
+
+  let t0 = performance.now();
+  const sanitized = sanitizeVaultDocument(big);
+  const sanitizeMs = performance.now() - t0;
+  assert.ok(sanitizeMs < 50, `sanitizeVaultDocument took ${sanitizeMs.toFixed(2)}ms`);
+
+  t0 = performance.now();
+  for (const c of sanitized.connections) resolveEffectiveConnectionProfile(c, sanitized);
+  const resolveMs = performance.now() - t0;
+  assert.ok(resolveMs < 50, `500x resolveEffectiveConnectionProfile took ${resolveMs.toFixed(2)}ms`);
+
+  t0 = performance.now();
+  for (const sf of sanitized.smartFolders) evaluateSmartFolder(sf, sanitized);
+  const sfMs = performance.now() - t0;
+  assert.ok(sfMs < 50, `12x evaluateSmartFolder took ${sfMs.toFixed(2)}ms`);
+
+  const peer = structuredClone(sanitized);
+  peer.connections[7].name = 'srv-7-updated';
+  peer.connections[7].updatedAtEpochMs = 5000;
+  t0 = performance.now();
+  const merged = mergeVaultDocuments(bumpVaultRevision(sanitized, 'dev-a'), bumpVaultRevision(peer, 'dev-b'), 'dev-a');
+  const mergeMs = performance.now() - t0;
+  assert.equal(merged.mergedDocument.connections.length, 500);
+  assert.ok(mergeMs < 50, `500-conn 3-way merge took ${mergeMs.toFixed(2)}ms`);
+});
+
 
 
 

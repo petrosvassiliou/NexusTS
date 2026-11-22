@@ -807,6 +807,94 @@ public extension LocalizedWorkspaceStrings {
         default: return "Synced (rev \(rev))"
         }
     }
+
+    func ovFoldersCount(_ count: Int) -> String {
+        switch connections {
+        case "Verbindungen": return "\(count) Ordner"
+        case "Connessioni": return "\(count) cartelle"
+        case "Conexiones": return "\(count) carpetas"
+        case "Συνδέσεις": return "\(count) φάκελοι"
+        case "Connexions": return "\(count) dossiers"
+        default: return "\(count) folders"
+        }
+    }
+
+    var ovLiveSessions: String {
+        switch connections {
+        case "Verbindungen": return "Aktive Sitzungen"
+        case "Connessioni": return "Sessioni attive"
+        case "Conexiones": return "Sesiones activas"
+        case "Συνδέσεις": return "Ενεργές συνεδρίες"
+        case "Connexions": return "Sessions actives"
+        default: return "Live Sessions"
+        }
+    }
+
+    func ovDetachedWindows(_ count: Int) -> String {
+        switch connections {
+        case "Verbindungen": return "\(count) gelöste Fenster"
+        case "Connessioni": return "\(count) finestre staccate"
+        case "Conexiones": return "\(count) ventanas separadas"
+        case "Συνδέσεις": return "\(count) αποσπασμένα παράθυρα"
+        case "Connexions": return "\(count) fenêtres détachées"
+        default: return "\(count) detached windows"
+        }
+    }
+
+    var ovCredentialsTotp: String {
+        switch connections {
+        case "Verbindungen": return "Anmeldedaten & TOTP"
+        case "Connessioni": return "Credenziali & TOTP"
+        case "Conexiones": return "Credenciales y TOTP"
+        case "Συνδέσεις": return "Διαπιστευτήρια & TOTP"
+        case "Connexions": return "Identifiants & TOTP"
+        default: return "Credentials & TOTP"
+        }
+    }
+
+    var ovSshAndPasswords: String {
+        switch connections {
+        case "Verbindungen": return "SSH-Schlüssel & Passwörter"
+        case "Connessioni": return "Chiavi SSH & password"
+        case "Conexiones": return "Claves SSH y contraseñas"
+        case "Συνδέσεις": return "Κλειδιά SSH & κωδικοί"
+        case "Connexions": return "Clés SSH & mots de passe"
+        default: return "SSH Keys & Passwords"
+        }
+    }
+
+    var ovLinked: String {
+        switch connections {
+        case "Verbindungen": return "Verknüpft"
+        case "Connessioni": return "Collegata"
+        case "Conexiones": return "Vinculada"
+        case "Συνδέσεις": return "Συνδεδεμένο"
+        case "Connexions": return "Lié"
+        default: return "Linked"
+        }
+    }
+
+    var ovLocal: String {
+        switch connections {
+        case "Verbindungen": return "Lokal"
+        case "Connessioni": return "Locale"
+        case "Conexiones": return "Local"
+        case "Συνδέσεις": return "Τοπικό"
+        case "Connexions": return "Local"
+        default: return "Local"
+        }
+    }
+
+    var remoteKeyCapture: String {
+        switch connections {
+        case "Verbindungen": return "System-Tastenkürzel abfangen"
+        case "Connessioni": return "Cattura scorciatoie di sistema"
+        case "Conexiones": return "Capturar atajos del sistema"
+        case "Συνδέσεις": return "Δέσμευση συντομεύσεων συστήματος"
+        case "Connexions": return "Capturer les raccourcis système"
+        default: return "Remote Key Capture"
+        }
+    }
 }
 
 

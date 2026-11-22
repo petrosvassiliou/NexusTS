@@ -29,64 +29,74 @@ public struct MenuBarQuickAgentView: View {
 
             Divider()
 
-            Button {
-                NSApp.setActivationPolicy(.regular)
-                openWindow(id: "main-workspace")
-                NSApp.activate(ignoringOtherApps: true)
-            } label: {
-                Label("Open NexusTS Workspace", systemImage: "macwindow")
-            }
+            if store.isVaultLocked {
+                Button {
+                    NSApp.setActivationPolicy(.regular)
+                    openWindow(id: "main-workspace")
+                    NSApp.activate(ignoringOtherApps: true)
+                } label: {
+                    Label(store.strings.unlockVault, systemImage: "lock.fill")
+                }
+            } else {
+                Button {
+                    NSApp.setActivationPolicy(.regular)
+                    openWindow(id: "main-workspace")
+                    NSApp.activate(ignoringOtherApps: true)
+                } label: {
+                    Label("Open NexusTS Workspace", systemImage: "macwindow")
+                }
 
-            Button {
-                NSApp.setActivationPolicy(.regular)
-                openWindow(id: "main-workspace")
-                NSApp.activate(ignoringOtherApps: true)
-                store.openLocalTerminal()
-            } label: {
-                Label(MacWorkspaceShortcut.localTerminal.title(in: store.strings), systemImage: "apple.terminal")
-            }
+                Button {
+                    NSApp.setActivationPolicy(.regular)
+                    openWindow(id: "main-workspace")
+                    NSApp.activate(ignoringOtherApps: true)
+                    store.openLocalTerminal()
+                } label: {
+                    Label(MacWorkspaceShortcut.localTerminal.title(in: store.strings), systemImage: "apple.terminal")
+                }
 
-            Button {
-                NSApp.setActivationPolicy(.regular)
-                openWindow(id: "main-workspace")
-                NSApp.activate(ignoringOtherApps: true)
-                store.isQuickConnectPresented = true
-            } label: {
-                Label(MacWorkspaceShortcut.quickConnect.menuTitle(in: store.strings), systemImage: "sparkle.magnifyingglass")
-            }
+                Button {
+                    NSApp.setActivationPolicy(.regular)
+                    openWindow(id: "main-workspace")
+                    NSApp.activate(ignoringOtherApps: true)
+                    store.isQuickConnectPresented = true
+                } label: {
+                    Label(MacWorkspaceShortcut.quickConnect.menuTitle(in: store.strings), systemImage: "sparkle.magnifyingglass")
+                }
 
-            let favorites = store.activeConnections.filter(\.favorite).prefix(8)
-            if !favorites.isEmpty {
-                Divider()
-                Text("Favorites")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                let favorites = store.activeConnections.filter(\.favorite).prefix(8)
+                if !favorites.isEmpty {
+                    Divider()
+                    Text(store.strings.favorites)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
 
-                ForEach(Array(favorites)) { conn in
-                    Button {
-                        NSApp.activate(ignoringOtherApps: true)
-                        store.openConnection(conn)
-                    } label: {
-                        Label("\(conn.name) (\(conn.protocolType.shortBadge))", systemImage: conn.protocolType.sfSymbolName)
+                    ForEach(Array(favorites)) { conn in
+                        Button {
+                            NSApp.activate(ignoringOtherApps: true)
+                            store.openConnection(conn)
+                        } label: {
+                            Label("\(conn.name) (\(conn.protocolType.shortBadge))", systemImage: conn.protocolType.sfSymbolName)
+                        }
                     }
                 }
-            }
 
-            let totpCreds = store.document.credentials.filter { !$0.totpSecretBase32.isEmpty }
-            if !totpCreds.isEmpty {
-                Divider()
-                Text("Copy 2FA TOTP Code")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                let totpCreds = store.activeCredentials.filter { !$0.totpSecretBase32.isEmpty }
+                if !totpCreds.isEmpty {
+                    Divider()
+                    Text("Copy 2FA TOTP Code")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
 
-                ForEach(totpCreds) { cred in
-                    Button {
-                        if let otp = TotpCodeGenerator.generateTotp(base32Secret: cred.totpSecretBase32) {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(otp, forType: .string)
+                    ForEach(totpCreds) { cred in
+                        Button {
+                            if let otp = TotpCodeGenerator.generateTotp(base32Secret: cred.totpSecretBase32) {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(otp, forType: .string)
+                            }
+                        } label: {
+                            Label("Copy TOTP: \(cred.name)", systemImage: "clock.badge.checkmark")
                         }
-                    } label: {
-                        Label("Copy TOTP: \(cred.name)", systemImage: "clock.badge.checkmark")
                     }
                 }
             }
@@ -366,8 +376,14 @@ public struct MacSettingsView: View {
     public init() {}
 
     public var body: some View {
-        UnifiedWorkspaceSettingsView(showsWorkspaceHeader: false)
-            .frame(minWidth: 780, minHeight: 540)
+        Group {
+            if store.isVaultLocked {
+                ZeroKnowledgeLockShieldView()
+            } else {
+                UnifiedWorkspaceSettingsView(showsWorkspaceHeader: false)
+            }
+        }
+        .frame(minWidth: 780, minHeight: 540)
     }
 }
 
@@ -423,11 +439,16 @@ private struct MacSoftwareUpdateContentView: View {
     let showsSheetChrome: Bool
 
     @State private var githubTokenInput: String = ""
-    @State private var detectedAuthSource: String = "None configured"
+    @State private var detectedAuthSource: String = "Checking…"
     @State private var tokenSavedNotice: String? = nil
 
     private func refreshAuthStatus() {
-        detectedAuthSource = MacGitHubReleaseUpdater.resolveGitHubAuthToken()?.source ?? "None configured"
+        Task.detached(priority: .utility) {
+            let source = MacGitHubReleaseUpdater.resolveGitHubAuthToken()?.source ?? "None configured"
+            await MainActor.run {
+                detectedAuthSource = source
+            }
+        }
     }
 
     var body: some View {

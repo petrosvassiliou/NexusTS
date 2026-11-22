@@ -352,11 +352,11 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
     }
 
     func testV118LocalizationUpgradeVersionAndVaultReplacementCompatibility() throws {
-        XCTAssertEqual(MacGitHubReleaseUpdater.currentVersion, "0.9.7")
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.9.7", isNewerThan: "0.9.1"))
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.9.7", isNewerThan: "0.9.0"))
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.9.7", isNewerThan: "0.8.14"))
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.9.7", isNewerThan: "0.3.0-beta.6"))
+        XCTAssertEqual(MacGitHubReleaseUpdater.currentVersion, "0.9.8")
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.9.8", isNewerThan: "0.9.7"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.9.8", isNewerThan: "0.9.0"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.9.8", isNewerThan: "0.8.14"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.9.8", isNewerThan: "0.3.0-beta.6"))
         XCTAssertEqual(LocalizedWorkspaceStrings.catalog(for: .en).studios, "Manage")
         XCTAssertEqual(LocalizedWorkspaceStrings.catalog(for: .en).logOffSession, "Log Off Session")
 
@@ -1611,6 +1611,68 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
             passphrase: NxtsVaultSerializer.defaultTransparentPassphrase
         )
         XCTAssertEqual(openedTransparent.revision, doc.revision)
+    }
+
+    func testPre10QualityAssuranceLocalizationExportAnd500ConnectionPerformance() throws {
+        // 1. Verify .nxts export preserves explicit custom Master Passphrase and rejects default key
+        var vault = NxtsVaultDocument(documentId: "qs-vault", name: "Pre-1.0 QS Vault", revision: 5)
+        vault.credentials.append(VaultCredential(id: "cred-1", name: "Domain Admin", username: "admin", secretPassword: "TopSecretPassword!"))
+        let exported = try VaultDocumentExporter.export(document: vault, format: .nxts, passphrase: "CustomMacMaster!2026")
+        XCTAssertThrowsError(
+            try NxtsVaultSerializer.open(sealedData: exported, passphrase: NxtsVaultSerializer.defaultTransparentPassphrase)
+        )
+        let reopened = try NxtsVaultSerializer.open(sealedData: exported, passphrase: "CustomMacMaster!2026")
+        XCTAssertEqual(reopened.credentials.first?.secretPassword, "TopSecretPassword!")
+
+        // 2. Verify 6-locale Overview Dashboard & Remote Key Capture localization strings
+        for lang in NexusAppLanguage.allCases {
+            let s = LocalizedWorkspaceStrings.catalog(for: lang)
+            XCTAssertFalse(s.ovFoldersCount(4).isEmpty)
+            XCTAssertFalse(s.ovLiveSessions.isEmpty)
+            XCTAssertFalse(s.ovDetachedWindows(1).isEmpty)
+            XCTAssertFalse(s.ovCredentialsTotp.isEmpty)
+            XCTAssertFalse(s.ovSshAndPasswords.isEmpty)
+            XCTAssertFalse(s.ovLinked.isEmpty)
+            XCTAssertFalse(s.ovLocal.isEmpty)
+            XCTAssertFalse(s.remoteKeyCapture.isEmpty)
+        }
+
+        // 3. 500-connection + 50-folder inheritance & sanitization performance gate (< 100ms)
+        var big = NxtsVaultDocument.sampleStarterVault()
+        for i in 0..<50 {
+            big.folders.append(
+                VaultFolder(
+                    id: "fld-\(i)",
+                    parentFolderId: i >= 10 ? "fld-\(i % 10)" : nil,
+                    name: "Cluster \(i)",
+                    inheritable: InheritableProperties(
+                        credentialMode: i % 5 == 0 ? .OVERRIDE_EXPLICIT : .INHERIT_FROM_PARENT,
+                        explicitCredentialId: i % 5 == 0 ? "cred-1" : nil
+                    ),
+                    sortOrder: i
+                )
+            )
+        }
+        big.credentials.append(VaultCredential(id: "cred-1", name: "Corp Admin", username: "svc_admin", secretPassword: "secret"))
+        for i in 0..<500 {
+            big.connections.append(
+                VaultConnection(
+                    id: "conn-\(i)",
+                    parentFolderId: "fld-\(i % 50)",
+                    name: "node-\(i).corp",
+                    host: "10.0.\(i / 250).\(i % 250)",
+                    protocolType: i % 2 == 0 ? .RDP : .SSH
+                )
+            )
+        }
+        let start = CFAbsoluteTimeGetCurrent()
+        let sanitized = VaultHierarchySanitizer.sanitizeVaultDocument(big)
+        for conn in sanitized.connections {
+            _ = PropertyInheritanceResolver.resolve(connection: conn, in: sanitized)
+        }
+        let elapsedMs = (CFAbsoluteTimeGetCurrent() - start) * 1000.0
+        XCTAssertEqual(sanitized.connections.count, 500)
+        XCTAssertLessThan(elapsedMs, 250.0, "500-connection inheritance resolution exceeded budget: \(elapsedMs)ms")
     }
 }
 

@@ -24,6 +24,8 @@ public struct ConnectionEditorSheet: View {
     // Inheritance
     @State private var credentialMode: InheritanceMode = .INHERIT_FROM_PARENT
     @State private var explicitCredentialId: String = ""
+    @State private var gatewayMode: InheritanceMode = .INHERIT_FROM_PARENT
+    @State private var explicitGatewayId: String = ""
     @State private var colorHex: String = ""
 
     // Protocol Specifics
@@ -148,7 +150,7 @@ public struct ConnectionEditorSheet: View {
                     Toggle("Pin to Favorites", isOn: $favorite)
                 }
 
-                Section("Credential Inheritance") {
+                Section("Credential & Gateway Inheritance") {
                     Picker("Authentication Mode", selection: $credentialMode) {
                         ForEach(InheritanceMode.allCases, id: \.self) { mode in
                             Text(mode.displayTitle).tag(mode)
@@ -158,8 +160,24 @@ public struct ConnectionEditorSheet: View {
                     if credentialMode == .OVERRIDE_EXPLICIT {
                         Picker("Vault Credential", selection: $explicitCredentialId) {
                             Text("Select Credential…").tag("")
-                            ForEach(store.document.credentials) { cred in
+                            ForEach(store.activeCredentials) { cred in
                                 Text("\(cred.name) (\(cred.username))").tag(cred.id)
+                            }
+                        }
+                    }
+
+                    Picker("Gateway Mode", selection: $gatewayMode) {
+                        ForEach(InheritanceMode.allCases.filter { $0 != .PROMPT_AT_CONNECT }, id: \.self) { mode in
+                            Text(mode.displayTitle).tag(mode)
+                        }
+                    }
+
+                    if gatewayMode == .OVERRIDE_EXPLICIT {
+                        let activeGateways = store.document.gateways.filter { !store.document.tombstonedObjectIds.contains($0.id) }
+                        Picker("Secure Gateway", selection: $explicitGatewayId) {
+                            Text("Select Gateway…").tag("")
+                            ForEach(activeGateways) { gw in
+                                Text("\(gw.name) (\(gw.host):\(gw.port))").tag(gw.id)
                             }
                         }
                     }
@@ -528,6 +546,8 @@ public struct ConnectionEditorSheet: View {
             favorite = conn.favorite
             credentialMode = conn.inheritable.credentialMode
             explicitCredentialId = conn.inheritable.explicitCredentialId ?? ""
+            gatewayMode = conn.inheritable.gatewayMode
+            explicitGatewayId = conn.inheritable.explicitGatewayId ?? ""
             colorHex = conn.inheritable.displayColorAccentHex ?? ""
 
             switch conn.settings {
@@ -663,6 +683,8 @@ public struct ConnectionEditorSheet: View {
         var inheritable = existing?.inheritable ?? InheritableProperties()
         inheritable.credentialMode = credentialMode
         inheritable.explicitCredentialId = credentialMode == .OVERRIDE_EXPLICIT && !explicitCredentialId.isEmpty ? explicitCredentialId : nil
+        inheritable.gatewayMode = gatewayMode
+        inheritable.explicitGatewayId = gatewayMode == .OVERRIDE_EXPLICIT && !explicitGatewayId.isEmpty ? explicitGatewayId : nil
         inheritable.displayColorAccentHex = colorHex.isEmpty ? nil : colorHex
 
         let resolvedParentId: String? = {
@@ -721,6 +743,8 @@ public struct FolderInheritanceEditorSheet: View {
     @State private var environmentBadge: String = ""
     @State private var credentialMode: InheritanceMode = .INHERIT_FROM_PARENT
     @State private var explicitCredentialId: String = ""
+    @State private var gatewayMode: InheritanceMode = .INHERIT_FROM_PARENT
+    @State private var explicitGatewayId: String = ""
     @State private var colorHex: String = ""
 
     public init(existing: VaultFolder?) {
@@ -732,6 +756,7 @@ public struct FolderInheritanceEditorSheet: View {
     }
 
     public var body: some View {
+        let activeGateways = store.document.gateways.filter { !store.document.tombstonedObjectIds.contains($0.id) }
         VStack(spacing: 0) {
             HStack {
                 Image(systemName: "folder.fill.badge.gearshape")
@@ -771,7 +796,7 @@ public struct FolderInheritanceEditorSheet: View {
                     }
                 }
 
-                Section("Cascading Credential Inheritance (Applies to All Descendant Connections)") {
+                Section("Cascading Credential & Gateway Inheritance (Applies to Descendants)") {
                     Picker("Folder Credential Policy", selection: $credentialMode) {
                         ForEach(InheritanceMode.allCases, id: \.self) { m in
                             Text(m.displayTitle).tag(m)
@@ -782,6 +807,19 @@ public struct FolderInheritanceEditorSheet: View {
                             Text("Select Credential…").tag("")
                             ForEach(store.activeCredentials) { cred in
                                 Text("\(cred.name) (\(cred.username))").tag(cred.id)
+                            }
+                        }
+                    }
+                    Picker("Folder Gateway Policy", selection: $gatewayMode) {
+                        ForEach(InheritanceMode.allCases.filter { $0 != .PROMPT_AT_CONNECT }, id: \.self) { m in
+                            Text(m.displayTitle).tag(m)
+                        }
+                    }
+                    if gatewayMode == .OVERRIDE_EXPLICIT {
+                        Picker("Inherited Gateway", selection: $explicitGatewayId) {
+                            Text("Select Gateway…").tag("")
+                            ForEach(activeGateways) { gw in
+                                Text("\(gw.name) (\(gw.host):\(gw.port))").tag(gw.id)
                             }
                         }
                     }
@@ -803,6 +841,8 @@ public struct FolderInheritanceEditorSheet: View {
                     inh.environmentBadge = environmentBadge.trimmingCharacters(in: .whitespaces).isEmpty ? nil : environmentBadge
                     inh.credentialMode = credentialMode
                     inh.explicitCredentialId = credentialMode == .OVERRIDE_EXPLICIT && !explicitCredentialId.isEmpty ? explicitCredentialId : nil
+                    inh.gatewayMode = gatewayMode
+                    inh.explicitGatewayId = gatewayMode == .OVERRIDE_EXPLICIT && !explicitGatewayId.isEmpty ? explicitGatewayId : nil
                     inh.displayColorAccentHex = colorHex.isEmpty ? nil : colorHex
 
                     let resolvedParent: String? = {
@@ -840,7 +880,7 @@ public struct FolderInheritanceEditorSheet: View {
             .padding(14)
             .background(.bar)
         }
-        .frame(width: 500, height: 450)
+        .frame(width: 500, height: 480)
         .onAppear {
             if let f = existing {
                 name = f.name
@@ -848,6 +888,8 @@ public struct FolderInheritanceEditorSheet: View {
                 environmentBadge = f.inheritable.environmentBadge ?? ""
                 credentialMode = f.inheritable.credentialMode
                 explicitCredentialId = f.inheritable.explicitCredentialId ?? ""
+                gatewayMode = f.inheritable.gatewayMode
+                explicitGatewayId = f.inheritable.explicitGatewayId ?? ""
                 colorHex = f.inheritable.displayColorAccentHex ?? ""
             } else {
                 let candidateParent = store.newFolderInitialParentId ?? store.selectedFolderId
@@ -1603,7 +1645,7 @@ public struct ResetDatabaseConfirmationSheet: View {
         panel.canCreateDirectories = true
         if panel.runModal() == .OK, let destURL = panel.url {
             do {
-                let data = try VaultDocumentExporter.export(document: store.document, format: .nxts)
+                let data = try store.exportVaultData(format: .nxts)
                 try data.write(to: destURL, options: .atomic)
                 backupStatusText = "Saved backup to \(destURL.lastPathComponent)"
             } catch {

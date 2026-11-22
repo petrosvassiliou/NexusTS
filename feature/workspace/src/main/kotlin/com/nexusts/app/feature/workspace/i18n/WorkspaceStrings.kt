@@ -277,6 +277,94 @@ data class WorkspaceLocalizedStrings(
             else -> "Updates"
         }
 
+    val localTerminalLabel: String
+        get() = when (navConnections) {
+            "Verbindungen" -> "Lokales Terminal"
+            "Connessioni" -> "Terminale locale"
+            "Conexiones" -> "Terminal local"
+            "Συνδέσεις" -> "Τοπικό τερματικό"
+            "Connexions" -> "Terminal local"
+            else -> "Local Terminal"
+        }
+
+    val remoteKeyCaptureLabel: String
+        get() = when (navConnections) {
+            "Verbindungen" -> "System-Tastenkürzel abfangen"
+            "Connessioni" -> "Cattura scorciatoie di sistema"
+            "Conexiones" -> "Capturar atajos del sistema"
+            "Συνδέσεις" -> "Δέσμευση συντομεύσεων συστήματος"
+            "Connexions" -> "Capturer les raccourcis système"
+            else -> "Remote Key Capture"
+        }
+
+    fun ovFoldersCount(count: Int): String = when (navConnections) {
+        "Verbindungen" -> "$count Ordner"
+        "Connessioni" -> "$count cartelle"
+        "Conexiones" -> "$count carpetas"
+        "Συνδέσεις" -> "$count φάκελοι"
+        "Connexions" -> "$count dossiers"
+        else -> "$count folders"
+    }
+
+    fun ovDetachedWindows(count: Int): String = when (navConnections) {
+        "Verbindungen" -> "$count gelöste Fenster"
+        "Connessioni" -> "$count finestre staccate"
+        "Conexiones" -> "$count ventanas separadas"
+        "Συνδέσεις" -> "$count αποσπασμένα παράθυρα"
+        "Connexions" -> "$count fenêtres détachées"
+        else -> "$count detached windows"
+    }
+
+    val ovCredentialsTotp: String
+        get() = when (navConnections) {
+            "Verbindungen" -> "Anmeldedaten & TOTP"
+            "Connessioni" -> "Credenziali & TOTP"
+            "Conexiones" -> "Credenciales y TOTP"
+            "Συνδέσεις" -> "Διαπιστευτήρια & TOTP"
+            "Connexions" -> "Identifiants & TOTP"
+            else -> "Credentials & TOTP"
+        }
+
+    val ovSshAndPasswords: String
+        get() = when (navConnections) {
+            "Verbindungen" -> "SSH-Schlüssel & Passwörter"
+            "Connessioni" -> "Chiavi SSH & password"
+            "Conexiones" -> "Claves SSH y contraseñas"
+            "Συνδέσεις" -> "Κλειδιά SSH & κωδικοί"
+            "Connexions" -> "Clés SSH & mots de passe"
+            else -> "SSH Keys & Passwords"
+        }
+
+    val ovLinked: String
+        get() = when (navConnections) {
+            "Verbindungen" -> "Verknüpft"
+            "Connessioni" -> "Collegata"
+            "Conexiones" -> "Vinculada"
+            "Συνδέσεις" -> "Συνδεδεμένο"
+            "Connexions" -> "Lié"
+            else -> "Linked"
+        }
+
+    val ovLocal: String
+        get() = when (navConnections) {
+            "Verbindungen" -> "Lokal"
+            "Connessioni" -> "Locale"
+            "Conexiones" -> "Local"
+            "Συνδέσεις" -> "Τοπικό"
+            "Connexions" -> "Local"
+            else -> "Local"
+        }
+
+    val ovLocalEncryptedVault: String
+        get() = when (navConnections) {
+            "Verbindungen" -> "Lokaler verschlüsselter Tresor"
+            "Connessioni" -> "Cassaforte locale cifrata"
+            "Conexiones" -> "Bóveda cifrada local"
+            "Συνδέσεις" -> "Τοπικό κρυπτογραφημένο θησαυροφυλάκιο"
+            "Connexions" -> "Coffre chiffré local"
+            else -> "Local encrypted vault"
+        }
+
     companion object {
         fun defaultEnglish(): WorkspaceLocalizedStrings = WorkspaceLocalizedStrings(
             appName = "NexusTS",

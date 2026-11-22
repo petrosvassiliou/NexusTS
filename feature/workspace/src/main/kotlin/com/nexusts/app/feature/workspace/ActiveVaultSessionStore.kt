@@ -430,8 +430,17 @@ class ActiveVaultSessionStore @Inject constructor() {
         }
 
         val allCandidates = buildList {
-            candidatePassphrases.filter { it.isNotEmpty() }.forEach { add(it.copyOf()) }
-            add(DEFAULT_LOCAL_VAULT_PASSPHRASE.toCharArray())
+            candidatePassphrases.filter { it.isNotEmpty() }.forEach { cand ->
+                if (none { existing -> Arrays.equals(existing, cand) }) {
+                    add(cand.copyOf())
+                }
+            }
+            val defaultChars = DEFAULT_LOCAL_VAULT_PASSPHRASE.toCharArray()
+            if (none { existing -> Arrays.equals(existing, defaultChars) }) {
+                add(defaultChars)
+            } else {
+                Arrays.fill(defaultChars, '\u0000')
+            }
         }
 
         try {

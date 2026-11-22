@@ -10,13 +10,41 @@ export async function initNexusWasm(customUrl = './wasm/nexusts_wasm.wasm') {
   if (loadAttempted) return null;
   loadAttempted = true;
   try {
-    if (typeof fetch !== 'function' || typeof WebAssembly === 'undefined') return null;
-    const resp = await fetch(customUrl);
-    if (!resp.ok) return null;
-    const bytes = await resp.arrayBuffer();
-    const { instance } = await WebAssembly.instantiate(bytes, {});
-    wasmExports = instance.exports;
-    return wasmExports;
+    if (typeof WebAssembly === 'undefined') return null;
+    if (typeof fetch === 'function') {
+      try {
+        const resp = await fetch(customUrl);
+        if (resp && resp.ok) {
+          const bytes = await resp.arrayBuffer();
+          const { instance } = await WebAssembly.instantiate(bytes, {});
+          wasmExports = instance.exports;
+          return wasmExports;
+        }
+      } catch {
+        // Fall through to Node.js local file check if running in Node test runner
+      }
+    }
+    if (typeof process !== 'undefined' && process.versions?.node) {
+      const [{ readFile }, { fileURLToPath }] = await Promise.all([
+        import('node:fs/promises'),
+        import('node:url')
+      ]);
+      const candidates = [
+        new URL('../../wasm/nexusts_wasm.wasm', import.meta.url),
+        new URL('../../../hosting-dist/wasm/nexusts_wasm.wasm', import.meta.url)
+      ];
+      for (const candidate of candidates) {
+        try {
+          const buf = await readFile(fileURLToPath(candidate));
+          const { instance } = await WebAssembly.instantiate(buf, {});
+          wasmExports = instance.exports;
+          return wasmExports;
+        } catch {
+          // Try next candidate
+        }
+      }
+    }
+    return null;
   } catch {
     return null;
   }

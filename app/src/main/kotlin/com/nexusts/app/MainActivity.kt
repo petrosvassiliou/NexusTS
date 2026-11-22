@@ -178,7 +178,7 @@ class MainActivity : AppCompatActivity() {
         workspaceViewModel.updateDriveAccountAndSafState(
             signedInEmail = persistedEmail,
             linkedSafLabel = persistedSaf?.displayName.orEmpty(),
-            autoSyncOnSave = true,
+            autoSyncOnSave = driveAuthManager.isAutoSyncOnSaveEnabled(),
             rememberVaultPassphrase = driveAuthManager.isRememberVaultPassphraseEnabled()
         )
         GoogleDriveVaultSyncEngine.scheduleBackgroundSync(this)
@@ -381,9 +381,9 @@ class MainActivity : AppCompatActivity() {
             }
 
             // 4. Automatic Local-Change Sync whenever vault mutations bump revision
-            LaunchedEffect(uiState.vaultDocument.revision) {
+            LaunchedEffect(uiState.vaultDocument.revision, uiState.driveAutoSyncOnSave) {
                 val rev = uiState.vaultDocument.revision
-                if (!uiState.isVaultLocked && rev > lastObservedAutoSyncRev) {
+                if (!uiState.isVaultLocked && uiState.driveAutoSyncOnSave && rev > lastObservedAutoSyncRev) {
                     lastObservedAutoSyncRev = rev
                     if (safDriveBridge.getLinkedVaultInfo() != null) {
                         scheduleDebouncedSafDriveSync(delayMs = 900L)
@@ -549,14 +549,18 @@ class MainActivity : AppCompatActivity() {
                         launchDetachedTabActivity(tab, targetDisplayId)
                     },
                     onRequestExportVault = { format ->
-                        runCatching {
-                            workspaceViewModel.buildVaultExportPayload(format)
-                        }.onSuccess { (suggestedFileName, payloadBytes) ->
-                            pendingExportBytes = payloadBytes
-                            pendingExportFileName = suggestedFileName
-                            fileExportLauncher.launch(suggestedFileName)
-                        }.onFailure { err ->
-                            workspaceViewModel.reportException(err, "Vault Export Failed")
+                        lifecycleScope.launch {
+                            runCatching {
+                                withContext(Dispatchers.IO) {
+                                    workspaceViewModel.buildVaultExportPayload(format)
+                                }
+                            }.onSuccess { (suggestedFileName, payloadBytes) ->
+                                pendingExportBytes = payloadBytes
+                                pendingExportFileName = suggestedFileName
+                                fileExportLauncher.launch(suggestedFileName)
+                            }.onFailure { err ->
+                                workspaceViewModel.reportException(err, "Vault Export Failed")
+                            }
                         }
                     },
                     initialOAuthWebClientId = effectiveInitialClientId,

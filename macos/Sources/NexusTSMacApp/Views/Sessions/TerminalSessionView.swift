@@ -58,7 +58,7 @@ private struct TerminalLiveWorkspaceBody: View {
                             LazyVStack(alignment: .leading, spacing: 0) {
                                 ForEach(Array(controller.snapshot.scrollbackLines.enumerated()), id: \.offset) { idx, line in
                                     Text(line.isEmpty ? " " : line)
-                                        .font(.system(size: effectiveFontSize, weight: .regular, design: .monospaced))
+                                        .font(TerminalRowLineView.resolveFont(name: store.terminalFontName, size: effectiveFontSize))
                                         .foregroundStyle(Color(white: 0.72))
                                         .textSelection(.enabled)
                                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -79,6 +79,7 @@ private struct TerminalLiveWorkspaceBody: View {
                                         rowIndex: rowIdx,
                                         cursorCol: controller.snapshot.cursorCol,
                                         isCursorRow: controller.snapshot.cursorVisible && controller.snapshot.cursorRow == rowIdx,
+                                        fontName: store.terminalFontName,
                                         fontSize: effectiveFontSize,
                                         lineHeight: lineH
                                     )
@@ -298,8 +299,17 @@ private struct TerminalRowLineView: View {
     let rowIndex: Int
     let cursorCol: Int
     let isCursorRow: Bool
+    let fontName: String
     let fontSize: Double
     let lineHeight: Double
+
+    static func resolveFont(name: String, size: Double, bold: Bool = false) -> Font {
+        if name == "SF Mono" || name.isEmpty {
+            return .system(size: size, weight: bold ? .bold : .regular, design: .monospaced)
+        }
+        let base = Font.custom(name, size: size)
+        return bold ? base.weight(.bold) : base
+    }
 
     private static let defaultFgRgb: UInt64 = 0xE2E6F3
     private static let defaultBgRgb: UInt64 = 0x090D16
@@ -352,7 +362,7 @@ private struct TerminalRowLineView: View {
                 run.backgroundColor = Self.swiftUiColor(rgb: effectiveBg)
             }
             if bold || italic {
-                var font = Font.system(size: fontSize, weight: bold ? .bold : .regular, design: .monospaced)
+                var font = Self.resolveFont(name: fontName, size: fontSize, bold: bold)
                 if italic { font = font.italic() }
                 run.font = font
             }
@@ -368,7 +378,7 @@ private struct TerminalRowLineView: View {
     var body: some View {
         ZStack(alignment: .leading) {
             Text(buildStyledLine())
-                .font(.system(size: fontSize, weight: .regular, design: .monospaced))
+                .font(Self.resolveFont(name: fontName, size: fontSize))
                 .frame(maxWidth: .infinity, alignment: .leading)
 
             if isCursorRow {

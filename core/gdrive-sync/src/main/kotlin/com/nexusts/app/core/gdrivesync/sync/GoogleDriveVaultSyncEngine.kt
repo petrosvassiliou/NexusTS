@@ -424,9 +424,18 @@ class GoogleDriveVaultSyncEngine(
                     val remoteBytes = downloadDriveBytes(drive, driveFileId)
                     createAutomatedLocalSnapshot(documentId, existingRecord.localRevision, localBytes, "conflict-local-backup")
 
-                    if (unlockedPassphraseOrNull != null) {
-                        val localDoc = serializer.unsealDocument(localBytes, unlockedPassphraseOrNull.copyOf())
-                        val remoteDoc = serializer.unsealDocument(remoteBytes, unlockedPassphraseOrNull.copyOf())
+                    val unlockedPair = if (unlockedPassphraseOrNull != null) {
+                        runCatching {
+                            val localDoc = serializer.unsealDocument(localBytes, unlockedPassphraseOrNull.copyOf())
+                            val remoteDoc = serializer.unsealDocument(remoteBytes, unlockedPassphraseOrNull.copyOf())
+                            localDoc to remoteDoc
+                        }.getOrNull()
+                    } else {
+                        null
+                    }
+
+                    if (unlockedPair != null && unlockedPassphraseOrNull != null) {
+                        val (localDoc, remoteDoc) = unlockedPair
                         val mergeOutcome = VaultDeltaConflictResolver.mergeDocuments(localDoc, remoteDoc, localDeviceId)
                         val mergedBytes = serializer.sealDocument(mergeOutcome.mergedDocument, unlockedPassphraseOrNull.copyOf())
                         localFile.writeBytes(mergedBytes)
@@ -457,8 +466,8 @@ class GoogleDriveVaultSyncEngine(
                             resolvedConflicts = mergeOutcome.detectedConflicts
                         )
                     } else {
-                        // Vault is locked in background worker; keep remote as latest synced, snapshot local safely,
-                        // and update vaultDao so we don't repeatedly re-trigger conflict sync on next pass.
+                        // Vault is locked in background worker (or remote passphrase rotated); keep remote as latest synced,
+                        // snapshot local safely, and update vaultDao so we don't repeatedly re-trigger conflict sync.
                         localFile.writeBytes(remoteBytes)
                         val pulledRev = serializer.inspectUnencryptedRevisionHeader(remoteBytes) ?: existingRecord.localRevision
                         vaultDao.upsertVault(

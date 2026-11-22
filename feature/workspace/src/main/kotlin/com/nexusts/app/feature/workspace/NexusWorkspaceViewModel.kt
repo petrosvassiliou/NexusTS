@@ -2475,11 +2475,19 @@ class NexusWorkspaceViewModel @Inject constructor(
                 _uiState.update { it.copy(isBottomDrawerVisible = !it.isBottomDrawerVisible) }
             NexusShortcutAction.SPLIT_PANE_VERTICAL -> {
                 _uiState.update { it.copy(activeRailId = "connections", isFullScreenSessionMode = false) }
-                tilingController.splitPane(orientation = SplitOrientation.HORIZONTAL)
+                if (tilingController.allActiveTabs().isEmpty()) {
+                    _uiState.update { it.copy(isQuickConnectVisible = true) }
+                } else {
+                    tilingController.splitPane(orientation = SplitOrientation.HORIZONTAL)
+                }
             }
             NexusShortcutAction.SPLIT_PANE_HORIZONTAL -> {
                 _uiState.update { it.copy(activeRailId = "connections", isFullScreenSessionMode = false) }
-                tilingController.splitPane(orientation = SplitOrientation.VERTICAL)
+                if (tilingController.allActiveTabs().isEmpty()) {
+                    _uiState.update { it.copy(isQuickConnectVisible = true) }
+                } else {
+                    tilingController.splitPane(orientation = SplitOrientation.VERTICAL)
+                }
             }
             NexusShortcutAction.FOCUS_NEXT_PANE ->
                 tilingController.focusNextPane()

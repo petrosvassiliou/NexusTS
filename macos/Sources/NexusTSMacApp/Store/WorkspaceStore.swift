@@ -1067,15 +1067,34 @@ public final class WorkspaceStore: ObservableObject {
 
     // Broadcast, Preferences & Sync
     @Published public var broadcastInputEnabled: Bool = false
-    @Published public var remoteKeyCaptureEnabled: Bool = false
+    @Published public var remoteKeyCaptureEnabled: Bool = (UserDefaults.standard.object(forKey: "nexusts.macos.remoteKeyCapture") as? Bool) ?? false {
+        didSet {
+            UserDefaults.standard.set(remoteKeyCaptureEnabled, forKey: "nexusts.macos.remoteKeyCapture")
+        }
+    }
     @Published public var appLanguage: NexusAppLanguage = UserDefaults.standard.string(forKey: "nexusts.macos.appLanguage").flatMap(NexusAppLanguage.init(rawValue:)) ?? .system {
         didSet {
             UserDefaults.standard.set(appLanguage.rawValue, forKey: "nexusts.macos.appLanguage")
         }
     }
-    @Published public var terminalFontName: String = "SF Mono"
-    @Published public var terminalFontSize: Double = 13.0
-    @Published public var spotlightIndexingEnabled: Bool = true
+    @Published public var terminalFontName: String = UserDefaults.standard.string(forKey: "nexusts.macos.terminalFontName") ?? "SF Mono" {
+        didSet {
+            UserDefaults.standard.set(terminalFontName, forKey: "nexusts.macos.terminalFontName")
+        }
+    }
+    @Published public var terminalFontSize: Double = (UserDefaults.standard.object(forKey: "nexusts.macos.terminalFontSize") as? Double) ?? 13.0 {
+        didSet {
+            UserDefaults.standard.set(terminalFontSize, forKey: "nexusts.macos.terminalFontSize")
+        }
+    }
+    @Published public var spotlightIndexingEnabled: Bool = (UserDefaults.standard.object(forKey: "nexusts.macos.spotlightIndexing") as? Bool) ?? true {
+        didSet {
+            UserDefaults.standard.set(spotlightIndexingEnabled, forKey: "nexusts.macos.spotlightIndexing")
+            if !isVaultLocked {
+                MacSpotlightVaultIndexer.reindexConnections(in: document, enabled: spotlightIndexingEnabled)
+            }
+        }
+    }
     @Published public var autoSyncOnSave: Bool = true
     @Published public var driveStorageZone: DriveStorageZone = .SHARED_TEAM_DRIVE
     @Published public var syncStatusSummary: String = "Not connected"
@@ -1388,12 +1407,17 @@ public final class WorkspaceStore: ObservableObject {
     }
 
     public func lockVault() {
-        // Close live interactive sessions for zero-knowledge protection
+        // Close live interactive sessions and scrub plaintext secrets from RAM while preserving documentId/name for Touch ID
         shutdownAllLiveRuntimes()
         paneTree = .initialEmpty()
         detachedWindowTabs.removeAll()
         isFullScreenSessionMode = false
         NativeSshCryptoBridge.clearAgentKeys()
+        var scrubbed = NxtsVaultDocument.sampleStarterVault()
+        scrubbed.documentId = document.documentId
+        scrubbed.name = document.name
+        document = scrubbed
+        activePassphrase = ""
         didDismissAutoTouchIdWhileActive = false
         isVaultLocked = true
         unlockErrorText = nil
@@ -1407,7 +1431,7 @@ public final class WorkspaceStore: ObservableObject {
            let data = try? Data(contentsOf: url),
            NxtsVaultSerializer.hasNxtsMagic(data) {
             let tryPassphrases = trimmed.isEmpty
-                ? [activePassphrase, NxtsVaultSerializer.defaultTransparentPassphrase]
+                ? [activePassphrase, NxtsVaultSerializer.defaultTransparentPassphrase].filter { !$0.isEmpty }
                 : [trimmed]
             for pass in tryPassphrases {
                 if let opened = try? NxtsVaultSerializer.open(sealedData: data, passphrase: pass) {
@@ -1531,6 +1555,8 @@ public final class WorkspaceStore: ObservableObject {
 
     public func resetVaultDatabase() {
         shutdownAllLiveRuntimes()
+        unlinkCloudVault()
+        MacKeychainAndBiometrics.shared.saveToken("", key: "gdrive_oauth_bearer")
         paneTree = .initialEmpty()
         detachedWindowTabs.removeAll()
         isFullScreenSessionMode = false
@@ -1544,6 +1570,7 @@ public final class WorkspaceStore: ObservableObject {
         self.activePassphrase = NxtsVaultSerializer.defaultTransparentPassphrase
         self.hasCustomPassphrase = false
         self.isVaultLocked = false
+        self.isStarterVaultUninitialized = true
         self.unlockErrorText = nil
         self.selectedConnectionId = nil
         self.selectedFolderId = nil
@@ -1553,7 +1580,7 @@ public final class WorkspaceStore: ObservableObject {
         self.isPresentingResetDatabaseSheet = false
         self.document = NxtsVaultDocument.sampleStarterVault()
         MacSpotlightVaultIndexer.reindexConnections(in: document, enabled: false)
-        persistLocalVault()
+        persistLocalVault(triggerCloudSync: false)
         statusToastMessage = "NexusTS database has been reset to a clean empty vault."
         appendAudit("Reset", "Reset local NexusTS database to a clean empty vault.")
     }
@@ -1587,7 +1614,9 @@ public final class WorkspaceStore: ObservableObject {
 
     public var selectedConnection: VaultConnection? {
         guard let id = selectedConnectionId else {
-            if let focused = focusedPaneId,
+            if selectedFolderId == nil,
+               selectedCredentialId == nil,
+               let focused = focusedPaneId,
                case .leaf(_, let tabs, let activeId) = findLeafNode(id: focused),
                let activeTab = tabs.first(where: { $0.id == activeId }) ?? tabs.first,
                !activeTab.isLocalShell {
@@ -1628,7 +1657,9 @@ public final class WorkspaceStore: ObservableObject {
         switch section {
         case .sessions:
             activeSection = .sessions
-        case .settings, .overview:
+        case .overview:
+            activeSection = .overview
+        case .settings:
             activeSection = .settings
             activeSettingsTab = .general
         case .cloudSync:
@@ -1670,7 +1701,12 @@ public final class WorkspaceStore: ObservableObject {
         if isFullScreenSessionMode {
             isFullScreenSessionMode = false
         }
-        isInspectorPresented.toggle()
+        if activeSection != .sessions {
+            activeSection = .sessions
+            isInspectorPresented = true
+        } else {
+            isInspectorPresented.toggle()
+        }
     }
 
     public func toggleFullScreenSessionMode() {
@@ -1777,6 +1813,13 @@ public final class WorkspaceStore: ObservableObject {
         adHocPassword: String? = nil,
         adHocDomain: String? = nil
     ) {
+        let resolved = PropertyInheritanceResolver.resolve(connection: connection, in: document)
+        if resolved.promptCredentialAtConnect && adHocUsername == nil && adHocPassword == nil {
+            selectedConnectionId = connection.id
+            connectWithOptionsTarget = connection
+            return
+        }
+
         isFullScreenSessionMode = false
         activeSection = .sessions
         selectedConnectionId = connection.id
@@ -1785,7 +1828,6 @@ public final class WorkspaceStore: ObservableObject {
         recents.insert(connection.id, at: 0)
         document.recentConnectionIds = Array(recents.prefix(12))
 
-        let resolved = PropertyInheritanceResolver.resolve(connection: connection, in: document)
         let tab = WorkspaceSessionTab(
             connection: connection,
             broadcastEnabled: broadcastInputEnabled,
@@ -2284,7 +2326,7 @@ public final class WorkspaceStore: ObservableObject {
     }
 
     public func runKeySequenceTask(_ macro: KeySequenceTask) {
-        guard let tab = paneTree.allTabs.first else { return }
+        guard let tab = focusedOrFirstActiveTab ?? detachedWindowTabs.values.first else { return }
         let profile = PropertyInheritanceResolver.resolve(connection: tab.connection, in: document)
         let steps = AutomationTaskEngine.compileKeySequence(macroSequence: macro.macroSequence, profile: profile)
         guard let ctrl = terminalControllers[tab.id] else { return }
@@ -2501,27 +2543,51 @@ public final class WorkspaceStore: ObservableObject {
 
     public func duplicateFolder(_ folder: VaultFolder) {
         guard folder.id != VaultHierarchySanitizer.systemCredentialsFolderId else { return }
+        let subtreeIds = collectSubtreeFolderIds(rootFolderId: folder.id)
         commitMutation("Duplicated folder \(folder.name)") { doc in
             let now = VaultClock.nowMs()
-            let newFolderId = UUID().uuidString.lowercased()
+            var folderIdMap: [String: String] = [:]
+            for id in subtreeIds {
+                folderIdMap[id] = UUID().uuidString.lowercased()
+            }
             let siblingMaxOrder = doc.folders
                 .filter { $0.parentFolderId == folder.parentFolderId }
                 .map(\.sortOrder)
                 .max() ?? -1
-            var folderCopy = folder
-            folderCopy.id = newFolderId
-            folderCopy.name = "\(folder.name) Copy"
-            folderCopy.sortOrder = siblingMaxOrder + 1
-            folderCopy.updatedAtEpochMs = now
-            doc.folders.append(folderCopy)
 
-            let directConns = doc.connections.filter {
-                $0.parentFolderId == folder.id && !doc.tombstonedObjectIds.contains($0.id)
+            func cloneSubtree(oldParentId: String?, sourceFolders: [VaultFolder]) {
+                for src in sourceFolders {
+                    guard let mappedId = folderIdMap[src.id] else { continue }
+                    var copy = src
+                    copy.id = mappedId
+                    if src.id == folder.id {
+                        copy.name = "\(folder.name) Copy"
+                        copy.parentFolderId = folder.parentFolderId
+                        copy.sortOrder = siblingMaxOrder + 1
+                    } else if let oldParentId, let mappedParent = folderIdMap[oldParentId] {
+                        copy.parentFolderId = mappedParent
+                    }
+                    copy.updatedAtEpochMs = now
+                    doc.folders.append(copy)
+
+                    let childFolders = doc.folders.filter {
+                        $0.parentFolderId == src.id && subtreeIds.contains($0.id) && !doc.tombstonedObjectIds.contains($0.id)
+                    }
+                    cloneSubtree(oldParentId: src.id, sourceFolders: childFolders)
+                }
             }
-            for conn in directConns {
+            cloneSubtree(oldParentId: folder.parentFolderId, sourceFolders: [folder])
+
+            let subtreeConns = doc.connections.filter {
+                guard let pid = $0.parentFolderId else { return false }
+                return subtreeIds.contains(pid) && !doc.tombstonedObjectIds.contains($0.id)
+            }
+            for conn in subtreeConns {
                 var connCopy = conn
                 connCopy.id = UUID().uuidString.lowercased()
-                connCopy.parentFolderId = newFolderId
+                if let pid = conn.parentFolderId, let mappedPid = folderIdMap[pid] {
+                    connCopy.parentFolderId = mappedPid
+                }
                 connCopy.updatedAtEpochMs = now
                 doc.connections.append(connCopy)
             }
@@ -2850,16 +2916,35 @@ public final class WorkspaceStore: ObservableObject {
         }
     }
 
+    public func exportVaultData(format: VaultExportFormat) throws -> Data {
+        let pass = activePassphrase.isEmpty ? NxtsVaultSerializer.defaultTransparentPassphrase : activePassphrase
+        return try VaultDocumentExporter.export(document: document, format: format, passphrase: pass)
+    }
+
     @discardableResult
     public func importExternalVaultFile(url: URL, passphrase: String = "") throws -> ImportedVaultSummary {
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         let data = try Data(contentsOf: url)
-        let summary = try EnterpriseVaultFormatImporter.importData(
-            data,
-            fileName: url.lastPathComponent,
-            passphrase: passphrase.isEmpty ? activePassphrase : passphrase
-        )
+        let primaryCandidate = passphrase.isEmpty ? activePassphrase : passphrase
+        let summary: ImportedVaultSummary
+        do {
+            summary = try EnterpriseVaultFormatImporter.importData(
+                data,
+                fileName: url.lastPathComponent,
+                passphrase: primaryCandidate
+            )
+        } catch {
+            if passphrase.isEmpty && primaryCandidate != NxtsVaultSerializer.defaultTransparentPassphrase {
+                summary = try EnterpriseVaultFormatImporter.importData(
+                    data,
+                    fileName: url.lastPathComponent,
+                    passphrase: NxtsVaultSerializer.defaultTransparentPassphrase
+                )
+            } else {
+                throw error
+            }
+        }
         if summary.isRoyalTsFormat {
             let suggestedName = url.deletingPathExtension().lastPathComponent
             self.pendingRoyalImport = PendingRoyalTsImport(
@@ -2956,8 +3041,13 @@ public final class WorkspaceStore: ObservableObject {
                     if self.watchedFileSource == nil {
                         self.armWatchedFileSourceIfPresent(for: url)
                     }
-                    if self.cloudBookmarkBridge.hasExternalChangeOnDisk(explicitURL: url) {
-                        self.scheduleDebouncedCloudSync(delayNanoseconds: 900_000_000)
+                    let bridge = self.cloudBookmarkBridge
+                    Task.detached(priority: .utility) { [weak self] in
+                        guard bridge.hasExternalChangeOnDisk(explicitURL: url) else { return }
+                        await MainActor.run {
+                            guard let self, !self.isVaultLocked else { return }
+                            self.scheduleDebouncedCloudSync(delayNanoseconds: 900_000_000)
+                        }
                     }
                 }
             }
@@ -2990,18 +3080,28 @@ public final class WorkspaceStore: ObservableObject {
             let flags = fileSrc?.data ?? []
             MainActor.assumeIsolated {
                 guard let self, !self.isVaultLocked else { return }
+                let bridge = self.cloudBookmarkBridge
                 if flags.contains(.delete) || flags.contains(.rename) {
                     // Cloud providers (Google Drive / iCloud) write via atomic temp-file rename; re-arm on the new inode
                     Task { @MainActor [weak self] in
                         try? await Task.sleep(nanoseconds: 500_000_000)
                         guard let self, !self.isVaultLocked else { return }
                         self.armWatchedFileSourceIfPresent(for: url)
-                        if self.cloudBookmarkBridge.hasExternalChangeOnDisk(explicitURL: url) {
+                        let changed = await Task.detached(priority: .utility) {
+                            bridge.hasExternalChangeOnDisk(explicitURL: url)
+                        }.value
+                        if changed {
                             await self.syncCloudNow(reportErrors: false)
                         }
                     }
-                } else if self.cloudBookmarkBridge.hasExternalChangeOnDisk(explicitURL: url) {
-                    self.scheduleDebouncedCloudSync(delayNanoseconds: 850_000_000)
+                } else {
+                    Task.detached(priority: .utility) { [weak self] in
+                        guard bridge.hasExternalChangeOnDisk(explicitURL: url) else { return }
+                        await MainActor.run {
+                            guard let self, !self.isVaultLocked else { return }
+                            self.scheduleDebouncedCloudSync(delayNanoseconds: 850_000_000)
+                        }
+                    }
                 }
             }
         }
@@ -3039,9 +3139,14 @@ public final class WorkspaceStore: ObservableObject {
                 try? await Task.sleep(nanoseconds: 12_000_000_000)
                 guard !Task.isCancelled, let self else { break }
                 guard !self.isVaultLocked, !self.isSyncingCloud else { continue }
-                if let url = self.linkedCloudFileURL ?? self.cloudBookmarkBridge.resolveLinkedURL(),
-                   self.cloudBookmarkBridge.hasExternalChangeOnDisk(explicitURL: url) {
-                    await self.syncCloudNow(reportErrors: false)
+                if let url = self.linkedCloudFileURL ?? self.cloudBookmarkBridge.resolveLinkedURL() {
+                    let bridge = self.cloudBookmarkBridge
+                    let changed = await Task.detached(priority: .utility) {
+                        bridge.hasExternalChangeOnDisk(explicitURL: url)
+                    }.value
+                    if changed && !self.isVaultLocked {
+                        await self.syncCloudNow(reportErrors: false)
+                    }
                 }
             }
         }

@@ -278,9 +278,12 @@ class NexusShortcutEngine(
             lastHandledKeyCode = native.keyCode
         }
 
-        val handledInline = onAction?.invoke(matchedAction) ?: false
+        val handledInline = onAction?.invoke(matchedAction)
+        if (handledInline == false) {
+            return false
+        }
         _triggeredActions.tryEmit(matchedAction)
-        return handledInline || true
+        return true
     }
 
     companion object {
@@ -359,6 +362,10 @@ class NexusShortcutEngine(
             ShortcutBinding(
                 action = NexusShortcutAction.TOGGLE_BOTTOM_LOG_DRAWER,
                 chord = KeyChord(AndroidKeyEvent.KEYCODE_J, primaryOrMeta = true)
+            ),
+            ShortcutBinding(
+                action = NexusShortcutAction.TOGGLE_BROADCAST_INPUT,
+                chord = KeyChord(AndroidKeyEvent.KEYCODE_B, primaryOrMeta = true, shift = true)
             ),
             ShortcutBinding(
                 action = NexusShortcutAction.TOGGLE_BROADCAST_INPUT,

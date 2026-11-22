@@ -1,0 +1,1 @@
+• NexusTS 0.9.8: Pre-1.0 Quality Assurance (QS) & Performance Release — hardened Zero-Knowledge Lock Shield, full 6-locale parity, O(F+C) 500-connection vault rendering, coalesced Argon2id saves, and shortcut/context-menu polish across macOS, ChromeOS, Googlebooks, and Android.

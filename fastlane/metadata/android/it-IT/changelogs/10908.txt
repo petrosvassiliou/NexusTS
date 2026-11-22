@@ -1,0 +1,1 @@
+• NexusTS 0.9.8: Release Pre-1.0 di Quality Assurance (QS) e prestazioni — blocco Zero-Knowledge rafforzato, parità completa in 6 lingue, albero laterale O(F+C) per oltre 500 connessioni e perfezionamento delle scorciatoie su macOS, ChromeOS, Googlebook e Android.

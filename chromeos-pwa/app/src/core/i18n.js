@@ -567,6 +567,84 @@ for (const [code, extra] of Object.entries(GOOGLEBOOK_UI_STRINGS)) {
   Object.assign(STRINGS[code], extra);
 }
 
+const OVERVIEW_DASHBOARD_STRINGS = {
+  en: {
+    ovFoldersCount: '{count} folders',
+    ovLiveSessions: 'Live Sessions',
+    ovDetachedWindows: '{count} detached windows',
+    ovCredentialsTotp: 'Credentials & TOTP',
+    ovSshAndPasswords: 'SSH Keys & Passwords',
+    ovCloudSync: 'Cloud Sync',
+    ovLinked: 'Linked',
+    ovLocal: 'Local',
+    ovLocalEncryptedVault: 'Local encrypted vault',
+    toggleFavorite: 'Toggle Favorite'
+  },
+  de: {
+    ovFoldersCount: '{count} Ordner',
+    ovLiveSessions: 'Aktive Sitzungen',
+    ovDetachedWindows: '{count} gelöste Fenster',
+    ovCredentialsTotp: 'Anmeldedaten & TOTP',
+    ovSshAndPasswords: 'SSH-Schlüssel & Passwörter',
+    ovCloudSync: 'Cloud-Synchronisierung',
+    ovLinked: 'Verknüpft',
+    ovLocal: 'Lokal',
+    ovLocalEncryptedVault: 'Lokaler verschlüsselter Tresor',
+    toggleFavorite: 'Favorit umschalten'
+  },
+  fr: {
+    ovFoldersCount: '{count} dossiers',
+    ovLiveSessions: 'Sessions actives',
+    ovDetachedWindows: '{count} fenêtres détachées',
+    ovCredentialsTotp: 'Identifiants & TOTP',
+    ovSshAndPasswords: 'Clés SSH & mots de passe',
+    ovCloudSync: 'Synchro Cloud',
+    ovLinked: 'Lié',
+    ovLocal: 'Local',
+    ovLocalEncryptedVault: 'Coffre chiffré local',
+    toggleFavorite: 'Basculer en favori'
+  },
+  it: {
+    ovFoldersCount: '{count} cartelle',
+    ovLiveSessions: 'Sessioni attive',
+    ovDetachedWindows: '{count} finestre staccate',
+    ovCredentialsTotp: 'Credenziali & TOTP',
+    ovSshAndPasswords: 'Chiavi SSH & password',
+    ovCloudSync: 'Sincronizzazione Cloud',
+    ovLinked: 'Collegata',
+    ovLocal: 'Locale',
+    ovLocalEncryptedVault: 'Cassaforte locale cifrata',
+    toggleFavorite: 'Attiva/disattiva preferito'
+  },
+  es: {
+    ovFoldersCount: '{count} carpetas',
+    ovLiveSessions: 'Sesiones activas',
+    ovDetachedWindows: '{count} ventanas separadas',
+    ovCredentialsTotp: 'Credenciales y TOTP',
+    ovSshAndPasswords: 'Claves SSH y contraseñas',
+    ovCloudSync: 'Sincronización en la nube',
+    ovLinked: 'Vinculada',
+    ovLocal: 'Local',
+    ovLocalEncryptedVault: 'Bóveda cifrada local',
+    toggleFavorite: 'Alternar favorito'
+  },
+  el: {
+    ovFoldersCount: '{count} φάκελοι',
+    ovLiveSessions: 'Ενεργές συνεδρίες',
+    ovDetachedWindows: '{count} αποσπασμένα παράθυρα',
+    ovCredentialsTotp: 'Διαπιστευτήρια & TOTP',
+    ovSshAndPasswords: 'Κλειδιά SSH & κωδικοί',
+    ovCloudSync: 'Συγχρονισμός Cloud',
+    ovLinked: 'Συνδεδεμένο',
+    ovLocal: 'Τοπικό',
+    ovLocalEncryptedVault: 'Τοπικό κρυπτογραφημένο θησαυροφυλάκιο',
+    toggleFavorite: 'Εναλλαγή αγαπημένου'
+  }
+};
+for (const [code, extra] of Object.entries(OVERVIEW_DASHBOARD_STRINGS)) {
+  Object.assign(STRINGS[code], extra);
+}
+
 export function resolveStrings(localeCode = 'de') {
   const short = String(localeCode || 'de').toLowerCase().slice(0, 2);
   return STRINGS[short] || STRINGS.en;

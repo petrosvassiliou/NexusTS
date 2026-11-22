@@ -641,6 +641,11 @@ fun NexusWorkspaceScreen(
                         onRequestImportFilePicker = onRequestImportFilePicker,
                         onRequestExportVault = onRequestExportVault,
                         onRequestGoogleDriveSync = onRequestGoogleDriveSync,
+                        initialOAuthWebClientId = initialOAuthWebClientId,
+                        initialSharedDriveFolderId = initialSharedDriveFolderId,
+                        onSaveOAuthConfig = onSaveOAuthConfig,
+                        onAuthorizeAndSyncOAuthDrive = onAuthorizeAndSyncOAuthDrive,
+                        onToggleAutoSyncOnSave = onToggleAutoSyncOnSave,
                         onCreateLiveSafDriveVault = onCreateLiveSafDriveVault,
                         onLinkExistingSafDriveVault = onLinkExistingSafDriveVault,
                         onUnlinkSafDriveVault = onUnlinkSafDriveVault,
@@ -757,9 +762,11 @@ fun NexusWorkspaceScreen(
                                 detachedWindowCount = (activeSessionCount - activeDockedTabs.size).coerceAtLeast(0),
                                 isDriveLinked = isDriveLinked,
                                 syncStatusSummary = if (isDriveLinked) {
-                                    "Up to date with ${uiState.driveLinkedSafLabel.ifBlank { uiState.driveSignedInEmail }}"
+                                    uiState.driveSyncStatusBanner.ifBlank {
+                                        "Up to date with ${uiState.driveLinkedSafLabel.ifBlank { uiState.driveSignedInEmail }}"
+                                    }
                                 } else {
-                                    "Local encrypted vault"
+                                    strings.ovLocalEncryptedVault
                                 },
                                 isSidebarVisible = uiState.isSidebarVisible,
                                 isInspectorVisible = uiState.isInspectorVisible,
@@ -868,7 +875,10 @@ fun NexusWorkspaceScreen(
                     strings = strings,
                     onDismiss = viewModel::dismissFolderDialog,
                     onSaveFolderAndCredential = viewModel::saveFolderAndCredentialToVault,
-                    onDeleteFolder = viewModel::deleteFolder,
+                    onDeleteFolder = { folderId ->
+                        viewModel.dismissFolderDialog()
+                        viewModel.requestDeleteFolderConfirmation(folderId)
+                    },
                     defaultParentFolderId = uiState.newFolderDefaultParentId
                 )
                 CredentialEditorDialog(
@@ -2490,7 +2500,7 @@ private fun DesktopTopWindowChrome(
                         )
                         NexusMenuDivider()
                         NexusSpacedDropdownMenuItem(
-                            text = { Text("Local Terminal") },
+                            text = { Text(strings.localTerminalLabel) },
                             leadingIcon = { Icon(Icons.Outlined.Terminal, contentDescription = null) },
                             onClick = {
                                 createMenuExpanded = false
@@ -2645,7 +2655,7 @@ private fun DesktopTopWindowChrome(
                 Box {
                     ExpressiveMorphingIconButton(
                         icon = Icons.Outlined.MoreVert,
-                        contentDescription = "Workspace Tools",
+                        contentDescription = strings.navSettings,
                         isActive = toolsMenuExpanded || isBottomDrawerVisible || remoteKeyCaptureEnabled,
                         onClick = { toolsMenuExpanded = true }
                     )
@@ -2685,7 +2695,7 @@ private fun DesktopTopWindowChrome(
                         )
                         if (hasActiveSessions || remoteKeyCaptureEnabled) {
                             NexusSpacedDropdownMenuItem(
-                                text = { Text("Remote Key Capture") },
+                                text = { Text(strings.remoteKeyCaptureLabel) },
                                 leadingIcon = { Icon(Icons.Outlined.Keyboard, contentDescription = null) },
                                 trailingIcon = {
                                     if (remoteKeyCaptureEnabled) {
@@ -3551,6 +3561,12 @@ private fun VaultHierarchySidebarTree(
                 color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
             )
 
+            val smartFolderMatchesById = remember(activeSmartFolders, doc, uiState.filterQuery) {
+                activeSmartFolders.associate { smart ->
+                    smart.id to smartFolderConnectionsProvider(smart).filter(::matchesFilter)
+                }
+            }
+
             LazyColumn(
                 modifier = Modifier
                     .weight(1f)
@@ -3959,7 +3975,7 @@ private fun VaultHierarchySidebarTree(
                             }
                         } else {
                             activeSmartFolders.forEach { smart ->
-                                val matchedConnections = smartFolderConnectionsProvider(smart).filter(::matchesFilter)
+                                val matchedConnections = smartFolderMatchesById[smart.id].orEmpty()
                                 val isExpanded = uiState.selectedSmartFolderId == smart.id
                                 item(key = "smart-${smart.id}") {
                                     SmartFolderTreeRow(
@@ -8347,6 +8363,11 @@ private fun UnifiedWorkspaceSettingsScreen(
     onRequestImportFilePicker: () -> Unit,
     onRequestExportVault: (VaultExportFormat) -> Unit,
     onRequestGoogleDriveSync: () -> Unit,
+    initialOAuthWebClientId: String = "",
+    initialSharedDriveFolderId: String = "17C98pGqQUAoQwQ-OSLUHPj4_dtb4_wtS",
+    onSaveOAuthConfig: (String, String) -> Unit = { _, _ -> },
+    onAuthorizeAndSyncOAuthDrive: () -> Unit = {},
+    onToggleAutoSyncOnSave: (Boolean) -> Unit = {},
     onCreateLiveSafDriveVault: () -> Unit,
     onLinkExistingSafDriveVault: () -> Unit,
     onUnlinkSafDriveVault: () -> Unit,
@@ -8459,17 +8480,22 @@ private fun UnifiedWorkspaceSettingsScreen(
                     strings = strings,
                     onSelectSyncZone = viewModel::setDriveSyncZone,
                     onTriggerDeltaSync = onRequestGoogleDriveSync,
+                    initialOAuthWebClientId = initialOAuthWebClientId,
+                    initialSharedFolderId = initialSharedDriveFolderId,
+                    onSaveOAuthConfig = onSaveOAuthConfig,
                     driveSignedInEmail = uiState.driveSignedInEmail,
                     driveLinkedSafLabel = uiState.driveLinkedSafLabel,
                     driveSyncStatusBanner = uiState.driveSyncStatusBanner,
                     driveIsSyncing = uiState.driveIsSyncing,
                     driveAutoSyncOnSave = uiState.driveAutoSyncOnSave,
+                    onToggleAutoSyncOnSave = onToggleAutoSyncOnSave,
                     rememberVaultPassphrase = uiState.driveRememberVaultPassphrase,
                     onSaveVaultSyncPassphrase = onSaveVaultSyncPassphrase,
                     onClearVaultSyncPassphrase = onClearVaultSyncPassphrase,
                     onCreateLiveSafDriveVault = onCreateLiveSafDriveVault,
                     onLinkExistingSafDriveVault = onLinkExistingSafDriveVault,
                     onUnlinkSafDriveVault = onUnlinkSafDriveVault,
+                    onAuthorizeAndSyncOAuthDrive = onAuthorizeAndSyncOAuthDrive,
                     onSignOutOAuthDrive = onSignOutOAuthDrive
                 )
 
@@ -8589,7 +8615,7 @@ private fun UnifiedWorkspaceSettingsScreen(
                                     modifier = Modifier.horizontalScroll(rememberScrollState()),
                                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
-                                    listOf(0 to "Off", 5 to "5 min", 15 to "15 min", 30 to "30 min").forEach { (mins, title) ->
+                                    listOf(0 to "Off", 1 to "1 min", 5 to "5 min", 15 to "15 min", 30 to "30 min").forEach { (mins, title) ->
                                         NexusChoiceChip(
                                             selected = uiState.idleAutoLockMinutes == mins,
                                             onClick = { onChangeIdleAutoLockMinutes(mins) },

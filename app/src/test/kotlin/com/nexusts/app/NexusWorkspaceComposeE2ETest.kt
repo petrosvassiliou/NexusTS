@@ -1518,10 +1518,10 @@ class NexusWorkspaceComposeE2ETest {
 
     @Test
     fun compactFlushLeftSidebarFolderContextMenusStartAllRdpRenameDeleteAndV117UpgradeParity() {
-        assertEquals(10907, BuildConfig.VERSION_CODE)
+        assertEquals(10908, BuildConfig.VERSION_CODE)
         assertTrue(
-            "Expected BuildConfig.VERSION_NAME (${BuildConfig.VERSION_NAME}) to start with 0.9.7",
-            BuildConfig.VERSION_NAME.startsWith("0.9.7")
+            "Expected BuildConfig.VERSION_NAME (${BuildConfig.VERSION_NAME}) to start with 0.9.8",
+            BuildConfig.VERSION_NAME.startsWith("0.9.8")
         )
         assertEquals("Manage", WorkspaceLocalizedStrings.defaultEnglish().navStudiosMenu)
 
@@ -2538,6 +2538,64 @@ class NexusWorkspaceComposeE2ETest {
         }
         bridge.unlinkPersistentVaultUri()
     }
+
+    @Test
+    fun pre10QualityAssuranceShortcutsEmptySplitGuardAnd6LocaleOverviewParity() {
+        val vm = buildRealViewModel()
+
+        // 1. Splitting panes when 0 session tabs are open opens Quick Connect instead of cloning empty Overview panes
+        assertTrue(vm.tilingController.allActiveTabs().isEmpty())
+        vm.handleShortcut(NexusShortcutAction.SPLIT_PANE_VERTICAL) {}
+        assertTrue(vm.uiState.value.isQuickConnectVisible)
+        assertTrue(vm.tilingController.rootNode.value is PaneNode.Leaf)
+
+        vm.dismissQuickConnect()
+        vm.handleShortcut(NexusShortcutAction.SPLIT_PANE_HORIZONTAL) {}
+        assertTrue(vm.uiState.value.isQuickConnectVisible)
+        assertTrue(vm.tilingController.rootNode.value is PaneNode.Leaf)
+
+        // 2. ShortcutEngine.dispatchAndroidKeyEvent returns false when inline handler declines action (DetachedSessionActivity passthrough)
+        val engine = com.nexusts.app.core.ui.input.ShortcutEngine()
+        val ctrlKDown = android.view.KeyEvent(
+            0L,
+            10L,
+            android.view.KeyEvent.ACTION_DOWN,
+            android.view.KeyEvent.KEYCODE_K,
+            0,
+            android.view.KeyEvent.META_CTRL_ON
+        )
+        assertFalse(
+            "Declined shortcut must return false so terminal/RDP receives Ctrl+K",
+            engine.dispatchAndroidKeyEvent(ctrlKDown, remoteCaptureActive = true) { false }
+        )
+
+        // Verify Ctrl+Shift+B dispatches TOGGLE_BROADCAST_INPUT matching Overview Cheat Sheet
+        var matchedBroadcast = false
+        val ctrlShiftB = android.view.KeyEvent(
+            0L,
+            20L,
+            android.view.KeyEvent.ACTION_DOWN,
+            android.view.KeyEvent.KEYCODE_B,
+            0,
+            android.view.KeyEvent.META_CTRL_ON or android.view.KeyEvent.META_SHIFT_ON
+        )
+        assertTrue(
+            engine.dispatchAndroidKeyEvent(ctrlShiftB, remoteCaptureActive = false) { act ->
+                matchedBroadcast = (act == NexusShortcutAction.TOGGLE_BROADCAST_INPUT)
+                true
+            }
+        )
+        assertTrue(matchedBroadcast)
+
+        // 3. Verify 6-locale Overview Dashboard & TopBar helpers
+        val deStrings = WorkspaceLocalizedStrings.defaultEnglish().copy(navConnections = "Verbindungen")
+        assertEquals("Lokales Terminal", deStrings.localTerminalLabel)
+        assertEquals("System-Tastenkürzel abfangen", deStrings.remoteKeyCaptureLabel)
+        assertEquals("3 Ordner", deStrings.ovFoldersCount(3))
+        assertEquals("Verknüpft", deStrings.ovLinked)
+        assertEquals("Lokal", deStrings.ovLocal)
+    }
 }
+
 
 

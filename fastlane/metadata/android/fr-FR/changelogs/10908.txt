@@ -1,0 +1,1 @@
+• NexusTS 0.9.8 : Version d’assurance qualité (QS) et de performance pré-1.0 — écran de verrouillage Zero-Knowledge renforcé, localisation complète en 6 langues, rendu O(F+C) pour 500+ connexions et raccourcis perfectionnés sur macOS, ChromeOS, Googlebooks et Android.

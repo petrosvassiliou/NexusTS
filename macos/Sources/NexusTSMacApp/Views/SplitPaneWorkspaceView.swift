@@ -80,6 +80,7 @@ private struct RecursivePaneNodeView: View {
 private struct PaneDividerHandle: View {
     let orientation: SplitOrientation
     @State private var isHovering = false
+    @State private var didPushCursor = false
 
     var body: some View {
         ZStack {
@@ -93,10 +94,18 @@ private struct PaneDividerHandle: View {
         .contentShape(Rectangle())
         .onHover { inside in
             isHovering = inside
-            if inside {
+            if inside && !didPushCursor {
                 (orientation == .horizontal ? NSCursor.resizeLeftRight : NSCursor.resizeUpDown).push()
-            } else {
+                didPushCursor = true
+            } else if !inside && didPushCursor {
                 NSCursor.pop()
+                didPushCursor = false
+            }
+        }
+        .onDisappear {
+            if didPushCursor {
+                NSCursor.pop()
+                didPushCursor = false
             }
         }
     }
@@ -130,6 +139,9 @@ private struct LeafPaneContainerView: View {
                             MacTabPillView(
                                 tab: tab,
                                 isActive: tab.id == activeTab?.id,
+                                isBroadcastActive: store.broadcastInputEnabled || tab.broadcastEnabled,
+                                fullScreenLabel: store.strings.fullScreenSession,
+                                detachWindowLabel: store.strings.detachToWindow,
                                 disconnectLabel: store.strings.disconnectSession,
                                 logOffLabel: store.strings.logOffSession,
                                 onSelect: {
@@ -273,6 +285,9 @@ private struct LeafPaneContainerView: View {
 private struct MacTabPillView: View {
     let tab: WorkspaceSessionTab
     let isActive: Bool
+    let isBroadcastActive: Bool
+    let fullScreenLabel: String
+    let detachWindowLabel: String
     let disconnectLabel: String
     let logOffLabel: String
     let onSelect: () -> Void
@@ -299,7 +314,7 @@ private struct MacTabPillView: View {
                         .foregroundStyle(.primary)
                         .lineLimit(1)
 
-                    if tab.broadcastEnabled {
+                    if isBroadcastActive {
                         Image(systemName: "dot.radiowaves.left.and.right")
                             .font(.system(size: 10))
                             .foregroundStyle(.orange)
@@ -338,8 +353,8 @@ private struct MacTabPillView: View {
             isDropTargeted = hovering
         }
         .contextMenu {
-            Button("Full Screen Session") { onEnterFullScreen() }
-            Button("Move Tab to New Window") { onDetachWindow() }
+            Button(fullScreenLabel) { onEnterFullScreen() }
+            Button(detachWindowLabel) { onDetachWindow() }
             Divider()
             Button {
                 onClose()
