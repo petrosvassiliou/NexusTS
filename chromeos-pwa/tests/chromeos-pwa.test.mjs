@@ -443,6 +443,11 @@ test('7. Firebase Hosting ChromeOS Start-Menu PWA (nexusts-prod): manifest short
   assert.ok(hostedTokensCss.includes('color-scheme: light;'));
   assert.ok(hostedTokensCss.includes('--bg-canvas: #f8fafc;'));
 
+  const hostedAppJs = fs.readFileSync(`${hostingInfo.hostingDistDir}/src/ui/app.js`, 'utf8');
+  assert.ok(hostedAppJs.includes('function renderSidebarConnectionTypeIcon'));
+  assert.ok(hostedAppJs.includes('M5.8 8.8L8.8 11.6L5.8 14.4M14.2 5.6L11.2 8.4L14.2 11.2'));
+  assert.equal(hostedAppJs.includes('<span class="proto-badge">${esc(badge)}</span>'), false);
+
   assert.equal(compareSemver('0.9.2', '0.9.1'), 1);
   assert.equal(compareSemver('0.9.0', '0.9.0-beta.1'), 1);
   assert.equal(canInstallPwa(), false);

@@ -405,12 +405,187 @@ function openPassphrasePromptModal(onConfirm, title = 'Enter Master Passphrase',
   renderWorkspace();
 }
 
-// Rendering Helpers
+// 1:1 macOS AppleHIGDesignSystem Protocol Tints & Vector Icons (Zero text "RDP" prefix)
+const CANONICAL_GROUP_ORDER = [
+  'RDP', 'SSH', 'VNC', 'ARD', 'SFTP', 'SCP', 'FTP', 'FTPS',
+  'TEL', 'UART', 'WEB', 'K8S', 'OCI', 'PVE', 'ESXi', 'HV',
+  'EC2', 'AZ', 'PING', 'MTR', 'SCAN', 'WOL'
+];
+
+function normalizeHexColor(rawHex) {
+  if (typeof rawHex !== 'string') return null;
+  const clean = rawHex.trim().replace(/^#/, '');
+  return /^[0-9a-fA-F]{6}$/.test(clean) ? `#${clean}` : null;
+}
+
+function protocolAppleTint(protocol, customHex = null) {
+  const override = normalizeHexColor(customHex);
+  if (override) return override;
+  switch (protocol) {
+    case 'RDP':
+    case 'WINDOWS_TERMINAL_SERVICES':
+      return '#007aff';
+    case 'SSH':
+    case 'TELNET':
+      return '#5856d6';
+    case 'SERIAL':
+      return '#34c759';
+    case 'SFTP':
+    case 'FTP':
+    case 'FTPS':
+    case 'SCP':
+      return '#ff9500';
+    case 'VNC':
+    case 'APPLE_SCREEN_SHARING':
+      return '#ff2d55';
+    case 'WEB_PAGE':
+      return '#af52de';
+    case 'VMWARE_VSPHERE':
+    case 'PROXMOX_VE':
+    case 'HYPER_V':
+    case 'AWS_EC2':
+    case 'AZURE_VM':
+      return '#009ec2';
+    case 'KUBERNETES_POD':
+    case 'DOCKER_CONTAINER':
+      return '#0d9488';
+    default:
+      return '#00a896';
+  }
+}
+
+function renderSidebarConnectionTypeIcon(protocol, customHex = null, size = 15) {
+  const tint = protocolAppleTint(protocol, customHex);
+  switch (protocol) {
+    case 'RDP':
+    case 'WINDOWS_TERMINAL_SERVICES':
+      // Exact 1:1 macOS SidebarConnectionTypeIcon (circle + opposing Remote Desktop / Royal TSX chevrons)
+      return `<svg class="conn-type-icon" width="${size}" height="${size}" viewBox="0 0 20 20" fill="none" aria-hidden="true"><circle cx="10" cy="10" r="8.6" stroke="${tint}" stroke-width="1.84" stroke-linecap="round" stroke-linejoin="round"/><path d="M5.8 8.8L8.8 11.6L5.8 14.4M14.2 5.6L11.2 8.4L14.2 11.2" stroke="${tint}" stroke-width="2.04" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+    case 'SSH':
+    case 'TELNET':
+      return `<svg class="conn-type-icon" width="${size}" height="${size}" viewBox="0 0 20 20" fill="none" aria-hidden="true"><rect x="2.2" y="3.4" width="15.6" height="13.2" rx="3" stroke="${tint}" stroke-width="1.75"/><path d="M5.8 7.5L8.9 10L5.8 12.5M10.4 12.6H14.2" stroke="${tint}" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+    case 'SFTP':
+    case 'FTP':
+    case 'FTPS':
+    case 'SCP':
+      return `<svg class="conn-type-icon" width="${size}" height="${size}" viewBox="0 0 20 20" fill="none" aria-hidden="true"><rect x="2.4" y="2.4" width="15.2" height="15.2" rx="3.2" stroke="${tint}" stroke-width="1.7"/><path d="M6.2 8H13.8M11.6 5.8L13.8 8L11.6 10.2M13.8 12.4H6.2M8.4 10.2L6.2 12.4L8.4 14.6" stroke="${tint}" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+    case 'VNC':
+    case 'APPLE_SCREEN_SHARING':
+      return `<svg class="conn-type-icon" width="${size}" height="${size}" viewBox="0 0 20 20" fill="none" aria-hidden="true"><rect x="2.3" y="5.4" width="11.4" height="8.8" rx="2" stroke="${tint}" stroke-width="1.7"/><path d="M6.5 5.2V4.4C6.5 3.5 7.2 2.8 8.1 2.8H15.9C16.8 2.8 17.5 3.5 17.5 4.4V10.2C17.5 11.1 16.8 11.8 15.9 11.8H14" stroke="${tint}" stroke-width="1.7" stroke-linecap="round"/></svg>`;
+    case 'SERIAL':
+      return `<svg class="conn-type-icon" width="${size}" height="${size}" viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M2.2 10H6.2M13.8 10H17.8" stroke="${tint}" stroke-width="1.8" stroke-linecap="round"/><rect x="6.2" y="6.6" width="7.6" height="6.8" rx="1.8" stroke="${tint}" stroke-width="1.75"/></svg>`;
+    case 'WEB_PAGE':
+      return `<svg class="conn-type-icon" width="${size}" height="${size}" viewBox="0 0 20 20" fill="none" aria-hidden="true"><circle cx="10" cy="10" r="7.8" stroke="${tint}" stroke-width="1.7"/><path d="M12.9 7.1L11.1 11.1L7.1 12.9L8.9 8.9L12.9 7.1Z" stroke="${tint}" stroke-width="1.55" stroke-linejoin="round"/></svg>`;
+    case 'VMWARE_VSPHERE':
+    case 'PROXMOX_VE':
+    case 'HYPER_V':
+      return `<svg class="conn-type-icon" width="${size}" height="${size}" viewBox="0 0 20 20" fill="none" aria-hidden="true"><rect x="3" y="3.2" width="14" height="5.6" rx="1.6" stroke="${tint}" stroke-width="1.7"/><rect x="3" y="11.2" width="14" height="5.6" rx="1.6" stroke="${tint}" stroke-width="1.7"/><circle cx="6.2" cy="6" r="1" fill="${tint}"/><circle cx="6.2" cy="14" r="1" fill="${tint}"/></svg>`;
+    case 'AWS_EC2':
+    case 'AZURE_VM':
+      return `<svg class="conn-type-icon" width="${size}" height="${size}" viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M6.2 15.2H14.4C16.3 15.2 17.8 13.7 17.8 11.9C17.8 10.2 16.5 8.8 14.8 8.6C14.2 6.1 12 4.4 9.4 4.4C6.4 4.4 4 6.8 4 9.8C2.9 10.3 2.2 11.4 2.2 12.6C2.2 14.1 3.5 15.2 5.1 15.2H6.2Z" stroke="${tint}" stroke-width="1.7" stroke-linejoin="round"/></svg>`;
+    case 'KUBERNETES_POD':
+    case 'DOCKER_CONTAINER':
+      return `<svg class="conn-type-icon" width="${size}" height="${size}" viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M10 2.4L16.8 6.2V13.8L10 17.6L3.2 13.8V6.2L10 2.4Z" stroke="${tint}" stroke-width="1.7" stroke-linejoin="round"/><path d="M3.4 6.4L10 10.1L16.6 6.4M10 10.1V17.4" stroke="${tint}" stroke-width="1.6" stroke-linecap="round"/></svg>`;
+    default:
+      return `<svg class="conn-type-icon" width="${size}" height="${size}" viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M2.2 10.2H5.6L7.6 5.2L10.4 14.8L12.8 8.2L14.4 10.2H17.8" stroke="${tint}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+  }
+}
+
+function renderSidebarFolderIcon(isOpen, customHex = null) {
+  const tint = normalizeHexColor(customHex) || '#007aff';
+  if (isOpen) {
+    return `<svg class="folder-type-icon" width="15" height="15" viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M2.2 5.4C2.2 4.4 3 3.6 4 3.6H7.8L9.6 5.5H16C17 5.5 17.8 6.3 17.8 7.3V14.6C17.8 15.6 17 16.4 16 16.4H4C3 16.4 2.2 15.6 2.2 14.6V5.4Z" fill="${tint}" fill-opacity="0.88"/></svg>`;
+  }
+  return `<svg class="folder-type-icon" width="15" height="15" viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M2.4 5.5C2.4 4.56 3.16 3.8 4.1 3.8H7.7L9.5 5.7H15.9C16.84 5.7 17.6 6.46 17.6 7.4V14.5C17.6 15.44 16.84 16.2 15.9 16.2H4.1C3.16 16.2 2.4 15.44 2.4 14.5V5.5Z" stroke="${tint}" stroke-width="1.65" stroke-linejoin="round"/></svg>`;
+}
+
+function renderFolderChevron(isOpen, hasChildren) {
+  const cls = hasChildren ? 'folder-chevron' : 'folder-chevron empty';
+  if (isOpen) {
+    return `<svg class="${cls}" width="11" height="11" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M2.5 4.2L6 7.8L9.5 4.2" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+  }
+  return `<svg class="${cls}" width="11" height="11" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M4.2 2.5L7.8 6L4.2 9.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+}
+
+// 1:1 port of macOS `IntelligentConnectionGrouper` (only shows header when 2+ protocols share a folder)
+function groupConnectionsLikeMac(connections, preserveOrder = false) {
+  if (!connections.length) return [];
+  const buckets = new Map();
+  for (const conn of connections) {
+    const rawBadge = PROTOCOL_CATALOG[conn.protocol]?.badge || conn.protocol;
+    const badge = conn.protocol === 'RDP' || conn.protocol === 'WINDOWS_TERMINAL_SERVICES' ? 'RDP' : rawBadge;
+    if (!buckets.has(badge)) buckets.set(badge, []);
+    buckets.get(badge).push(conn);
+  }
+  const sortedBadges = [...buckets.keys()].sort((a, b) => {
+    const ra = CANONICAL_GROUP_ORDER.indexOf(a);
+    const rb = CANONICAL_GROUP_ORDER.indexOf(b);
+    const ia = ra === -1 ? CANONICAL_GROUP_ORDER.length : ra;
+    const ib = rb === -1 ? CANONICAL_GROUP_ORDER.length : rb;
+    return ia !== ib ? ia - ib : a.localeCompare(b);
+  });
+  const showsHeader = sortedBadges.length > 1;
+  return sortedBadges.map((badge) => {
+    const items = buckets.get(badge);
+    const ordered = preserveOrder
+      ? items
+      : [...items].sort((a, b) => (a.sortOrder - b.sortOrder) || a.name.localeCompare(b.name));
+    return { badge, connections: ordered, showsHeader };
+  });
+}
+
+function renderGroupedConnections(conns, depth, activeConnIds, preserveOrder = false) {
+  const groups = groupConnectionsLikeMac(conns, preserveOrder);
+  let html = '';
+  for (const g of groups) {
+    if (g.showsHeader) {
+      const hdrPad = 10 + depth * 14;
+      html += `
+        <div class="protocol-group-header" style="padding-left:${hdrPad}px">
+          <span>${esc(g.badge)}</span>
+          <span class="protocol-group-line"></span>
+          <span class="protocol-group-count">${g.connections.length}</span>
+        </div>
+      `;
+    }
+    for (const c of g.connections) {
+      html += renderConnectionRow(c, depth, activeConnIds);
+    }
+  }
+  return html;
+}
+
+function countFolderSubtreeStats(folderId, allFolders, allConns, activeConnIds) {
+  let total = 0;
+  let live = 0;
+  const stack = [folderId];
+  const seen = new Set();
+  while (stack.length) {
+    const fid = stack.pop();
+    if (seen.has(fid)) continue;
+    seen.add(fid);
+    for (const c of allConns) {
+      if (c.parentFolderId === fid) {
+        total += 1;
+        if (activeConnIds.has(c.id)) live += 1;
+      }
+    }
+    for (const sub of allFolders) {
+      if (sub.parentFolderId === fid) stack.push(sub.id);
+    }
+  }
+  return { total, live };
+}
+
+// Rendering Helpers (1:1 with macOS SidebarHierarchyView.swift)
 function renderFolderSubtree(parentId, depth, activeConnIds) {
   const doc = store.state.vaultDocument;
   const query = store.state.sidebarFilterQuery.trim().toLowerCase();
   const qf = store.state.sidebarQuickFilter;
   const recentsSet = new Set(doc.recentConnectionIds || []);
+  const allFolders = doc.folders || [];
+  const allConns = doc.connections || [];
+  const validFolderIds = new Set(allFolders.map((f) => f.id));
 
   const connMatches = (c) => {
     if (qf === 'FAVORITES' && !c.favorite) return false;
@@ -420,33 +595,45 @@ function renderFolderSubtree(parentId, depth, activeConnIds) {
   };
 
   if (qf !== 'ALL' && parentId === null) {
-    return doc.connections
-      .filter(connMatches)
-      .map((c) => renderConnectionRow(c, 0, activeConnIds))
-      .join('');
+    const filtered = qf === 'RECENTS'
+      ? (doc.recentConnectionIds || []).map((id) => allConns.find((c) => c.id === id)).filter((c) => c && connMatches(c))
+      : allConns.filter(connMatches);
+    return renderGroupedConnections(filtered, 0, activeConnIds, qf === 'RECENTS');
   }
 
-  const folders = (doc.folders || [])
-    .filter((f) => (f.parentFolderId || null) === parentId)
+  const effectiveParent = (rawParentId) => (rawParentId && validFolderIds.has(rawParentId) ? rawParentId : null);
+
+  const folders = allFolders
+    .filter((f) => effectiveParent(f.parentFolderId) === parentId)
     .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name));
-  const conns = (doc.connections || [])
-    .filter((c) => (c.parentFolderId || null) === parentId && connMatches(c))
-    .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name));
+  const conns = allConns
+    .filter((c) => effectiveParent(c.parentFolderId) === parentId && connMatches(c));
 
   let html = '';
   for (const f of folders) {
     const isOpen = store.state.expandedFolderIds.has(f.id) || Boolean(query);
-    const padLeft = 8 + depth * 15;
+    const hasChildFolders = allFolders.some((sf) => effectiveParent(sf.parentFolderId) === f.id);
+    const hasChildConns = allConns.some((sc) => effectiveParent(sc.parentFolderId) === f.id);
+    const hasChildren = hasChildFolders || hasChildConns;
+    const stats = countFolderSubtreeStats(f.id, allFolders, allConns, activeConnIds);
+    const isSelected = store.state.selectedFolderId === f.id && !store.state.selectedConnectionId;
+    const padLeft = 6 + depth * 14;
+
     html += `
-      <div class="tree-row ${store.state.selectedFolderId === f.id ? 'selected' : ''}"
+      <div class="tree-row folder-row ${isSelected ? 'selected' : ''}"
            style="padding-left:${padLeft}px"
            draggable="true"
            data-action="toggle-folder"
            data-folder-id="${esc(f.id)}"
            data-drop-folder-id="${esc(f.id)}">
-        <span>${isOpen ? '▾' : '▸'}</span>
-        <span>📁</span>
-        <span class="tree-row-name">${esc(f.name)}</span>
+        ${renderFolderChevron(isOpen, hasChildren)}
+        ${renderSidebarFolderIcon(isOpen, f.inheritable?.displayColorAccentHex)}
+        <span class="tree-row-name folder-name">${esc(f.name)}</span>
+        ${stats.live > 0
+          ? `<span class="folder-count live"><span class="active-dot"></span>${stats.live}</span>`
+          : stats.total > 0
+            ? `<span class="folder-count">${stats.total}</span>`
+            : ''}
         <span class="row-actions">
           <button type="button" class="mini-action-btn" data-action="start-folder-rdp" data-folder-id="${esc(f.id)}" data-tooltip="${esc(store.strings.startAllRdpInFolder)}">▶</button>
           <button type="button" class="mini-action-btn" data-action="edit-folder" data-folder-id="${esc(f.id)}" data-tooltip="${esc(store.strings.edit)}">✎</button>
@@ -457,26 +644,27 @@ function renderFolderSubtree(parentId, depth, activeConnIds) {
       html += renderFolderSubtree(f.id, depth + 1, activeConnIds);
     }
   }
-  for (const c of conns) {
-    html += renderConnectionRow(c, depth, activeConnIds);
-  }
+  html += renderGroupedConnections(conns, depth, activeConnIds, false);
   return html;
 }
 
 function renderConnectionRow(c, depth, activeConnIds) {
   const isActive = activeConnIds.has(c.id);
   const isSelected = store.state.selectedConnectionId === c.id;
-  const badge = PROTOCOL_CATALOG[c.protocol]?.badge || c.protocol;
-  const padLeft = 10 + depth * 15;
+  const protoTitle = PROTOCOL_CATALOG[c.protocol]?.title || c.protocol;
+  const padLeft = 20 + depth * 14;
   return `
-    <div class="tree-row ${isSelected ? 'selected' : ''} ${isActive ? 'active-session' : ''}"
+    <div class="tree-row conn-row ${isSelected ? 'selected' : ''} ${isActive ? 'active-session' : ''}"
          style="padding-left:${padLeft}px"
          draggable="true"
          data-action="select-connection"
          data-dblaction="launch-connection"
-         data-conn-id="${esc(c.id)}">
-      ${isActive ? '<span class="active-dot"></span>' : `<span class="proto-badge">${esc(badge)}</span>`}
+         data-conn-id="${esc(c.id)}"
+         data-tooltip="${esc(`${c.name} • ${protoTitle}`)}">
+      ${renderSidebarConnectionTypeIcon(c.protocol, c.inheritable?.displayColorAccentHex, 15)}
       <span class="tree-row-name">${esc(c.name)}</span>
+      ${c.favorite ? '<span class="fav-star" aria-hidden="true">★</span>' : ''}
+      ${isActive ? '<span class="active-dot"></span>' : ''}
       <span class="row-actions">
         <button type="button" class="mini-action-btn" data-action="launch-connection" data-conn-id="${esc(c.id)}" data-tooltip="${esc(store.strings.connectNow)}">⚡</button>
         <button type="button" class="mini-action-btn" data-action="edit-connection" data-conn-id="${esc(c.id)}" data-tooltip="${esc(store.strings.edit)}">✎</button>
@@ -878,7 +1066,7 @@ function renderActiveSessionsStage() {
           <div class="session-tab ${t.tabId === store.state.focusedTabId ? 'focused' : ''}"
                data-action="focus-tab"
                data-tab-id="${esc(t.tabId)}">
-            <span class="active-dot"></span>
+            ${renderSidebarConnectionTypeIcon(t.protocol, null, 13)}
             <span>${esc(t.title)}</span>
             <button type="button" class="mini-action-btn" data-action="detach-tab" data-tab-id="${esc(t.tabId)}" data-tooltip="${esc(s.detachWindow)}">↗</button>
             <button type="button" class="mini-action-btn" data-action="close-tab" data-tab-id="${esc(t.tabId)}" data-tooltip="${esc(s.disconnectSession)}">✕</button>
@@ -899,7 +1087,7 @@ function renderActiveSessionsStage() {
         return `
           <div class="session-pane ${t.tabId === store.state.focusedTabId ? 'focused' : ''}" data-action="focus-tab" data-tab-id="${esc(t.tabId)}">
             <div class="pane-toolbar">
-              <span><strong>${esc(t.title)}</strong> <span style="color:var(--text-muted)">(${esc(t.protocol)})</span></span>
+              <span style="display:inline-flex;align-items:center;gap:6px">${renderSidebarConnectionTypeIcon(t.protocol, null, 14)}<strong>${esc(t.title)}</strong></span>
               <div class="topbar-cluster">
                 <span id="pane-status-${esc(t.tabId)}" style="color:var(--text-secondary);font-size:11px">${esc(entry?.statusText || '')}</span>
                 ${t.protocol === 'RDP' ? `<button type="button" class="pill-btn" style="height:24px;padding:0 8px;font-size:11px" data-action="send-cad" data-tab-id="${esc(t.tabId)}">Ctrl+Alt+Del</button>` : ''}

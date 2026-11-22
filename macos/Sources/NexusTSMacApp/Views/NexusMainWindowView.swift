@@ -723,7 +723,7 @@ struct ZeroKnowledgeLockShieldView: View {
                     Button(role: .destructive) {
                         store.isPresentingResetDatabaseSheet = true
                     } label: {
-                        Text("\(store.strings.resetDatabase)…")
+                        Text(store.strings.resetDatabase)
                             .font(.caption)
                     }
                     .buttonStyle(.plain)
