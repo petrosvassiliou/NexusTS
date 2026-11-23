@@ -1,0 +1,1 @@
+• NexusTS 1.0.2 ChromeOS y Drive Sync: Desbloqueo directo con frase maestra en la tarjeta Drive-Sync con vinculación en Hardware Keystore y sincronización inmediata, compatibilidad 1:1 con bóvedas .nxts de macOS sin frase de contraseña y hardware Wi-Fi/NFC opcional para Chromebox por Ethernet en Managed Play.

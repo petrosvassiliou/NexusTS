@@ -24,6 +24,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
@@ -38,12 +40,15 @@ import androidx.compose.material.icons.outlined.DeviceHub
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Key
+import androidx.compose.material.icons.outlined.LockOpen
 import androidx.compose.material.icons.outlined.NetworkCheck
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.SystemUpdateAlt
 import androidx.compose.material.icons.outlined.UnfoldMore
 import androidx.compose.material.icons.outlined.UploadFile
+import androidx.compose.material.icons.outlined.Visibility
+import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material.icons.outlined.VpnKey
 import androidx.compose.material.icons.outlined.WarningAmber
 import androidx.compose.material3.AlertDialog
@@ -76,7 +81,9 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -3829,7 +3836,16 @@ fun DriveSyncAndConflictStudioView(
                 HorizontalDivider()
 
                 if (isLinked) {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    val needsPassphraseUnlock = driveSyncStatusBanner.contains("Failed to unlock", ignoreCase = true) ||
+                        driveSyncStatusBanner.contains("Master passphrase required", ignoreCase = true)
+                    var showPassphraseEditor by remember { mutableStateOf(false) }
+                    var unlockPassInput by remember { mutableStateOf("") }
+                    var showPassPlaintext by remember { mutableStateOf(false) }
+                    var rememberInKeystoreToggle by remember(rememberVaultPassphrase) {
+                        mutableStateOf(if (rememberVaultPassphrase) true else true)
+                    }
+
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Text(
                             text = linkedDisplayTitle,
                             style = MaterialTheme.typography.titleMedium,
@@ -3840,17 +3856,141 @@ fun DriveSyncAndConflictStudioView(
                                 String.format(strings.syncStatusSyncedFormat, vaultDocument.revision)
                             },
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            color = if (needsPassphraseUnlock) {
+                                MaterialTheme.colorScheme.error
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            }
                         )
-                        Row(
+
+                        if (needsPassphraseUnlock || showPassphraseEditor) {
+                            val submitUnlock = {
+                                val entered = unlockPassInput
+                                if (entered.isNotEmpty() && !driveIsSyncing) {
+                                    unlockPassInput = ""
+                                    showPassphraseEditor = false
+                                    onSaveVaultSyncPassphrase(entered, rememberInKeystoreToggle)
+                                }
+                            }
+                            Surface(
+                                shape = RoundedCornerShape(14.dp),
+                                color = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.65f),
+                                border = BorderStroke(
+                                    1.dp,
+                                    if (needsPassphraseUnlock) {
+                                        MaterialTheme.colorScheme.error.copy(alpha = 0.45f)
+                                    } else {
+                                        MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)
+                                    }
+                                ),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(16.dp),
+                                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Outlined.VpnKey,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                        Text(
+                                            text = strings.vaultPassphraseLabel,
+                                            style = MaterialTheme.typography.titleSmall,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+                                    }
+
+                                    OutlinedTextField(
+                                        value = unlockPassInput,
+                                        onValueChange = { unlockPassInput = it },
+                                        label = { Text(strings.vaultPassphraseLabel) },
+                                        singleLine = true,
+                                        visualTransformation = if (showPassPlaintext) {
+                                            VisualTransformation.None
+                                        } else {
+                                            PasswordVisualTransformation()
+                                        },
+                                        trailingIcon = {
+                                            IconButton(onClick = { showPassPlaintext = !showPassPlaintext }) {
+                                                Icon(
+                                                    imageVector = if (showPassPlaintext) {
+                                                        Icons.Outlined.VisibilityOff
+                                                    } else {
+                                                        Icons.Outlined.Visibility
+                                                    },
+                                                    contentDescription = null
+                                                )
+                                            }
+                                        },
+                                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                                        keyboardActions = KeyboardActions(onDone = { submitUnlock() }),
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Text(
+                                            text = "Save Passphrase in Hardware Keystore",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        Switch(
+                                            checked = rememberInKeystoreToggle,
+                                            onCheckedChange = { rememberInKeystoreToggle = it }
+                                        )
+                                    }
+
+                                    Row(
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        NexusPrimaryButton(
+                                            enabled = unlockPassInput.isNotEmpty() && !driveIsSyncing,
+                                            onClick = submitUnlock,
+                                            label = strings.actionUnlockVault,
+                                            leadingIcon = Icons.Outlined.LockOpen
+                                        )
+                                        if (!needsPassphraseUnlock) {
+                                            NexusOutlinedButton(
+                                                onClick = {
+                                                    unlockPassInput = ""
+                                                    showPassphraseEditor = false
+                                                },
+                                                label = strings.dialogActionCancel
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        FlowRow(
                             modifier = Modifier.padding(top = 6.dp),
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             NexusTonalButton(
                                 onClick = onLinkExistingSafDriveVault,
                                 label = strings.syncLinkDriveSafOpen,
                                 leadingIcon = Icons.Outlined.Folder
                             )
+                            if (!needsPassphraseUnlock && !showPassphraseEditor) {
+                                NexusOutlinedButton(
+                                    onClick = { showPassphraseEditor = true },
+                                    label = strings.vaultPassphraseLabel,
+                                    leadingIcon = Icons.Outlined.VpnKey
+                                )
+                            }
                             NexusOutlinedButton(
                                 onClick = {
                                     if (driveLinkedSafLabel.isNotBlank()) {

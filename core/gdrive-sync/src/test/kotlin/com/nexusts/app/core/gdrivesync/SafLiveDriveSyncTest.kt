@@ -20,6 +20,7 @@ import com.nexusts.app.core.gdrivesync.sync.SafLiveGoogleDriveBridge
 import com.nexusts.app.core.gdrivesync.sync.VaultSyncResult
 import com.nexusts.app.core.vault.crypto.KdfSecurityParameters
 import com.nexusts.app.core.vault.crypto.NxtsVaultSerializer
+import com.nexusts.app.core.vault.crypto.VaultAuthenticationException
 import com.nexusts.app.core.vault.model.NxtsVaultDocument
 import com.nexusts.app.core.vault.model.ProtocolSpecificSettings
 import com.nexusts.app.core.vault.model.VaultConnection
@@ -496,5 +497,99 @@ class SafLiveDriveSyncTest {
         assertEquals("created-nexusts-folder-id", cached?.parentFolderDriveId)
         assertEquals(4L, cached?.localRevision)
         assertFalse(cached?.hasPendingLocalEdits ?: true)
+    }
+
+    @Test
+    fun emptyPassphraseFallbackAndCustomMasterPassphraseUnlockFlow() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val fastSerializer = NxtsVaultSerializer(
+            KdfSecurityParameters(memoryKiB = 8_192, iterations = 1, parallelism = 1)
+        )
+        val transport = InMemoryDriveSafTransport()
+        val bridge = SafLiveGoogleDriveBridge(
+            appContext = context,
+            serializer = fastSerializer,
+            byteTransport = transport
+        )
+        val starterDoc = NxtsVaultDocument(
+            documentId = "starter-ephemeral-doc",
+            name = "Starter",
+            revision = 1L
+        )
+
+        // Part 1: Legacy empty-passphrase ("") .nxts vault on Google Drive unseals seamlessly via macOS-parity fallback
+        val emptyKeyUri = Uri.parse("content://com.google.android.apps.docs.storage/document/legacy-empty-key-vault")
+        val legacyMacVault = NxtsVaultDocument(
+            documentId = "mac-legacy-empty-key-doc",
+            name = "MacSyncedVault",
+            revision = 3L,
+            connections = listOf(
+                VaultConnection(
+                    id = "conn-mac-ssh",
+                    name = "Mac-Core-Router",
+                    host = "192.168.10.1",
+                    protocol = VaultProtocolType.SSH,
+                    settings = ProtocolSpecificSettings.Ssh()
+                )
+            )
+        )
+        transport.writeBytes(emptyKeyUri.toString(), fastSerializer.sealDocument(legacyMacVault, CharArray(0)))
+        val writesAfterSeed1 = transport.writeCount
+
+        bridge.linkPersistentVaultUri(emptyKeyUri, takePersistable = false)
+        val fallbackOutcome = bridge.synchronizeLinkedSafVault(
+            currentDocument = starterDoc,
+            vaultPassphrase = SafLiveGoogleDriveBridge.DEFAULT_TRANSPARENT_SYNC_PASSPHRASE.toCharArray(),
+            localIsUninitializedStarter = true
+        )
+        assertTrue("Expected PulledFromDrive via empty-passphrase fallback, got $fallbackOutcome", fallbackOutcome is SafDriveSyncOutcome.PulledFromDrive)
+        val pulledLegacy = (fallbackOutcome as SafDriveSyncOutcome.PulledFromDrive).remoteDocument
+        assertEquals("mac-legacy-empty-key-doc", pulledLegacy.documentId)
+        assertEquals(1, pulledLegacy.connections.size)
+        assertEquals(writesAfterSeed1, transport.writeCount)
+
+        // Part 2: Custom Master Passphrase vault throws VaultAuthenticationException on default key without overwriting,
+        // then unlocks and pulls cleanly once the user enters their Master Passphrase
+        val customKeyUri = Uri.parse("content://com.google.android.apps.docs.storage/document/custom-master-key-vault")
+        val customMasterKey = "ChromeOS#MasterVault!2026".toCharArray()
+        val protectedVault = NxtsVaultDocument(
+            documentId = "protected-prod-doc",
+            name = "NexusTS Vault",
+            revision = 12L,
+            connections = listOf(
+                VaultConnection(
+                    id = "conn-prod-rdp",
+                    name = "Prod-JumpHost",
+                    host = "10.99.0.10",
+                    protocol = VaultProtocolType.RDP,
+                    settings = ProtocolSpecificSettings.Rdp()
+                )
+            )
+        )
+        transport.writeBytes(customKeyUri.toString(), fastSerializer.sealDocument(protectedVault, customMasterKey.copyOf()))
+        val writesAfterSeed2 = transport.writeCount
+
+        bridge.linkPersistentVaultUri(customKeyUri, takePersistable = false)
+        val defaultKeyAttempt = runCatching {
+            bridge.synchronizeLinkedSafVault(
+                currentDocument = starterDoc,
+                vaultPassphrase = SafLiveGoogleDriveBridge.DEFAULT_TRANSPARENT_SYNC_PASSPHRASE.toCharArray(),
+                localIsUninitializedStarter = true
+            )
+        }
+        assertTrue(defaultKeyAttempt.exceptionOrNull() is VaultAuthenticationException)
+        assertEquals("Failed unlock must never overwrite remote Google Drive vault", writesAfterSeed2, transport.writeCount)
+
+        val unlockedOutcome = bridge.synchronizeLinkedSafVault(
+            currentDocument = starterDoc,
+            vaultPassphrase = customMasterKey.copyOf(),
+            localIsUninitializedStarter = true
+        )
+        assertTrue("Expected PulledFromDrive once Master Passphrase is provided", unlockedOutcome is SafDriveSyncOutcome.PulledFromDrive)
+        val pulledProtected = (unlockedOutcome as SafDriveSyncOutcome.PulledFromDrive).remoteDocument
+        assertEquals("protected-prod-doc", pulledProtected.documentId)
+        assertEquals(12L, pulledProtected.revision)
+        assertEquals("Prod-JumpHost", pulledProtected.connections.single().name)
+        assertEquals(writesAfterSeed2, transport.writeCount)
     }
 }

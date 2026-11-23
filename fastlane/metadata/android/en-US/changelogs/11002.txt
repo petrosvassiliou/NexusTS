@@ -1,0 +1,1 @@
+• NexusTS 1.0.2 ChromeOS & Drive Sync Polish: Adds an inline Master Passphrase unlock prompt directly inside the Drive-Sync card with automatic Hardware Keystore binding & immediate re-sync, adds 1:1 macOS empty-passphrase fallback when opening synced .nxts vaults, and marks Wi-Fi/NFC hardware optional for Ethernet-only Chromebox & Managed Play deployments.

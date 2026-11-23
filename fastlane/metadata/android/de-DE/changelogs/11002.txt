@@ -1,0 +1,1 @@
+• NexusTS 1.0.2 ChromeOS- & Drive-Sync-Update: Direktes Master-Passphrasen-Entsperrfeld in der Drive-Sync-Karte mit Hardware-Keystore-Speicherung und sofortiger Synchronisierung, 1:1-macOS-Kompatibilität für .nxts-Tresore ohne Passphrase sowie optionale WLAN-/NFC-Hardwaremerkmale für Ethernet-Chromeboxen in Workspace Managed Play.

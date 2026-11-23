@@ -5,6 +5,7 @@ import android.content.Intent
 import android.net.Uri
 import android.provider.OpenableColumns
 import com.nexusts.app.core.vault.crypto.NxtsVaultSerializer
+import com.nexusts.app.core.vault.crypto.VaultAuthenticationException
 import com.nexusts.app.core.vault.model.NxtsVaultDocument
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
@@ -226,8 +227,17 @@ class SafLiveGoogleDriveBridge(
                 }
             }
 
-            // Unseal remote Google Drive .nxts container
-            val remoteDoc = serializer.unsealDocument(remoteBytes, vaultPassphrase.copyOf())
+            // Unseal remote Google Drive .nxts container (with 1:1 macOS empty-passphrase fallback when using default transparent key)
+            val remoteDoc = try {
+                serializer.unsealDocument(remoteBytes, vaultPassphrase.copyOf())
+            } catch (authErr: VaultAuthenticationException) {
+                if (String(vaultPassphrase) == DEFAULT_TRANSPARENT_SYNC_PASSPHRASE) {
+                    runCatching { serializer.unsealDocument(remoteBytes, CharArray(0)) }
+                        .getOrElse { throw authErr }
+                } else {
+                    throw authErr
+                }
+            }
 
             // Cold-start / uninitialized starter guard: never overwrite or pollute an existing remote Drive vault!
             if (localIsUninitializedStarter || currentDocument.documentId != remoteDoc.documentId) {
@@ -389,6 +399,7 @@ class SafLiveGoogleDriveBridge(
             .joinToString("") { "%02x".format(it) }
 
     companion object {
+        const val DEFAULT_TRANSPARENT_SYNC_PASSPHRASE = "NexusTS-LiveDriveSync-ZeroKnowledge-v1"
         /** Process-wide mutex serializing MainActivity foreground SAF syncs and WorkManager background SAF syncs. */
         private val PROCESS_SAF_SYNC_MUTEX = Mutex()
         private const val PREFS_NAME = "nexusts_saf_drive_bridge"

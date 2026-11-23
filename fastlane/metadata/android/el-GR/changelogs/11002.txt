@@ -1,0 +1,1 @@
+• NexusTS 1.0.2 ChromeOS & Google Drive Sync: Άμεσο ξεκλείδωμα κύριας φράσης πρόσβασης στην κάρτα Drive-Sync με αποθήκευση στο Hardware Keystore και άμεσο συγχρονισμό, πλήρης συμβατότητα με θησαυροφυλάκια .nxts macOS κενής φράσης και προαιρετικό Wi-Fi/NFC για Chromebox με Ethernet στο Managed Play.

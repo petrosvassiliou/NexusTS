@@ -18,6 +18,12 @@
     <uses-feature
         android:name="android.hardware.microphone"
         android:required="false" />
+    <uses-feature
+        android:name="android.hardware.wifi"
+        android:required="false" />
+    <uses-feature
+        android:name="android.hardware.nfc"
+        android:required="false" />
 
     <!-- Enterprise Network, Sync, Audio Redirection & Hardware Key Permissions -->
     <!-- Play Protect Compliant: Uses official Google Play In-App Updates API exclusively -->

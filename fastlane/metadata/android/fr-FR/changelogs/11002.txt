@@ -1,0 +1,1 @@
+• NexusTS 1.0.2 ChromeOS & Drive Sync : Déverrouillage direct par phrase secrète principale dans la carte Drive-Sync avec sauvegarde Hardware Keystore et synchronisation immédiate, compatibilité 1:1 avec les coffres .nxts macOS sans phrase secrète et Wi-Fi/NFC optionnels pour les Chromebox Ethernet sur Managed Play.

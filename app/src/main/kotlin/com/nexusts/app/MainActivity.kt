@@ -573,25 +573,35 @@ class MainActivity : AppCompatActivity() {
                     },
                     onSaveVaultSyncPassphrase = { pass, rememberInKeystore ->
                         val chars = pass.toCharArray()
+                        val currentSnap = workspaceViewModel.sessionStore.snapshot.value
                         workspaceViewModel.sessionStore.setActivePassphrase(chars)
                         driveAuthManager.saveVaultPassphrasePreference(
                             passphrase = chars,
                             rememberPassphrase = rememberInKeystore,
-                            documentId = uiState.vaultDocument.documentId
+                            documentId = currentSnap.vaultDocument.documentId.takeIf { rememberInKeystore }
                         )
                         workspaceViewModel.updateDriveAccountAndSafState(
                             rememberVaultPassphrase = driveAuthManager.isRememberVaultPassphraseEnabled()
                         )
                         syncBiometricAndVaultSecurityState()
-                        lifecycleScope.launch(Dispatchers.IO) {
+                        lifecycleScope.launch {
                             try {
-                                runCatching {
-                                    workspaceViewModel.sessionStore.persistVaultToDisk(filesDir, vaultSerializer, chars)
-                                }.onFailure { err ->
-                                    workspaceViewModel.reportException(err, "Local Vault Save Failed")
+                                if (!currentSnap.isStarterUninitialized && !currentSnap.hasPreImportBackup) {
+                                    withContext(Dispatchers.IO) {
+                                        runCatching {
+                                            workspaceViewModel.sessionStore.persistVaultToDisk(filesDir, vaultSerializer, chars)
+                                        }.onFailure { err ->
+                                            workspaceViewModel.reportException(err, "Local Vault Save Failed")
+                                        }
+                                    }
                                 }
                             } finally {
                                 chars.fill('\u0000')
+                            }
+                            if (safDriveBridge.getLinkedVaultInfo() != null) {
+                                executeSafDriveSync()
+                            } else if (workspaceViewModel.uiState.value.driveSignedInEmail.isNotBlank()) {
+                                GoogleDriveVaultSyncEngine.triggerImmediateDeltaSync(this@MainActivity)
                             }
                         }
                     },
@@ -939,6 +949,22 @@ class MainActivity : AppCompatActivity() {
                         localIsUninitializedStarter = snapshotState.isStarterUninitialized
                     )
                 }.onSuccess { outcome ->
+                    val syncedDoc = when (outcome) {
+                        is SafDriveSyncOutcome.AlreadyUpToDate -> null
+                        is SafDriveSyncOutcome.PushedToDrive -> outcome.updatedDocument
+                        is SafDriveSyncOutcome.PulledFromDrive -> outcome.remoteDocument
+                        is SafDriveSyncOutcome.ThreeWayMerged -> outcome.mergedDocument
+                    }
+                    if (syncedDoc != null && String(pass) != DEFAULT_LIVE_DRIVE_PASSPHRASE) {
+                        workspaceViewModel.sessionStore.setActivePassphrase(pass)
+                        if (driveAuthManager.isRememberVaultPassphraseEnabled()) {
+                            driveAuthManager.saveVaultPassphrasePreference(
+                                passphrase = pass,
+                                rememberPassphrase = true,
+                                documentId = syncedDoc.documentId
+                            )
+                        }
+                    }
                     when (outcome) {
                         is SafDriveSyncOutcome.AlreadyUpToDate ->
                             workspaceViewModel.updateDriveSyncProgress(
@@ -962,10 +988,12 @@ class MainActivity : AppCompatActivity() {
                             )
                     }
                 }.onFailure { err ->
-                    workspaceViewModel.updateDriveSyncProgress(
-                        false,
+                    val msg = if (err is com.nexusts.app.core.vault.crypto.VaultAuthenticationException) {
+                        "Master passphrase required to unlock '${linked.displayName}' (Failed to unlock .nxts vault)."
+                    } else {
                         "Google Drive sync error: ${err.message}"
-                    )
+                    }
+                    workspaceViewModel.updateDriveSyncProgress(false, msg)
                 }
             } finally {
                 pass.fill('\u0000')
