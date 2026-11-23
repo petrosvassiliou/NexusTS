@@ -471,10 +471,10 @@ class NexusWorkspaceComposeE2ETest {
         assertFalse(GitHubReleaseUpdateChecker.isNewerSemanticVersion("0.3.0-beta.1", "0.3.0"))
         assertFalse(GitHubReleaseUpdateChecker.isNewerSemanticVersion("0.3.0-beta.1", "0.3.0-beta.1"))
         assertTrue(GitHubReleaseUpdateChecker.isNewerSemanticVersion("v1.0.0", "0.9.9"))
-        // Historical pre-rebase tags (1.1.0–1.2.1-beta.2) must never be flagged as updates
-        assertFalse(GitHubReleaseUpdateChecker.isNewerSemanticVersion("v1.2.0", "0.3.0-beta.1"))
-        assertFalse(GitHubReleaseUpdateChecker.isNewerSemanticVersion("v1.2.1-beta.2", "1.0.0"))
-        assertFalse(GitHubReleaseUpdateChecker.isNewerSemanticVersion("1.1.9", "1.0.0"))
+        assertTrue(GitHubReleaseUpdateChecker.isNewerSemanticVersion("v1.0.1", "1.0.0"))
+        assertTrue(GitHubReleaseUpdateChecker.isNewerSemanticVersion("v1.1.0", "1.0.1"))
+        assertTrue(GitHubReleaseUpdateChecker.isNewerSemanticVersion("v1.2.0", "1.1.9"))
+        assertFalse(GitHubReleaseUpdateChecker.isNewerSemanticVersion("v1.0.0", "1.0.1"))
     }
 
     @Test

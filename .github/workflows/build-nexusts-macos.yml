@@ -123,6 +123,7 @@ jobs:
 
       - name: Package Universal2 NexusTS.app & DMG installer
         env:
+          NEXUSTS_RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || (github.event_name == 'workflow_dispatch' && inputs.release_tag) || '' }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
@@ -190,9 +191,13 @@ jobs:
           codesign --verify --deep --strict --verbose=2 macos/dist/NexusTS.app
 
           echo "==> Executing packaged NexusTS --self-test binary"
+          EXPECTED_TAG="${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || (github.event_name == 'workflow_dispatch' && inputs.release_tag) || 'v1.0.0' }}"
+          EXPECTED_VER="${EXPECTED_TAG#v}"
+          PLIST_VER="$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" macos/dist/NexusTS.app/Contents/Info.plist)"
+          test "${PLIST_VER}" = "${EXPECTED_VER}"
           SELF_TEST_OUT="$("${BIN}" --self-test)"
           echo "${SELF_TEST_OUT}"
-          echo "${SELF_TEST_OUT}" | grep -q "NEXUSTS_MACOS_SELF_TEST_OK version=1.0.0"
+          echo "${SELF_TEST_OUT}" | grep -q "NEXUSTS_MACOS_SELF_TEST_OK version=${EXPECTED_VER}"
 
       - name: Upload NexusTS macOS Universal DMG & App Bundle
         uses: actions/upload-artifact@v4

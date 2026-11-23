@@ -28,7 +28,7 @@ data class GitHubReleaseCheckResult(
 )
 
 /**
- * Google Play Protect–Compliant GitHub Releases Auto-Update Checker (`v1.1.5`).
+ * Google Play Protect–Compliant GitHub Releases Auto-Update Checker.
  *
  * Security Guarantees:
  * - Strictly ZERO `REQUEST_INSTALL_PACKAGES` permissions in `AndroidManifest.xml`.
@@ -138,10 +138,6 @@ class GitHubReleaseUpdateChecker(
                 val arr = lenientJson.parseToJsonElement(resp.body?.string().orEmpty()) as? JsonArray ?: return null
                 arr.map { it.jsonObject }
                     .filter { it["draft"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() != true }
-                    .filterNot {
-                        val tag = it["tag_name"]?.jsonPrimitive?.contentOrNull.orEmpty()
-                        !isLegacyPreRebaseVersion(currentVersionName) && isLegacyPreRebaseVersion(tag)
-                    }
                     .maxWithOrNull { a, b ->
                         val tagA = a["tag_name"]?.jsonPrimitive?.contentOrNull.orEmpty()
                         val tagB = b["tag_name"]?.jsonPrimitive?.contentOrNull.orEmpty()
@@ -180,23 +176,7 @@ class GitHubReleaseUpdateChecker(
             "release-assets.githubusercontent.com"
         )
 
-        /**
-         * Historical tags published prior to rebasing NexusTS (`1.1.0`–`1.2.1-beta.2`).
-         * Ignored until post-1.0 releases reach `1.1.0` so historical pre-rebase tags are never
-         * falsely flagged over `1.0.x`.
-         */
-        private val LEGACY_PRE_REBASE_VERSIONS = setOf(
-            "1.1.0", "1.1.1", "1.1.2", "1.1.3", "1.1.4",
-            "1.1.5", "1.1.6", "1.1.7", "1.1.8", "1.1.9",
-            "1.2.0", "1.2.1-beta.1", "1.2.1-beta.2"
-        )
-
         private val SHA256_LINE_REGEX = Regex("^([0-9a-fA-F]{64})\\s+\\*?(.+)$")
-
-        internal fun isLegacyPreRebaseVersion(rawVersion: String): Boolean {
-            val cleaned = rawVersion.removePrefix("v").removePrefix("V").trim()
-            return cleaned in LEGACY_PRE_REBASE_VERSIONS
-        }
 
         internal fun isAllowedGitHubHttpsUrl(url: String): Boolean {
             val parsed = url.trim().toHttpUrlOrNull() ?: return false
@@ -228,9 +208,6 @@ class GitHubReleaseUpdateChecker(
             val candTrim = candidate.removePrefix("v").removePrefix("V").trim()
             val currTrim = current.removePrefix("v").removePrefix("V").trim()
             if (candTrim.isBlank() || currTrim.isBlank()) return false
-            if (!isLegacyPreRebaseVersion(currTrim) && isLegacyPreRebaseVersion(candTrim)) {
-                return false
-            }
 
             val candCore = candTrim.substringBefore('-').substringBefore('+')
             val currCore = currTrim.substringBefore('-').substringBefore('+')

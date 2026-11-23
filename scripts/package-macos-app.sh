@@ -36,6 +36,37 @@ mkdir -p "${APP_BUNDLE}/Contents/MacOS" "${APP_BUNDLE}/Contents/Resources"
 cp "${BIN_PATH}" "${APP_BUNDLE}/Contents/MacOS/NexusTS"
 chmod +x "${APP_BUNDLE}/Contents/MacOS/NexusTS"
 cp "${MACOS_DIR}/Info.plist" "${APP_BUNDLE}/Contents/Info.plist"
+
+RAW_RELEASE_TAG=""
+if [[ "${NEXUSTS_RELEASE_TAG:-}" == v* ]]; then
+    RAW_RELEASE_TAG="${NEXUSTS_RELEASE_TAG}"
+elif [[ "${GITHUB_REF_NAME:-}" == v* ]]; then
+    RAW_RELEASE_TAG="${GITHUB_REF_NAME}"
+fi
+
+if [[ -n "${RAW_RELEASE_TAG}" ]]; then
+    RESOLVED_VERSION_NAME="${RAW_RELEASE_TAG#v}"
+    if [[ "${RESOLVED_VERSION_NAME}" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
+        V_MAJOR=$(( 10#${BASH_REMATCH[1]} ))
+        V_MINOR=$(( 10#${BASH_REMATCH[2]} ))
+        V_PATCH=$(( 10#${BASH_REMATCH[3]} ))
+        if (( V_MAJOR <= 1 && V_MINOR <= 9 && V_PATCH <= 99 )); then
+            COMPUTED_BUILD=$(( 10000 + V_MAJOR * 1000 + V_MINOR * 100 + V_PATCH ))
+        else
+            COMPUTED_BUILD=$(( V_MAJOR * 1000000 + V_MINOR * 1000 + V_PATCH ))
+        fi
+        RESOLVED_BUILD_NUMBER=$(( COMPUTED_BUILD > 11000 ? COMPUTED_BUILD : 11000 ))
+    else
+        RESOLVED_BUILD_NUMBER="11000"
+    fi
+    /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${RESOLVED_VERSION_NAME}" "${APP_BUNDLE}/Contents/Info.plist"
+    /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${RESOLVED_BUILD_NUMBER}" "${APP_BUNDLE}/Contents/Info.plist"
+else
+    RESOLVED_VERSION_NAME="$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "${APP_BUNDLE}/Contents/Info.plist")"
+    RESOLVED_BUILD_NUMBER="$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "${APP_BUNDLE}/Contents/Info.plist")"
+fi
+echo "==> Stamped NexusTS.app Info.plist: CFBundleShortVersionString=${RESOLVED_VERSION_NAME}, CFBundleVersion=${RESOLVED_BUILD_NUMBER}"
+
 printf "APPL????" > "${APP_BUNDLE}/Contents/PkgInfo"
 
 FREERDP_MAC_LIB_DIR="${REPO_ROOT}/native/third_party/freerdp3/macos/lib"
@@ -330,6 +361,22 @@ fi
 ZIP_OUT="${DIST_DIR}/NexusTS-macOS-${ARCHIVE_SUFFIX}.zip"
 DMG_OUT="${DIST_DIR}/NexusTS-macOS-${ARCHIVE_SUFFIX}.dmg"
 
+HAS_NOTARY_CREDENTIALS="false"
+if [[ "${SIGN_IDENTITY}" != "-" && -n "${APPLE_ID:-}" && -n "${APPLE_TEAM_ID:-}" && -n "${APPLE_APP_SPECIFIC_PASSWORD:-}" ]]; then
+    HAS_NOTARY_CREDENTIALS="true"
+    NOTARY_UPLOAD_ZIP="${DIST_DIR}/NexusTS-notary-upload.zip"
+    echo "==> Submitting NexusTS.app for Apple Developer ID Notarization & Stapling..."
+    ditto -c -k --sequesterRsrc --keepParent "${APP_BUNDLE}" "${NOTARY_UPLOAD_ZIP}"
+    xcrun notarytool submit "${NOTARY_UPLOAD_ZIP}" \
+        --apple-id "${APPLE_ID}" \
+        --team-id "${APPLE_TEAM_ID}" \
+        --password "${APPLE_APP_SPECIFIC_PASSWORD}" \
+        --wait
+    rm -f "${NOTARY_UPLOAD_ZIP}"
+    xcrun stapler staple "${APP_BUNDLE}"
+    xcrun stapler validate "${APP_BUNDLE}"
+fi
+
 ditto -c -k --sequesterRsrc --keepParent "${APP_BUNDLE}" "${ZIP_OUT}"
 
 STAGE_DMG_DIR="${DIST_DIR}/dmg-stage"
@@ -339,8 +386,8 @@ ln -s /Applications "${STAGE_DMG_DIR}/Applications"
 hdiutil create -volname "NexusTS" -srcfolder "${STAGE_DMG_DIR}" -ov -format UDZO "${DMG_OUT}" >/dev/null
 rm -rf "${STAGE_DMG_DIR}"
 
-if [[ "${SIGN_IDENTITY}" != "-" && -n "${APPLE_ID:-}" && -n "${APPLE_TEAM_ID:-}" && -n "${APPLE_APP_SPECIFIC_PASSWORD:-}" ]]; then
-    echo "==> Submitting ${DMG_OUT} for Apple Developer ID Notarization..."
+if [[ "${HAS_NOTARY_CREDENTIALS}" == "true" ]]; then
+    echo "==> Submitting ${DMG_OUT} for Apple Developer ID Notarization & Stapling..."
     codesign --force --timestamp --sign "${SIGN_IDENTITY}" "${DMG_OUT}"
     xcrun notarytool submit "${DMG_OUT}" \
         --apple-id "${APPLE_ID}" \
@@ -348,6 +395,7 @@ if [[ "${SIGN_IDENTITY}" != "-" && -n "${APPLE_ID:-}" && -n "${APPLE_TEAM_ID:-}"
         --password "${APPLE_APP_SPECIFIC_PASSWORD}" \
         --wait
     xcrun stapler staple "${DMG_OUT}"
+    xcrun stapler validate "${DMG_OUT}"
 fi
 
 echo "==> Packaged macOS artifacts:"

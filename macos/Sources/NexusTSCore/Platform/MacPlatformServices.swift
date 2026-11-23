@@ -877,21 +877,22 @@ public struct MacReleaseUpdateCandidate: Equatable, Sendable {
 }
 
 public enum MacGitHubReleaseUpdater {
-    public static let currentVersion = "1.0.0"
-    public static let githubTokenKeychainKey = "github_release_pat"
-
-    private static let legacyPreRebaseVersions: Set<String> = [
-        "1.1.0", "1.1.1", "1.1.2", "1.1.3", "1.1.4",
-        "1.1.5", "1.1.6", "1.1.7", "1.1.8", "1.1.9",
-        "1.2.0", "1.2.1-beta.1", "1.2.1-beta.2"
-    ]
-
-    public static func isLegacyPreRebaseVersion(_ rawVersion: String) -> Bool {
-        let cleaned = rawVersion
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .trimmingCharacters(in: CharacterSet(charactersIn: "vV"))
-        return legacyPreRebaseVersions.contains(cleaned)
+    public static var currentVersion: String {
+        if Bundle.main.bundleIdentifier == "com.nexusts.app.macos",
+           let bundleVer = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String {
+            let trimmed = bundleVer.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                return trimmed
+            }
+        }
+        if let envTag = ProcessInfo.processInfo.environment["NEXUSTS_RELEASE_TAG"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !envTag.isEmpty {
+            return envTag.trimmingCharacters(in: CharacterSet(charactersIn: "vV"))
+        }
+        return "1.0.0"
     }
+    public static let githubTokenKeychainKey = "github_release_pat"
 
     // MARK: - GitHub Token Discovery (Supports Both Public & Private Repositories)
 
@@ -1046,7 +1047,6 @@ public enum MacGitHubReleaseUpdater {
         if isBetaChannel {
             let list = try JSONDecoder().decode([ReleasePayload].self, from: data)
                 .filter { $0.draft != true }
-                .filter { isLegacyPreRebaseVersion(currentVersion) || !isLegacyPreRebaseVersion($0.tag_name) }
             guard let newest = list.max(by: { compareSemver($1.tag_name, isNewerThan: $0.tag_name) }) else {
                 return nil
             }
@@ -1434,9 +1434,6 @@ public enum MacGitHubReleaseUpdater {
         let currTrim = current.trimmingCharacters(in: .whitespacesAndNewlines)
             .trimmingCharacters(in: CharacterSet(charactersIn: "vV"))
         guard !candTrim.isEmpty, !currTrim.isEmpty else { return false }
-        if !isLegacyPreRebaseVersion(currTrim) && isLegacyPreRebaseVersion(candTrim) {
-            return false
-        }
 
         let candNoBuild = String(candTrim.split(separator: "+", maxSplits: 1).first ?? "")
         let currNoBuild = String(currTrim.split(separator: "+", maxSplits: 1).first ?? "")

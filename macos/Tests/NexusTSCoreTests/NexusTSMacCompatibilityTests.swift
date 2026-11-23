@@ -311,10 +311,10 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
         XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.3.0", isNewerThan: "0.3.0-beta.1"))
         XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("0.4.0", isNewerThan: "0.3.0"))
         XCTAssertFalse(MacGitHubReleaseUpdater.compareSemver("0.3.0-beta.1", isNewerThan: "0.3.0"))
-        XCTAssertFalse(MacGitHubReleaseUpdater.compareSemver("1.2.0", isNewerThan: "0.3.0-beta.1"))
-        XCTAssertFalse(MacGitHubReleaseUpdater.compareSemver("1.2.1-beta.2", isNewerThan: "0.3.0-beta.1"))
-        XCTAssertFalse(MacGitHubReleaseUpdater.compareSemver("1.1.9", isNewerThan: "0.3.0"))
-        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("1.3.0", isNewerThan: "0.3.0"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("1.0.1", isNewerThan: "1.0.0"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("1.1.0", isNewerThan: "1.0.1"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("1.2.0", isNewerThan: "1.1.9"))
+        XCTAssertFalse(MacGitHubReleaseUpdater.compareSemver("1.0.0", isNewerThan: "1.0.1"))
     }
 
     func testMacWorkspaceShortcutsUniquenessAndLocalizedLabels() {
@@ -357,7 +357,7 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
         XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("1.0.0", isNewerThan: "0.9.0"))
         XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("1.0.0", isNewerThan: "0.8.14"))
         XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("1.0.0", isNewerThan: "0.3.0-beta.6"))
-        XCTAssertFalse(MacGitHubReleaseUpdater.isLegacyPreRebaseVersion("v1.0.0"))
+        XCTAssertTrue(MacGitHubReleaseUpdater.compareSemver("1.1.0", isNewerThan: "1.0.0"))
         XCTAssertEqual(LocalizedWorkspaceStrings.catalog(for: .en).studios, "Manage")
         XCTAssertEqual(LocalizedWorkspaceStrings.catalog(for: .en).logOffSession, "Log Off Session")
 
