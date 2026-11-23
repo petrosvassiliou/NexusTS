@@ -1364,10 +1364,14 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
 
         let server_task = tokio::spawn(async move {
-            let (mut sock, _) = listener.accept().await.unwrap();
-
-            // Read Step 1 (Negotiate Type 1)
-            let req1 = read_http_response_like_request(&mut sock).await;
+            // Ignore any stray 0-byte probe connection so Step 1 always pairs with the real WinRM HTTP POST
+            let (mut sock, req1) = loop {
+                let (mut candidate, _) = listener.accept().await.unwrap();
+                let hdr = read_http_response_like_request(&mut candidate).await;
+                if !hdr.is_empty() {
+                    break (candidate, hdr);
+                }
+            };
             assert!(req1.contains("Authorization: Negotiate "));
 
             // Build NTLMSSP Type 2 Challenge with TargetInfo + Timestamp
@@ -1485,6 +1489,9 @@ mod tests {
                 break pos;
             }
             let n = sock.read(&mut tmp).await.unwrap();
+            if n == 0 {
+                return (String::new(), Vec::new());
+            }
             buf.extend_from_slice(&tmp[..n]);
         };
         let hdr = String::from_utf8_lossy(&buf[..hdr_end]).into_owned();
@@ -1499,6 +1506,9 @@ mod tests {
         let mut body = buf.split_off(hdr_end + 4);
         while body.len() < cl {
             let n = sock.read(&mut tmp).await.unwrap();
+            if n == 0 {
+                break;
+            }
             body.extend_from_slice(&tmp[..n]);
         }
         body.truncate(cl);

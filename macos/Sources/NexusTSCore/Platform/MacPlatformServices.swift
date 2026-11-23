@@ -1075,6 +1075,11 @@ public enum MacGitHubReleaseUpdater {
             $0.name.lowercased().hasSuffix(".dmg")
         })
 
+        // Do not advertise a macOS update while the macOS CI job is still building/uploading its .zip/.dmg assets
+        guard zipAsset != nil || dmgAsset != nil else {
+            return nil
+        }
+
         let sumsAsset = rel.assets?.first(where: {
             $0.name == "SHA256SUMS-macos.txt"
         }) ?? rel.assets?.first(where: {

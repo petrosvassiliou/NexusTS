@@ -1055,9 +1055,8 @@ mod tests {
         let ping_ms = tcp_latency_ping("127.0.0.1", p1, 500).await;
         assert!(ping_ms.is_some(), "Open loopback port should respond to TCP latency ping");
 
-        let start_port = p1.saturating_sub(4).max(1);
-        let end_port = p1.saturating_add(4);
-        let hits = scan_tcp_ports("127.0.0.1", start_port, end_port, 200, 16).await;
+        // Scan only ports owned by this test (never sweep p1-4..=p1+4 across parallel tests' ephemeral listeners!)
+        let hits = scan_tcp_ports("127.0.0.1", p1, p1, 200, 16).await;
 
         let matched = hits.iter().find(|h| h.port == p1).expect("scanner found p1");
         assert!(matched.open);
@@ -1073,6 +1072,8 @@ mod tests {
         let closed_probe = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let closed_port = closed_probe.local_addr().unwrap().port();
         drop(closed_probe);
+        let closed_hits = scan_tcp_ports("127.0.0.1", closed_port, closed_port, 150, 4).await;
+        assert!(closed_hits.iter().all(|h| !h.open), "Closed port must not report open");
         let rst_ms = tcp_latency_ping("127.0.0.1", closed_port, 500).await;
         assert!(rst_ms.is_some(), "TCP RST on closed port proves host is alive");
 
