@@ -1,0 +1,1 @@
+• NexusTS 1.0.1 Stabilitäts- & Zuverlässigkeits-Update: Schützt die Google-Drive- und iCloud-.nxts-Synchronisierung zuverlässig bei noch mountendem DriveFS/CloudStorage durch Mutex-Serialisierung und automatische Vorab-Backups, begrenzt H.264-RDPGFX-Flächen auf gedockten 5K-/Ultrawide-Monitoren proportional auf 4K und unterstützt automatische Workspace-Managed-Play-Updates.

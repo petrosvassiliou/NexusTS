@@ -1,0 +1,1 @@
+• NexusTS 1.0.1 Mise à jour de stabilité et fiabilité : Sécurise la synchronisation des coffres .nxts sur Google Drive et iCloud lors du montage DriveFS/CloudStorage avec verrouillage mutex et sauvegardes automatiques, applique la limite proportionnelle 4K H.264 RDPGFX sur écrans externes 5K/ultrawide et active les mises à jour automatiques via Workspace Managed Play.

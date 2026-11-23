@@ -1,0 +1,1 @@
+• NexusTS 1.0.1 Aggiornamento di Stabilità e Affidabilità: Protegge la sincronizzazione dei vault .nxts su Google Drive e iCloud durante il montaggio di DriveFS/CloudStorage con mutex di processo e backup automatici, applica il limite proporzionale 4K H.264 RDPGFX su monitor esterni 5K/ultrawide e abilita aggiornamenti automatici tramite Workspace Managed Play.

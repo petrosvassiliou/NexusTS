@@ -53,9 +53,6 @@ android {
             useSupportLibrary = true
         }
 
-        // Restrict resource packaging strictly to our 6 supported enterprise locales
-        resourceConfigurations += listOf("en", "de", "it", "es", "el", "fr")
-
         val resolvedWebClientId = (
             System.getenv("NEXUSTS_GOOGLE_WEB_CLIENT_ID")?.takeIf { it.isNotBlank() }
                 ?: providers.gradleProperty("nexusts.google.webClientId").orNull.orEmpty()
@@ -68,6 +65,11 @@ android {
                 .split(",")
                 .map { it.trim() }
         }
+    }
+
+    // Restrict resource packaging strictly to our 6 supported enterprise locales
+    androidResources {
+        localeFilters += listOf("en", "de", "it", "es", "el", "fr")
     }
 
     val resolvedKeystorePath = System.getenv("NEXUSTS_KEYSTORE_PATH")?.takeIf { it.isNotBlank() }

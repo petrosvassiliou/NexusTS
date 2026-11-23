@@ -193,6 +193,7 @@ public struct LiveBookmarkSyncResult: Equatable, Sendable {
 
 public final class MacCloudBookmarkSyncBridge: @unchecked Sendable {
     private let defaults: UserDefaults
+    private let syncLock = NSLock()
     private let bookmarkKey = "com.nexusts.macos.cloud.securityBookmark"
     private let lastShaKey = "com.nexusts.macos.cloud.lastRemoteSha256"
     private let lastRevKey = "com.nexusts.macos.cloud.lastSyncedRevision"
@@ -254,25 +255,27 @@ public final class MacCloudBookmarkSyncBridge: @unchecked Sendable {
         return locations
     }
 
-    public func linkVaultFileURL(_ url: URL) throws {
+    private func encodeBookmarkData(for url: URL) throws -> Data {
         #if os(macOS)
-        let bookmark: Data
         if let standard = try? url.bookmarkData(
             options: [],
             includingResourceValuesForKeys: nil,
             relativeTo: nil
         ) {
-            bookmark = standard
-        } else {
-            bookmark = try url.bookmarkData(
-                options: [.withSecurityScope],
-                includingResourceValuesForKeys: nil,
-                relativeTo: nil
-            )
+            return standard
         }
+        return try url.bookmarkData(
+            options: [.withSecurityScope],
+            includingResourceValuesForKeys: nil,
+            relativeTo: nil
+        )
         #else
-        let bookmark = try url.bookmarkData()
+        return try url.bookmarkData()
         #endif
+    }
+
+    public func linkVaultFileURL(_ url: URL) throws {
+        let bookmark = try encodeBookmarkData(for: url)
         defaults.set(bookmark, forKey: bookmarkKey)
         defaults.removeObject(forKey: lastShaKey)
         defaults.removeObject(forKey: lastRevKey)
@@ -302,8 +305,9 @@ public final class MacCloudBookmarkSyncBridge: @unchecked Sendable {
             bookmarkDataIsStale: &stale
         ))
         guard let url = resolved else { return nil }
-        if stale {
-            try? linkVaultFileURL(url)
+        if stale, let refreshed = try? encodeBookmarkData(for: url) {
+            // Preserve lastShaKey, lastRevKey, and linkedDocIdKey across stale bookmark refreshes!
+            defaults.set(refreshed, forKey: bookmarkKey)
         }
         return url
         #else
@@ -337,6 +341,8 @@ public final class MacCloudBookmarkSyncBridge: @unchecked Sendable {
         explicitURL: URL? = nil,
         kdf: Argon2KdfConfiguration = .enterpriseDefault
     ) throws {
+        syncLock.lock()
+        defer { syncLock.unlock() }
         guard let targetURL = explicitURL ?? resolveLinkedURL() else { return }
         #if os(macOS)
         let scoped = targetURL.startAccessingSecurityScopedResource()
@@ -359,6 +365,8 @@ public final class MacCloudBookmarkSyncBridge: @unchecked Sendable {
         kdf: Argon2KdfConfiguration = .enterpriseDefault,
         localIsStarterVault: Bool = false
     ) throws -> LiveBookmarkSyncResult {
+        syncLock.lock()
+        defer { syncLock.unlock() }
         guard let targetURL = explicitURL ?? resolveLinkedURL() else {
             throw NativeBridgeError.serializationFailed("No Google Drive or iCloud Drive .nxts file linked.")
         }
@@ -368,12 +376,25 @@ public final class MacCloudBookmarkSyncBridge: @unchecked Sendable {
         #endif
 
         let fm = FileManager.default
-        try fm.createDirectory(
-            at: targetURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
+        let lastSha = defaults.string(forKey: lastShaKey)
+        let lastRev = Int64(defaults.integer(forKey: lastRevKey))
+        let hadPriorRemoteSync = !(lastSha ?? "").isEmpty || lastRev > 0
+        let parentDir = targetURL.deletingLastPathComponent()
 
         if !fm.fileExists(atPath: targetURL.path) {
+            let icloudPlaceholder = parentDir.appendingPathComponent(".\(targetURL.lastPathComponent).icloud")
+            if fm.fileExists(atPath: icloudPlaceholder.path) || fm.isUbiquitousItem(at: targetURL) {
+                try? fm.startDownloadingUbiquitousItem(at: targetURL)
+                throw NativeBridgeError.serializationFailed(
+                    "iCloud Drive is downloading '\(targetURL.lastPathComponent)'. Sync will resume once the file is available offline."
+                )
+            }
+            if hadPriorRemoteSync {
+                throw NativeBridgeError.serializationFailed(
+                    "Linked cloud vault '\(targetURL.lastPathComponent)' is temporarily unavailable (cloud drive may still be mounting). Sync aborted to protect remote data."
+                )
+            }
+            try fm.createDirectory(at: parentDir, withIntermediateDirectories: true)
             let sealed = try NxtsVaultSerializer.seal(document: localDocument, passphrase: passphrase, kdf: kdf)
             try writeAtomically(sealed, to: targetURL)
             recordSyncState(docId: localDocument.documentId, rev: localDocument.revision, sha256: sha256Hex(sealed))
@@ -387,6 +408,11 @@ public final class MacCloudBookmarkSyncBridge: @unchecked Sendable {
 
         let remoteBytes = try Data(contentsOf: targetURL)
         if remoteBytes.isEmpty {
+            if hadPriorRemoteSync {
+                throw NativeBridgeError.serializationFailed(
+                    "Linked cloud vault '\(targetURL.lastPathComponent)' returned 0 bytes despite prior sync history. Sync aborted to prevent overwriting remote vault."
+                )
+            }
             let sealed = try NxtsVaultSerializer.seal(document: localDocument, passphrase: passphrase, kdf: kdf)
             try writeAtomically(sealed, to: targetURL)
             recordSyncState(docId: localDocument.documentId, rev: localDocument.revision, sha256: sha256Hex(sealed))
@@ -399,8 +425,6 @@ public final class MacCloudBookmarkSyncBridge: @unchecked Sendable {
         }
 
         let remoteSha = sha256Hex(remoteBytes)
-        let lastSha = defaults.string(forKey: lastShaKey)
-        let lastRev = Int64(defaults.integer(forKey: lastRevKey))
 
         if remoteSha == lastSha {
             if localDocument.revision > lastRev {
@@ -517,9 +541,14 @@ public final class MacCloudBookmarkSyncBridge: @unchecked Sendable {
     }
 
     private func writeAtomically(_ data: Data, to url: URL) throws {
-        let tmp = url.deletingLastPathComponent().appendingPathComponent(".\(url.lastPathComponent).tmp")
+        let fm = FileManager.default
+        let tmp = url.deletingLastPathComponent().appendingPathComponent(".\(url.lastPathComponent).\(UUID().uuidString).tmp")
         try data.write(to: tmp, options: .atomic)
-        _ = try FileManager.default.replaceItemAt(url, withItemAt: tmp)
+        if fm.fileExists(atPath: url.path) {
+            _ = try fm.replaceItemAt(url, withItemAt: tmp)
+        } else {
+            try fm.moveItem(at: tmp, to: url)
+        }
     }
 
     private func recordSyncState(docId: String, rev: Int64, sha256: String) {

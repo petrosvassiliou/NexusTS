@@ -1675,6 +1675,75 @@ final class NexusTSMacCompatibilityTests: XCTestCase {
         XCTAssertEqual(sanitized.connections.count, 500)
         XCTAssertLessThan(elapsedMs, 250.0, "500-connection inheritance resolution exceeded budget: \(elapsedMs)ms")
     }
+
+    func testMacCloudBookmarkUnmountedVolumeAndEvictedICloudClobberGuards() throws {
+        let suiteName = "com.nexusts.tests.cloudguard.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("nexusts-cloudguard-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let vaultURL = tempDir.appendingPathComponent("FleetVault.nxts")
+        let bridge = MacCloudBookmarkSyncBridge(defaults: defaults)
+        let fastKdf = Argon2KdfConfiguration(memoryKiB: 8192, iterations: 1, parallelism: 1)
+
+        var prodDoc = NxtsVaultDocument(documentId: "doc-prod-mac-101", name: "Mac Fleet", revision: 3)
+        prodDoc.connections.append(VaultConnection(id: "c-1", name: "MacMini-Build", host: "10.0.1.50", protocolType: .SSH))
+
+        // 1. Initial push creates FleetVault.nxts and records sync baseline
+        let firstSync = try bridge.syncWithLinkedFile(
+            localDocument: prodDoc,
+            passphrase: "test-sync-passphrase",
+            explicitURL: vaultURL,
+            kdf: fastKdf
+        )
+        XCTAssertEqual(firstSync.action, .pushedLocal)
+        let savedCiphertext = try Data(contentsOf: vaultURL)
+
+        // 2. Simulate cloud volume temporarily unmounted (file missing despite prior sync history) -> MUST throw and NOT recreate/clobber
+        try FileManager.default.removeItem(at: vaultURL)
+        let starterDoc = NxtsVaultDocument.sampleStarterVault()
+        XCTAssertThrowsError(
+            try bridge.syncWithLinkedFile(
+                localDocument: starterDoc,
+                passphrase: "test-sync-passphrase",
+                explicitURL: vaultURL,
+                kdf: fastKdf,
+                localIsStarterVault: true
+            )
+        )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: vaultURL.path))
+
+        // 3. Simulate evicted iCloud placeholder (.FleetVault.nxts.icloud) -> MUST throw and NOT overwrite
+        let icloudPlaceholder = tempDir.appendingPathComponent(".FleetVault.nxts.icloud")
+        try Data("icloud-stub".utf8).write(to: icloudPlaceholder)
+        XCTAssertThrowsError(
+            try bridge.syncWithLinkedFile(
+                localDocument: starterDoc,
+                passphrase: "test-sync-passphrase",
+                explicitURL: vaultURL,
+                kdf: fastKdf,
+                localIsStarterVault: true
+            )
+        )
+        try FileManager.default.removeItem(at: icloudPlaceholder)
+
+        // 4. Restore real vault bytes -> pulls cleanly with zero data loss
+        try savedCiphertext.write(to: vaultURL)
+        let recovered = try bridge.syncWithLinkedFile(
+            localDocument: starterDoc,
+            passphrase: "test-sync-passphrase",
+            explicitURL: vaultURL,
+            kdf: fastKdf,
+            localIsStarterVault: true
+        )
+        XCTAssertEqual(recovered.action, .pulledRemote)
+        XCTAssertEqual(recovered.document.documentId, "doc-prod-mac-101")
+        XCTAssertEqual(recovered.document.connections.count, 1)
+    }
 }
 
 private extension String {

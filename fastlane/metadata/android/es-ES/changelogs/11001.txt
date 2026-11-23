@@ -1,0 +1,1 @@
+• NexusTS 1.0.1 Actualización de Estabilidad y Fiabilidad: Protege la sincronización de bóvedas .nxts en Google Drive e iCloud frente a volúmenes DriveFS/CloudStorage en montaje con exclusión mutua y copias previas, aplica el límite proporcional 4K H.264 RDPGFX en monitores 5K/ultrawide en ChromeOS/Googlebook/Android y añade actualizaciones automáticas en Workspace Managed Play.

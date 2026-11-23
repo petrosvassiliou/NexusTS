@@ -70,16 +70,11 @@ inline std::pair<uint32_t, uint32_t> clamp_rdp_surface_dimensions(
     uint32_t max_h,
     bool h264_enabled
 ) {
-#ifndef __ANDROID__
-    // Cisco OpenH264 v2.5.0 & Windows MF H.264 RDPGFX surfaces max out at 3840x2160 (32,400 <= 36,864 macroblocks).
-    // Proportionally scale down >4K Retina viewports while preserving exact aspect ratio so RDPGFX never stalls.
+    // Cisco OpenH264 v2.5.0, Android MediaCodec, & Windows MF H.264 RDPGFX surfaces max out at 3840x2160
+    // (32,400 <= 36,864 macroblocks). Proportionally scale down >4K viewports on all platforms while
+    // preserving exact aspect ratio so RDPGFX never stalls on docked 5K/ultrawide displays.
     const uint32_t effective_max_w = h264_enabled ? std::min<uint32_t>(max_w, 3840u) : max_w;
     const uint32_t effective_max_h = h264_enabled ? std::min<uint32_t>(max_h, 2160u) : max_h;
-#else
-    (void)h264_enabled;
-    const uint32_t effective_max_w = max_w;
-    const uint32_t effective_max_h = max_h;
-#endif
     double w = static_cast<double>(std::max(raw_w, min_w));
     double h = static_cast<double>(std::max(raw_h, min_h));
     if (w > static_cast<double>(effective_max_w) || h > static_cast<double>(effective_max_h)) {

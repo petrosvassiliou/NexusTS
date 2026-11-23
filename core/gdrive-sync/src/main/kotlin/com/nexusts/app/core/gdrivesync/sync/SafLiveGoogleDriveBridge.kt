@@ -7,8 +7,12 @@ import android.provider.OpenableColumns
 import com.nexusts.app.core.vault.crypto.NxtsVaultSerializer
 import com.nexusts.app.core.vault.model.NxtsVaultDocument
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.io.FileNotFoundException
+import java.io.IOException
 import java.security.MessageDigest
 import kotlin.math.max
 
@@ -42,11 +46,9 @@ class ContentResolverSafByteTransport(
 ) : SafByteTransport {
     override fun readBytes(uriString: String): ByteArray {
         val uri = Uri.parse(uriString)
-        return try {
-            appContext.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: ByteArray(0)
-        } catch (_: FileNotFoundException) {
-            ByteArray(0)
-        }
+        val input = appContext.contentResolver.openInputStream(uri)
+            ?: throw FileNotFoundException("Google Drive provider returned null InputStream for $uriString")
+        return input.use { it.readBytes() }
     }
 
     override fun writeBytes(uriString: String, payload: ByteArray) {
@@ -96,6 +98,9 @@ class SafLiveGoogleDriveBridge(
 ) {
     private val prefs by lazy {
         appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    }
+    private val localBackupDir by lazy {
+        File(appContext.filesDir, "vaults/saf-backups").apply { mkdirs() }
     }
 
     @JvmOverloads
@@ -168,108 +173,127 @@ class SafLiveGoogleDriveBridge(
         vaultPassphrase: CharArray,
         localDeviceId: String = "Googlebook-OS",
         localIsUninitializedStarter: Boolean = false
-    ): SafDriveSyncOutcome = withContext(Dispatchers.IO) {
-        val linked = getLinkedVaultInfo()
-            ?: error("No persistent Google Drive .nxts file is linked yet.")
+    ): SafDriveSyncOutcome = PROCESS_SAF_SYNC_MUTEX.withLock {
+        withContext(Dispatchers.IO) {
+            val linked = getLinkedVaultInfo()
+                ?: error("No persistent Google Drive .nxts file is linked yet.")
 
-        val remoteBytes = byteTransport.readBytes(linked.uriString)
+            val hadPriorRemoteSync = linked.lastSyncedRemoteSha256.isNotBlank() || linked.lastSyncedRevision > 0L
+            val remoteBytes = try {
+                byteTransport.readBytes(linked.uriString)
+            } catch (fnf: FileNotFoundException) {
+                if (hadPriorRemoteSync) {
+                    throw IOException(
+                        "Linked Google Drive vault '${linked.displayName}' is temporarily unavailable (DriveFS may still be mounting). Sync aborted to protect remote data.",
+                        fnf
+                    )
+                }
+                ByteArray(0)
+            }
 
-        // Case 1: Newly created empty .nxts document in Google Drive
-        if (remoteBytes.isEmpty()) {
-            val docToSeal = alignLocalClockWithoutExtraRevisionBump(currentDocument, localDeviceId)
-            val sealed = serializer.sealDocument(docToSeal, vaultPassphrase.copyOf())
-            byteTransport.writeBytes(linked.uriString, sealed)
-            recordSyncSuccess(docToSeal.revision, sha256Hex(sealed), docToSeal.documentId)
-            return@withContext SafDriveSyncOutcome.PushedToDrive(docToSeal, sealed.size)
-        }
-
-        val remoteSha = sha256Hex(remoteBytes)
-
-        // Case 2: Fast-path when remote file matches last synced hash AND local vault is the active synced document
-        // (Never take this fast-path on a cold-started starter vault — always unseal and pull the real Drive vault!)
-        val sameKnownDocId = !localIsUninitializedStarter &&
-            !linked.linkedDocumentId.isNullOrBlank() &&
-            currentDocument.documentId == linked.linkedDocumentId
-
-        if (sameKnownDocId && linked.lastSyncedRemoteSha256.isNotBlank() && remoteSha == linked.lastSyncedRemoteSha256) {
-            return@withContext if (currentDocument.revision > linked.lastSyncedRevision) {
+            // Case 1: Newly created empty .nxts document in Google Drive
+            // Guard: NEVER treat a 0-byte read as an empty new vault if this URI already has prior sync history!
+            if (remoteBytes.isEmpty()) {
+                if (hadPriorRemoteSync) {
+                    throw IOException(
+                        "Linked Google Drive vault '${linked.displayName}' returned 0 bytes despite prior sync history (DriveFS may still be hydrating). Sync aborted to prevent overwriting remote vault."
+                    )
+                }
                 val docToSeal = alignLocalClockWithoutExtraRevisionBump(currentDocument, localDeviceId)
                 val sealed = serializer.sealDocument(docToSeal, vaultPassphrase.copyOf())
-                byteTransport.writeBytes(linked.uriString, sealed)
+                writeSafBytesWithBackup(linked.uriString, sealed, previousRemoteBytes = null, docId = docToSeal.documentId)
                 recordSyncSuccess(docToSeal.revision, sha256Hex(sealed), docToSeal.documentId)
-                SafDriveSyncOutcome.PushedToDrive(docToSeal, sealed.size)
-            } else {
-                SafDriveSyncOutcome.AlreadyUpToDate(currentDocument.revision)
+                return@withContext SafDriveSyncOutcome.PushedToDrive(docToSeal, sealed.size)
             }
-        }
 
-        // Unseal remote Google Drive .nxts container
-        val remoteDoc = serializer.unsealDocument(remoteBytes, vaultPassphrase.copyOf())
+            val remoteSha = sha256Hex(remoteBytes)
 
-        // Cold-start / uninitialized starter guard: never overwrite or pollute an existing remote Drive vault!
-        if (localIsUninitializedStarter || currentDocument.documentId != remoteDoc.documentId) {
-            recordSyncSuccess(remoteDoc.revision, remoteSha, remoteDoc.documentId)
-            return@withContext SafDriveSyncOutcome.PulledFromDrive(remoteDoc)
-        }
+            // Case 2: Fast-path when remote file matches last synced hash AND local vault is the active synced document
+            // (Never take this fast-path on a cold-started starter vault — always unseal and pull the real Drive vault!)
+            val sameKnownDocId = !localIsUninitializedStarter &&
+                !linked.linkedDocumentId.isNullOrBlank() &&
+                currentDocument.documentId == linked.linkedDocumentId
 
-        // If remote SHA matched lastSyncedRemoteSha256 (e.g. linkedDocumentId was migrated from legacy prefs)
-        if (linked.lastSyncedRemoteSha256.isNotBlank() && remoteSha == linked.lastSyncedRemoteSha256) {
-            return@withContext if (currentDocument.revision > linked.lastSyncedRevision) {
-                val docToSeal = alignLocalClockWithoutExtraRevisionBump(currentDocument, localDeviceId)
-                val sealed = serializer.sealDocument(docToSeal, vaultPassphrase.copyOf())
-                byteTransport.writeBytes(linked.uriString, sealed)
-                recordSyncSuccess(docToSeal.revision, sha256Hex(sealed), docToSeal.documentId)
-                SafDriveSyncOutcome.PushedToDrive(docToSeal, sealed.size)
-            } else {
-                recordSyncSuccess(remoteDoc.revision, remoteSha, remoteDoc.documentId)
-                SafDriveSyncOutcome.AlreadyUpToDate(currentDocument.revision)
+            if (sameKnownDocId && linked.lastSyncedRemoteSha256.isNotBlank() && remoteSha == linked.lastSyncedRemoteSha256) {
+                return@withContext if (currentDocument.revision > linked.lastSyncedRevision) {
+                    val docToSeal = alignLocalClockWithoutExtraRevisionBump(currentDocument, localDeviceId)
+                    val sealed = serializer.sealDocument(docToSeal, vaultPassphrase.copyOf())
+                    writeSafBytesWithBackup(linked.uriString, sealed, previousRemoteBytes = remoteBytes, docId = docToSeal.documentId)
+                    recordSyncSuccess(docToSeal.revision, sha256Hex(sealed), docToSeal.documentId)
+                    SafDriveSyncOutcome.PushedToDrive(docToSeal, sealed.size)
+                } else {
+                    SafDriveSyncOutcome.AlreadyUpToDate(currentDocument.revision)
+                }
             }
-        }
 
-        // Case 3: Initial link to an existing Google Drive .nxts vault with the same documentId
-        if (linked.lastSyncedRemoteSha256.isBlank()) {
-            if (currentDocument == remoteDoc) {
+            // Unseal remote Google Drive .nxts container
+            val remoteDoc = serializer.unsealDocument(remoteBytes, vaultPassphrase.copyOf())
+
+            // Cold-start / uninitialized starter guard: never overwrite or pollute an existing remote Drive vault!
+            if (localIsUninitializedStarter || currentDocument.documentId != remoteDoc.documentId) {
                 recordSyncSuccess(remoteDoc.revision, remoteSha, remoteDoc.documentId)
                 return@withContext SafDriveSyncOutcome.PulledFromDrive(remoteDoc)
             }
-            val relation = VaultDeltaConflictResolver.compareVectorClocks(
-                currentDocument.vectorClock,
-                remoteDoc.vectorClock
-            )
-            return@withContext when (relation) {
-                VectorClockRelation.IDENTICAL, VectorClockRelation.REMOTE_AHEAD -> {
-                    recordSyncSuccess(remoteDoc.revision, remoteSha, remoteDoc.documentId)
-                    SafDriveSyncOutcome.PulledFromDrive(remoteDoc)
-                }
-                VectorClockRelation.LOCAL_AHEAD -> {
+
+            // If remote SHA matched lastSyncedRemoteSha256 (e.g. linkedDocumentId was migrated from legacy prefs)
+            if (linked.lastSyncedRemoteSha256.isNotBlank() && remoteSha == linked.lastSyncedRemoteSha256) {
+                return@withContext if (currentDocument.revision > linked.lastSyncedRevision) {
                     val docToSeal = alignLocalClockWithoutExtraRevisionBump(currentDocument, localDeviceId)
                     val sealed = serializer.sealDocument(docToSeal, vaultPassphrase.copyOf())
-                    byteTransport.writeBytes(linked.uriString, sealed)
+                    writeSafBytesWithBackup(linked.uriString, sealed, previousRemoteBytes = remoteBytes, docId = docToSeal.documentId)
                     recordSyncSuccess(docToSeal.revision, sha256Hex(sealed), docToSeal.documentId)
                     SafDriveSyncOutcome.PushedToDrive(docToSeal, sealed.size)
-                }
-                VectorClockRelation.CONCURRENT_DIVERGENCE -> {
-                    val merge = VaultDeltaConflictResolver.mergeDocuments(currentDocument, remoteDoc, localDeviceId)
-                    val sealed = serializer.sealDocument(merge.mergedDocument, vaultPassphrase.copyOf())
-                    byteTransport.writeBytes(linked.uriString, sealed)
-                    recordSyncSuccess(merge.mergedDocument.revision, sha256Hex(sealed), merge.mergedDocument.documentId)
-                    SafDriveSyncOutcome.ThreeWayMerged(merge.mergedDocument, merge.detectedConflicts)
+                } else {
+                    recordSyncSuccess(remoteDoc.revision, remoteSha, remoteDoc.documentId)
+                    SafDriveSyncOutcome.AlreadyUpToDate(currentDocument.revision)
                 }
             }
-        }
 
-        // Case 4: Remote changed since last sync — pull cleanly if local unchanged, else 3-way merge!
-        val localHasEdits = currentDocument.revision > linked.lastSyncedRevision
-        if (!localHasEdits) {
-            recordSyncSuccess(remoteDoc.revision, remoteSha, remoteDoc.documentId)
-            return@withContext SafDriveSyncOutcome.PulledFromDrive(remoteDoc)
-        }
+            // Case 3: Initial link to an existing Google Drive .nxts vault with the same documentId
+            if (linked.lastSyncedRemoteSha256.isBlank()) {
+                if (currentDocument == remoteDoc) {
+                    recordSyncSuccess(remoteDoc.revision, remoteSha, remoteDoc.documentId)
+                    return@withContext SafDriveSyncOutcome.PulledFromDrive(remoteDoc)
+                }
+                val relation = VaultDeltaConflictResolver.compareVectorClocks(
+                    currentDocument.vectorClock,
+                    remoteDoc.vectorClock
+                )
+                return@withContext when (relation) {
+                    VectorClockRelation.IDENTICAL, VectorClockRelation.REMOTE_AHEAD -> {
+                        recordSyncSuccess(remoteDoc.revision, remoteSha, remoteDoc.documentId)
+                        SafDriveSyncOutcome.PulledFromDrive(remoteDoc)
+                    }
+                    VectorClockRelation.LOCAL_AHEAD -> {
+                        val docToSeal = alignLocalClockWithoutExtraRevisionBump(currentDocument, localDeviceId)
+                        val sealed = serializer.sealDocument(docToSeal, vaultPassphrase.copyOf())
+                        writeSafBytesWithBackup(linked.uriString, sealed, previousRemoteBytes = remoteBytes, docId = docToSeal.documentId)
+                        recordSyncSuccess(docToSeal.revision, sha256Hex(sealed), docToSeal.documentId)
+                        SafDriveSyncOutcome.PushedToDrive(docToSeal, sealed.size)
+                    }
+                    VectorClockRelation.CONCURRENT_DIVERGENCE -> {
+                        val merge = VaultDeltaConflictResolver.mergeDocuments(currentDocument, remoteDoc, localDeviceId)
+                        val sealed = serializer.sealDocument(merge.mergedDocument, vaultPassphrase.copyOf())
+                        writeSafBytesWithBackup(linked.uriString, sealed, previousRemoteBytes = remoteBytes, docId = merge.mergedDocument.documentId)
+                        recordSyncSuccess(merge.mergedDocument.revision, sha256Hex(sealed), merge.mergedDocument.documentId)
+                        SafDriveSyncOutcome.ThreeWayMerged(merge.mergedDocument, merge.detectedConflicts)
+                    }
+                }
+            }
 
-        val mergeOutcome = VaultDeltaConflictResolver.mergeDocuments(currentDocument, remoteDoc, localDeviceId)
-        val mergedBytes = serializer.sealDocument(mergeOutcome.mergedDocument, vaultPassphrase.copyOf())
-        byteTransport.writeBytes(linked.uriString, mergedBytes)
-        recordSyncSuccess(mergeOutcome.mergedDocument.revision, sha256Hex(mergedBytes), mergeOutcome.mergedDocument.documentId)
-        SafDriveSyncOutcome.ThreeWayMerged(mergeOutcome.mergedDocument, mergeOutcome.detectedConflicts)
+            // Case 4: Remote changed since last sync — pull cleanly if local unchanged, else 3-way merge!
+            val localHasEdits = currentDocument.revision > linked.lastSyncedRevision
+            if (!localHasEdits) {
+                recordSyncSuccess(remoteDoc.revision, remoteSha, remoteDoc.documentId)
+                return@withContext SafDriveSyncOutcome.PulledFromDrive(remoteDoc)
+            }
+
+            val mergeOutcome = VaultDeltaConflictResolver.mergeDocuments(currentDocument, remoteDoc, localDeviceId)
+            val mergedBytes = serializer.sealDocument(mergeOutcome.mergedDocument, vaultPassphrase.copyOf())
+            writeSafBytesWithBackup(linked.uriString, mergedBytes, previousRemoteBytes = remoteBytes, docId = mergeOutcome.mergedDocument.documentId)
+            recordSyncSuccess(mergeOutcome.mergedDocument.revision, sha256Hex(mergedBytes), mergeOutcome.mergedDocument.documentId)
+            SafDriveSyncOutcome.ThreeWayMerged(mergeOutcome.mergedDocument, mergeOutcome.detectedConflicts)
+        }
     }
 
     @JvmOverloads
@@ -277,23 +301,54 @@ class SafLiveGoogleDriveBridge(
         sealedBytes: ByteArray,
         revision: Long,
         documentId: String? = null
-    ): Boolean = withContext(Dispatchers.IO) {
-        val linked = getLinkedVaultInfo() ?: return@withContext false
-        if (!linked.linkedDocumentId.isNullOrBlank() &&
-            !documentId.isNullOrBlank() &&
-            linked.linkedDocumentId != documentId
-        ) {
-            return@withContext false
-        }
-        val remoteBytes = byteTransport.readBytes(linked.uriString)
-        val remoteUnchanged = remoteBytes.isEmpty() ||
-            linked.lastSyncedRemoteSha256.isBlank() ||
-            sha256Hex(remoteBytes) == linked.lastSyncedRemoteSha256
-        if (!remoteUnchanged) return@withContext false
+    ): Boolean = PROCESS_SAF_SYNC_MUTEX.withLock {
+        withContext(Dispatchers.IO) {
+            val linked = getLinkedVaultInfo() ?: return@withContext false
+            if (!linked.linkedDocumentId.isNullOrBlank() &&
+                !documentId.isNullOrBlank() &&
+                linked.linkedDocumentId != documentId
+            ) {
+                return@withContext false
+            }
+            val hadPriorRemoteSync = linked.lastSyncedRemoteSha256.isNotBlank() || linked.lastSyncedRevision > 0L
+            val remoteBytes = try {
+                byteTransport.readBytes(linked.uriString)
+            } catch (_: FileNotFoundException) {
+                if (hadPriorRemoteSync) return@withContext false
+                ByteArray(0)
+            }
+            if (remoteBytes.isEmpty() && hadPriorRemoteSync) {
+                return@withContext false
+            }
+            val remoteUnchanged = remoteBytes.isEmpty() ||
+                linked.lastSyncedRemoteSha256.isBlank() ||
+                sha256Hex(remoteBytes) == linked.lastSyncedRemoteSha256
+            if (!remoteUnchanged) return@withContext false
 
-        byteTransport.writeBytes(linked.uriString, sealedBytes)
-        recordSyncSuccess(revision, sha256Hex(sealedBytes), documentId ?: linked.linkedDocumentId)
-        true
+            writeSafBytesWithBackup(
+                uriString = linked.uriString,
+                payload = sealedBytes,
+                previousRemoteBytes = remoteBytes.takeIf { it.isNotEmpty() },
+                docId = documentId ?: linked.linkedDocumentId.orEmpty()
+            )
+            recordSyncSuccess(revision, sha256Hex(sealedBytes), documentId ?: linked.linkedDocumentId)
+            true
+        }
+    }
+
+    private fun writeSafBytesWithBackup(
+        uriString: String,
+        payload: ByteArray,
+        previousRemoteBytes: ByteArray?,
+        docId: String
+    ) {
+        if (previousRemoteBytes != null && previousRemoteBytes.isNotEmpty()) {
+            runCatching {
+                val safeId = docId.ifBlank { "vault" }.replace(Regex("[^a-zA-Z0-9._-]"), "_")
+                File(localBackupDir, "$safeId-prewrite.nxts.bak").writeBytes(previousRemoteBytes)
+            }
+        }
+        byteTransport.writeBytes(uriString, payload)
     }
 
     /**
@@ -334,6 +389,8 @@ class SafLiveGoogleDriveBridge(
             .joinToString("") { "%02x".format(it) }
 
     companion object {
+        /** Process-wide mutex serializing MainActivity foreground SAF syncs and WorkManager background SAF syncs. */
+        private val PROCESS_SAF_SYNC_MUTEX = Mutex()
         private const val PREFS_NAME = "nexusts_saf_drive_bridge"
         private const val KEY_URI_STRING = "linked_saf_uri"
         private const val KEY_DISPLAY_NAME = "linked_display_name"

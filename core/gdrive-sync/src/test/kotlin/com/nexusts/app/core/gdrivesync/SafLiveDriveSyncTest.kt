@@ -354,6 +354,34 @@ class SafLiveDriveSyncTest {
         assertTrue(coldPullImplicit is SafDriveSyncOutcome.PulledFromDrive)
         assertEquals("doc-real-production-vault", (coldPullImplicit as SafDriveSyncOutcome.PulledFromDrive).remoteDocument.documentId)
         assertEquals(writesBeforeColdStart, transport.writeCount)
+
+        // Step 3 (v1.0.1 Regression): Simulate ChromeOS DriveFS transiently returning 0 bytes or FileNotFoundException
+        // while remounting after boot — MUST abort and NEVER overwrite a previously synced vault!
+        val savedRealBlob = transport.blobs[driveUri.toString()]!!.copyOf()
+        transport.blobs[driveUri.toString()] = ByteArray(0)
+        val zeroByteAttempt = runCatching {
+            bridge.synchronizeLinkedSafVault(
+                currentDocument = freshStarterVault,
+                vaultPassphrase = passphrase.copyOf(),
+                localIsUninitializedStarter = true
+            )
+        }
+        assertTrue("Expected IOException when DriveFS transiently returns 0 bytes on synced vault", zeroByteAttempt.isFailure)
+        assertEquals("Zero-byte transient read must NEVER write to Drive", writesBeforeColdStart, transport.writeCount)
+        assertFalse(
+            "Background snapshot push must also refuse overwriting 0-byte unhydrated Drive file",
+            bridge.pushPreSealedSnapshotIfRemoteUnchanged(savedRealBlob, revision = 8L, documentId = "doc-real-production-vault")
+        )
+
+        // Restore DriveFS blob and verify subsequent sync recovers cleanly
+        transport.blobs[driveUri.toString()] = savedRealBlob
+        val recoveredPull = bridge.synchronizeLinkedSafVault(
+            currentDocument = freshStarterVault,
+            vaultPassphrase = passphrase.copyOf(),
+            localIsUninitializedStarter = true
+        )
+        assertTrue(recoveredPull is SafDriveSyncOutcome.PulledFromDrive)
+        assertEquals(2, (recoveredPull as SafDriveSyncOutcome.PulledFromDrive).remoteDocument.connections.size)
     }
 
     @Test

@@ -298,13 +298,7 @@ public final class MacKeychainAndBiometrics: @unchecked Sendable {
             if let primary = try unsealSecret(namespace: Self.vaultNamespace, account: Self.primaryLocalVaultSlot) {
                 return primary
             }
-            lock.lock()
-            let fallbackAccounts = loadStoreMapLocked().keys.compactMap { key -> String? in
-                let prefix = "\(Self.vaultNamespace):"
-                return key.hasPrefix(prefix) ? String(key.dropFirst(prefix.count)) : nil
-            }
-            lock.unlock()
-            for acct in fallbackAccounts {
+            for acct in listStoredVaultAccounts() {
                 if let val = try? unsealSecret(namespace: Self.vaultNamespace, account: acct) {
                     return val
                 }
@@ -314,6 +308,15 @@ public final class MacKeychainAndBiometrics: @unchecked Sendable {
             throw bioErr
         } catch {
             throw BiometricUnlockError.localKeystoreFailure(error.localizedDescription)
+        }
+    }
+
+    private func listStoredVaultAccounts() -> [String] {
+        lock.withLock {
+            let prefix = "\(Self.vaultNamespace):"
+            return loadStoreMapLocked().keys.compactMap { key -> String? in
+                key.hasPrefix(prefix) ? String(key.dropFirst(prefix.count)) : nil
+            }
         }
     }
 
