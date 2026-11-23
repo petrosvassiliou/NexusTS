@@ -425,8 +425,12 @@ public final class MacCloudBookmarkSyncBridge: @unchecked Sendable {
         }
 
         let remoteSha = sha256Hex(remoteBytes)
+        let linkedDocId = defaults.string(forKey: linkedDocIdKey)
+        let sameKnownDocId = !localIsStarterVault &&
+            !(linkedDocId ?? "").isEmpty &&
+            localDocument.documentId == linkedDocId
 
-        if remoteSha == lastSha {
+        if sameKnownDocId, remoteSha == lastSha {
             if localDocument.revision > lastRev {
                 let sealed = try NxtsVaultSerializer.seal(document: localDocument, passphrase: passphrase, kdf: kdf)
                 try writeAtomically(sealed, to: targetURL)
