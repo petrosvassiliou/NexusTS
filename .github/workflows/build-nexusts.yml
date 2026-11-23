@@ -353,15 +353,15 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.stage.outputs.tag_name }}
-          name: "NexusTS ${{ steps.stage.outputs.tag_name }} — Official 1.0 Release (Googlebook OS, Android, macOS & ChromeOS IWA)"
+          name: "NexusTS ${{ steps.stage.outputs.tag_name }} — Official Release (Googlebook OS, ChromeOS Managed Play, Android & macOS)"
           draft: false
           prerelease: ${{ contains(steps.stage.outputs.tag_name, '-') }}
           generate_release_notes: true
           body: |
-            ## NexusTS ${{ steps.stage.outputs.tag_name }} (`com.nexusts.app`, `com.nexusts.app.macos` & ChromeOS `.swbn` IWA)
-            **Desktop-Class Remote Management, FreeRDP 3.12, SSHv2, SFTP & Zero-Knowledge Vault Workspace for Googlebook OS, Android, macOS & ChromeOS**
+            ## NexusTS ${{ steps.stage.outputs.tag_name }} (`com.nexusts.app` & `com.nexusts.app.macos`)
+            **Desktop-Class Remote Management, FreeRDP 3.12, SSHv2, SFTP & Zero-Knowledge Vault Workspace for Googlebook OS, ChromeOS (Managed Play), Android & macOS**
 
-            > **Official `1.0.0` General Availability Release (`versionCode = 11000`)**: Built from the ground up because existing Android RDP managers fall short of a true desktop remote management workflow. Features native C++20 FreeRDP 3.12 (`DISP_DVC` dynamic resize, H.264/AVC444, bidirectional `DocumentsProvider` file & recursive folder copy/paste with `Files`, `/admin`, Hyper-V Enhanced Session, YubiKey PIV), ChromeOS Signed Isolated Web App (`.swbn`) with WebCrypto STARTTLS + CredSSP v6 NTLMv2 RDP & `Direct Sockets` over VPN & Internet (installable via [**nexusts-prod.web.app**](https://nexusts-prod.web.app/)), Rust `russh` SSHv2 + Dual-Pane SFTP v3 + Port-Forwarding, VNC, USB-C Serial, Kubernetes/Docker, Royal TS `.rtsz`/KeePass/Bitwarden/1Password importers, automatic Biometric/Touch ID unlock, and Zero-Knowledge Argon2id + AES-256-GCM live Google Drive sync across all platforms.
+            > **Official `${{ steps.stage.outputs.tag_name }}` Release**: Built from the ground up because existing Android RDP managers fall short of a true desktop remote management workflow. Features native C++20 FreeRDP 3.12 (`DISP_DVC` dynamic resize, H.264/AVC444, bidirectional `DocumentsProvider` file & recursive folder copy/paste with `Files`, `/admin`, Hyper-V Enhanced Session, YubiKey PIV), Rust `russh` SSHv2 + Dual-Pane SFTP v3 + Port-Forwarding, VNC, USB-C Serial, Kubernetes/Docker, Royal TS `.rtsz`/KeePass/Bitwarden/1Password importers, automatic Biometric/Touch ID unlock, zero-flag ChromeOS Workspace Managed Play auto-updates, and Zero-Knowledge Argon2id + AES-256-GCM live Google Drive sync across all platforms.
 
             ### Signed Deliverables
             - **`NexusTS-${{ steps.stage.outputs.tag_name }}-googlebook-android-release.apk` & `.aab`**: Signed (APK Signature Scheme v2/v3/v4, RSA-4096) universal `arm64-v8a` + `x86_64` APK (`versionCode = 11000`) with 16 KB ELF page alignment.

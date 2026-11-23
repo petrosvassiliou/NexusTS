@@ -21,9 +21,4 @@ macos/.swiftpm/
 macos/Vendor/
 macos/dist/
 native/build-macos-*/
-chromeos-pwa/dist/
-chromeos-pwa/rust/target/
-chromeos-pwa/app/wasm/
-chromeos-pwa/node_modules/
-chromeos-pwa/hosting-dist/
-.firebase/
+
