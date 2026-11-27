@@ -371,7 +371,7 @@ fun FolderPropertiesAndCredentialDialog(
 
                 if (childConnectionCount > 0) {
                     Text(
-                        text = "Cascades automatically to $childConnectionCount child connection(s) using '${strings.credModeInheritFolder}'.",
+                        text = strings.cascadesToChildrenLabel(childConnectionCount),
                         style = NexusTheme.monospace.keycapShortcut,
                         color = MaterialTheme.colorScheme.secondary
                     )
@@ -2617,11 +2617,12 @@ fun CredentialVaultStudioView(
 
                             DropdownMenu(
                                 expanded = credMenuOpen,
-                                onDismissRequest = { credMenuOpen = false }
+                                onDismissRequest = { credMenuOpen = false },
+                                shape = RoundedCornerShape(14.dp)
                             ) {
                                 if (cred.username.isNotBlank()) {
                                     DropdownMenuItem(
-                                        text = { Text("Copy Username") },
+                                        text = { Text(strings.actionCopyUsername) },
                                         leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp)) },
                                         onClick = {
                                             credMenuOpen = false
@@ -2631,7 +2632,7 @@ fun CredentialVaultStudioView(
                                 }
                                 if (cred.secretPassword.isNotBlank()) {
                                     DropdownMenuItem(
-                                        text = { Text("Copy Password / Secret") },
+                                        text = { Text(strings.actionCopyPassword) },
                                         leadingIcon = { Icon(Icons.Outlined.VpnKey, contentDescription = null, modifier = Modifier.size(18.dp)) },
                                         onClick = {
                                             credMenuOpen = false
@@ -2641,7 +2642,7 @@ fun CredentialVaultStudioView(
                                 }
                                 if (cred.publicKeyOpenSsh.isNotBlank()) {
                                     DropdownMenuItem(
-                                        text = { Text("Copy SSH Public Key") },
+                                        text = { Text(strings.actionCopySshPublicKey) },
                                         leadingIcon = { Icon(Icons.Outlined.Key, contentDescription = null, modifier = Modifier.size(18.dp)) },
                                         onClick = {
                                             credMenuOpen = false
@@ -2653,7 +2654,7 @@ fun CredentialVaultStudioView(
                                     HorizontalDivider()
                                 }
                                 DropdownMenuItem(
-                                    text = { Text("Edit Credential") },
+                                    text = { Text(strings.actionEditCredential) },
                                     leadingIcon = { Icon(Icons.Outlined.Edit, contentDescription = null, modifier = Modifier.size(18.dp)) },
                                     onClick = {
                                         credMenuOpen = false
@@ -2661,7 +2662,7 @@ fun CredentialVaultStudioView(
                                     }
                                 )
                                 DropdownMenuItem(
-                                    text = { Text("Duplicate Credential") },
+                                    text = { Text(strings.actionDuplicateShort) },
                                     leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp)) },
                                     onClick = {
                                         credMenuOpen = false
@@ -2670,7 +2671,7 @@ fun CredentialVaultStudioView(
                                 )
                                 HorizontalDivider()
                                 DropdownMenuItem(
-                                    text = { Text("Delete Credential", color = MaterialTheme.colorScheme.error) },
+                                    text = { Text(strings.actionDeleteItem, color = MaterialTheme.colorScheme.error) },
                                     leadingIcon = {
                                         Icon(
                                             Icons.Outlined.Delete,
@@ -3806,7 +3807,7 @@ fun DriveSyncAndConflictStudioView(
                                         color = NexusTheme.extendedColors.statusConnected.copy(alpha = 0.16f)
                                     ) {
                                         Text(
-                                            text = if (driveIsSyncing) "Syncing…" else "Active",
+                                            text = if (driveIsSyncing) strings.statusSyncingLabel else strings.statusActiveBadge,
                                             style = MaterialTheme.typography.labelSmall,
                                             color = NexusTheme.extendedColors.statusConnected,
                                             modifier = Modifier.padding(horizontal = 9.dp, vertical = 3.dp)
@@ -3815,7 +3816,7 @@ fun DriveSyncAndConflictStudioView(
                                 }
                             }
                             Text(
-                                text = "Automatically syncs on startup, when you save changes, and when remote changes are detected in Google Drive.",
+                                text = strings.driveSyncAutoSubtitle,
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -3827,7 +3828,7 @@ fun DriveSyncAndConflictStudioView(
                         NexusPrimaryButton(
                             enabled = !driveIsSyncing,
                             onClick = onTriggerDeltaSync,
-                            label = if (driveIsSyncing) "Syncing…" else strings.actionSyncNow,
+                            label = if (driveIsSyncing) strings.statusSyncingLabel else strings.actionSyncNow,
                             leadingIcon = Icons.Outlined.CloudSync
                         )
                     }
@@ -3851,10 +3852,11 @@ fun DriveSyncAndConflictStudioView(
                             style = MaterialTheme.typography.titleMedium,
                             color = MaterialTheme.colorScheme.onSurface
                         )
+                        val localizedStatusText = strings.localizeDriveSyncBanner(driveSyncStatusBanner).ifBlank {
+                            String.format(strings.syncStatusSyncedFormat, vaultDocument.revision)
+                        }
                         Text(
-                            text = driveSyncStatusBanner.ifBlank {
-                                String.format(strings.syncStatusSyncedFormat, vaultDocument.revision)
-                            },
+                            text = localizedStatusText,
                             style = MaterialTheme.typography.bodySmall,
                             color = if (needsPassphraseUnlock) {
                                 MaterialTheme.colorScheme.error
@@ -3939,7 +3941,7 @@ fun DriveSyncAndConflictStudioView(
                                         horizontalArrangement = Arrangement.SpaceBetween
                                     ) {
                                         Text(
-                                            text = "Save Passphrase in Hardware Keystore",
+                                            text = strings.savePassphraseHardwareKeystore,
                                             style = MaterialTheme.typography.bodySmall,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                                             modifier = Modifier.weight(1f)
@@ -3999,7 +4001,7 @@ fun DriveSyncAndConflictStudioView(
                                         onSignOutOAuthDrive()
                                     }
                                 },
-                                label = "Disconnect",
+                                label = strings.actionDisconnectSession,
                                 leadingIcon = Icons.Outlined.Delete
                             )
                         }
@@ -4007,13 +4009,13 @@ fun DriveSyncAndConflictStudioView(
                 } else {
                     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         Text(
-                            text = "Pick or create a vault file in Google Drive once. NexusTS keeps all your connections, folders, and credentials encrypted and synchronized automatically across Chromebook, Android, and macOS.",
+                            text = strings.driveSyncOnboardingBody,
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         if (driveSyncStatusBanner.isNotBlank()) {
                             Text(
-                                text = driveSyncStatusBanner,
+                                text = strings.localizeDriveSyncBanner(driveSyncStatusBanner),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.secondary
                             )
@@ -4059,13 +4061,41 @@ internal fun <T> NexusDialogSelectField(
     leadingIcon: ImageVector? = null
 ) {
     var dialogOpen by remember { mutableStateOf(false) }
+    val hover = rememberDesktopHoverState()
+    val interaction = remember { MutableInteractionSource() }
+    val isHovered = hover.value.isHovered
+    val fieldShape = RoundedCornerShape(12.dp)
 
-    OutlinedButton(
-        onClick = { dialogOpen = true },
-        modifier = modifier.fillMaxWidth()
+    Surface(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(44.dp)
+            .nexusHoverTracker(hover, PointerIcon.Hand)
+            .clip(fieldShape)
+            .clickable(
+                interactionSource = interaction,
+                indication = null,
+                onClick = { dialogOpen = true }
+            ),
+        shape = fieldShape,
+        color = if (isHovered) {
+            MaterialTheme.colorScheme.surfaceContainerLow
+        } else {
+            MaterialTheme.colorScheme.surfaceContainerLowest
+        },
+        border = BorderStroke(
+            width = 1.dp,
+            color = if (isHovered) {
+                MaterialTheme.colorScheme.primary.copy(alpha = 0.55f)
+            } else {
+                MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.8f)
+            }
+        )
     ) {
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
@@ -4077,12 +4107,15 @@ internal fun <T> NexusDialogSelectField(
                     Icon(
                         imageVector = leadingIcon,
                         contentDescription = null,
-                        modifier = Modifier.size(16.dp)
+                        modifier = Modifier.size(16.dp),
+                        tint = MaterialTheme.colorScheme.primary
                     )
-                    Spacer(modifier = Modifier.width(8.dp))
+                    Spacer(modifier = Modifier.width(9.dp))
                 }
                 Text(
                     text = buttonText,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -4114,6 +4147,7 @@ internal fun <T> NexusDialogSelectField(
 
         AlertDialog(
             onDismissRequest = { dialogOpen = false },
+            shape = RoundedCornerShape(24.dp),
             title = {
                 Text(
                     text = dialogTitle,
@@ -4235,9 +4269,10 @@ internal fun <T> NexusDialogSelectField(
                 }
             },
             confirmButton = {
-                TextButton(onClick = { dialogOpen = false }) {
-                    Text(cancelLabel)
-                }
+                NexusOutlinedButton(
+                    onClick = { dialogOpen = false },
+                    label = cancelLabel
+                )
             }
         )
     }

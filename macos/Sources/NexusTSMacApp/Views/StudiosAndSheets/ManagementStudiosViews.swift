@@ -143,13 +143,13 @@ public struct VaultOverviewDashboardView: View {
                                     }
                                 )
                                 .contextMenu {
-                                    Button("Connect") {
+                                    Button(store.strings.connectAction) {
                                         store.openConnection(conn)
                                     }
-                                    Button("Connect with Options…") {
+                                    Button(store.strings.connectWithOptionsAction) {
                                         store.connectWithOptionsTarget = conn
                                     }
-                                    Button("Edit Connection…") {
+                                    Button(store.strings.editConnection) {
                                         store.editingConnection = conn
                                     }
                                 }
@@ -862,7 +862,7 @@ public struct CloudSyncStudioView: View {
                                     ProgressView()
                                         .controlSize(.small)
                                 } else if store.linkedCloudFileURL != nil {
-                                    Text("Active")
+                                    Text(store.strings.statusActiveBadge)
                                         .font(.caption2.weight(.bold))
                                         .foregroundStyle(Color(nsColor: .systemGreen))
                                         .padding(.horizontal, 7)
@@ -873,7 +873,7 @@ public struct CloudSyncStudioView: View {
                                         )
                                 }
                             }
-                            Text("Automatically syncs on startup, when you make changes, and whenever remote changes are detected.")
+                            Text(store.strings.cloudSyncAutoSubtitle)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -884,7 +884,7 @@ public struct CloudSyncStudioView: View {
                             Button {
                                 Task { await store.syncCloudNow(reportErrors: true) }
                             } label: {
-                                Label(store.isSyncingCloud ? "Syncing…" : store.strings.syncNow, systemImage: "arrow.triangle.2.circlepath")
+                                Label(store.isSyncingCloud ? store.strings.statusSyncing : store.strings.syncNow, systemImage: "arrow.triangle.2.circlepath")
                             }
                             .buttonStyle(.borderedProminent)
                             .disabled(store.isSyncingCloud)
@@ -901,7 +901,7 @@ public struct CloudSyncStudioView: View {
                                 Text(linked.lastPathComponent)
                                     .font(.callout.weight(.semibold))
                                 if let syncedAt = store.lastCloudSyncDate {
-                                    Text("• Last synced \(Self.timeFormatter.string(from: syncedAt))")
+                                    Text(store.strings.lastSyncedFormat(Self.timeFormatter.string(from: syncedAt)))
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                 }
@@ -920,13 +920,13 @@ public struct CloudSyncStudioView: View {
                                 Button {
                                     NSWorkspace.shared.activateFileViewerSelecting([linked])
                                 } label: {
-                                    Label("Show in Finder", systemImage: "folder")
+                                    Label(store.strings.showInFinderAction, systemImage: "folder")
                                 }
 
                                 Button {
                                     isPickingExistingCloudFile = true
                                 } label: {
-                                    Label("Switch Vault File…", systemImage: "arrow.left.arrow.right")
+                                    Label(store.strings.switchVaultFileAction, systemImage: "arrow.left.arrow.right")
                                 }
 
                                 Spacer()
@@ -934,14 +934,14 @@ public struct CloudSyncStudioView: View {
                                 Button(role: .destructive) {
                                     store.unlinkCloudVault()
                                 } label: {
-                                    Label("Disconnect Sync", systemImage: "xmark.circle")
+                                    Label(store.strings.disconnectSyncAction, systemImage: "xmark.circle")
                                 }
                             }
                             .padding(.top, 4)
                         }
                     } else {
                         VStack(alignment: .leading, spacing: 12) {
-                            Text("Choose a Google Drive (or iCloud Drive) vault file once. NexusTS keeps your connections, folders, and credentials encrypted and synchronized automatically across all your devices.")
+                            Text(store.strings.cloudSyncOnboardingBody)
                                 .font(.callout)
                                 .foregroundStyle(.secondary)
 
@@ -960,7 +960,7 @@ public struct CloudSyncStudioView: View {
                                                     .lineLimit(1)
                                             }
                                             Spacer()
-                                            Button("Sync Here") {
+                                            Button(store.strings.syncHereAction) {
                                                 let fileUrl = entry.url.appendingPathComponent("NexusTS-Vault.nxts")
                                                 do {
                                                     try FileManager.default.createDirectory(at: entry.url, withIntermediateDirectories: true)
@@ -985,14 +985,14 @@ public struct CloudSyncStudioView: View {
                                 Button {
                                     presentCreateSyncedVaultSavePanel()
                                 } label: {
-                                    Label("Create New Synced Vault…", systemImage: "plus.circle.fill")
+                                    Label(store.strings.createSyncedVaultAction, systemImage: "plus.circle.fill")
                                 }
                                 .buttonStyle(.borderedProminent)
 
                                 Button {
                                     isPickingExistingCloudFile = true
                                 } label: {
-                                    Label("Open Existing Vault (.nxts)…", systemImage: "folder.badge.person.crop")
+                                    Label(store.strings.openExistingVaultAction, systemImage: "folder.badge.person.crop")
                                 }
                             }
                             .padding(.top, 2)

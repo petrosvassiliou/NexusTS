@@ -13,17 +13,21 @@ import android.view.Surface
 import android.view.TextureView
 import android.view.View
 import android.view.ViewTreeObserver
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
@@ -92,6 +96,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import com.nexusts.app.core.ui.components.NexusActionChip
+import com.nexusts.app.core.ui.components.NexusOutlinedButton
+import com.nexusts.app.core.ui.components.NexusPrimaryButton
+import com.nexusts.app.core.ui.components.NexusTonalButton
 import com.nexusts.app.core.ui.input.isSystemPassThroughKeyEvent
 import com.nexusts.app.core.ui.input.nexusMouseWheelHandler
 import com.nexusts.app.core.ui.input.nexusTrackpadCanvasGesture
@@ -940,21 +947,22 @@ fun RdpSessionSurfaceView(
             if (isConnecting) {
                 Surface(
                     modifier = Modifier.align(Alignment.Center),
-                    shape = RoundedCornerShape(16.dp),
-                    color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.94f),
+                    shape = RoundedCornerShape(18.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.96f),
+                    border = BorderStroke(1.dp, NexusTheme.extendedColors.rdpAccent.copy(alpha = 0.35f)),
                     tonalElevation = 6.dp
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 20.dp, vertical = 14.dp),
+                        modifier = Modifier.padding(horizontal = 22.dp, vertical = 16.dp),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        horizontalArrangement = Arrangement.spacedBy(14.dp)
                     ) {
                         CircularProgressIndicator(
-                            modifier = Modifier.size(20.dp),
+                            modifier = Modifier.size(22.dp),
                             strokeWidth = 2.5.dp,
                             color = NexusTheme.extendedColors.rdpAccent
                         )
-                        Column {
+                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                             Text(
                                 text = "Connecting…",
                                 style = MaterialTheme.typography.titleSmall,
@@ -974,13 +982,14 @@ fun RdpSessionSurfaceView(
                         .align(Alignment.TopCenter)
                         .padding(top = 12.dp, start = 16.dp, end = 16.dp),
                     shape = RoundedCornerShape(999.dp),
-                    color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.95f),
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.96f),
+                    border = BorderStroke(1.dp, NexusTheme.extendedColors.rdpAccent.copy(alpha = 0.35f)),
                     tonalElevation = 6.dp
                 ) {
                     Row(
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                        modifier = Modifier.padding(start = 18.dp, end = 10.dp, top = 8.dp, bottom = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
                         CircularProgressIndicator(
                             modifier = Modifier.size(16.dp),
@@ -992,7 +1001,7 @@ fun RdpSessionSurfaceView(
                             style = MaterialTheme.typography.labelLarge,
                             color = MaterialTheme.colorScheme.onSurface
                         )
-                        FilledTonalButton(
+                        NexusTonalButton(
                             onClick = {
                                 coroutineScope.launch(Dispatchers.IO) {
                                     session.reconnect(
@@ -1002,10 +1011,9 @@ fun RdpSessionSurfaceView(
                                         context = context
                                     )
                                 }
-                            }
-                        ) {
-                            Text("Reconnect Now")
-                        }
+                            },
+                            label = "Reconnect Now"
+                        )
                     }
                 }
             } else if (!isConnected && !isReconnecting && lastError != null) {
@@ -1013,14 +1021,16 @@ fun RdpSessionSurfaceView(
                 Surface(
                     modifier = Modifier
                         .align(Alignment.Center)
-                        .padding(24.dp),
-                    shape = RoundedCornerShape(18.dp),
-                    color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.97f),
+                        .padding(24.dp)
+                        .widthIn(max = 560.dp),
+                    shape = RoundedCornerShape(22.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.98f),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.38f)),
                     tonalElevation = 8.dp
                 ) {
                     Column(
-                        modifier = Modifier.padding(22.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                        modifier = Modifier.padding(24.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
                         Text(
                             text = err.title,
@@ -1041,22 +1051,24 @@ fun RdpSessionSurfaceView(
                         }
                         if (showErrorDetails && err.technicalDetails.isNotBlank()) {
                             Surface(
-                                shape = RoundedCornerShape(8.dp),
-                                color = MaterialTheme.colorScheme.surfaceContainerLowest
+                                shape = RoundedCornerShape(10.dp),
+                                color = MaterialTheme.colorScheme.surfaceContainerLowest,
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
                             ) {
                                 Text(
                                     text = err.technicalDetails,
-                                    modifier = Modifier.padding(10.dp),
+                                    modifier = Modifier.padding(12.dp),
                                     style = NexusTheme.monospace.keycapShortcut,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
                         }
-                        Row(
+                        @OptIn(ExperimentalLayoutApi::class)
+                        FlowRow(
                             horizontalArrangement = Arrangement.spacedBy(10.dp),
-                            verticalAlignment = Alignment.CenterVertically
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            FilledTonalButton(
+                            NexusPrimaryButton(
                                 onClick = {
                                     coroutineScope.launch(Dispatchers.IO) {
                                         session.reconnect(
@@ -1066,26 +1078,26 @@ fun RdpSessionSurfaceView(
                                             context = context
                                         )
                                     }
-                                }
-                            ) {
-                                Text("Reconnect")
-                            }
+                                },
+                                label = "Reconnect"
+                            )
                             if (onEditConnection != null) {
-                                FilledTonalButton(onClick = onEditConnection) {
-                                    Text("Edit Connection…")
-                                }
+                                NexusTonalButton(
+                                    onClick = onEditConnection,
+                                    label = "Edit Connection…"
+                                )
                             }
                             if (err.technicalDetails.isNotBlank()) {
-                                FilledTonalButton(onClick = { showErrorDetails = !showErrorDetails }) {
-                                    Text(if (showErrorDetails) "Hide Details" else "Details")
-                                }
-                                FilledTonalButton(
+                                NexusOutlinedButton(
+                                    onClick = { showErrorDetails = !showErrorDetails },
+                                    label = if (showErrorDetails) "Hide Details" else "Details"
+                                )
+                                NexusOutlinedButton(
                                     onClick = {
                                         composeClipboardManager.setText(AnnotatedString(err.formatDiagnosticReport()))
-                                    }
-                                ) {
-                                    Text("Copy Diagnostics")
-                                }
+                                    },
+                                    label = "Copy Diagnostics"
+                                )
                             }
                         }
                     }

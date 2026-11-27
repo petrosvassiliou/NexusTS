@@ -395,9 +395,13 @@ fun NexusWorkspaceScreen(
             detachNewWindowLabel = strings.detachNewWindow,
             detachToDisplayPrefix = strings.detachToDisplayPrefix,
             toggleBroadcastLabel = strings.toggleBroadcast,
+            fullScreenLabel = strings.tabFullScreen,
             reconnectTabLabel = strings.actionReconnectTab,
             disconnectTabLabel = strings.actionDisconnectSession,
             logOffSessionLabel = strings.actionLogOffSession,
+            moveTabLeftLabel = strings.tabMoveLeft,
+            moveTabRightLabel = strings.tabMoveRight,
+            closeOtherTabsLabel = strings.tabCloseOthers,
             closeTabLabel = strings.closeTab,
             emptyWorkspaceTitle = strings.emptyWorkspaceTitle,
             emptyWorkspaceSubtitle = strings.emptyWorkspaceSubtitle
@@ -4222,7 +4226,7 @@ private fun VaultHierarchySidebarTree(
             )
             NexusMenuDivider()
             NexusSpacedDropdownMenuItem(
-                text = { Text("Local Terminal") },
+                text = { Text(strings.localTerminalLabel) },
                 leadingIcon = { Icon(Icons.Outlined.Terminal, contentDescription = null) },
                 onClick = {
                     sidebarBgMenuOpen = false
@@ -4748,7 +4752,7 @@ private fun CredentialTreeRow(
             )
             if (credential.username.isNotBlank()) {
                 NexusSpacedDropdownMenuItem(
-                    text = { Text("Copy Username") },
+                    text = { Text(strings.actionCopyUsername) },
                     leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null) },
                     onClick = {
                         menuOpen = false
@@ -4758,7 +4762,7 @@ private fun CredentialTreeRow(
             }
             if (!credential.secretPassword.isNullOrEmpty()) {
                 NexusSpacedDropdownMenuItem(
-                    text = { Text("Copy Password") },
+                    text = { Text(strings.actionCopyPassword) },
                     leadingIcon = { Icon(Icons.Outlined.Key, contentDescription = null) },
                     onClick = {
                         menuOpen = false
@@ -4767,7 +4771,7 @@ private fun CredentialTreeRow(
                 )
             }
             NexusSpacedDropdownMenuItem(
-                text = { Text("Duplicate") },
+                text = { Text(strings.actionDuplicateShort) },
                 leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null) },
                 onClick = {
                     menuOpen = false
@@ -5418,7 +5422,7 @@ private fun FolderTreeRow(
             }
             NexusMenuDivider()
             NexusSpacedDropdownMenuItem(
-                text = { Text("New RDP Connection") },
+                text = { Text(strings.actionNewRdpConnection) },
                 leadingIcon = { Icon(Icons.Outlined.Add, contentDescription = null) },
                 onClick = {
                     folderMenuOpen = false
@@ -5426,7 +5430,7 @@ private fun FolderTreeRow(
                 }
             )
             NexusSpacedDropdownMenuItem(
-                text = { Text("New SSH Connection") },
+                text = { Text(strings.actionNewSshConnection) },
                 leadingIcon = { Icon(Icons.Outlined.Terminal, contentDescription = null) },
                 onClick = {
                     folderMenuOpen = false
@@ -5434,7 +5438,7 @@ private fun FolderTreeRow(
                 }
             )
             NexusSpacedDropdownMenuItem(
-                text = { Text("New Subfolder") },
+                text = { Text(strings.actionNewSubfolder) },
                 leadingIcon = { Icon(Icons.Outlined.CreateNewFolder, contentDescription = null) },
                 onClick = {
                     folderMenuOpen = false
@@ -5443,7 +5447,7 @@ private fun FolderTreeRow(
             )
             NexusMenuDivider()
             NexusSpacedDropdownMenuItem(
-                text = { Text("Move Folder to…") },
+                text = { Text(strings.actionMoveFolderTo) },
                 leadingIcon = { Icon(Icons.Outlined.DriveFileMove, contentDescription = null) },
                 onClick = {
                     folderMenuOpen = false
@@ -5451,7 +5455,7 @@ private fun FolderTreeRow(
                 }
             )
             NexusSpacedDropdownMenuItem(
-                text = { Text("Move Up") },
+                text = { Text(strings.actionMoveUp) },
                 leadingIcon = { Icon(Icons.Outlined.ArrowUpward, contentDescription = null) },
                 onClick = {
                     folderMenuOpen = false
@@ -5459,7 +5463,7 @@ private fun FolderTreeRow(
                 }
             )
             NexusSpacedDropdownMenuItem(
-                text = { Text("Move Down") },
+                text = { Text(strings.actionMoveDown) },
                 leadingIcon = { Icon(Icons.Outlined.ArrowDownward, contentDescription = null) },
                 onClick = {
                     folderMenuOpen = false
@@ -5467,7 +5471,7 @@ private fun FolderTreeRow(
                 }
             )
             NexusSpacedDropdownMenuItem(
-                text = { Text("Duplicate Folder") },
+                text = { Text(strings.actionDuplicateFolder) },
                 leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null) },
                 onClick = {
                     folderMenuOpen = false
@@ -5476,7 +5480,7 @@ private fun FolderTreeRow(
             )
             if (hasExpandableChildren) {
                 NexusSpacedDropdownMenuItem(
-                    text = { Text(if (isExpanded) "Collapse Subfolders" else "Expand Subfolders") },
+                    text = { Text(if (isExpanded) strings.actionCollapseSubfolders else strings.actionExpandSubfolders) },
                     leadingIcon = {
                         Icon(
                             if (isExpanded) Icons.Outlined.UnfoldLess else Icons.Outlined.UnfoldMore,
@@ -5974,7 +5978,7 @@ private fun ConnectionTreeRow(
             shape = NexusDropdownMenuShape
         ) {
             NexusSpacedDropdownMenuItem(
-                text = { Text("Connect") },
+                text = { Text(strings.actionConnect) },
                 leadingIcon = { Icon(Icons.Outlined.PlayArrow, contentDescription = null) },
                 onClick = {
                     contextMenuOpen = false
@@ -6073,7 +6077,7 @@ private fun ConnectionTreeRow(
             )
             if (enableDragToFolder) {
                 NexusSpacedDropdownMenuItem(
-                    text = { Text("Move Up") },
+                    text = { Text(strings.actionMoveUp) },
                     leadingIcon = { Icon(Icons.Outlined.ArrowUpward, contentDescription = null) },
                     onClick = {
                         contextMenuOpen = false
@@ -6081,7 +6085,7 @@ private fun ConnectionTreeRow(
                     }
                 )
                 NexusSpacedDropdownMenuItem(
-                    text = { Text("Move Down") },
+                    text = { Text(strings.actionMoveDown) },
                     leadingIcon = { Icon(Icons.Outlined.ArrowDownward, contentDescription = null) },
                     onClick = {
                         contextMenuOpen = false
@@ -6090,7 +6094,7 @@ private fun ConnectionTreeRow(
                 )
             }
             NexusSpacedDropdownMenuItem(
-                text = { Text("Copy Host") },
+                text = { Text(strings.actionCopyHost) },
                 leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null) },
                 onClick = {
                     contextMenuOpen = false
@@ -6637,14 +6641,12 @@ fun FullScreenVaultUnlockShield(
                     }
 
                     if (biometricUnlockAvailable) {
-                        FilledTonalButton(
+                        NexusTonalButton(
                             onClick = onBiometricUnlock,
+                            label = strings.actionUnlockBiometrics,
+                            leadingIcon = Icons.Outlined.Fingerprint,
                             modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Icon(Icons.Outlined.Fingerprint, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Unlock with Biometrics / Passkey")
-                        }
+                        )
                     }
 
                     OutlinedTextField(
@@ -6656,19 +6658,17 @@ fun FullScreenVaultUnlockShield(
                         modifier = Modifier.fillMaxWidth()
                     )
 
-                    Button(
+                    NexusPrimaryButton(
                         enabled = passphrase.isNotEmpty(),
                         onClick = {
                             val current = passphrase
                             passphrase = ""
                             onUnlock(current)
                         },
+                        label = strings.actionUnlockVault,
+                        leadingIcon = Icons.Outlined.LockOpen,
                         modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Icon(Icons.Outlined.LockOpen, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(strings.actionUnlockVault)
-                    }
+                    )
 
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -6741,31 +6741,26 @@ private fun BottomTelemetryAndBroadcastDrawer(
                 singleLine = true,
                 modifier = Modifier.weight(1f)
             )
-            Button(
+            NexusPrimaryButton(
                 enabled = cmd.isNotBlank(),
                 onClick = {
                     onBroadcastCommand(cmd)
                     cmd = ""
-                }
-            ) {
-                Text(strings.drawerSendBroadcast)
-            }
-            OutlinedButton(
+                },
+                label = strings.drawerSendBroadcast
+            )
+            NexusOutlinedButton(
                 enabled = logs.isNotEmpty(),
-                onClick = { clipboard.setText(AnnotatedString(logs.joinToString("\n"))) }
-            ) {
-                Icon(Icons.Outlined.ContentCopy, contentDescription = null, modifier = Modifier.size(14.dp))
-                Spacer(modifier = Modifier.width(6.dp))
-                Text("Copy All")
-            }
-            TextButton(
+                onClick = { clipboard.setText(AnnotatedString(logs.joinToString("\n"))) },
+                label = strings.actionCopyAll,
+                leadingIcon = Icons.Outlined.ContentCopy
+            )
+            NexusOutlinedButton(
                 enabled = logs.isNotEmpty(),
-                onClick = onClearLogs
-            ) {
-                Icon(Icons.Outlined.ClearAll, contentDescription = null, modifier = Modifier.size(15.dp))
-                Spacer(modifier = Modifier.width(4.dp))
-                Text("Clear")
-            }
+                onClick = onClearLogs,
+                label = strings.actionClear,
+                leadingIcon = Icons.Outlined.ClearAll
+            )
         }
 
         LazyColumn(modifier = Modifier.fillMaxSize()) {
@@ -6797,10 +6792,11 @@ private fun BottomTelemetryAndBroadcastDrawer(
                     )
                     DropdownMenu(
                         expanded = logMenuOpen,
-                        onDismissRequest = { logMenuOpen = false }
+                        onDismissRequest = { logMenuOpen = false },
+                        shape = RoundedCornerShape(14.dp)
                     ) {
                         DropdownMenuItem(
-                            text = { Text("Copy Log Entry") },
+                            text = { Text(strings.actionCopyLogEntry) },
                             leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null) },
                             onClick = {
                                 logMenuOpen = false
@@ -6808,7 +6804,7 @@ private fun BottomTelemetryAndBroadcastDrawer(
                             }
                         )
                         DropdownMenuItem(
-                            text = { Text("Copy All Logs") },
+                            text = { Text(strings.actionCopyAllLogs) },
                             leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null) },
                             onClick = {
                                 logMenuOpen = false
@@ -6817,7 +6813,7 @@ private fun BottomTelemetryAndBroadcastDrawer(
                         )
                         HorizontalDivider()
                         DropdownMenuItem(
-                            text = { Text("Clear Audit Log", color = MaterialTheme.colorScheme.error) },
+                            text = { Text(strings.actionClearAuditLog, color = MaterialTheme.colorScheme.error) },
                             leadingIcon = {
                                 Icon(Icons.Outlined.ClearAll, contentDescription = null, tint = MaterialTheme.colorScheme.error)
                             },
@@ -6854,6 +6850,7 @@ private fun EncryptedImportPassphraseDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
+        shape = RoundedCornerShape(24.dp),
         icon = {
             Icon(
                 imageVector = Icons.Outlined.VpnKey,
@@ -6861,7 +6858,7 @@ private fun EncryptedImportPassphraseDialog(
                 tint = MaterialTheme.colorScheme.primary
             )
         },
-        title = { Text("Unlock Encrypted Import") },
+        title = { Text(strings.dialogUnlockEncryptedImportTitle) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(
@@ -6923,6 +6920,7 @@ private fun ImportErrorAlertDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
+        shape = RoundedCornerShape(24.dp),
         icon = {
             Icon(
                 imageVector = Icons.Outlined.ErrorOutline,
@@ -6930,7 +6928,7 @@ private fun ImportErrorAlertDialog(
                 tint = MaterialTheme.colorScheme.error
             )
         },
-        title = { Text("Import Failed") },
+        title = { Text(strings.dialogImportFailedTitle) },
         text = {
             Text(
                 text = errorMessage,
@@ -7808,37 +7806,34 @@ private fun PlayProtectAutoUpdateDialog(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        FilledTonalButton(
+                        NexusTonalButton(
                             onClick = onDownloadVerifiedToFiles,
+                            label = strings.verifiedApkDownloadAction,
+                            leadingIcon = Icons.Outlined.Download,
                             modifier = Modifier.weight(1f)
-                        ) {
-                            Icon(Icons.Outlined.Download, contentDescription = null, modifier = Modifier.size(17.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Verified APK Download", maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        }
-                        OutlinedButton(onClick = onSkipVersion) {
-                            Text("Skip")
-                        }
+                        )
+                        NexusOutlinedButton(
+                            onClick = onSkipVersion,
+                            label = strings.skipAction
+                        )
                     }
                 }
             }
         },
         confirmButton = {
             if (uiState.updateAvailable) {
-                Button(onClick = onTriggerBrowserUpdate) {
-                    Icon(Icons.Outlined.SystemUpdateAlt, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(strings.autoUpdateInstallAction)
-                }
+                NexusPrimaryButton(
+                    onClick = onTriggerBrowserUpdate,
+                    label = strings.autoUpdateInstallAction,
+                    leadingIcon = Icons.Outlined.SystemUpdateAlt
+                )
             } else {
-                FilledTonalButton(
+                NexusTonalButton(
                     onClick = onCheckNow,
-                    enabled = !uiState.isCheckingForUpdates
-                ) {
-                    Icon(Icons.Outlined.Refresh, contentDescription = null, modifier = Modifier.size(17.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(strings.syncCheckGitHubUpdates)
-                }
+                    enabled = !uiState.isCheckingForUpdates,
+                    label = strings.syncCheckGitHubUpdates,
+                    leadingIcon = Icons.Outlined.Refresh
+                )
             }
         },
         dismissButton = {
@@ -7848,7 +7843,7 @@ private fun PlayProtectAutoUpdateDialog(
                         onClick = onCheckNow,
                         enabled = !uiState.isCheckingForUpdates
                     ) {
-                        Text("Check Again")
+                        Text(strings.checkAgainAction)
                     }
                 }
                 TextButton(onClick = onDismiss) {
@@ -8540,7 +8535,7 @@ private fun UnifiedWorkspaceSettingsScreen(
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
                                 Text(
-                                    text = "Save Passphrase in Hardware Keystore",
+                                    text = strings.savePassphraseHardwareKeystore,
                                     style = MaterialTheme.typography.bodyMedium,
                                     modifier = Modifier.weight(1f)
                                 )
@@ -8561,7 +8556,7 @@ private fun UnifiedWorkspaceSettingsScreen(
                                         newPassInput = ""
                                         passSavedNotice = true
                                     },
-                                    label = "Apply Passphrase",
+                                    label = strings.applyPassphraseAction,
                                     leadingIcon = Icons.Outlined.VpnKey
                                 )
                                 if (uiState.driveRememberVaultPassphrase) {
@@ -8571,7 +8566,7 @@ private fun UnifiedWorkspaceSettingsScreen(
                                             rememberPassToggle = false
                                             passSavedNotice = false
                                         },
-                                        label = "Clear Saved Passphrase"
+                                        label = strings.clearSavedPassphraseAction
                                     )
                                 }
                                 NexusTonalButton(
@@ -8582,7 +8577,7 @@ private fun UnifiedWorkspaceSettingsScreen(
                             }
                             if (passSavedNotice) {
                                 Text(
-                                    text = "Vault passphrase updated.",
+                                    text = strings.passphraseUpdatedNotice,
                                     style = MaterialTheme.typography.labelMedium,
                                     color = NexusTheme.extendedColors.statusConnected
                                 )
@@ -8596,7 +8591,7 @@ private fun UnifiedWorkspaceSettingsScreen(
                                     horizontalArrangement = Arrangement.SpaceBetween
                                 ) {
                                     Text(
-                                        text = "Biometric / Device Unlock",
+                                        text = strings.biometricDeviceUnlockLabel,
                                         style = MaterialTheme.typography.bodyMedium,
                                         modifier = Modifier.weight(1f)
                                     )
@@ -8610,14 +8605,20 @@ private fun UnifiedWorkspaceSettingsScreen(
                             if (onChangeIdleAutoLockMinutes != null) {
                                 HorizontalDivider()
                                 Text(
-                                    text = "Idle Auto-Lock",
+                                    text = strings.idleAutoLockTitle,
                                     style = MaterialTheme.typography.titleSmall
                                 )
                                 Row(
                                     modifier = Modifier.horizontalScroll(rememberScrollState()),
                                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
-                                    listOf(0 to "Off", 1 to "1 min", 5 to "5 min", 15 to "15 min", 30 to "30 min").forEach { (mins, title) ->
+                                    listOf(
+                                        0 to strings.idleOffLabel,
+                                        1 to strings.idleMinutesLabel(1),
+                                        5 to strings.idleMinutesLabel(5),
+                                        15 to strings.idleMinutesLabel(15),
+                                        30 to strings.idleMinutesLabel(30)
+                                    ).forEach { (mins, title) ->
                                         NexusChoiceChip(
                                             selected = uiState.idleAutoLockMinutes == mins,
                                             onClick = { onChangeIdleAutoLockMinutes(mins) },
@@ -8707,7 +8708,7 @@ private fun UnifiedWorkspaceSettingsScreen(
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
                                 Text(
-                                    text = "Automatically check for updates",
+                                    text = strings.autoUpdateAutoCheckToggle,
                                     style = MaterialTheme.typography.bodyMedium,
                                     modifier = Modifier.weight(1f)
                                 )
@@ -8737,20 +8738,20 @@ private fun UnifiedWorkspaceSettingsScreen(
                                 NexusPrimaryButton(
                                     enabled = !uiState.isCheckingForUpdates,
                                     onClick = onCheckGitHubReleases,
-                                    label = if (uiState.isCheckingForUpdates) "Checking…" else strings.syncCheckGitHubUpdates,
+                                    label = if (uiState.isCheckingForUpdates) strings.checkingUpdatesLabel else strings.syncCheckGitHubUpdates,
                                     leadingIcon = Icons.Outlined.Refresh
                                 )
                                 if (uiState.updateAvailable) {
                                     NexusTonalButton(
                                         onClick = onDownloadVerifiedUpdateToFiles,
-                                        label = "Download ${uiState.updateLatestTag}",
+                                        label = strings.downloadVersionLabel(uiState.updateLatestTag),
                                         leadingIcon = Icons.Outlined.Download
                                     )
                                 }
                                 if (uiState.githubLatestReleaseUrl.isNotBlank()) {
                                     NexusOutlinedButton(
                                         onClick = { onOpenGitHubReleaseUrl(uiState.githubLatestReleaseUrl) },
-                                        label = "Release Notes"
+                                        label = strings.releaseNotesAction
                                     )
                                 }
                             }
@@ -8797,7 +8798,9 @@ private fun UnifiedWorkspaceSettingsScreen(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
-                    // General Tab: Language, Workspace Behavior, Import & Export Vault
+                    // General Tab: Appearance, Language, Workspace Behavior, Import & Export Vault
+                    val localContext = androidx.compose.ui.platform.LocalContext.current
+                    val activeThemeMode = com.nexusts.app.core.ui.theme.NexusThemeModeController.observeThemeMode()
                     Surface(
                         shape = RoundedCornerShape(18.dp),
                         color = MaterialTheme.colorScheme.surfaceContainerLow,
@@ -8808,6 +8811,32 @@ private fun UnifiedWorkspaceSettingsScreen(
                             modifier = Modifier.padding(22.dp),
                             verticalArrangement = Arrangement.spacedBy(14.dp)
                         ) {
+                            Text(
+                                text = strings.appearanceTitle,
+                                style = MaterialTheme.typography.titleMedium
+                            )
+                            Row(
+                                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                listOf(
+                                    com.nexusts.app.core.ui.theme.NexusThemeMode.SYSTEM to strings.themeModeSystem,
+                                    com.nexusts.app.core.ui.theme.NexusThemeMode.LIGHT to strings.themeModeLight,
+                                    com.nexusts.app.core.ui.theme.NexusThemeMode.DARK to strings.themeModeDark
+                                ).forEach { (mode, modeTitle) ->
+                                    NexusChoiceChip(
+                                        selected = activeThemeMode == mode,
+                                        onClick = {
+                                            com.nexusts.app.core.ui.theme.NexusThemeModeController.setThemeMode(localContext, mode)
+                                        },
+                                        label = modeTitle,
+                                        showCheckmarkWhenSelected = true
+                                    )
+                                }
+                            }
+
+                            HorizontalDivider()
+
                             Text(
                                 text = strings.actionLanguagePicker,
                                 style = MaterialTheme.typography.titleMedium
@@ -8833,7 +8862,7 @@ private fun UnifiedWorkspaceSettingsScreen(
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
                                 Text(
-                                    text = "Capture Remote Shortcut Keys in Active Sessions",
+                                    text = strings.remoteKeyCaptureLabel,
                                     style = MaterialTheme.typography.bodyMedium,
                                     modifier = Modifier.weight(1f)
                                 )
@@ -8846,7 +8875,7 @@ private fun UnifiedWorkspaceSettingsScreen(
                             HorizontalDivider()
 
                             Text(
-                                text = "Import & Export Vault",
+                                text = strings.importExportVaultTitle,
                                 style = MaterialTheme.typography.titleMedium
                             )
                             Row(

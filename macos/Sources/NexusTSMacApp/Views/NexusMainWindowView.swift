@@ -6,10 +6,17 @@ import UniformTypeIdentifiers
 public struct NexusMainWindowView: View {
     @EnvironmentObject private var store: WorkspaceStore
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.colorScheme) private var colorScheme
 
     @AppStorage("nexusts.macos.sidebarWidth") private var sidebarWidth: Double = 268
+    @AppStorage("nexusts.macos.inspectorWidth") private var inspectorWidth: Double = 304
+    @AppStorage("nexusts.macos.bottomConsoleHeight") private var bottomConsoleHeight: Double = 185
     @State private var sidebarDragStartWidth: Double? = nil
+    @State private var inspectorDragStartWidth: Double? = nil
+    @State private var bottomDragStartHeight: Double? = nil
     @State private var didPushSidebarResizeCursor: Bool = false
+    @State private var didPushInspectorResizeCursor: Bool = false
+    @State private var didPushBottomResizeCursor: Bool = false
     @State private var pendingEncryptedImportURL: URL? = nil
     @State private var importArchivePassword: String = ""
     @State private var exportPayload: ExportedFileDocument? = nil
@@ -19,9 +26,21 @@ public struct NexusMainWindowView: View {
 
     public init() {}
 
+    private var canvasBackdropColor: Color {
+        colorScheme == .dark
+            ? Color(red: 0.075, green: 0.086, blue: 0.114)
+            : Color(red: 0.973, green: 0.980, blue: 0.988)
+    }
+
+    private var panelSurfaceColor: Color {
+        colorScheme == .dark
+            ? Color(red: 0.102, green: 0.118, blue: 0.153)
+            : Color.white
+    }
+
     public var body: some View {
         ZStack {
-            Color(red: 0.973, green: 0.980, blue: 0.988)
+            canvasBackdropColor
                 .ignoresSafeArea()
 
             if store.isVaultLocked {
@@ -60,7 +79,7 @@ public struct NexusMainWindowView: View {
                             SidebarHierarchyView()
                                 .frame(width: clampedSidebarWidth)
                                 .clipped()
-                                .background(Color.white)
+                                .background(panelSurfaceColor)
 
                             Divider()
                                 .overlay {
@@ -80,6 +99,11 @@ public struct NexusMainWindowView: View {
                                             if didPushSidebarResizeCursor {
                                                 NSCursor.pop()
                                                 didPushSidebarResizeCursor = false
+                                            }
+                                        }
+                                        .onTapGesture(count: 2) {
+                                            withAnimation(.spring(response: 0.24, dampingFraction: 0.84)) {
+                                                sidebarWidth = 268
                                             }
                                         }
                                         .gesture(
@@ -103,11 +127,52 @@ public struct NexusMainWindowView: View {
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
                         if store.isInspectorPresented && store.activeSection == .sessions {
+                            let clampedInspectorWidth = min(max(inspectorWidth, 268), 500)
                             Divider()
+                                .overlay {
+                                    Color.clear
+                                        .frame(width: 8)
+                                        .contentShape(Rectangle())
+                                        .onHover { hovering in
+                                            if hovering && !didPushInspectorResizeCursor {
+                                                NSCursor.resizeLeftRight.push()
+                                                didPushInspectorResizeCursor = true
+                                            } else if !hovering && didPushInspectorResizeCursor {
+                                                NSCursor.pop()
+                                                didPushInspectorResizeCursor = false
+                                            }
+                                        }
+                                        .onDisappear {
+                                            if didPushInspectorResizeCursor {
+                                                NSCursor.pop()
+                                                didPushInspectorResizeCursor = false
+                                            }
+                                        }
+                                        .onTapGesture(count: 2) {
+                                            withAnimation(.spring(response: 0.24, dampingFraction: 0.84)) {
+                                                inspectorWidth = 304
+                                            }
+                                        }
+                                        .gesture(
+                                            DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                                                .onChanged { value in
+                                                    let base = inspectorDragStartWidth ?? clampedInspectorWidth
+                                                    if inspectorDragStartWidth == nil {
+                                                        inspectorDragStartWidth = base
+                                                    }
+                                                    inspectorWidth = min(max(base - value.translation.width, 268), 500)
+                                                }
+                                                .onEnded { _ in
+                                                    inspectorDragStartWidth = nil
+                                                }
+                                        )
+                                }
+                                .zIndex(3)
+
                             InspectorColumnView()
-                                .frame(width: 295)
+                                .frame(width: clampedInspectorWidth)
                                 .clipped()
-                                .background(Color.white)
+                                .background(panelSurfaceColor)
                         }
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -308,14 +373,14 @@ public struct NexusMainWindowView: View {
                             .controlSize(.small)
                     }
 
-                    Button("Update & Relaunch") {
+                    Button(store.strings.updateAndRelaunchAction) {
                         Task { await store.installAvailableUpdateAndRelaunch() }
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
                     .disabled(store.updateInstallPhase.isBusy)
 
-                    Button("Details…") {
+                    Button(store.strings.detailsAction) {
                         store.isPresentingSoftwareUpdateSheet = true
                     }
                     .controlSize(.small)
@@ -345,9 +410,49 @@ public struct NexusMainWindowView: View {
             }
 
             if store.isBottomConsolePresented {
+                let clampedBottomHeight = min(max(bottomConsoleHeight, 140), 420)
                 Divider()
+                    .overlay {
+                        Color.clear
+                            .frame(height: 8)
+                            .contentShape(Rectangle())
+                            .onHover { hovering in
+                                if hovering && !didPushBottomResizeCursor {
+                                    NSCursor.resizeUpDown.push()
+                                    didPushBottomResizeCursor = true
+                                } else if !hovering && didPushBottomResizeCursor {
+                                    NSCursor.pop()
+                                    didPushBottomResizeCursor = false
+                                }
+                            }
+                            .onDisappear {
+                                if didPushBottomResizeCursor {
+                                    NSCursor.pop()
+                                    didPushBottomResizeCursor = false
+                                }
+                            }
+                            .onTapGesture(count: 2) {
+                                withAnimation(.spring(response: 0.24, dampingFraction: 0.84)) {
+                                    bottomConsoleHeight = 185
+                                }
+                            }
+                            .gesture(
+                                DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                                    .onChanged { value in
+                                        let base = bottomDragStartHeight ?? clampedBottomHeight
+                                        if bottomDragStartHeight == nil {
+                                            bottomDragStartHeight = base
+                                        }
+                                        bottomConsoleHeight = min(max(base - value.translation.height, 140), 420)
+                                    }
+                                    .onEnded { _ in
+                                        bottomDragStartHeight = nil
+                                    }
+                            )
+                    }
+                    .zIndex(3)
                 BottomAuditAndBroadcastConsole()
-                    .frame(height: 175)
+                    .frame(height: clampedBottomHeight)
             }
         }
     }
@@ -357,6 +462,7 @@ public struct NexusMainWindowView: View {
 
 private struct GooglebookDesktopTopBar: View {
     @EnvironmentObject private var store: WorkspaceStore
+    @Environment(\.colorScheme) private var colorScheme
     let onImportVault: () -> Void
     let onExportVault: (VaultExportFormat) -> Void
 
@@ -364,12 +470,50 @@ private struct GooglebookDesktopTopBar: View {
     @State private var isLangMenuPresented = false
     @State private var isToolsMenuPresented = false
 
-    private static let royalSapphire = Color(red: 0.114, green: 0.306, blue: 0.847)
-    private static let royalSapphireHover = Color(red: 0.094, green: 0.255, blue: 0.725)
-    private static let surfaceLow = Color(red: 0.945, green: 0.961, blue: 0.976)
-    private static let activeContainer = Color(red: 0.859, green: 0.918, blue: 0.996)
-    private static let activeOnContainer = Color(red: 0.118, green: 0.227, blue: 0.541)
-    private static let subtleBorder = Color.black.opacity(0.09)
+    private static let royalSapphire = Color(red: 0.145, green: 0.388, blue: 0.922)
+    private static let royalSapphireHover = Color(red: 0.114, green: 0.306, blue: 0.847)
+
+    private var topBarBackground: Color {
+        colorScheme == .dark
+            ? Color(red: 0.094, green: 0.110, blue: 0.145)
+            : Color.white
+    }
+
+    private var surfaceLow: Color {
+        colorScheme == .dark
+            ? Color.white.opacity(0.075)
+            : Color(red: 0.945, green: 0.961, blue: 0.976)
+    }
+
+    private var activeContainer: Color {
+        colorScheme == .dark
+            ? Self.royalSapphire.opacity(0.24)
+            : Color(red: 0.859, green: 0.918, blue: 0.996)
+    }
+
+    private var activeOnContainer: Color {
+        colorScheme == .dark
+            ? Color(red: 0.655, green: 0.808, blue: 1.0)
+            : Color(red: 0.118, green: 0.227, blue: 0.541)
+    }
+
+    private var subtleBorder: Color {
+        colorScheme == .dark
+            ? Color.white.opacity(0.11)
+            : Color.black.opacity(0.09)
+    }
+
+    private var brandTitleColor: Color {
+        colorScheme == .dark
+            ? Color(red: 0.933, green: 0.953, blue: 0.988)
+            : Color(red: 0.059, green: 0.090, blue: 0.165)
+    }
+
+    private var syncedTint: Color {
+        colorScheme == .dark
+            ? Color(red: 0.204, green: 0.827, blue: 0.600)
+            : Color(red: 0.016, green: 0.471, blue: 0.341)
+    }
 
     private var showsVaultPill: Bool {
         let trimmed = store.document.name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -399,7 +543,7 @@ private struct GooglebookDesktopTopBar: View {
 
                     Text("NexusTS")
                         .font(.system(size: 15.5, weight: .semibold))
-                        .foregroundStyle(Color(red: 0.059, green: 0.090, blue: 0.165))
+                        .foregroundStyle(brandTitleColor)
                 }
                 .padding(.trailing, 2)
 
@@ -410,7 +554,7 @@ private struct GooglebookDesktopTopBar: View {
                         .lineLimit(1)
                         .padding(.horizontal, 11)
                         .padding(.vertical, 5)
-                        .background(Capsule(style: .continuous).fill(Self.surfaceLow))
+                        .background(Capsule(style: .continuous).fill(surfaceLow))
                         .frame(maxWidth: 160)
                 }
 
@@ -424,19 +568,19 @@ private struct GooglebookDesktopTopBar: View {
                             .font(.system(size: 12.5, weight: store.activeSection == .sessions ? .medium : .semibold))
                             .lineLimit(1)
                     }
-                    .foregroundStyle(store.activeSection == .sessions ? Color.primary : Self.activeOnContainer)
+                    .foregroundStyle(store.activeSection == .sessions ? Color.primary : activeOnContainer)
                     .padding(.horizontal, 14)
                     .frame(height: 38)
                     .background(
                         Capsule(style: .continuous)
-                            .fill(store.activeSection == .sessions ? Self.surfaceLow : Self.activeContainer)
+                            .fill(store.activeSection == .sessions ? surfaceLow : activeContainer)
                     )
                     .overlay(
                         Capsule(style: .continuous)
                             .strokeBorder(
                                 store.activeSection == .sessions
-                                    ? Self.subtleBorder
-                                    : Self.royalSapphire.opacity(0.32),
+                                    ? subtleBorder
+                                    : Self.royalSapphire.opacity(0.38),
                                 lineWidth: 1
                             )
                     )
@@ -461,11 +605,11 @@ private struct GooglebookDesktopTopBar: View {
                         .frame(height: 34)
                         .background(
                             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .fill(Color.white)
+                                .fill(surfaceLow)
                         )
                         .overlay(
                             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .strokeBorder(Color.black.opacity(0.14), lineWidth: 1)
+                                .strokeBorder(subtleBorder, lineWidth: 1)
                         )
                     }
                     .buttonStyle(.plain)
@@ -494,8 +638,8 @@ private struct GooglebookDesktopTopBar: View {
                 .padding(.horizontal, 13)
                 .frame(minWidth: 190, idealWidth: 300, maxWidth: 340)
                 .frame(height: 38)
-                .background(Capsule(style: .continuous).fill(Self.surfaceLow))
-                .overlay(Capsule(style: .continuous).strokeBorder(Self.subtleBorder, lineWidth: 1))
+                .background(Capsule(style: .continuous).fill(surfaceLow))
+                .overlay(Capsule(style: .continuous).strokeBorder(subtleBorder, lineWidth: 1))
             }
             .buttonStyle(.plain)
             .accessibilityIdentifier("nexusts.toolbar.quickConnect")
@@ -614,16 +758,16 @@ private struct GooglebookDesktopTopBar: View {
                                 .font(.system(size: 11.5, weight: .medium))
                                 .lineLimit(1)
                         }
-                        .foregroundStyle(Color(red: 0.016, green: 0.471, blue: 0.341))
+                        .foregroundStyle(syncedTint)
                         .padding(.horizontal, 11)
                         .frame(height: 34)
                         .background(
                             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .fill(Color(red: 0.016, green: 0.471, blue: 0.341).opacity(0.08))
+                                .fill(syncedTint.opacity(colorScheme == .dark ? 0.14 : 0.08))
                         )
                         .overlay(
                             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .strokeBorder(Color(red: 0.016, green: 0.471, blue: 0.341).opacity(0.24), lineWidth: 1)
+                                .strokeBorder(syncedTint.opacity(0.28), lineWidth: 1)
                         )
                     }
                     .buttonStyle(.plain)
@@ -661,8 +805,8 @@ private struct GooglebookDesktopTopBar: View {
                     }
                     .padding(.horizontal, 11)
                     .frame(height: 40)
-                    .background(Capsule(style: .continuous).fill(Self.surfaceLow))
-                    .overlay(Capsule(style: .continuous).strokeBorder(Self.subtleBorder, lineWidth: 1))
+                    .background(Capsule(style: .continuous).fill(surfaceLow))
+                    .overlay(Capsule(style: .continuous).strokeBorder(subtleBorder, lineWidth: 1))
                 }
                 .buttonStyle(.plain)
                 .popover(isPresented: $isLangMenuPresented, arrowEdge: .bottom) {
@@ -739,6 +883,30 @@ private struct GooglebookDesktopTopBar: View {
                 }
                 .popover(isPresented: $isToolsMenuPresented, arrowEdge: .bottom) {
                     VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "circle.lefthalf.filled")
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(.secondary)
+                            Text(store.strings.appearanceLabel)
+                                .font(.system(size: 11.5, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.top, 4)
+
+                        Picker("", selection: $store.appearanceMode) {
+                            ForEach(NexusAppearanceMode.allCases) { mode in
+                                Text(mode.title(in: store.strings)).tag(mode)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        .padding(.horizontal, 8)
+                        .padding(.bottom, 4)
+
+                        Divider().padding(.vertical, 3)
+
                         GooglebookMenuRowButton(title: store.strings.updatesSettings, symbol: "arrow.down.circle") {
                             isToolsMenuPresented = false
                             store.isPresentingSoftwareUpdateSheet = true
@@ -786,17 +954,18 @@ private struct GooglebookDesktopTopBar: View {
                         }
                     }
                     .padding(6)
-                    .frame(width: 256)
+                    .frame(width: 268)
                 }
             }
         }
         .padding(.horizontal, 16)
         .frame(height: 58)
-        .background(Color.white)
+        .background(topBarBackground)
     }
 }
 
 private struct GooglebookMorphIconButton: View {
+    @Environment(\.colorScheme) private var colorScheme
     let systemName: String
     let isActive: Bool
     var rotationDegrees: Double = 0
@@ -808,13 +977,23 @@ private struct GooglebookMorphIconButton: View {
     @State private var isHovered = false
 
     var body: some View {
+        let activeFg = colorScheme == .dark
+            ? Color(red: 0.655, green: 0.808, blue: 1.0)
+            : Color(red: 0.118, green: 0.227, blue: 0.541)
+        let activeBg = colorScheme == .dark
+            ? Color(red: 0.145, green: 0.388, blue: 0.922).opacity(0.24)
+            : Color(red: 0.859, green: 0.918, blue: 0.996)
+        let hoverBg = colorScheme == .dark
+            ? Color.white.opacity(0.085)
+            : Color(red: 0.945, green: 0.961, blue: 0.976)
+
         Button(action: action) {
             Image(systemName: systemName)
                 .font(.system(size: 15.5, weight: .medium))
                 .rotationEffect(.degrees(rotationDegrees))
                 .foregroundStyle(
                     isActive
-                        ? Color(red: 0.118, green: 0.227, blue: 0.541)
+                        ? activeFg
                         : (isHovered ? Color.primary : Color.secondary)
                 )
                 .frame(width: 40, height: 40)
@@ -822,14 +1001,14 @@ private struct GooglebookMorphIconButton: View {
                     RoundedRectangle(cornerRadius: isActive ? 13 : 20, style: .continuous)
                         .fill(
                             isActive
-                                ? Color(red: 0.859, green: 0.918, blue: 0.996)
-                                : (isHovered ? Color(red: 0.945, green: 0.961, blue: 0.976) : Color.clear)
+                                ? activeBg
+                                : (isHovered ? hoverBg : Color.clear)
                         )
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: isActive ? 13 : 20, style: .continuous)
                         .strokeBorder(
-                            isActive ? Color(red: 0.114, green: 0.306, blue: 0.847).opacity(0.24) : Color.clear,
+                            isActive ? Color(red: 0.145, green: 0.388, blue: 0.922).opacity(0.32) : Color.clear,
                             lineWidth: 1
                         )
                 )
@@ -846,6 +1025,7 @@ private struct GooglebookMorphIconButton: View {
 }
 
 private struct GooglebookMenuRowButton: View {
+    @Environment(\.colorScheme) private var colorScheme
     let title: String
     let symbol: String
     var shortcut: String? = nil
@@ -856,6 +1036,14 @@ private struct GooglebookMenuRowButton: View {
     @State private var isHovered = false
 
     var body: some View {
+        let hoverFill: Color = {
+            if !isHovered { return Color.clear }
+            if isDestructive { return Color.red.opacity(colorScheme == .dark ? 0.18 : 0.10) }
+            return colorScheme == .dark
+                ? Color.accentColor.opacity(0.18)
+                : Color(red: 0.937, green: 0.965, blue: 1.0)
+        }()
+
         Button(action: action) {
             HStack(spacing: 10) {
                 Image(systemName: symbol)
@@ -870,7 +1058,7 @@ private struct GooglebookMenuRowButton: View {
                 if isChecked {
                     Image(systemName: "checkmark")
                         .font(.system(size: 11.5, weight: .bold))
-                        .foregroundStyle(Color(red: 0.114, green: 0.306, blue: 0.847))
+                        .foregroundStyle(Color.accentColor)
                 } else if let shortcut {
                     Text(shortcut)
                         .font(.system(size: 11, design: .monospaced))
@@ -881,11 +1069,7 @@ private struct GooglebookMenuRowButton: View {
             .padding(.vertical, 7)
             .background(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(
-                        isHovered
-                            ? (isDestructive ? Color.red.opacity(0.10) : Color(red: 0.937, green: 0.965, blue: 1.0))
-                            : Color.clear
-                    )
+                    .fill(hoverFill)
             )
             .contentShape(Rectangle())
         }

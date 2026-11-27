@@ -365,6 +365,557 @@ data class WorkspaceLocalizedStrings(
             else -> "Local encrypted vault"
         }
 
+    val appearanceTitle: String
+        get() = when (navConnections) {
+            "Verbindungen" -> "Erscheinungsbild"
+            "Connessioni" -> "Aspetto"
+            "Conexiones" -> "Apariencia"
+            "Συνδέσεις" -> "Εμφάνιση"
+            "Connexions" -> "Apparence"
+            else -> "Appearance"
+        }
+
+    val themeModeSystem: String
+        get() = when (navConnections) {
+            "Verbindungen" -> "System"
+            "Connessioni" -> "Sistema"
+            "Conexiones" -> "Sistema"
+            "Συνδέσεις" -> "Σύστημα"
+            "Connexions" -> "Système"
+            else -> "System"
+        }
+
+    val themeModeLight: String
+        get() = when (navConnections) {
+            "Verbindungen" -> "Hell"
+            "Connessioni" -> "Chiaro"
+            "Conexiones" -> "Claro"
+            "Συνδέσεις" -> "Φωτεινό"
+            "Connexions" -> "Clair"
+            else -> "Light"
+        }
+
+    val themeModeDark: String
+        get() = when (navConnections) {
+            "Verbindungen" -> "Dunkel"
+            "Connessioni" -> "Scuro"
+            "Conexiones" -> "Oscuro"
+            "Συνδέσεις" -> "Σκοτεινό"
+            "Connexions" -> "Sombre"
+            else -> "Dark"
+        }
+
+    val statusActiveBadge: String
+        get() = when (navConnections) {
+            "Verbindungen" -> "Aktiv"
+            "Connessioni" -> "Attivo"
+            "Conexiones" -> "Activo"
+            "Συνδέσεις" -> "Ενεργό"
+            "Connexions" -> "Actif"
+            else -> "Active"
+        }
+
+    val statusSyncingLabel: String
+        get() = when (navConnections) {
+            "Verbindungen" -> "Synchronisiere…"
+            "Connessioni" -> "Sincronizzazione…"
+            "Conexiones" -> "Sincronizando…"
+            "Συνδέσεις" -> "Συγχρονισμός…"
+            "Connexions" -> "Synchronisation…"
+            else -> "Syncing…"
+        }
+
+    val driveSyncAutoSubtitle: String
+        get() = when (navConnections) {
+            "Verbindungen" -> "Synchronisiert automatisch beim Start, beim Speichern von Änderungen und bei erkannten Änderungen in Google Drive."
+            "Connessioni" -> "Sincronizza automaticamente all'avvio, al salvataggio delle modifiche e quando vengono rilevate modifiche in Google Drive."
+            "Conexiones" -> "Sincroniza automáticamente al iniciar, al guardar cambios y al detectar cambios remotos en Google Drive."
+            "Συνδέσεις" -> "Συγχρονίζει αυτόματα κατά την εκκίνηση, την αποθήκευση αλλαγών και τον εντοπισμό αλλαγών στο Google Drive."
+            "Connexions" -> "Synchronise automatiquement au démarrage, à l'enregistrement et lors de modifications détectées sur Google Drive."
+            else -> "Automatically syncs on startup, when you save changes, and when remote changes are detected in Google Drive."
+        }
+
+    val driveSyncOnboardingBody: String
+        get() = when (navConnections) {
+            "Verbindungen" -> "Wähle oder erstelle einmalig eine Tresor-Datei in Google Drive. NexusTS hält alle Verbindungen, Ordner und Anmeldedaten automatisch verschlüsselt über Chromebook, Android und macOS synchron."
+            "Connessioni" -> "Scegli o crea una volta un file cassaforte in Google Drive. NexusTS mantiene connessioni, cartelle e credenziali cifrate e sincronizzate su Chromebook, Android e macOS."
+            "Conexiones" -> "Elige o crea un archivo de bóveda en Google Drive una sola vez. NexusTS mantiene tus conexiones, carpetas y credenciales cifradas y sincronizadas en Chromebook, Android y macOS."
+            "Συνδέσεις" -> "Επιλέξτε ή δημιουργήστε ένα αρχείο θησαυροφυλακίου στο Google Drive μία φορά. Το NexusTS διατηρεί συνδέσεις, φακέλους και διαπιστευτήρια κρυπτογραφημένα και συγχρονισμένα σε Chromebook, Android και macOS."
+            "Connexions" -> "Choisissez ou créez un fichier coffre dans Google Drive une seule fois. NexusTS garde vos connexions, dossiers et identifiants chiffrés et synchronisés sur Chromebook, Android et macOS."
+            else -> "Pick or create a vault file in Google Drive once. NexusTS keeps all your connections, folders, and credentials encrypted and synchronized automatically across Chromebook, Android, and macOS."
+        }
+
+    val savePassphraseHardwareKeystore: String
+        get() = when (navConnections) {
+            "Verbindungen" -> "Passphrase im Hardware-Keystore speichern"
+            "Connessioni" -> "Salva passphrase nell'Hardware Keystore"
+            "Conexiones" -> "Guardar frase de contraseña en Hardware Keystore"
+            "Συνδέσεις" -> "Αποθήκευση φράσης πρόσβασης στο Hardware Keystore"
+            "Connexions" -> "Enregistrer la phrase secrète dans le Hardware Keystore"
+            else -> "Save Passphrase in Hardware Keystore"
+        }
+
+    fun localizeDriveSyncBanner(rawBanner: String): String {
+        if (rawBanner.isBlank() || navConnections == "Connections") return rawBanner
+        val needsUnlock = rawBanner.contains("Failed to unlock", ignoreCase = true) ||
+            rawBanner.contains("Master passphrase required", ignoreCase = true)
+        if (needsUnlock) {
+            return when (navConnections) {
+                "Verbindungen" -> "Master-Passphrase erforderlich, um den Google-Drive-Tresor (.nxts) zu entsperren."
+                "Connessioni" -> "Passphrase principale richiesta per sbloccare la cassaforte Google Drive (.nxts)."
+                "Conexiones" -> "Se requiere la frase maestra para desbloquear la bóveda de Google Drive (.nxts)."
+                "Συνδέσεις" -> "Απαιτείται κύρια φράση πρόσβασης για το ξεκλείδωμα του θησαυροφυλακίου Google Drive (.nxts)."
+                "Connexions" -> "Phrase secrète principale requise pour déverrouiller le coffre Google Drive (.nxts)."
+                else -> rawBanner
+            }
+        }
+        if (rawBanner.startsWith("Unlinked persistent", ignoreCase = true)) {
+            return when (navConnections) {
+                "Verbindungen" -> "Verknüpfung zum Google-Drive-Tresor aufgehoben."
+                "Connessioni" -> "Collegamento alla cassaforte Google Drive rimosso."
+                "Conexiones" -> "Bóveda de Google Drive desvinculada."
+                "Συνδέσεις" -> "Αποσυνδέθηκε το θησαυροφυλάκιο Google Drive."
+                "Connexions" -> "Coffre Google Drive dissocié."
+                else -> rawBanner
+            }
+        }
+        return rawBanner
+    }
+
+    val applyPassphraseAction: String
+        get() = when (navConnections) {
+            "Verbindungen" -> "Passphrase anwenden"
+            "Connessioni" -> "Applica passphrase"
+            "Conexiones" -> "Aplicar frase de contraseña"
+            "Συνδέσεις" -> "Εφαρμογή φράσης πρόσβασης"
+            "Connexions" -> "Appliquer la phrase secrète"
+            else -> "Apply Passphrase"
+        }
+
+    val clearSavedPassphraseAction: String
+        get() = when (navConnections) {
+            "Verbindungen" -> "Gespeicherte Passphrase löschen"
+            "Connessioni" -> "Cancella passphrase salvata"
+            "Conexiones" -> "Borrar frase guardada"
+            "Συνδέσεις" -> "Διαγραφή αποθηκευμένης φράσης"
+            "Connexions" -> "Effacer la phrase enregistrée"
+            else -> "Clear Saved Passphrase"
+        }
+
+    val passphraseUpdatedNotice: String
+        get() = when (navConnections) {
+            "Verbindungen" -> "Tresor-Passphrase aktualisiert."
+            "Connessioni" -> "Passphrase della cassaforte aggiornata."
+            "Conexiones" -> "Frase de la bóveda actualizada."
+            "Συνδέσεις" -> "Η φράση πρόσβασης ενημερώθηκε."
+            "Connexions" -> "Phrase secrète du coffre mise à jour."
+            else -> "Vault passphrase updated."
+        }
+
+    val biometricDeviceUnlockLabel: String
+        get() = when (navConnections) {
+            "Verbindungen" -> "Biometrische / Geräte-Entsperrung"
+            "Connessioni" -> "Sblocco biometrico / dispositivo"
+            "Conexiones" -> "Desbloqueo biométrico / del dispositivo"
+            "Συνδέσεις" -> "Βιομετρικό ξεκλείδωμα συσκευής"
+            "Connexions" -> "Déverrouillage biométrique / appareil"
+            else -> "Biometric / Device Unlock"
+        }
+
+    val idleAutoLockTitle: String
+        get() = when (navConnections) {
+            "Verbindungen" -> "Automatische Sperre bei Inaktivität"
+            "Connessioni" -> "Blocco automatico per inattività"
+            "Conexiones" -> "Bloqueo automático por inactividad"
+            "Συνδέσεις" -> "Αυτόματο κλείδωμα αδράνειας"
+            "Connexions" -> "Verrouillage automatique d'inactivité"
+            else -> "Idle Auto-Lock"
+        }
+
+    val idleOffLabel: String
+        get() = when (navConnections) {
+            "Verbindungen" -> "Aus"
+            "Connessioni" -> "Disattivato"
+            "Conexiones" -> "Desactivado"
+            "Συνδέσεις" -> "Ανενεργό"
+            "Connexions" -> "Désactivé"
+            else -> "Off"
+        }
+
+    fun idleMinutesLabel(mins: Int): String = when (navConnections) {
+        "Verbindungen" -> "$mins Min."
+        "Συνδέσεις" -> "$mins λεπ."
+        else -> "$mins min"
+    }
+
+    val importExportVaultTitle: String
+        get() = when (navConnections) {
+            "Verbindungen" -> "Tresor importieren & exportieren"
+            "Connessioni" -> "Importa ed esporta cassaforte"
+            "Conexiones" -> "Importar y exportar bóveda"
+            "Συνδέσεις" -> "Εισαγωγή & εξαγωγή θησαυροφυλακίου"
+            "Connexions" -> "Importer et exporter le coffre"
+            else -> "Import & Export Vault"
+        }
+
+    val checkingUpdatesLabel: String
+        get() = when (navConnections) {
+            "Verbindungen" -> "Prüfe…"
+            "Connessioni" -> "Verifica…"
+            "Conexiones" -> "Comprobando…"
+            "Συνδέσεις" -> "Έλεγχος…"
+            "Connexions" -> "Vérification…"
+            else -> "Checking…"
+        }
+
+    fun downloadVersionLabel(tag: String): String = when (navConnections) {
+        "Verbindungen" -> "$tag herunterladen"
+        "Connessioni" -> "Scarica $tag"
+        "Conexiones" -> "Descargar $tag"
+        "Συνδέσεις" -> "Λήψη $tag"
+        "Connexions" -> "Télécharger $tag"
+        else -> "Download $tag"
+    }
+
+    val releaseNotesAction: String
+        get() = when (navConnections) {
+            "Verbindungen" -> "Versionshinweise"
+            "Connessioni" -> "Note di rilascio"
+            "Conexiones" -> "Notas de la versión"
+            "Συνδέσεις" -> "Σημειώσεις έκδοσης"
+            "Connexions" -> "Notes de version"
+            else -> "Release Notes"
+        }
+
+    val verifiedApkDownloadAction: String
+        get() = when (navConnections) {
+            "Verbindungen" -> "Verifizierter APK-Download"
+            "Connessioni" -> "Download APK verificato"
+            "Conexiones" -> "Descarga APK verificada"
+            "Συνδέσεις" -> "Επαληθευμένη λήψη APK"
+            "Connexions" -> "Téléchargement APK vérifié"
+            else -> "Verified APK Download"
+        }
+
+    val skipAction: String
+        get() = when (navConnections) {
+            "Verbindungen" -> "Überspringen"
+            "Connessioni" -> "Salta"
+            "Conexiones" -> "Omitir"
+            "Συνδέσεις" -> "Παράλειψη"
+            "Connexions" -> "Ignorer"
+            else -> "Skip"
+        }
+
+    val checkAgainAction: String
+        get() = when (navConnections) {
+            "Verbindungen" -> "Erneut prüfen"
+            "Connessioni" -> "Controlla di nuovo"
+            "Conexiones" -> "Comprobar de nuevo"
+            "Συνδέσεις" -> "Έλεγχος ξανά"
+            "Connexions" -> "Vérifier à nouveau"
+            else -> "Check Again"
+        }
+
+    val actionConnect: String
+        get() = when (navConnections) {
+            "Verbindungen" -> "Verbinden"
+            "Connessioni" -> "Connetti"
+            "Conexiones" -> "Conectar"
+            "Συνδέσεις" -> "Σύνδεση"
+            "Connexions" -> "Connecter"
+            else -> "Connect"
+        }
+
+    val actionNewRdpConnection: String
+        get() = when (navConnections) {
+            "Verbindungen" -> "Neue RDP-Verbindung"
+            "Connessioni" -> "Nuova connessione RDP"
+            "Conexiones" -> "Nueva conexión RDP"
+            "Συνδέσεις" -> "Νέα σύνδεση RDP"
+            "Connexions" -> "Nouvelle connexion RDP"
+            else -> "New RDP Connection"
+        }
+
+    val actionNewSshConnection: String
+        get() = when (navConnections) {
+            "Verbindungen" -> "Neue SSH-Verbindung"
+            "Connessioni" -> "Nuova connessione SSH"
+            "Conexiones" -> "Nueva conexión SSH"
+            "Συνδέσεις" -> "Νέα σύνδεση SSH"
+            "Connexions" -> "Nouvelle connexion SSH"
+            else -> "New SSH Connection"
+        }
+
+    val actionNewSubfolder: String
+        get() = when (navConnections) {
+            "Verbindungen" -> "Neuer Unterordner"
+            "Connessioni" -> "Nuova sottocartella"
+            "Conexiones" -> "Nueva subcarpeta"
+            "Συνδέσεις" -> "Νέος υποφάκελος"
+            "Connexions" -> "Nouveau sous-dossier"
+            else -> "New Subfolder"
+        }
+
+    val actionMoveFolderTo: String
+        get() = when (navConnections) {
+            "Verbindungen" -> "Ordner verschieben nach…"
+            "Connessioni" -> "Sposta cartella in…"
+            "Conexiones" -> "Mover carpeta a…"
+            "Συνδέσεις" -> "Μετακίνηση φακέλου σε…"
+            "Connexions" -> "Déplacer le dossier vers…"
+            else -> "Move Folder to…"
+        }
+
+    val actionMoveUp: String
+        get() = when (navConnections) {
+            "Verbindungen" -> "Nach oben"
+            "Connessioni" -> "Sposta su"
+            "Conexiones" -> "Mover arriba"
+            "Συνδέσεις" -> "Μετακίνηση πάνω"
+            "Connexions" -> "Monter"
+            else -> "Move Up"
+        }
+
+    val actionMoveDown: String
+        get() = when (navConnections) {
+            "Verbindungen" -> "Nach unten"
+            "Connessioni" -> "Sposta giù"
+            "Conexiones" -> "Mover abajo"
+            "Συνδέσεις" -> "Μετακίνηση κάτω"
+            "Connexions" -> "Descendre"
+            else -> "Move Down"
+        }
+
+    val actionDuplicateFolder: String
+        get() = when (navConnections) {
+            "Verbindungen" -> "Ordner duplizieren"
+            "Connessioni" -> "Duplica cartella"
+            "Conexiones" -> "Duplicar carpeta"
+            "Συνδέσεις" -> "Διπλότυπο φακέλου"
+            "Connexions" -> "Dupliquer le dossier"
+            else -> "Duplicate Folder"
+        }
+
+    val actionExpandSubfolders: String
+        get() = when (navConnections) {
+            "Verbindungen" -> "Unterordner ausklappen"
+            "Connessioni" -> "Espandi sottocartelle"
+            "Conexiones" -> "Expandir subcarpetas"
+            "Συνδέσεις" -> "Ανάπτυξη υποφακέλων"
+            "Connexions" -> "Développer les sous-dossiers"
+            else -> "Expand Subfolders"
+        }
+
+    val actionCollapseSubfolders: String
+        get() = when (navConnections) {
+            "Verbindungen" -> "Unterordner einklappen"
+            "Connessioni" -> "Comprimi sottocartelle"
+            "Conexiones" -> "Contraer subcarpetas"
+            "Συνδέσεις" -> "Σύμπτυξη υποφακέλων"
+            "Connexions" -> "Réduire les sous-dossiers"
+            else -> "Collapse Subfolders"
+        }
+
+    val actionCopyHost: String
+        get() = when (navConnections) {
+            "Verbindungen" -> "Host kopieren"
+            "Connessioni" -> "Copia host"
+            "Conexiones" -> "Copiar host"
+            "Συνδέσεις" -> "Αντιγραφή host"
+            "Connexions" -> "Copier l'hôte"
+            else -> "Copy Host"
+        }
+
+    val actionCopyUsername: String
+        get() = when (navConnections) {
+            "Verbindungen" -> "Benutzername kopieren"
+            "Connessioni" -> "Copia nome utente"
+            "Conexiones" -> "Copiar usuario"
+            "Συνδέσεις" -> "Αντιγραφή ονόματος χρήστη"
+            "Connexions" -> "Copier l'utilisateur"
+            else -> "Copy Username"
+        }
+
+    val actionCopyPassword: String
+        get() = when (navConnections) {
+            "Verbindungen" -> "Passwort kopieren"
+            "Connessioni" -> "Copia password"
+            "Conexiones" -> "Copiar contraseña"
+            "Συνδέσεις" -> "Αντιγραφή κωδικού"
+            "Connexions" -> "Copier le mot de passe"
+            else -> "Copy Password"
+        }
+
+    val actionCopySshPublicKey: String
+        get() = when (navConnections) {
+            "Verbindungen" -> "Öffentlichen SSH-Schlüssel kopieren"
+            "Connessioni" -> "Copia chiave pubblica SSH"
+            "Conexiones" -> "Copiar clave pública SSH"
+            "Συνδέσεις" -> "Αντιγραφή δημόσιου κλειδιού SSH"
+            "Connexions" -> "Copier la clé publique SSH"
+            else -> "Copy SSH Public Key"
+        }
+
+    val actionDuplicateShort: String
+        get() = when (navConnections) {
+            "Verbindungen" -> "Duplizieren"
+            "Connessioni" -> "Duplica"
+            "Conexiones" -> "Duplicar"
+            "Συνδέσεις" -> "Διπλότυπο"
+            "Connexions" -> "Dupliquer"
+            else -> "Duplicate"
+        }
+
+    val actionUnlockBiometrics: String
+        get() = when (navConnections) {
+            "Verbindungen" -> "Mit Biometrie / Passkey entsperren"
+            "Connessioni" -> "Sblocca con biometria / passkey"
+            "Conexiones" -> "Desbloquear con biometría / passkey"
+            "Συνδέσεις" -> "Ξεκλείδωμα με βιομετρικά / passkey"
+            "Connexions" -> "Déverrouiller par biométrie / passkey"
+            else -> "Unlock with Biometrics / Passkey"
+        }
+
+    val actionQuickLockNow: String
+        get() = when (navConnections) {
+            "Verbindungen" -> "Jetzt schnell sperren"
+            "Connessioni" -> "Blocca subito"
+            "Conexiones" -> "Bloquear ahora"
+            "Συνδέσεις" -> "Άμεσο κλείδωμα"
+            "Connexions" -> "Verrouiller maintenant"
+            else -> "Quick Lock Now"
+        }
+
+    val actionCopyAll: String
+        get() = when (navConnections) {
+            "Verbindungen" -> "Alles kopieren"
+            "Connessioni" -> "Copia tutto"
+            "Conexiones" -> "Copiar todo"
+            "Συνδέσεις" -> "Αντιγραφή όλων"
+            "Connexions" -> "Tout copier"
+            else -> "Copy All"
+        }
+
+    val actionClear: String
+        get() = when (navConnections) {
+            "Verbindungen" -> "Leeren"
+            "Connessioni" -> "Pulisci"
+            "Conexiones" -> "Limpiar"
+            "Συνδέσεις" -> "Εκκαθάριση"
+            "Connexions" -> "Effacer"
+            else -> "Clear"
+        }
+
+    val actionCopyLogEntry: String
+        get() = when (navConnections) {
+            "Verbindungen" -> "Eintrag kopieren"
+            "Connessioni" -> "Copia voce"
+            "Conexiones" -> "Copiar entrada"
+            "Συνδέσεις" -> "Αντιγραφή εγγραφής"
+            "Connexions" -> "Copier l'entrée"
+            else -> "Copy Log Entry"
+        }
+
+    val actionCopyAllLogs: String
+        get() = when (navConnections) {
+            "Verbindungen" -> "Gesamtes Protokoll kopieren"
+            "Connessioni" -> "Copia tutti i log"
+            "Conexiones" -> "Copiar todos los registros"
+            "Συνδέσεις" -> "Αντιγραφή όλων των αρχείων καταγραφής"
+            "Connexions" -> "Copier tous les journaux"
+            else -> "Copy All Logs"
+        }
+
+    val actionClearAuditLog: String
+        get() = when (navConnections) {
+            "Verbindungen" -> "Audit-Protokoll leeren"
+            "Connessioni" -> "Cancella registro audit"
+            "Conexiones" -> "Limpiar registro de auditoría"
+            "Συνδέσεις" -> "Εκκαθάριση αρχείου καταγραφής"
+            "Connexions" -> "Effacer le journal d'audit"
+            else -> "Clear Audit Log"
+        }
+
+    val dialogUnlockEncryptedImportTitle: String
+        get() = when (navConnections) {
+            "Verbindungen" -> "Verschlüsselten Import entsperren"
+            "Connessioni" -> "Sblocca importazione cifrata"
+            "Conexiones" -> "Desbloquear importación cifrada"
+            "Συνδέσεις" -> "Ξεκλείδωμα κρυπτογραφημένης εισαγωγής"
+            "Connexions" -> "Déverrouiller l'importation chiffrée"
+            else -> "Unlock Encrypted Import"
+        }
+
+    val dialogImportFailedTitle: String
+        get() = when (navConnections) {
+            "Verbindungen" -> "Import fehlgeschlagen"
+            "Connessioni" -> "Importazione non riuscita"
+            "Conexiones" -> "Error al importar"
+            "Συνδέσεις" -> "Αποτυχία εισαγωγής"
+            "Connexions" -> "Échec de l'importation"
+            else -> "Import Failed"
+        }
+
+    val filterPlaceholderShort: String
+        get() = when (navConnections) {
+            "Verbindungen" -> "Filtern…"
+            "Connessioni" -> "Filtra…"
+            "Conexiones" -> "Filtrar…"
+            "Συνδέσεις" -> "Φιλτράρισμα…"
+            "Connexions" -> "Filtrer…"
+            else -> "Filter…"
+        }
+
+    val tabFullScreen: String
+        get() = when (navConnections) {
+            "Verbindungen" -> "Vollbild"
+            "Connessioni" -> "Schermo intero"
+            "Conexiones" -> "Pantalla completa"
+            "Συνδέσεις" -> "Πλήρης οθόνη"
+            "Connexions" -> "Plein écran"
+            else -> "Full Screen"
+        }
+
+    val tabMoveLeft: String
+        get() = when (navConnections) {
+            "Verbindungen" -> "Tab nach links"
+            "Connessioni" -> "Sposta scheda a sinistra"
+            "Conexiones" -> "Mover pestaña a la izquierda"
+            "Συνδέσεις" -> "Μετακίνηση καρτέλας αριστερά"
+            "Connexions" -> "Déplacer l'onglet à gauche"
+            else -> "Move Tab Left"
+        }
+
+    val tabMoveRight: String
+        get() = when (navConnections) {
+            "Verbindungen" -> "Tab nach rechts"
+            "Connessioni" -> "Sposta scheda a destra"
+            "Conexiones" -> "Mover pestaña a la derecha"
+            "Συνδέσεις" -> "Μετακίνηση καρτέλας δεξιά"
+            "Connexions" -> "Déplacer l'onglet à droite"
+            else -> "Move Tab Right"
+        }
+
+    val tabCloseOthers: String
+        get() = when (navConnections) {
+            "Verbindungen" -> "Andere Tabs schließen"
+            "Connessioni" -> "Chiudi altre schede"
+            "Conexiones" -> "Cerrar otras pestañas"
+            "Συνδέσεις" -> "Κλείσιμο άλλων καρτελών"
+            "Connexions" -> "Fermer les autres onglets"
+            else -> "Close Other Tabs"
+        }
+
+    fun cascadesToChildrenLabel(count: Int): String = when (navConnections) {
+        "Verbindungen" -> "Wird automatisch an $count untergeordnete Verbindung(en) mit '${credModeInheritFolder}' vererbt."
+        "Connessioni" -> "Si propaga automaticamente a $count connessioni figlie che usano '${credModeInheritFolder}'."
+        "Conexiones" -> "Se hereda automáticamente en $count conexión(es) hija(s) con '${credModeInheritFolder}'."
+        "Συνδέσεις" -> "Εφαρμόζεται αυτόματα σε $count θυγατρικές συνδέσεις με '${credModeInheritFolder}'."
+        "Connexions" -> "S'applique automatiquement à $count connexion(s) enfant(s) utilisant '${credModeInheritFolder}'."
+        else -> "Cascades automatically to $count child connection(s) using '${credModeInheritFolder}'."
+    }
+
     companion object {
         fun defaultEnglish(): WorkspaceLocalizedStrings = WorkspaceLocalizedStrings(
             appName = "NexusTS",

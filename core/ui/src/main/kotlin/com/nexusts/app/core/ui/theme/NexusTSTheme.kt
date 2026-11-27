@@ -1,11 +1,13 @@
 package com.nexusts.app.core.ui.theme
 
+import android.content.Context
 import androidx.compose.foundation.IndicationNodeFactory
 import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.interaction.FocusInteraction
 import androidx.compose.foundation.interaction.HoverInteraction
 import androidx.compose.foundation.interaction.InteractionSource
 import androidx.compose.foundation.interaction.PressInteraction
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material.ripple.RippleAlpha
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.LocalRippleConfiguration
@@ -14,6 +16,8 @@ import androidx.compose.material3.RippleConfiguration
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.ReadOnlyComposable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -22,7 +26,55 @@ import androidx.compose.ui.node.DelegatableNode
 import androidx.compose.ui.node.DrawModifierNode
 import androidx.compose.ui.node.invalidateDraw
 import androidx.compose.ui.platform.LocalContext
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
+
+enum class NexusThemeMode(val storageKey: String) {
+    SYSTEM("system"),
+    LIGHT("light"),
+    DARK("dark");
+
+    companion object {
+        fun fromStorage(raw: String?): NexusThemeMode =
+            entries.firstOrNull { it.storageKey.equals(raw, ignoreCase = true) } ?: SYSTEM
+    }
+}
+
+object NexusThemeModeController {
+    private const val PREFS_NAME = "nexusts_ui_theme_prefs"
+    private const val KEY_THEME_MODE = "theme_mode"
+
+    private val _themeMode = MutableStateFlow<NexusThemeMode?>(null)
+
+    fun currentMode(context: Context): NexusThemeMode {
+        _themeMode.value?.let { return it }
+        val loaded = runCatching {
+            val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            NexusThemeMode.fromStorage(prefs.getString(KEY_THEME_MODE, null))
+        }.getOrDefault(NexusThemeMode.SYSTEM)
+        _themeMode.value = loaded
+        return loaded
+    }
+
+    @Composable
+    fun observeThemeMode(): NexusThemeMode {
+        val context = LocalContext.current
+        val initial = remember(context) { currentMode(context) }
+        val observed by _themeMode.collectAsState()
+        return observed ?: initial
+    }
+
+    fun setThemeMode(context: Context, mode: NexusThemeMode) {
+        runCatching {
+            context.applicationContext
+                .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .edit()
+                .putString(KEY_THEME_MODE, mode.storageKey)
+                .apply()
+        }
+        _themeMode.value = mode
+    }
+}
 
 /**
  * Pure-Compose, single-pass full-surface desktop hover & press indication that avoids Android's
@@ -99,20 +151,27 @@ private class NexusUniformDesktopIndication(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun NexusTSTheme(
-    darkTheme: Boolean = false,
+    darkTheme: Boolean? = null,
     dynamicColor: Boolean = false,
     highContrast: Boolean = false,
     terminalFontScale: Float = 1.0f,
     content: @Composable () -> Unit
 ) {
     val context = LocalContext.current
+    val persistedMode = NexusThemeModeController.observeThemeMode()
+    val systemDark = isSystemInDarkTheme()
+    val resolvedDarkTheme = darkTheme ?: when (persistedMode) {
+        NexusThemeMode.LIGHT -> false
+        NexusThemeMode.DARK -> true
+        NexusThemeMode.SYSTEM -> systemDark
+    }
     val colorScheme = resolveNexusColorScheme(
         context = context,
-        darkTheme = darkTheme,
+        darkTheme = resolvedDarkTheme,
         dynamicColor = dynamicColor,
         highContrast = highContrast
     )
-    val extendedColors = if (darkTheme) DarkNexusExtendedColors else LightNexusExtendedColors
+    val extendedColors = if (resolvedDarkTheme) DarkNexusExtendedColors else LightNexusExtendedColors
     val defaultMono = NexusMonospaceTypography()
     val scaledMono = defaultMono.copy(
         terminalDefault = defaultMono.terminalDefault.copy(

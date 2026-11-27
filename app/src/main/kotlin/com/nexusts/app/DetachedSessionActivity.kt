@@ -111,6 +111,19 @@ class DetachedSessionActivity : AppCompatActivity() {
                 onReleaseDetachedCapture = { keyCaptureEnabled = false }
             }
 
+            val currentThemeMode = com.nexusts.app.core.ui.theme.NexusThemeModeController.observeThemeMode()
+            val systemDark = androidx.compose.foundation.isSystemInDarkTheme()
+            val effectiveDarkBars = when (currentThemeMode) {
+                com.nexusts.app.core.ui.theme.NexusThemeMode.LIGHT -> false
+                com.nexusts.app.core.ui.theme.NexusThemeMode.DARK -> true
+                com.nexusts.app.core.ui.theme.NexusThemeMode.SYSTEM -> systemDark
+            }
+            androidx.compose.runtime.LaunchedEffect(effectiveDarkBars) {
+                val controller = androidx.core.view.WindowCompat.getInsetsController(window, window.decorView)
+                controller.isAppearanceLightStatusBars = !effectiveDarkBars
+                controller.isAppearanceLightNavigationBars = !effectiveDarkBars
+            }
+
             CompositionLocalProvider(LocalNexusShortcutEngine provides viewModel.shortcutEngine) {
                 NexusTSTheme {
                     if (uiState.isVaultLocked) {

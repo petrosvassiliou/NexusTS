@@ -1055,8 +1055,16 @@ public final class WorkspaceStore: ObservableObject {
     @Published public var selectedFolderId: String? = nil
     @Published public var selectedCredentialId: String? = nil
     @Published public var sidebarSearchQuery: String = ""
-    @Published public var isInspectorPresented: Bool = false
-    @Published public var isBottomConsolePresented: Bool = false
+    @Published public var isInspectorPresented: Bool = (UserDefaults.standard.object(forKey: "nexusts.macos.inspectorPresented") as? Bool) ?? false {
+        didSet {
+            UserDefaults.standard.set(isInspectorPresented, forKey: "nexusts.macos.inspectorPresented")
+        }
+    }
+    @Published public var isBottomConsolePresented: Bool = (UserDefaults.standard.object(forKey: "nexusts.macos.bottomConsolePresented") as? Bool) ?? false {
+        didSet {
+            UserDefaults.standard.set(isBottomConsolePresented, forKey: "nexusts.macos.bottomConsolePresented")
+        }
+    }
     @Published public var isQuickConnectPresented: Bool = false
 
     // Split-Pane & Detached Windows
@@ -1070,6 +1078,12 @@ public final class WorkspaceStore: ObservableObject {
     @Published public var remoteKeyCaptureEnabled: Bool = (UserDefaults.standard.object(forKey: "nexusts.macos.remoteKeyCapture") as? Bool) ?? false {
         didSet {
             UserDefaults.standard.set(remoteKeyCaptureEnabled, forKey: "nexusts.macos.remoteKeyCapture")
+        }
+    }
+    @Published public var appearanceMode: NexusAppearanceMode = UserDefaults.standard.string(forKey: "nexusts.macos.appearanceMode").flatMap(NexusAppearanceMode.init(rawValue:)) ?? .system {
+        didSet {
+            UserDefaults.standard.set(appearanceMode.rawValue, forKey: "nexusts.macos.appearanceMode")
+            Self.applyMacAppearance(appearanceMode)
         }
     }
     @Published public var appLanguage: NexusAppLanguage = UserDefaults.standard.string(forKey: "nexusts.macos.appLanguage").flatMap(NexusAppLanguage.init(rawValue:)) ?? .system {

@@ -1,0 +1,1 @@
+• NexusTS 1.0.3 Finition UI & Thèmes : Mode Système / Clair / Sombre complet sur ChromeOS, Android et macOS, localisation intégrale en 6 langues dans Drive-Sync, Réglages et menus contextuels, redimensionnement 1:1 sans latence des panneaux avec sauvegarde des largeurs, et dialogues et superpositions RDP harmonisés.

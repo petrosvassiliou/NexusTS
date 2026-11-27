@@ -519,10 +519,18 @@ class MainActivity : AppCompatActivity() {
                 }
             }
 
-            LaunchedEffect(uiState.isFullScreenSessionMode) {
+            val currentThemeMode = com.nexusts.app.core.ui.theme.NexusThemeModeController.observeThemeMode()
+            val systemDark = androidx.compose.foundation.isSystemInDarkTheme()
+            val effectiveDarkBars = when (currentThemeMode) {
+                com.nexusts.app.core.ui.theme.NexusThemeMode.LIGHT -> false
+                com.nexusts.app.core.ui.theme.NexusThemeMode.DARK -> true
+                com.nexusts.app.core.ui.theme.NexusThemeMode.SYSTEM -> systemDark
+            }
+
+            LaunchedEffect(uiState.isFullScreenSessionMode, effectiveDarkBars) {
                 val controller = WindowCompat.getInsetsController(window, window.decorView)
-                controller.isAppearanceLightStatusBars = true
-                controller.isAppearanceLightNavigationBars = true
+                controller.isAppearanceLightStatusBars = !effectiveDarkBars
+                controller.isAppearanceLightNavigationBars = !effectiveDarkBars
                 if (uiState.isFullScreenSessionMode) {
                     controller.systemBarsBehavior =
                         WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE

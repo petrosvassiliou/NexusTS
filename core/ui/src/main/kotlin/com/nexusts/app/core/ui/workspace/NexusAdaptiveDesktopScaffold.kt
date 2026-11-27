@@ -1,5 +1,6 @@
 package com.nexusts.app.core.ui.workspace
 
+import android.content.Context
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateDpAsState
@@ -9,8 +10,11 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -35,22 +39,27 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.PointerIcon
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.nexusts.app.core.ui.input.LocalNexusShortcutEngine
 import com.nexusts.app.core.ui.input.NexusShortcutAction
+import com.nexusts.app.core.ui.input.nexusHoverTracker
 import com.nexusts.app.core.ui.input.nexusRemoteKeyPassthrough
 import com.nexusts.app.core.ui.input.nexusResizeCursor
 import com.nexusts.app.core.ui.input.RawHardwareKeyPacket
+import com.nexusts.app.core.ui.input.rememberDesktopHoverState
 import com.nexusts.app.core.ui.theme.NexusTheme
 
 @Immutable
@@ -88,17 +97,42 @@ fun NexusAdaptiveDesktopScaffold(
     bottomStatusDrawerContent: @Composable () -> Unit,
     floatingOverlayContent: @Composable () -> Unit,
     modifier: Modifier = Modifier,
-    initialSidebarWidth: Dp = 236.dp,
+    initialSidebarWidth: Dp = 248.dp,
     initialInspectorWidth: Dp = 320.dp,
     initialBottomDrawerHeight: Dp = 220.dp
 ) {
     val shortcutEngine = LocalNexusShortcutEngine.current
     val density = LocalDensity.current
+    val context = LocalContext.current
     val motion = NexusTheme.motion
+    val layoutPrefs = remember(context) {
+        runCatching {
+            context.applicationContext.getSharedPreferences("nexusts_desktop_layout_prefs", Context.MODE_PRIVATE)
+        }.getOrNull()
+    }
 
-    var sidebarWidthDp by remember { mutableFloatStateOf(initialSidebarWidth.value) }
-    var inspectorWidthDp by remember { mutableFloatStateOf(initialInspectorWidth.value) }
-    var bottomHeightDp by remember { mutableFloatStateOf(initialBottomDrawerHeight.value) }
+    var sidebarWidthDp by remember(layoutPrefs) {
+        mutableFloatStateOf(
+            (layoutPrefs?.getFloat("sidebar_width_dp", initialSidebarWidth.value) ?: initialSidebarWidth.value)
+                .coerceIn(190f, 440f)
+        )
+    }
+    var inspectorWidthDp by remember(layoutPrefs) {
+        mutableFloatStateOf(
+            (layoutPrefs?.getFloat("inspector_width_dp", initialInspectorWidth.value) ?: initialInspectorWidth.value)
+                .coerceIn(270f, 540f)
+        )
+    }
+    var bottomHeightDp by remember(layoutPrefs) {
+        mutableFloatStateOf(
+            (layoutPrefs?.getFloat("bottom_height_dp", initialBottomDrawerHeight.value) ?: initialBottomDrawerHeight.value)
+                .coerceIn(150f, 480f)
+        )
+    }
+
+    var isDraggingSidebar by remember { mutableStateOf(false) }
+    var isDraggingInspector by remember { mutableStateOf(false) }
+    var isDraggingBottom by remember { mutableStateOf(false) }
 
     val animatedSidebarWidth by animateDpAsState(
         targetValue = sidebarWidthDp.dp,
@@ -115,6 +149,11 @@ fun NexusAdaptiveDesktopScaffold(
         animationSpec = motion.spatialFastDp,
         label = "BottomDrawerHeight"
     )
+
+    val effectiveSidebarWidth = if (isDraggingSidebar) sidebarWidthDp.dp else animatedSidebarWidth
+    val effectiveInspectorWidth = if (isDraggingInspector) inspectorWidthDp.dp else animatedInspectorWidth
+    val effectiveBottomHeight = if (isDraggingBottom) bottomHeightDp.dp else animatedBottomHeight
+    val hairlineColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
 
     Box(
         modifier = modifier
@@ -144,7 +183,7 @@ fun NexusAdaptiveDesktopScaffold(
                     Row(modifier = Modifier.fillMaxHeight()) {
                         Surface(
                             modifier = Modifier
-                                .width(animatedSidebarWidth)
+                                .width(effectiveSidebarWidth)
                                 .fillMaxHeight(),
                             color = MaterialTheme.colorScheme.surfaceContainerLow,
                             tonalElevation = 1.dp
@@ -152,25 +191,28 @@ fun NexusAdaptiveDesktopScaffold(
                             sidebarTreeContent()
                         }
 
-                        Box(
-                            modifier = Modifier
-                                .width(1.dp)
-                                .fillMaxHeight()
-                                .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f))
-                        )
-
-                        // Sidebar Resize Handle
                         PanelResizeHandle(
                             horizontal = true,
+                            hairlineColor = hairlineColor,
+                            onDragActiveChanged = { active ->
+                                isDraggingSidebar = active
+                                if (!active) {
+                                    layoutPrefs?.edit()?.putFloat("sidebar_width_dp", sidebarWidthDp)?.apply()
+                                }
+                            },
                             onDeltaDp = { delta ->
-                                sidebarWidthDp = (sidebarWidthDp + delta).coerceIn(180f, 440f)
+                                sidebarWidthDp = (sidebarWidthDp + delta).coerceIn(190f, 440f)
+                            },
+                            onDoubleClickReset = {
+                                sidebarWidthDp = initialSidebarWidth.value
+                                layoutPrefs?.edit()?.putFloat("sidebar_width_dp", sidebarWidthDp)?.apply()
                             },
                             densityPxPerDp = density.density
                         )
                     }
                 }
 
-                // Center Workspace Column (Split-Pane Session Canvas + Bottom Log/Transfer Drawer)
+                // Center Workspace Column (Split-Pane Session Canvas + Flush Docked Bottom Log/Transfer Drawer)
                 Column(
                     modifier = Modifier
                         .weight(1f)
@@ -192,19 +234,28 @@ fun NexusAdaptiveDesktopScaffold(
                         Column(modifier = Modifier.fillMaxWidth()) {
                             PanelResizeHandle(
                                 horizontal = false,
+                                hairlineColor = hairlineColor,
+                                onDragActiveChanged = { active ->
+                                    isDraggingBottom = active
+                                    if (!active) {
+                                        layoutPrefs?.edit()?.putFloat("bottom_height_dp", bottomHeightDp)?.apply()
+                                    }
+                                },
                                 onDeltaDp = { delta ->
                                     bottomHeightDp = (bottomHeightDp - delta).coerceIn(150f, 480f)
+                                },
+                                onDoubleClickReset = {
+                                    bottomHeightDp = initialBottomDrawerHeight.value
+                                    layoutPrefs?.edit()?.putFloat("bottom_height_dp", bottomHeightDp)?.apply()
                                 },
                                 densityPxPerDp = density.density
                             )
                             Surface(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .height(animatedBottomHeight)
-                                    .padding(horizontal = 6.dp, vertical = 6.dp),
-                                shape = RoundedCornerShape(20.dp),
-                                color = MaterialTheme.colorScheme.surfaceContainer,
-                                tonalElevation = 2.dp
+                                    .height(effectiveBottomHeight),
+                                color = MaterialTheme.colorScheme.surfaceContainerLow,
+                                tonalElevation = 1.dp
                             ) {
                                 bottomStatusDrawerContent()
                             }
@@ -212,7 +263,7 @@ fun NexusAdaptiveDesktopScaffold(
                     }
                 }
 
-                // Right-Hand Contextual Property Inspector
+                // Flush Right-Hand Contextual Property Inspector
                 AnimatedVisibility(
                     visible = isInspectorVisible,
                     enter = expandHorizontally(animationSpec = motion.spatialIntSize) + fadeIn(),
@@ -221,17 +272,26 @@ fun NexusAdaptiveDesktopScaffold(
                     Row(modifier = Modifier.fillMaxHeight()) {
                         PanelResizeHandle(
                             horizontal = true,
+                            hairlineColor = hairlineColor,
+                            onDragActiveChanged = { active ->
+                                isDraggingInspector = active
+                                if (!active) {
+                                    layoutPrefs?.edit()?.putFloat("inspector_width_dp", inspectorWidthDp)?.apply()
+                                }
+                            },
                             onDeltaDp = { delta ->
                                 inspectorWidthDp = (inspectorWidthDp - delta).coerceIn(270f, 540f)
+                            },
+                            onDoubleClickReset = {
+                                inspectorWidthDp = initialInspectorWidth.value
+                                layoutPrefs?.edit()?.putFloat("inspector_width_dp", inspectorWidthDp)?.apply()
                             },
                             densityPxPerDp = density.density
                         )
                         Surface(
                             modifier = Modifier
-                                .width(animatedInspectorWidth)
-                                .fillMaxHeight()
-                                .padding(top = 6.dp, bottom = 6.dp, end = 8.dp),
-                            shape = RoundedCornerShape(20.dp),
+                                .width(effectiveInspectorWidth)
+                                .fillMaxHeight(),
                             color = MaterialTheme.colorScheme.surfaceContainerLow,
                             tonalElevation = 1.dp
                         ) {
@@ -247,29 +307,70 @@ fun NexusAdaptiveDesktopScaffold(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun PanelResizeHandle(
     horizontal: Boolean,
+    hairlineColor: androidx.compose.ui.graphics.Color,
+    onDragActiveChanged: (Boolean) -> Unit,
     onDeltaDp: (Float) -> Unit,
+    onDoubleClickReset: () -> Unit,
     densityPxPerDp: Float
 ) {
+    val hover = rememberDesktopHoverState()
+    var isDragging by remember { mutableStateOf(false) }
+    val isHighlighted = hover.value.isHovered || isDragging
     val pillColor by animateColorAsState(
-        targetValue = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f),
+        targetValue = if (isHighlighted) {
+            MaterialTheme.colorScheme.primary.copy(alpha = 0.78f)
+        } else {
+            MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f)
+        },
         label = "ResizeHandleTint"
     )
+    val trackTint by animateColorAsState(
+        targetValue = if (isHighlighted) {
+            MaterialTheme.colorScheme.primary.copy(alpha = 0.08f)
+        } else {
+            androidx.compose.ui.graphics.Color.Transparent
+        },
+        label = "ResizeTrackTint"
+    )
+
     Box(
         modifier = if (horizontal) {
             Modifier
-                .width(8.dp)
+                .width(7.dp)
                 .fillMaxHeight()
         } else {
             Modifier
-                .height(8.dp)
+                .height(7.dp)
                 .fillMaxWidth()
         }
+            .background(trackTint)
+            .nexusHoverTracker(hover, PointerIcon.Hand)
             .nexusResizeCursor(horizontalResize = horizontal)
+            .combinedClickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = {},
+                onDoubleClick = onDoubleClickReset
+            )
             .pointerInput(horizontal, densityPxPerDp) {
-                detectDragGestures { change, dragAmount ->
+                detectDragGestures(
+                    onDragStart = {
+                        isDragging = true
+                        onDragActiveChanged(true)
+                    },
+                    onDragEnd = {
+                        isDragging = false
+                        onDragActiveChanged(false)
+                    },
+                    onDragCancel = {
+                        isDragging = false
+                        onDragActiveChanged(false)
+                    }
+                ) { change, dragAmount ->
                     change.consume()
                     val px = if (horizontal) dragAmount.x else dragAmount.y
                     onDeltaDp(px / densityPxPerDp.coerceAtLeast(1f))
@@ -277,15 +378,30 @@ private fun PanelResizeHandle(
             },
         contentAlignment = Alignment.Center
     ) {
+        // Crisp 1dp structural divider line across the full seam
         Box(
             modifier = if (horizontal) {
                 Modifier
-                    .width(2.dp)
-                    .height(32.dp)
+                    .width(1.dp)
+                    .fillMaxHeight()
             } else {
                 Modifier
-                    .height(2.dp)
-                    .width(32.dp)
+                    .height(1.dp)
+                    .fillMaxWidth()
+            }
+                .background(if (isHighlighted) MaterialTheme.colorScheme.primary.copy(alpha = 0.38f) else hairlineColor)
+        )
+
+        // Centered tactile grip pill
+        Box(
+            modifier = if (horizontal) {
+                Modifier
+                    .width(if (isHighlighted) 3.dp else 2.dp)
+                    .height(if (isHighlighted) 40.dp else 28.dp)
+            } else {
+                Modifier
+                    .height(if (isHighlighted) 3.dp else 2.dp)
+                    .width(if (isHighlighted) 40.dp else 28.dp)
             }
                 .clip(RoundedCornerShape(99.dp))
                 .background(pillColor)

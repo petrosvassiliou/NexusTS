@@ -1,0 +1,1 @@
+• NexusTS 1.0.3 Pulido de Interfaz y Temas: Selector de apariencia Sistema / Claro / Oscuro en ChromeOS, Android y macOS, localización completa en 6 idiomas en Drive-Sync, Ajustes y menús contextuales, divisores de paneles 1:1 sin retardo con anchos persistentes y diálogos y superposiciones RDP unificados.

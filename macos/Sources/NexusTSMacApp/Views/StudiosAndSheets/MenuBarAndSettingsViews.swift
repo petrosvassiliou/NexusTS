@@ -43,7 +43,7 @@ public struct MenuBarQuickAgentView: View {
                     openWindow(id: "main-workspace")
                     NSApp.activate(ignoringOtherApps: true)
                 } label: {
-                    Label("Open NexusTS Workspace", systemImage: "macwindow")
+                    Label(store.strings.openWorkspaceAction, systemImage: "macwindow")
                 }
 
                 Button {
@@ -84,7 +84,7 @@ public struct MenuBarQuickAgentView: View {
                 let totpCreds = store.activeCredentials.filter { !$0.totpSecretBase32.isEmpty }
                 if !totpCreds.isEmpty {
                     Divider()
-                    Text("Copy 2FA TOTP Code")
+                    Text(store.strings.copyTotpHeader)
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
 
@@ -95,7 +95,7 @@ public struct MenuBarQuickAgentView: View {
                                 NSPasteboard.general.setString(otp, forType: .string)
                             }
                         } label: {
-                            Label("Copy TOTP: \(cred.name)", systemImage: "clock.badge.checkmark")
+                            Label("TOTP: \(cred.name)", systemImage: "clock.badge.checkmark")
                         }
                     }
                 }
@@ -106,7 +106,7 @@ public struct MenuBarQuickAgentView: View {
             Button {
                 Task { await store.syncCloudNow(reportErrors: true) }
             } label: {
-                Label("Sync Cloud Vault Now", systemImage: "arrow.triangle.2.circlepath.icloud")
+                Label(store.strings.syncNow, systemImage: "arrow.triangle.2.circlepath.icloud")
             }
 
             Button {
@@ -119,21 +119,21 @@ public struct MenuBarQuickAgentView: View {
                 }
             } label: {
                 if let rel = store.updateCandidate {
-                    Label("Install Update (\(rel.tagName))…", systemImage: "arrow.down.circle.fill")
+                    Label(store.strings.installUpdateFormat(rel.tagName), systemImage: "arrow.down.circle.fill")
                 } else {
-                    Label("Check for Updates…", systemImage: "arrow.triangle.2.circlepath.circle")
+                    Label(store.strings.checkForUpdatesMenuAction, systemImage: "arrow.triangle.2.circlepath.circle")
                 }
             }
 
             Button {
                 store.lockVault()
             } label: {
-                Label("Lock Zero-Knowledge Vault", systemImage: "lock.fill")
+                Label(store.strings.lockVault, systemImage: "lock.fill")
             }
 
             Divider()
 
-            Button("Quit NexusTS") {
+            Button(store.strings.quitAppAction) {
                 NSApplication.shared.terminate(nil)
             }
             .keyboardShortcut("q", modifiers: [.command])
@@ -225,35 +225,42 @@ public struct UnifiedWorkspaceSettingsView: View {
 
     private var generalTab: some View {
         Form {
-            Section("Language & Appearance") {
-                Picker("Workspace Language", selection: $store.appLanguage) {
+            Section(store.strings.languageAndAppearanceSection) {
+                Picker(store.strings.appearanceLabel, selection: $store.appearanceMode) {
+                    ForEach(NexusAppearanceMode.allCases) { mode in
+                        Text(mode.title(in: store.strings)).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                Picker(store.strings.workspaceLanguageLabel, selection: $store.appLanguage) {
                     ForEach(NexusAppLanguage.allCases) { lang in
                         Text(lang.nativeDisplayName).tag(lang)
                     }
                 }
 
-                Toggle("Index Connections in macOS Spotlight Search", isOn: $store.spotlightIndexingEnabled)
+                Toggle(store.strings.spotlightIndexingToggle, isOn: $store.spotlightIndexingEnabled)
                     .onChange(of: store.spotlightIndexingEnabled) { _, enabled in
                         MacSpotlightVaultIndexer.reindexConnections(in: store.document, enabled: enabled)
                     }
             }
 
-            Section("Terminal & Remote Sessions") {
-                Picker("Monospaced Font Family", selection: $store.terminalFontName) {
+            Section(store.strings.terminalAndSessionsSection) {
+                Picker(store.strings.monospacedFontLabel, selection: $store.terminalFontName) {
                     Text("SF Mono").tag("SF Mono")
                     Text("Menlo").tag("Menlo")
                     Text("Monaco").tag("Monaco")
                 }
 
                 Slider(value: $store.terminalFontSize, in: 10...22, step: 1) {
-                    Text("Default Font Size (\(Int(store.terminalFontSize)) pt)")
+                    Text(store.strings.defaultFontSizeLabel(Int(store.terminalFontSize)))
                 }
 
-                Toggle("Capture Remote Shortcut Keys Inside Active Sessions", isOn: $store.remoteKeyCaptureEnabled)
+                Toggle(store.strings.remoteKeyCapture, isOn: $store.remoteKeyCaptureEnabled)
             }
 
-            Section("Vault Storage & Maintenance") {
-                LabeledContent("Local Vault Path") {
+            Section(store.strings.vaultStorageSection) {
+                LabeledContent(store.strings.localVaultPathLabel) {
                     Text(WorkspaceStore.localVaultFileURL.path)
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -264,7 +271,7 @@ public struct UnifiedWorkspaceSettingsView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(store.strings.resetDatabase)
                             .font(.callout.weight(.medium))
-                        Text("Wipe all local folders, connections, credentials, and passphrases back to an empty vault.")
+                        Text(store.strings.resetDatabaseHint)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -282,17 +289,17 @@ public struct UnifiedWorkspaceSettingsView: View {
 
     private var securityTab: some View {
         Form {
-            Section("Vault Encryption Passphrase (AES-256-GCM)") {
-                SecureField("New Master Passphrase (blank resets to transparent key)", text: $newMasterPassphrase)
-                SecureField("Confirm Master Passphrase", text: $confirmMasterPassphrase)
+            Section(store.strings.vaultEncryptionSection) {
+                SecureField(store.strings.newMasterPassphrasePlaceholder, text: $newMasterPassphrase)
+                SecureField(store.strings.confirmMasterPassphrasePlaceholder, text: $confirmMasterPassphrase)
 
-                Toggle("Enable Touch ID / Apple Watch Unlock", isOn: $saveToTouchIdKeychain)
+                Toggle(store.strings.touchIdUnlockToggle, isOn: $saveToTouchIdKeychain)
                     .disabled(!MacKeychainAndBiometrics.shared.canUseTouchIdOrCompanion)
 
                 HStack {
-                    Button("Apply Vault Encryption Key") {
+                    Button(store.strings.applyEncryptionKeyAction) {
                         guard newMasterPassphrase == confirmMasterPassphrase else {
-                            securityStatusBanner = "Passphrases do not match."
+                            securityStatusBanner = store.strings.passphrasesMismatchError
                             return
                         }
                         do {
@@ -324,7 +331,7 @@ public struct UnifiedWorkspaceSettingsView: View {
                 }
             }
 
-            Section("Emergency Recovery") {
+            Section(store.strings.emergencyRecoverySection) {
                 Button(role: .destructive) {
                     store.isPresentingResetDatabaseSheet = true
                 } label: {

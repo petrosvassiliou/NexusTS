@@ -895,6 +895,473 @@ public extension LocalizedWorkspaceStrings {
         default: return "Remote Key Capture"
         }
     }
+
+    var appearanceLabel: String {
+        switch connections {
+        case "Verbindungen": return "Erscheinungsbild"
+        case "Connessioni": return "Aspetto"
+        case "Conexiones": return "Apariencia"
+        case "Συνδέσεις": return "Εμφάνιση"
+        case "Connexions": return "Apparence"
+        default: return "Appearance"
+        }
+    }
+
+    var themeSystem: String {
+        switch connections {
+        case "Verbindungen": return "System"
+        case "Connessioni": return "Sistema"
+        case "Conexiones": return "Sistema"
+        case "Συνδέσεις": return "Σύστημα"
+        case "Connexions": return "Système"
+        default: return "System"
+        }
+    }
+
+    var themeLight: String {
+        switch connections {
+        case "Verbindungen": return "Hell"
+        case "Connessioni": return "Chiaro"
+        case "Conexiones": return "Claro"
+        case "Συνδέσεις": return "Φωτεινό"
+        case "Connexions": return "Clair"
+        default: return "Light"
+        }
+    }
+
+    var themeDark: String {
+        switch connections {
+        case "Verbindungen": return "Dunkel"
+        case "Connessioni": return "Scuro"
+        case "Conexiones": return "Oscuro"
+        case "Συνδέσεις": return "Σκοτεινό"
+        case "Connexions": return "Sombre"
+        default: return "Dark"
+        }
+    }
+
+    var languageAndAppearanceSection: String {
+        switch connections {
+        case "Verbindungen": return "Sprache & Erscheinungsbild"
+        case "Connessioni": return "Lingua e aspetto"
+        case "Conexiones": return "Idioma y apariencia"
+        case "Συνδέσεις": return "Γλώσσα & εμφάνιση"
+        case "Connexions": return "Langue et apparence"
+        default: return "Language & Appearance"
+        }
+    }
+
+    var workspaceLanguageLabel: String {
+        switch connections {
+        case "Verbindungen": return "Sprache"
+        case "Connessioni": return "Lingua dell'area di lavoro"
+        case "Conexiones": return "Idioma del espacio de trabajo"
+        case "Συνδέσεις": return "Γλώσσα εφαρμογής"
+        case "Connexions": return "Langue de l'espace de travail"
+        default: return "Workspace Language"
+        }
+    }
+
+    var spotlightIndexingToggle: String {
+        switch connections {
+        case "Verbindungen": return "Verbindungen in der macOS-Spotlight-Suche indizieren"
+        case "Connessioni": return "Indicizza connessioni in Spotlight di macOS"
+        case "Conexiones": return "Indexar conexiones en Spotlight de macOS"
+        case "Συνδέσεις": return "Ευρετηρίαση συνδέσεων στο Spotlight του macOS"
+        case "Connexions": return "Indexer les connexions dans Spotlight macOS"
+        default: return "Index Connections in macOS Spotlight Search"
+        }
+    }
+
+    var terminalAndSessionsSection: String {
+        switch connections {
+        case "Verbindungen": return "Terminal & Remote-Sitzungen"
+        case "Connessioni": return "Terminale e sessioni remote"
+        case "Conexiones": return "Terminal y sesiones remotas"
+        case "Συνδέσεις": return "Τερματικό & απομακρυσμένες συνεδρίες"
+        case "Connexions": return "Terminal et sessions distantes"
+        default: return "Terminal & Remote Sessions"
+        }
+    }
+
+    var monospacedFontLabel: String {
+        switch connections {
+        case "Verbindungen": return "Nichtproportionale Schriftart"
+        case "Connessioni": return "Carattere a spaziatura fissa"
+        case "Conexiones": return "Fuente monoespaciada"
+        case "Συνδέσεις": return "Γραμματοσειρά σταθερού πλάτους"
+        case "Connexions": return "Police à chasse fixe"
+        default: return "Monospaced Font Family"
+        }
+    }
+
+    func defaultFontSizeLabel(_ pt: Int) -> String {
+        switch connections {
+        case "Verbindungen": return "Standard-Schriftgröße (\(pt) pt)"
+        case "Connessioni": return "Dimensione carattere (\(pt) pt)"
+        case "Conexiones": return "Tamaño de fuente (\(pt) pt)"
+        case "Συνδέσεις": return "Μέγεθος γραμματοσειράς (\(pt) pt)"
+        case "Connexions": return "Taille de police (\(pt) pt)"
+        default: return "Default Font Size (\(pt) pt)"
+        }
+    }
+
+    var vaultStorageSection: String {
+        switch connections {
+        case "Verbindungen": return "Tresor-Speicher & Wartung"
+        case "Connessioni": return "Archiviazione e manutenzione"
+        case "Conexiones": return "Almacenamiento y mantenimiento"
+        case "Συνδέσεις": return "Αποθήκευση & συντήρηση θησαυροφυλακίου"
+        case "Connexions": return "Stockage et maintenance du coffre"
+        default: return "Vault Storage & Maintenance"
+        }
+    }
+
+    var localVaultPathLabel: String {
+        switch connections {
+        case "Verbindungen": return "Lokaler Tresor-Pfad"
+        case "Connessioni": return "Percorso cassaforte locale"
+        case "Conexiones": return "Ruta de la bóveda local"
+        case "Συνδέσεις": return "Τοπική διαδρομή θησαυροφυλακίου"
+        case "Connexions": return "Chemin du coffre local"
+        default: return "Local Vault Path"
+        }
+    }
+
+    var resetDatabaseHint: String {
+        switch connections {
+        case "Verbindungen": return "Löscht alle lokalen Ordner, Verbindungen, Anmeldedaten und Passphrasen unwiderruflich auf diesem Gerät."
+        case "Connessioni": return "Elimina tutte le cartelle, connessioni, credenziali e passphrase locali riportando la cassaforte allo stato vuoto."
+        case "Conexiones": return "Borra todas las carpetas, conexiones, credenciales y frases locales dejando la bóveda vacía."
+        case "Συνδέσεις": return "Διαγράφει όλους τους τοπικούς φακέλους, συνδέσεις, διαπιστευτήρια και φράσεις πρόσβασης."
+        case "Connexions": return "Efface tous les dossiers, connexions, identifiants et phrases secrètes locaux pour repartir d'un coffre vide."
+        default: return "Wipe all local folders, connections, credentials, and passphrases back to an empty vault."
+        }
+    }
+
+    var vaultEncryptionSection: String {
+        switch connections {
+        case "Verbindungen": return "Tresor-Verschlüsselungs-Passphrase (AES-256-GCM)"
+        case "Connessioni": return "Passphrase di cifratura cassaforte (AES-256-GCM)"
+        case "Conexiones": return "Frase de cifrado de bóveda (AES-256-GCM)"
+        case "Συνδέσεις": return "Φράση κρυπτογράφησης θησαυροφυλακίου (AES-256-GCM)"
+        case "Connexions": return "Phrase de chiffrement du coffre (AES-256-GCM)"
+        default: return "Vault Encryption Passphrase (AES-256-GCM)"
+        }
+    }
+
+    var newMasterPassphrasePlaceholder: String {
+        switch connections {
+        case "Verbindungen": return "Neue Master-Passphrase (leer setzt auf transparenten Schlüssel zurück)"
+        case "Connessioni": return "Nuova passphrase principale (vuoto ripristina chiave automatica)"
+        case "Conexiones": return "Nueva frase maestra (vacío restablece clave automática)"
+        case "Συνδέσεις": return "Νέα κύρια φράση πρόσβασης (κενό = αυτόματο κλειδί)"
+        case "Connexions": return "Nouvelle phrase secrète principale (vide réinitialise la clé automatique)"
+        default: return "New Master Passphrase (blank resets to transparent key)"
+        }
+    }
+
+    var confirmMasterPassphrasePlaceholder: String {
+        switch connections {
+        case "Verbindungen": return "Master-Passphrase bestätigen"
+        case "Connessioni": return "Conferma passphrase principale"
+        case "Conexiones": return "Confirmar frase maestra"
+        case "Συνδέσεις": return "Επιβεβαίωση κύριας φράσης"
+        case "Connexions": return "Confirmer la phrase secrète principale"
+        default: return "Confirm Master Passphrase"
+        }
+    }
+
+    var touchIdUnlockToggle: String {
+        switch connections {
+        case "Verbindungen": return "Entsperren mit Touch ID / Apple Watch aktivieren"
+        case "Connessioni": return "Abilita sblocco con Touch ID / Apple Watch"
+        case "Conexiones": return "Activar desbloqueo con Touch ID / Apple Watch"
+        case "Συνδέσεις": return "Ξεκλείδωμα με Touch ID / Apple Watch"
+        case "Connexions": return "Activer le déverrouillage Touch ID / Apple Watch"
+        default: return "Enable Touch ID / Apple Watch Unlock"
+        }
+    }
+
+    var applyEncryptionKeyAction: String {
+        switch connections {
+        case "Verbindungen": return "Verschlüsselungsschlüssel anwenden"
+        case "Connessioni": return "Applica chiave di cifratura"
+        case "Conexiones": return "Aplicar clave de cifrado"
+        case "Συνδέσεις": return "Εφαρμογή κλειδιού κρυπτογράφησης"
+        case "Connexions": return "Appliquer la clé de chiffrement"
+        default: return "Apply Vault Encryption Key"
+        }
+    }
+
+    var emergencyRecoverySection: String {
+        switch connections {
+        case "Verbindungen": return "Notfall-Wiederherstellung"
+        case "Connessioni": return "Ripristino di emergenza"
+        case "Conexiones": return "Recuperación de emergencia"
+        case "Συνδέσεις": return "Επαναφορά έκτακτης ανάγκης"
+        case "Connexions": return "Récupération d'urgence"
+        default: return "Emergency Recovery"
+        }
+    }
+
+    var passphrasesMismatchError: String {
+        switch connections {
+        case "Verbindungen": return "Die Passphrasen stimmen nicht überein."
+        case "Connessioni": return "Le passphrase non corrispondono."
+        case "Conexiones": return "Las frases de contraseña no coinciden."
+        case "Συνδέσεις": return "Οι φράσεις πρόσβασης δεν ταιριάζουν."
+        case "Connexions": return "Les phrases secrètes ne correspondent pas."
+        default: return "Passphrases do not match."
+        }
+    }
+
+    var statusActiveBadge: String {
+        switch connections {
+        case "Verbindungen": return "Aktiv"
+        case "Connessioni": return "Attivo"
+        case "Conexiones": return "Activo"
+        case "Συνδέσεις": return "Ενεργό"
+        case "Connexions": return "Actif"
+        default: return "Active"
+        }
+    }
+
+    var statusSyncing: String {
+        switch connections {
+        case "Verbindungen": return "Synchronisiere…"
+        case "Connessioni": return "Sincronizzazione…"
+        case "Conexiones": return "Sincronizando…"
+        case "Συνδέσεις": return "Συγχρονισμός…"
+        case "Connexions": return "Synchronisation…"
+        default: return "Syncing…"
+        }
+    }
+
+    var cloudSyncAutoSubtitle: String {
+        switch connections {
+        case "Verbindungen": return "Synchronisiert automatisch beim Start, bei Änderungen und sobald entfernte Änderungen erkannt werden."
+        case "Connessioni": return "Sincronizza automaticamente all'avvio, alle modifiche e quando vengono rilevate modifiche remote."
+        case "Conexiones": return "Sincroniza automáticamente al iniciar, al realizar cambios y cuando se detectan cambios remotos."
+        case "Συνδέσεις": return "Συγχρονίζει αυτόματα κατά την εκκίνηση, τις αλλαγές και τον εντοπισμό απομακρυσμένων αλλαγών."
+        case "Connexions": return "Synchronise automatiquement au démarrage, lors de modifications et dès que des changements distants sont détectés."
+        default: return "Automatically syncs on startup, when you make changes, and whenever remote changes are detected."
+        }
+    }
+
+    var cloudSyncOnboardingBody: String {
+        switch connections {
+        case "Verbindungen": return "Wähle einmalig eine Tresor-Datei in Google Drive (oder iCloud Drive). NexusTS hält alle Verbindungen, Ordner und Anmeldedaten automatisch verschlüsselt auf allen Geräten synchron."
+        case "Connessioni": return "Scegli una volta un file cassaforte in Google Drive (o iCloud Drive). NexusTS mantiene connessioni, cartelle e credenziali cifrate e sincronizzate su tutti i tuoi dispositivi."
+        case "Conexiones": return "Elige un archivo de bóveda en Google Drive (o iCloud Drive) una vez. NexusTS mantiene tus conexiones, carpetas y credenciales cifradas y sincronizadas en todos tus dispositivos."
+        case "Συνδέσεις": return "Επιλέξτε ένα αρχείο θησαυροφυλακίου στο Google Drive (ή iCloud Drive) μία φορά. Το NexusTS διατηρεί τα δεδομένα σας κρυπτογραφημένα και συγχρονισμένα σε όλες τις συσκευές."
+        case "Connexions": return "Choisissez un fichier coffre dans Google Drive (ou iCloud Drive) une seule fois. NexusTS garde vos connexions, dossiers et identifiants chiffrés et synchronisés sur tous vos appareils."
+        default: return "Choose a Google Drive (or iCloud Drive) vault file once. NexusTS keeps your connections, folders, and credentials encrypted and synchronized automatically across all your devices."
+        }
+    }
+
+    var showInFinderAction: String {
+        switch connections {
+        case "Verbindungen": return "Im Finder zeigen"
+        case "Connessioni": return "Mostra nel Finder"
+        case "Conexiones": return "Mostrar en el Finder"
+        case "Συνδέσεις": return "Εμφάνιση στο Finder"
+        case "Connexions": return "Afficher dans le Finder"
+        default: return "Show in Finder"
+        }
+    }
+
+    var switchVaultFileAction: String {
+        switch connections {
+        case "Verbindungen": return "Tresor-Datei wechseln…"
+        case "Connessioni": return "Cambia file cassaforte…"
+        case "Conexiones": return "Cambiar archivo de bóveda…"
+        case "Συνδέσεις": return "Αλλαγή αρχείου θησαυροφυλακίου…"
+        case "Connexions": return "Changer de fichier coffre…"
+        default: return "Switch Vault File…"
+        }
+    }
+
+    var disconnectSyncAction: String {
+        switch connections {
+        case "Verbindungen": return "Synchronisierung trennen"
+        case "Connessioni": return "Scollega sincronizzazione"
+        case "Conexiones": return "Desconectar sincronización"
+        case "Συνδέσεις": return "Αποσύνδεση συγχρονισμού"
+        case "Connexions": return "Déconnecter la synchronisation"
+        default: return "Disconnect Sync"
+        }
+    }
+
+    var createSyncedVaultAction: String {
+        switch connections {
+        case "Verbindungen": return "Neuen synchronisierten Tresor erstellen…"
+        case "Connessioni": return "Crea nuova cassaforte sincronizzata…"
+        case "Conexiones": return "Crear nueva bóveda sincronizada…"
+        case "Συνδέσεις": return "Δημιουργία νέου συγχρονισμένου θησαυροφυλακίου…"
+        case "Connexions": return "Créer un nouveau coffre synchronisé…"
+        default: return "Create New Synced Vault…"
+        }
+    }
+
+    var openExistingVaultAction: String {
+        switch connections {
+        case "Verbindungen": return "Vorhandenen Tresor öffnen (.nxts)…"
+        case "Connessioni": return "Apri cassaforte esistente (.nxts)…"
+        case "Conexiones": return "Abrir bóveda existente (.nxts)…"
+        case "Συνδέσεις": return "Άνοιγμα υπάρχοντος θησαυροφυλακίου (.nxts)…"
+        case "Connexions": return "Ouvrir un coffre existant (.nxts)…"
+        default: return "Open Existing Vault (.nxts)…"
+        }
+    }
+
+    var syncHereAction: String {
+        switch connections {
+        case "Verbindungen": return "Hier synchronisieren"
+        case "Connessioni": return "Sincronizza qui"
+        case "Conexiones": return "Sincronizar aquí"
+        case "Συνδέσεις": return "Συγχρονισμός εδώ"
+        case "Connexions": return "Synchroniser ici"
+        default: return "Sync Here"
+        }
+    }
+
+    func lastSyncedFormat(_ time: String) -> String {
+        switch connections {
+        case "Verbindungen": return "• Zuletzt synchronisiert \(time)"
+        case "Connessioni": return "• Ultima sincronizzazione \(time)"
+        case "Conexiones": return "• Última sincronización \(time)"
+        case "Συνδέσεις": return "• Τελευταίος συγχρονισμός \(time)"
+        case "Connexions": return "• Dernière synchro \(time)"
+        default: return "• Last synced \(time)"
+        }
+    }
+
+    var openWorkspaceAction: String {
+        switch connections {
+        case "Verbindungen": return "NexusTS-Arbeitsbereich öffnen"
+        case "Connessioni": return "Apri area di lavoro NexusTS"
+        case "Conexiones": return "Abrir espacio de trabajo NexusTS"
+        case "Συνδέσεις": return "Άνοιγμα χώρου εργασίας NexusTS"
+        case "Connexions": return "Ouvrir l'espace NexusTS"
+        default: return "Open NexusTS Workspace"
+        }
+    }
+
+    var copyTotpHeader: String {
+        switch connections {
+        case "Verbindungen": return "2FA-TOTP-Code kopieren"
+        case "Connessioni": return "Copia codice 2FA TOTP"
+        case "Conexiones": return "Copiar código 2FA TOTP"
+        case "Συνδέσεις": return "Αντιγραφή κωδικού 2FA TOTP"
+        case "Connexions": return "Copier le code 2FA TOTP"
+        default: return "Copy 2FA TOTP Code"
+        }
+    }
+
+    var checkForUpdatesMenuAction: String {
+        switch connections {
+        case "Verbindungen": return "Nach Updates suchen…"
+        case "Connessioni": return "Controlla aggiornamenti…"
+        case "Conexiones": return "Buscar actualizaciones…"
+        case "Συνδέσεις": return "Έλεγχος για ενημερώσεις…"
+        case "Connexions": return "Rechercher des mises à jour…"
+        default: return "Check for Updates…"
+        }
+    }
+
+    func installUpdateFormat(_ tag: String) -> String {
+        switch connections {
+        case "Verbindungen": return "Update installieren (\(tag))…"
+        case "Connessioni": return "Installa aggiornamento (\(tag))…"
+        case "Conexiones": return "Instalar actualización (\(tag))…"
+        case "Συνδέσεις": return "Εγκατάσταση ενημέρωσης (\(tag))…"
+        case "Connexions": return "Installer la mise à jour (\(tag))…"
+        default: return "Install Update (\(tag))…"
+        }
+    }
+
+    var quitAppAction: String {
+        switch connections {
+        case "Verbindungen": return "NexusTS beenden"
+        case "Connessioni": return "Esci da NexusTS"
+        case "Conexiones": return "Salir de NexusTS"
+        case "Συνδέσεις": return "Τερματισμός NexusTS"
+        case "Connexions": return "Quitter NexusTS"
+        default: return "Quit NexusTS"
+        }
+    }
+
+    var updateAndRelaunchAction: String {
+        switch connections {
+        case "Verbindungen": return "Aktualisieren & neu starten"
+        case "Connessioni": return "Aggiorna e riavvia"
+        case "Conexiones": return "Actualizar y reiniciar"
+        case "Συνδέσεις": return "Ενημέρωση & επανεκκίνηση"
+        case "Connexions": return "Mettre à jour et relancer"
+        default: return "Update & Relaunch"
+        }
+    }
+
+    var detailsAction: String {
+        switch connections {
+        case "Verbindungen": return "Details…"
+        case "Connessioni": return "Dettagli…"
+        case "Conexiones": return "Detalles…"
+        case "Συνδέσεις": return "Λεπτομέρειες…"
+        case "Connexions": return "Détails…"
+        default: return "Details…"
+        }
+    }
+
+    var cancelAction: String {
+        switch connections {
+        case "Verbindungen": return "Abbrechen"
+        case "Connessioni": return "Annulla"
+        case "Conexiones": return "Cancelar"
+        case "Συνδέσεις": return "Ακύρωση"
+        case "Connexions": return "Annuler"
+        default: return "Cancel"
+        }
+    }
+
+    var connectAction: String {
+        switch connections {
+        case "Verbindungen": return "Verbinden"
+        case "Connessioni": return "Connetti"
+        case "Conexiones": return "Conectar"
+        case "Συνδέσεις": return "Σύνδεση"
+        case "Connexions": return "Connecter"
+        default: return "Connect"
+        }
+    }
+
+    var connectWithOptionsAction: String {
+        switch connections {
+        case "Verbindungen": return "Mit Optionen verbinden…"
+        case "Connessioni": return "Connetti con opzioni…"
+        case "Conexiones": return "Conectar con opciones…"
+        case "Συνδέσεις": return "Σύνδεση με επιλογές…"
+        case "Connexions": return "Connecter avec options…"
+        default: return "Connect with Options…"
+        }
+    }
+}
+
+public enum NexusAppearanceMode: String, Codable, CaseIterable, Identifiable, Sendable {
+    case system = "system"
+    case light = "light"
+    case dark = "dark"
+
+    public var id: String { rawValue }
+
+    public func title(in strings: LocalizedWorkspaceStrings) -> String {
+        switch self {
+        case .system: return strings.themeSystem
+        case .light: return strings.themeLight
+        case .dark: return strings.themeDark
+        }
+    }
 }
 
 

@@ -1,0 +1,1 @@
+• NexusTS 1.0.3 UI-Feinschliff & Design-Update: Vollständiger System-/Hell-/Dunkel-Modus für ChromeOS, Android & macOS, durchgängige 6-Sprachen-Lokalisierung in Drive-Sync, Einstellungen & Kontextmenüs ohne englische Resttexte, verzögerungsfreies 1:1-Ziehen der Trennlinien mit Doppelklick-Reset & gespeicherten Spaltenbreiten sowie einheitliche Dialoge und RDP-Overlays.

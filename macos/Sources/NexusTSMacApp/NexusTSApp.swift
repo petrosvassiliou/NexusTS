@@ -4,9 +4,38 @@ import Darwin
 import NexusTSCore
 import SwiftUI
 
+public extension NexusAppearanceMode {
+    var swiftUIColorScheme: ColorScheme? {
+        switch self {
+        case .system: return nil
+        case .light: return .light
+        case .dark: return .dark
+        }
+    }
+}
+
+public extension WorkspaceStore {
+    static func applyMacAppearance(_ mode: NexusAppearanceMode) {
+        guard let app = NSApp else { return }
+        switch mode {
+        case .system:
+            app.appearance = nil
+        case .light:
+            app.appearance = NSAppearance(named: .aqua)
+        case .dark:
+            app.appearance = NSAppearance(named: .darkAqua)
+        }
+    }
+}
+
 public final class NexusMacAppDelegate: NSObject, NSApplicationDelegate {
     public func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.appearance = NSAppearance(named: .aqua)
+        let savedAppearance = UserDefaults.standard
+            .string(forKey: "nexusts.macos.appearanceMode")
+            .flatMap(NexusAppearanceMode.init(rawValue:)) ?? .system
+        MainActor.assumeIsolated {
+            WorkspaceStore.applyMacAppearance(savedAppearance)
+        }
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         MainActor.assumeIsolated {
@@ -63,9 +92,10 @@ public struct NexusTSApp: App {
         WindowGroup(id: "main-workspace") {
             NexusMainWindowView()
                 .environmentObject(store)
-                .preferredColorScheme(.light)
+                .preferredColorScheme(store.appearanceMode.swiftUIColorScheme)
                 .frame(minWidth: 980, minHeight: 620)
                 .onAppear {
+                    WorkspaceStore.applyMacAppearance(store.appearanceMode)
                     let s = store
                     DiscreetTooltipController.shared.stringsProvider = { [weak s] in
                         s?.strings ?? LocalizedWorkspaceStrings.catalog(for: .system)
@@ -96,7 +126,7 @@ public struct NexusTSApp: App {
             if let id = tabId {
                 DetachedSessionWindowRootView(tabId: id)
                     .environmentObject(store)
-                    .preferredColorScheme(.light)
+                    .preferredColorScheme(store.appearanceMode.swiftUIColorScheme)
                     .frame(minWidth: 720, minHeight: 480)
             }
         }
@@ -105,13 +135,13 @@ public struct NexusTSApp: App {
         Settings {
             MacSettingsView()
                 .environmentObject(store)
-                .preferredColorScheme(.light)
+                .preferredColorScheme(store.appearanceMode.swiftUIColorScheme)
         }
 
         MenuBarExtra("NexusTS", systemImage: "network.badge.shield.half.filled") {
             MenuBarQuickAgentView()
                 .environmentObject(store)
-                .preferredColorScheme(.light)
+                .preferredColorScheme(store.appearanceMode.swiftUIColorScheme)
         }
         .menuBarExtraStyle(.window)
     }

@@ -1,0 +1,1 @@
+• NexusTS 1.0.3 Rifinitura UI e Temi: Modalità Sistema / Chiaro / Scuro su ChromeOS, Android e macOS, localizzazione completa in 6 lingue in Drive-Sync, Impostazioni e menu contestuali, ridimensionamento pannelli 1:1 senza ritardi con salvataggio larghezze e finestre di dialogo e overlay RDP unificati.
